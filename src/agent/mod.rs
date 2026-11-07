@@ -16,6 +16,7 @@ mod lan;
 mod landscape;
 mod mcp;
 mod online;
+mod prefs;
 mod presence;
 mod prompt;
 mod runner;
@@ -141,6 +142,8 @@ struct Chat {
     network: bool,
     /// The share of the window's width the panel covers (0 when hidden).
     covered: f32,
+    /// The shortcut hints at the bottom of the view are showing (F1 toggles them).
+    hints: bool,
 }
 
 impl Default for Chat {
@@ -166,6 +169,7 @@ impl Default for Chat {
             play_together: false,
             network: false,
             covered: 0.0,
+            hints: prefs::get("hints").and_then(|v| v.as_bool()).unwrap_or(true),
         }
     }
 }
@@ -515,6 +519,11 @@ fn shortcuts(
     if command {
         return;
     }
+    if keys.just_pressed(KeyCode::F1) {
+        chat.hints = !chat.hints;
+        prefs::set("hints", chat.hints);
+        return;
+    }
     // T opens the chat to talk to the agent, like Minecraft's chat key.
     if keys.just_pressed(KeyCode::KeyT) {
         chat.open = true;
@@ -799,61 +808,140 @@ fn click_in_world(
     }
 }
 
-/// A one-line reminder of the shortcuts that apply right now, at the bottom of the view.
+/// What each key does right now, at the bottom of the view: the actions for what you're
+/// doing on top, and moving around beneath, quieter.
 fn shortcut_hints(
     mut contexts: EguiContexts,
     chat: Res<Chat>,
     creations: Res<Creations>,
     landscape: Res<Landscape>,
 ) -> Result {
-    let hint = match &creations.draft {
-        Some(d) if d.follow => "Click: place   Q/E: turn   R/F: raise / lower   Esc or right-click: cancel   T: ask for changes",
-        Some(_) => "Enter: keep the change   M: move it   T: ask for more   Esc: cancel",
-        None if landscape.draft.is_some() => "Enter: keep the change   T: ask for changes   Esc: put the ground back   Right-drag: look",
-        None if landscape.selecting => {
-            "Drag across the ground to select an area (a click selects 6 m)   Right-drag: look   G or Esc: stop"
+    let actions: &[(&str, &str)] = match &creations.draft {
+        Some(d) if d.follow => &[
+            ("Click", "place"),
+            ("Q/E", "turn"),
+            ("R/F", "raise / lower"),
+            ("T", "ask for changes"),
+            ("Esc or right-click", "cancel"),
+        ],
+        Some(_) => &[("Enter", "keep the change"), ("M", "move it"), ("T", "ask for more"), ("Esc", "cancel")],
+        None if landscape.draft.is_some() => {
+            &[("Enter", "keep the change"), ("T", "ask for changes"), ("Esc", "put the ground back")]
         }
-        None if creations.selected.is_some() => {
-            "T: change it   M or double-click: move   Delete: remove   Middle-click: copy   Esc: deselect   Ctrl/Cmd+Z: undo"
+        None if landscape.selecting => &[("Drag", "select an area (a click: 6 m)"), ("G or Esc", "stop")],
+        None if creations.selected.is_some() => &[
+            ("T", "change it"),
+            ("M or double-click", "move"),
+            ("Delete", "remove"),
+            ("Middle-click", "copy"),
+            ("Ctrl/Cmd+Z", "undo"),
+            ("Esc", "deselect"),
+        ],
+        None if chat.pending.is_some() => &[],
+        None if landscape.area.is_some() => {
+            &[("T", "describe what this land should become"), ("G", "select again"), ("Esc", "clear the area")]
         }
-        None if chat.pending.is_some() => return Ok(()),
-        None if landscape.area.is_some() => "T: describe what this land should become   G: select again   Esc: clear the area",
-        None => "T: describe a build   G: reshape the ground   P: land   H: history   Click a build: select   Middle-click a build: copy",
+        None => &[
+            ("T", "describe a build"),
+            ("G", "reshape the ground"),
+            ("Click", "select a build"),
+            ("Middle-click", "copy a build"),
+            ("P", "land"),
+            ("H", "history"),
+        ],
     };
+    // Looking around turns to the right button while the left one selects ground.
+    let look = if landscape.selecting || landscape.draft.is_some() { "Right-drag" } else { "Drag" };
+    let builder = if chat.open { "hide builder" } else { "builder" };
+    let moving =
+        [("WASD", "move"), ("Shift", "run"), ("Space", "jump"), (look, "look"), ("Scroll", "zoom"), ("Tab", builder), ("F1", "hide hints")];
+
     let ctx = contexts.ctx_mut()?;
     let p = theme::palette(ctx);
     let screen = ctx.viewport_rect();
     let covered = chat.covered * screen.width();
+    // Hidden, the hints leave a small reminder of how to bring them back.
+    if !chat.hints {
+        egui::Area::new("shortcut_hints".into())
+            .anchor(egui::Align2::CENTER_BOTTOM, egui::vec2(-covered / 2.0, -16.0))
+            .interactable(false)
+            .show(ctx, |ui| {
+                egui::Frame::new()
+                    .fill(p.overlay)
+                    .stroke(egui::Stroke::new(1.0, p.line))
+                    .corner_radius(theme::ROUND + 1)
+                    .inner_margin(egui::Margin::symmetric(8, 5))
+                    .show(ui, |ui| ui.horizontal(|ui| hint_row(ui, &[("F1", "show hints")], true)));
+            });
+        return Ok(());
+    }
     egui::Area::new("shortcut_hints".into())
-        .anchor(egui::Align2::CENTER_BOTTOM, egui::vec2(-covered / 2.0, -36.0))
+        .anchor(egui::Align2::CENTER_BOTTOM, egui::vec2(-covered / 2.0, -16.0))
         .interactable(false)
         .show(ctx, |ui| {
             egui::Frame::new()
                 .fill(p.overlay)
-                .corner_radius(theme::ROUND)
-                .inner_margin(egui::Margin::symmetric(10, 6))
+                .stroke(egui::Stroke::new(1.0, p.line))
+                .corner_radius(theme::ROUND + 1)
+                .inner_margin(egui::Margin::symmetric(12, 8))
                 .show(ui, |ui| {
                     ui.set_max_width(screen.width() - covered - 48.0);
-                    ui.horizontal_wrapped(|ui| {
-                        // Each hint reads "Keys: what they do"; the keys get drawn as keycaps.
-                        for (i, part) in hint.split("   ").enumerate() {
-                            if i > 0 {
-                                ui.add_space(8.0);
-                            }
-                            match part.split_once(": ") {
-                                Some((keys, what)) => {
-                                    theme::key(ui, keys);
-                                    ui.label(egui::RichText::new(what).size(12.5).color(p.text));
-                                }
-                                None => {
-                                    ui.label(egui::RichText::new(part).size(12.5).color(p.text));
-                                }
-                            }
-                        }
-                    });
+                    ui.spacing_mut().item_spacing = egui::vec2(5.0, 6.0);
+                    let mut divider = None;
+                    if !actions.is_empty() {
+                        ui.horizontal_wrapped(|ui| hint_row(ui, actions, false));
+                        divider = Some(ui.cursor().top() + 1.0);
+                        ui.add_space(4.0);
+                    }
+                    ui.horizontal_wrapped(|ui| hint_row(ui, &moving, true));
+                    // Drawn last so it spans the wider of the two rows.
+                    if let Some(y) = divider {
+                        ui.painter().hline(ui.min_rect().x_range(), y, egui::Stroke::new(1.0, p.line));
+                    }
                 });
         });
     Ok(())
+}
+
+/// One row of hints: keycaps, then what they do. Quiet rows are smaller and muted.
+fn hint_row(ui: &mut egui::Ui, hints: &[(&str, &str)], quiet: bool) {
+    let p = theme::palette(ui.ctx());
+    let (size, color) = if quiet { (11.5, p.muted) } else { (13.0, p.text) };
+    for (i, (keys, what)) in hints.iter().enumerate() {
+        if i > 0 {
+            ui.add_space(if quiet { 8.0 } else { 10.0 });
+        }
+        for (j, alternative) in keys.split(" or ").enumerate() {
+            if j > 0 {
+                ui.label(egui::RichText::new("or").size(size - 1.0).color(p.faint));
+            }
+            // "Q/E" is two keys; "Ctrl/Cmd+Z" is one.
+            let parts: Vec<&str> = alternative.split('/').collect();
+            if parts.len() > 1 && parts.iter().all(|k| k.chars().count() == 1) {
+                for k in parts {
+                    theme::key(ui, k, quiet);
+                }
+            } else {
+                theme::key(ui, &mouse_key(alternative), quiet);
+            }
+        }
+        ui.label(egui::RichText::new(*what).size(size).color(color));
+    }
+}
+
+/// Mouse buttons get a mouse icon on their keycap.
+fn mouse_key(key: &str) -> String {
+    let (icon, name) = match key.to_lowercase().as_str() {
+        "click" => (icon::MOUSE_LEFT_CLICK, "Click"),
+        "double-click" => (icon::MOUSE_LEFT_CLICK, "Double-click"),
+        "right-click" => (icon::MOUSE_RIGHT_CLICK, "Right-click"),
+        "middle-click" => (icon::MOUSE_MIDDLE_CLICK, "Middle-click"),
+        "drag" => (icon::MOUSE_LEFT_CLICK, "Drag"),
+        "right-drag" => (icon::MOUSE_RIGHT_CLICK, "Right-drag"),
+        "scroll" => (icon::MOUSE_SCROLL, "Scroll"),
+        _ => return key.to_string(),
+    };
+    format!("{icon} {name}")
 }
 
 /// Adds the Phosphor icon font as a fallback, so icons render inside any label, and

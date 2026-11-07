@@ -5,8 +5,7 @@
 
 use bevy_egui::egui::{self, Color32, CornerRadius, FontId, Margin, Stroke, TextStyle, Theme};
 
-/// Where the light/dark choice is kept between runs.
-const SETTINGS_PATH: &str = "saves/settings.json";
+use super::prefs;
 
 /// Corner radius for blocks: just enough to soften the pixels.
 pub const ROUND: u8 = 3;
@@ -101,11 +100,8 @@ pub fn palette(ctx: &egui::Context) -> &'static Palette {
 pub fn apply(ctx: &egui::Context) {
     ctx.style_mut_of(Theme::Dark, |style| restyle(style, &DARK, true));
     ctx.style_mut_of(Theme::Light, |style| restyle(style, &LIGHT, false));
-    let saved = std::fs::read_to_string(SETTINGS_PATH)
-        .ok()
-        .and_then(|text| serde_json::from_str::<serde_json::Value>(&text).ok())
-        .and_then(|v| v["theme"].as_str().map(str::to_owned));
-    ctx.set_theme(if saved.as_deref() == Some("light") { Theme::Light } else { Theme::Dark });
+    let light = prefs::get("theme").is_some_and(|v| v == "light");
+    ctx.set_theme(if light { Theme::Light } else { Theme::Dark });
 }
 
 /// Switches between light and dark, and remembers it.
@@ -115,12 +111,7 @@ pub fn toggle(ctx: &egui::Context) {
         Theme::Light => Theme::Dark,
     };
     ctx.set_theme(theme);
-    let name = if theme == Theme::Light { "light" } else { "dark" };
-    let result = std::fs::create_dir_all("saves")
-        .and_then(|_| std::fs::write(SETTINGS_PATH, serde_json::json!({ "theme": name }).to_string()));
-    if let Err(e) = result {
-        bevy::log::error!("couldn't save {SETTINGS_PATH}: {e}");
-    }
+    prefs::set("theme", if theme == Theme::Light { "light" } else { "dark" });
 }
 
 fn restyle(style: &mut egui::Style, p: &Palette, dark: bool) {
@@ -306,19 +297,21 @@ pub fn tag(ui: &mut egui::Ui, text: &str, fill: Color32, color: Color32) {
     ui.painter().galley(rect.center() - galley.size() / 2.0, galley, color);
 }
 
-/// A keyboard key, for shortcut hints: a keycap with a shaded lip.
-pub fn key(ui: &mut egui::Ui, text: &str) {
+/// A keyboard key, for shortcut hints: a keycap with a shaded lip. Quiet keys are
+/// smaller and flatter, for hints that are always there.
+pub fn key(ui: &mut egui::Ui, text: &str, quiet: bool) {
     let p = palette(ui.ctx());
+    let (size, color) = if quiet { (10.5, p.text) } else { (11.5, p.strong) };
     let response = egui::Frame::new()
         .fill(p.raised)
         .stroke(Stroke::new(1.0, p.line))
         .corner_radius(ROUND)
-        .inner_margin(Margin { left: 5, right: 5, top: 1, bottom: 3 })
+        .inner_margin(Margin { left: 5, right: 5, top: 1, bottom: if quiet { 2 } else { 3 } })
         .show(ui, |ui| {
-            ui.label(egui::RichText::new(text).size(11.5).strong().color(p.strong));
+            ui.label(egui::RichText::new(text).size(size).strong().color(color));
         })
         .response;
     let rect = response.rect;
-    let lip = egui::Rect::from_min_max(egui::pos2(rect.left(), rect.bottom() - 2.0), rect.max);
+    let lip = egui::Rect::from_min_max(egui::pos2(rect.left(), rect.bottom() - if quiet { 1.5 } else { 2.0 }), rect.max);
     ui.painter().rect_filled(lip, CornerRadius { nw: 0, ne: 0, sw: ROUND, se: ROUND }, p.line);
 }

@@ -107,12 +107,10 @@ fn setup(mut commands: Commands, mut media: ResMut<Assets<ScatteringMedium>>) {
         camera.insert(ScreenSpaceAmbientOcclusion::default());
     }
 
+    // On desktop the builder draws these, with what applies right now.
+    #[cfg(target_arch = "wasm32")]
     commands.spawn((
-        Text::new(if cfg!(target_arch = "wasm32") {
-            "WASD: move   Shift: run   Space: jump   Drag: look   Scroll: zoom"
-        } else {
-            "WASD: move   Shift: run   Space: jump   Drag: look   Scroll: zoom   Tab: builder"
-        }),
+        Text::new("WASD: move   Shift: run   Space: jump   Drag: look   Scroll: zoom"),
         TextFont { font_size: FontSize::Px(14.0), ..default() },
         TextColor(Color::srgba(1.0, 1.0, 1.0, 0.75)),
         Node {
