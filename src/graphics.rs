@@ -334,6 +334,11 @@ fn fit_render_target(
             {
                 image.resize(Extent3d { width: size.x, height: size.y, depth_or_array_layers: 1 });
                 image.sampler = ImageSampler::Descriptor(sampler);
+                // The material's bind group still holds the old texture, so the screen would
+                // keep showing the last frame drawn before the resize; writing to it rebuilds that.
+                if let Some(mut material) = materials.get_mut(&material.0) {
+                    material.texture = Some(handle.clone());
+                }
             }
             if current_factor != scale_factor {
                 *target = RenderTarget::Image(ImageRenderTarget { handle, scale_factor });
