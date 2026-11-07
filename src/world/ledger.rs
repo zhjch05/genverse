@@ -57,6 +57,34 @@ impl Ledger {
         self.record(None, None, Action::Revert { change });
     }
 
+    /// Renames the local player; past changes keep the name they were made under.
+    pub fn rename(&mut self, name: &str) {
+        let name = name.trim();
+        if name.is_empty() || name == self.profile.name {
+            return;
+        }
+        self.profile.name = name.chars().take(32).collect();
+        #[cfg(not(target_arch = "wasm32"))]
+        write_json(PROFILE_PATH, &self.profile);
+    }
+
+    /// Who first placed build `build`, and who changed it last (if anyone did since).
+    pub fn credits(&self, build: u64) -> Option<(&Provenance, Option<&Provenance>)> {
+        let mut changes = self.log.effective().filter(|c| match &c.action {
+            Action::PlaceBuild(b) | Action::UpdateBuild(b) => b.build == build,
+            _ => false,
+        });
+        let first = changes.next()?;
+        Some((&first.by, changes.last().map(|c| &c.by)))
+    }
+
+    /// A short credit line: "Ada with Claude Code, 2 h ago" ("you" for the local player).
+    pub fn describe(&self, by: &Provenance) -> String {
+        let who = if by.player == self.profile.id { "you".to_string() } else { by.player_name.clone() };
+        let how = by.agent.as_deref().map(|a| format!(" with {a}")).unwrap_or_default();
+        format!("{who}{how}, {}", ago(now().saturating_sub(by.at)))
+    }
+
     fn save(&self) {
         #[cfg(not(target_arch = "wasm32"))]
         write_json(LOG_PATH, &self.log);
@@ -72,6 +100,15 @@ fn now() -> u64 {
 #[cfg(target_arch = "wasm32")]
 fn now() -> u64 {
     0
+}
+
+fn ago(seconds: u64) -> String {
+    match seconds {
+        0..60 => "just now".into(),
+        60..3600 => format!("{} min ago", seconds / 60),
+        3600..86_400 => format!("{} h ago", seconds / 3600),
+        _ => format!("{} days ago", seconds / 86_400),
+    }
 }
 
 /// The voxel cache: the replayed edits and the log they came from.

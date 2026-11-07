@@ -107,6 +107,8 @@ struct Chat {
     pending: Option<Pending>,
     /// Set by the T/Enter shortcuts; the panel focuses the input on its next frame.
     focus_input: bool,
+    /// The player's name as being edited in the panel (loaded from the profile).
+    name: Option<String>,
 }
 
 impl Default for Chat {
@@ -126,6 +128,7 @@ impl Default for Chat {
             status: String::new(),
             pending: None,
             focus_input: false,
+            name: None,
         }
     }
 }
@@ -798,7 +801,16 @@ fn chat_panel(
                     });
                 });
             });
-            ui.label(egui::RichText::new("Tab hides this panel").small().weak());
+            ui.horizontal(|ui| {
+                ui.label(egui::RichText::new("You are").small().weak());
+                let name = chat.name.get_or_insert_with(|| ledger.profile.name.clone());
+                let field = ui.add(egui::TextEdit::singleline(name).desired_width(120.0).hint_text("your name"));
+                if field.lost_focus() {
+                    ledger.rename(name);
+                    *name = ledger.profile.name.clone();
+                }
+                ui.label(egui::RichText::new("· Tab hides this panel").small().weak());
+            });
             ui.separator();
 
             // Bottom-up: input, status, draft controls; messages fill what's left.
@@ -859,7 +871,14 @@ fn chat_panel(
                     ui.add_space(4.0);
                     ui.group(|ui| {
                         ui.label(egui::RichText::new(format!("Selected: {}", selected.name)).strong());
-                        ui.label(egui::RichText::new(format!("\"{}\" · {}", selected.prompt, selected.provider)).small().weak());
+                        ui.label(egui::RichText::new(format!("\"{}\"", selected.prompt)).small().weak());
+                        if let Some((made, changed)) = ledger.credits(selected.build) {
+                            let mut credit = format!("Made by {}", ledger.describe(made));
+                            if let Some(changed) = changed {
+                                credit.push_str(&format!(" · changed by {}", ledger.describe(changed)));
+                            }
+                            ui.label(egui::RichText::new(credit).small().weak());
+                        }
                         ui.horizontal(|ui| {
                             if ui
                                 .button(format!("{} Move", icon::ARROWS_OUT_CARDINAL))
