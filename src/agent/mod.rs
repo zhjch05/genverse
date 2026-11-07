@@ -12,6 +12,7 @@
 mod commands;
 mod creations;
 mod history;
+mod lan;
 mod landscape;
 mod mcp;
 mod online;
@@ -69,13 +70,14 @@ impl Plugin for AgentPlugin {
             .init_resource::<ParcelOverlay>()
             .init_resource::<presence::Peers>()
             .init_resource::<history::History>()
+            .init_resource::<lan::Lan>()
             .init_gizmo_group::<AreaGizmos>()
-            .add_systems(Startup, (load_creations, configure_area_gizmos, start_tool_server))
+            .add_systems(Startup, (load_creations, configure_area_gizmos, start_tool_server, lan::start_listening))
             .add_systems(
                 Update,
                 (
                     block_game_input,
-                    (online::sync_online, update_build_site, answer_tool_calls, poll_agent).chain(),
+                    (online::sync_online, lan::update_lan, update_build_site, answer_tool_calls, poll_agent).chain(),
                     (presence::send_presence, presence::move_avatars, presence::draw_peers, history::toggle_history),
                     auto_prompt,
                     (shortcuts, select_area, follow_cursor, check_clearance, click_in_world, outline_creations, draw_area, highlight_area, draw_parcels)
@@ -125,6 +127,8 @@ struct Chat {
     name: Option<String>,
     /// The server address being typed, to join.
     server_addr: String,
+    /// Play together was asked for (by `/play`); the LAN system picks it up.
+    play_together: bool,
 }
 
 impl Default for Chat {
@@ -146,6 +150,7 @@ impl Default for Chat {
             focus_input: false,
             name: None,
             server_addr: String::new(),
+            play_together: false,
         }
     }
 }
@@ -296,6 +301,12 @@ fn auto_prompt(
 /// Echoes a chat command and its reply.
 fn run_command(chat: &mut Chat, text: &str, cx: &mut commands::Context) {
     chat.say(Role::Player, text);
+    // Play together is the panel's, not a world command.
+    if text.trim() == "/play" {
+        chat.play_together = true;
+        chat.say(Role::System, "Looking for worlds on your network…");
+        return;
+    }
     let reply = commands::run(text, cx);
     info!("{text} -> {reply}");
     chat.say(Role::System, reply);
@@ -839,6 +850,8 @@ enum Action {
     Claim,
     Release,
     Join,
+    JoinLan(String),
+    PlayTogether,
     Host,
     Leave,
     History,
@@ -857,6 +870,8 @@ fn chat_panel(
     mut world: ResMut<VoxelWorld>,
     mut ledger: ResMut<Ledger>,
     mut history: ResMut<history::History>,
+    mut lan: ResMut<lan::Lan>,
+    time: Res<Time>,
     players: Query<&Transform, With<Player>>,
     cameras: Query<&GlobalTransform, With<Camera3d>>,
 ) -> Result {
@@ -925,9 +940,9 @@ fn chat_panel(
                     }
                 }
                 Some(online) => {
-                    let status = match (&online.closed, ledger.hosting) {
+                    let status = match (&online.closed, &ledger.hosting) {
                         (Some(_), _) => format!("{} · reconnecting…", online.addr),
-                        (None, Some(addr)) => format!("Hosting on port {}", addr.port()),
+                        (None, Some((addr, _))) => format!("Hosting on port {}", addr.port()),
                         (None, None) => format!("Online at {}", online.addr),
                     };
                     ui.label(egui::RichText::new(status).small());
@@ -936,6 +951,33 @@ fn chat_panel(
                     }
                 }
             });
+            if ledger.online.is_none() {
+                ui.horizontal(|ui| {
+                    let label = if lan.play_until.is_some() { "Looking…" } else { "Play together" };
+                    if ui
+                        .add_enabled(lan.play_until.is_none(), egui::Button::new(format!("{} {label}", icon::USERS_THREE)).small())
+                        .on_hover_text("Join a world on your network, or open this one if there's none")
+                        .clicked()
+                    {
+                        action = Some(Action::PlayTogether);
+                    }
+                    if lan.worlds.is_empty() {
+                        ui.label(egui::RichText::new("No worlds on your network yet").small().weak());
+                    }
+                });
+                for world in &lan.worlds {
+                    ui.horizontal(|ui| {
+                        let b = &world.beacon;
+                        ui.label(egui::RichText::new(format!("{} · {} playing", b.world, b.players)).small());
+                        let join = ui
+                            .add_enabled(b.compatible(), egui::Button::new("Join").small())
+                            .on_disabled_hover_text("Made with another version of the game");
+                        if join.clicked() {
+                            action = Some(Action::JoinLan(world.address()));
+                        }
+                    });
+                }
+            }
             ui.separator();
 
             // Bottom-up: input, status, draft controls; messages fill what's left.
@@ -1178,7 +1220,9 @@ fn chat_panel(
         Some(Action::SelectArea) => landscape.selecting = true,
         Some(Action::ClearArea) => landscape.area = None,
         Some(Action::History) => history.open = !history.open,
-        Some(Action::Join | Action::Host | Action::Leave) if creations.draft.is_some() || landscape.draft.is_some() => {
+        Some(Action::Join | Action::JoinLan(_) | Action::PlayTogether | Action::Host | Action::Leave)
+            if creations.draft.is_some() || landscape.draft.is_some() =>
+        {
             chat.say(Role::System, "Keep or discard your draft first.");
         }
         Some(Action::Join) => {
@@ -1189,6 +1233,14 @@ fn chat_panel(
         Some(Action::Host) => {
             let reply = online::host(&mut ledger);
             chat.say(Role::System, reply);
+        }
+        Some(Action::JoinLan(addr)) => {
+            let reply = online::join(&mut ledger, &addr);
+            chat.say(Role::System, reply);
+        }
+        Some(Action::PlayTogether) => {
+            lan.play_together(time.elapsed_secs());
+            chat.say(Role::System, "Looking for worlds on your network…");
         }
         Some(Action::Leave) => {
             let reply = online::leave(&mut commands, &mut ledger, &mut world, &mut creations, &mut landscape);

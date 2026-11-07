@@ -47,7 +47,7 @@ pub fn host(ledger: &mut Ledger) -> String {
         Ok(running) => running,
         Err(e) => return format!("⚠ Couldn't host: {e}"),
     };
-    ledger.hosting = Some(running.addr);
+    ledger.hosting = Some((running.addr, running.players));
     let port = running.addr.port();
     if let Err(e) = ledger.go_online(&format!("127.0.0.1:{port}")) {
         return format!("⚠ {e}");

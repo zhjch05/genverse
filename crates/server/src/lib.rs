@@ -18,7 +18,11 @@ use std::{
     io,
     net::{SocketAddr, TcpListener, TcpStream},
     path::PathBuf,
-    sync::mpsc::{self, Receiver, Sender},
+    sync::{
+        Arc,
+        atomic::{AtomicUsize, Ordering},
+        mpsc::{self, Receiver, Sender},
+    },
     thread,
     time::{SystemTime, UNIX_EPOCH},
 };
@@ -44,6 +48,8 @@ pub struct ServerConfig {
 /// A running server.
 pub struct Running {
     pub addr: SocketAddr,
+    /// How many players are logged in.
+    pub players: Arc<AtomicUsize>,
 }
 
 /// Changes between snapshots.
@@ -73,6 +79,7 @@ struct World {
     state: Replay,
     snapshot: Option<Snapshot>,
     conns: HashMap<u64, Conn>,
+    players: Arc<AtomicUsize>,
 }
 
 pub fn start(config: ServerConfig) -> io::Result<Running> {
@@ -101,9 +108,10 @@ pub fn start(config: ServerConfig) -> io::Result<Running> {
     let addr = listener.local_addr()?;
     let (events_tx, events) = mpsc::channel();
     thread::Builder::new().name("accept".into()).spawn(move || accept(listener, events_tx))?;
-    let world = World { path, log, state, snapshot, conns: HashMap::new() };
+    let players = Arc::new(AtomicUsize::new(0));
+    let world = World { path, log, state, snapshot, conns: HashMap::new(), players: players.clone() };
     thread::Builder::new().name("world".into()).spawn(move || run(world, events))?;
-    Ok(Running { addr })
+    Ok(Running { addr, players })
 }
 
 fn accept(listener: TcpListener, events: Sender<Event>) {
@@ -161,6 +169,7 @@ fn run(mut world: World, events: Receiver<Event>) {
             }
             Event::Left { conn } => {
                 if let Some((player, name)) = world.conns.remove(&conn).and_then(|c| c.player) {
+                    world.players.fetch_sub(1, Ordering::Relaxed);
                     println!("{name} left");
                     world.tell_others(conn, ToClient::Gone { player });
                 }
@@ -192,8 +201,10 @@ impl World {
                     self.save();
                 }
                 println!("{name} joined ({}…)", &player[..8.min(player.len())]);
-                if let Some(c) = self.conns.get_mut(&conn) {
-                    c.player = Some((player, name));
+                if let Some(c) = self.conns.get_mut(&conn)
+                    && c.player.replace((player, name)).is_none()
+                {
+                    self.players.fetch_add(1, Ordering::Relaxed);
                 }
                 let snapshot = self.snapshot.clone().filter(|s| s.fits(&self.log));
                 let _ = out.send(ToClient::Welcome { log: self.log.clone(), snapshot });

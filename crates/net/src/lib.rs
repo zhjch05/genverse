@@ -9,6 +9,8 @@
 //! crate already serializes everything. [`Client`] runs the connection on background
 //! threads for the game.
 
+pub mod lan;
+
 use std::{
     io::{BufRead, BufReader, Write},
     net::TcpStream,

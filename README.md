@@ -82,7 +82,7 @@ made it, which agent, and when; filter by player. Undo your own changes from the
 also **Restore to here** (undo everything after a change) and **Roll back** a player.
 
 Chat commands do the same and more: `/history [n]`, `/revert <id>`, `/rules`,
-`/verify`, `/host`, `/join <host[:port]>`, `/leave`, and for admins `/rollback <player>`, `/restore <id>`, `/land open|parcels`,
+`/verify`, `/host`, `/join <host[:port]>`, `/play`, `/leave`, and for admins `/rollback <player>`, `/restore <id>`, `/land open|parcels`,
 `/rate <changes per minute> [voxels per 10 minutes]` or `/rate off`. Try them from someone else's
 side with `CUBELARK_AS=Bo cargo run`, a non-admin guest for one run; script them with
 `CUBELARK_PROMPT="/rate 5; /history"`.
@@ -103,7 +103,16 @@ Two ways to host:
   It's a small program with no graphics (only the rules and protocol crates), so it runs on any
   machine with a terminal. Its whole world is `server-data/world.json`; back that file up.
 
-To join, type `host` or `host:port` next to **Join** in the panel, or use `/join host`, or
+**On the same network, nobody types an address.** A hosting game announces itself to the
+local network (a small UDP broadcast on port 7877, once a second: world name, host name, port,
+player count), and every game lists the worlds it hears under the panel's address field, each
+with **Join**. **Play together** (or `/play`) listens for a couple of seconds, then joins the
+world it found, or hosts yours if there was none, so the first person to press it hosts and
+everyone after joins. Guest Wi-Fi that isolates devices, or VPN and proxy apps, can block the
+announcements; typing the address still works then. The first time you host, allow incoming
+connections if macOS asks.
+
+To join by address, type `host` or `host:port` next to **Join** in the panel, or use `/join host`, or
 start with `CUBELARK_SERVER=host cargo run`. **Leave** (`/leave`) goes back to your local world.
 If the connection drops, the game reconnects by itself and works out which of your changes
 in flight reached the server. A game and server with different world rules refuse to play
@@ -194,12 +203,12 @@ can bump into and stand on them) and recorded in the world's change log.
 | World rules | `crates/rules/` (`cubelark_rules`) | Everything that decides what the world is, with no rendering, so a server can share it: voxel models, the terrain generator (`terrain.rs`), terrain changes (`sculpt.rs`), build specs (`build.rs`), the change log and replay (`log.rs`), world rules (`settings.rs`), land (`land.rs`), budgets (`budget.rs`), rate limits (`rate.rs`), player keys (`identity.rs`) |
 | World streaming | `src/world/mod.rs` | Generates and meshes 32³ chunks around each `ChunkLoader` on the async pool; answers voxel queries for collision |
 | Change log | `src/world/ledger.rs` | Loads, migrates, records and saves the log; the player profile; live land and budgets |
-| Protocol | `crates/net` | Client/server messages and the game's background connection |
+| Protocol | `crates/net` | Client/server messages, the game's background connection, and finding games on the local network (`lan.rs`) |
 | Server | `crates/server` | Headless server: holds the log, checks, orders and shares changes |
 | Hero | `src/player.rs` | Builds the character from model parts, kinematic movement with voxel collision and step-up, walk animation, follow camera |
 | Voxel rendering | `src/voxel/` | Materials, mesher with baked AO, `.vox.ron` asset loader, picking |
 | Scene | `src/scene.rs` | Sky, sun, fog, post-processing |
-| Builder | `src/agent/` | egui chat, CLI runner, drafts and placed builds, area selection, land previews and the land overlay (`landscape.rs`), chat commands (`commands.rs`), applying what the server sends (`online.rs`), other players (`presence.rs`), the history panel (`history.rs`) (desktop only) |
+| Builder | `src/agent/` | egui chat, CLI runner, drafts and placed builds, area selection, land previews and the land overlay (`landscape.rs`), chat commands (`commands.rs`), applying what the server sends (`online.rs`), other players (`presence.rs`), the history panel (`history.rs`), worlds on the local network (`lan.rs`) (desktop only) |
 
 ## Voxel models (`assets/**/*.vox.ron`)
 
