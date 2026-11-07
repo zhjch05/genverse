@@ -31,6 +31,7 @@ pub struct PlayerPlugin;
 impl Plugin for PlayerPlugin {
     fn build(&self, app: &mut App) {
         app.init_resource::<InputBlocked>()
+            .init_resource::<PointerOverUi>()
             .init_resource::<OrbitLock>()
             .add_systems(Startup, spawn_player)
             .add_systems(
@@ -49,6 +50,10 @@ impl Plugin for PlayerPlugin {
 /// Set while a UI (like the builder chat) is taking keyboard input.
 #[derive(Resource, Default)]
 pub struct InputBlocked(pub bool);
+
+/// Set while the pointer is over a UI, whose scrolling isn't the camera's zoom.
+#[derive(Resource, Default)]
+pub struct PointerOverUi(pub bool);
 
 /// While set, left-drag no longer turns the camera (another tool owns it); right-drag still does.
 #[derive(Resource, Default)]
@@ -398,6 +403,7 @@ fn follow_camera(
     buttons: Res<ButtonInput<MouseButton>>,
     motion: Res<AccumulatedMouseMotion>,
     scroll: Res<AccumulatedMouseScroll>,
+    over_ui: Res<PointerOverUi>,
     lock: Res<OrbitLock>,
     world: Res<VoxelWorld>,
     players: Query<&Transform, (With<Player>, Without<FollowCamera>)>,
@@ -412,9 +418,13 @@ fn follow_camera(
             cam.yaw -= motion.delta.x * 0.005;
             cam.pitch = (cam.pitch + motion.delta.y * 0.004).clamp(-0.3, 1.3);
         }
-        let lines = match scroll.unit {
+        let lines = if over_ui.0 {
+            0.0
+        } else {
+            match scroll.unit {
             MouseScrollUnit::Line => scroll.delta.y,
             MouseScrollUnit::Pixel => scroll.delta.y / 40.0,
+            }
         };
         cam.distance = (cam.distance * (1.0 - lines * 0.08)).clamp(2.0, 25.0);
 

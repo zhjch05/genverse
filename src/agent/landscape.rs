@@ -16,8 +16,6 @@ use bevy::{
     prelude::*,
     window::PrimaryWindow,
 };
-use bevy_egui::input::EguiWantsInput;
-
 use cubelark_rules::{
     land::{Access, PARCEL, area_parcels},
     log::{Action, terrain_footprint},
@@ -27,7 +25,7 @@ use cubelark_rules::sculpt::{self, Area, Columns, SculptStats, TerrainEdit, Terr
 
 use super::{Chat, cursor_ray};
 use crate::{
-    player::OrbitLock,
+    player::{OrbitLock, PointerOverUi},
     voxel::{AIR, VoxelId},
     world::{
         VoxelWorld,
@@ -400,7 +398,7 @@ pub fn select_area(
     buttons: Res<ButtonInput<MouseButton>>,
     windows: Query<&Window, With<PrimaryWindow>>,
     cameras: Query<(&Camera, &GlobalTransform), With<Camera3d>>,
-    egui: Res<EguiWantsInput>,
+    over_ui: Res<PointerOverUi>,
     world: Res<VoxelWorld>,
     chat: Res<Chat>,
     ledger: Res<Ledger>,
@@ -415,7 +413,7 @@ pub fn select_area(
         landscape.drag_from = None;
         return;
     }
-    let cell = cursor_ray(&windows, &cameras, &egui).and_then(|(_, ray)| {
+    let cell = cursor_ray(&windows, &cameras, &over_ui).and_then(|(_, ray)| {
         // Through trees and plants to the ground, so the corner doesn't jump onto them.
         let hit = world.raycast_ground(ray, 60.0)?;
         Some(VoxelWorld::voxel_at(ray.get_point(hit.distance) - hit.normal * 0.01).xz())

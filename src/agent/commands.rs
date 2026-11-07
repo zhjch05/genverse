@@ -29,9 +29,48 @@ pub struct Context<'a, 'w, 's> {
     pub landscape: &'a mut Landscape,
 }
 
-const HELP: &str = "Commands: /history [n] · /revert <id> · /rules · /verify · /host · /join <addr> · /leave · \
-admins: /rollback <player> · \
-/restore <id> · /land open|parcels · /rate <changes/min> [voxels/10 min] | off · /bevel <0-0.3> | off";
+/// A command, as the chat suggests it while you type.
+pub struct Command {
+    pub name: &'static str,
+    /// What follows the name, e.g. `<id>`; empty for none.
+    pub args: &'static str,
+    pub about: &'static str,
+    pub admin: bool,
+}
+
+const fn command(name: &'static str, args: &'static str, about: &'static str, admin: bool) -> Command {
+    Command { name, args, about, admin }
+}
+
+/// Every command, in the order they're suggested. `/play` is the panel's own.
+pub const COMMANDS: [Command; 14] = [
+    command("history", "[n]", "The latest changes, with ids", false),
+    command("revert", "<id>", "Undo one of your changes", false),
+    command("rules", "", "This world's rules", false),
+    command("verify", "", "Check every change is signed by its player", false),
+    command("play", "", "Join a world on your network, or open this one", false),
+    command("host", "", "Open this world to others", false),
+    command("join", "<host[:port]>", "Play on another world", false),
+    command("leave", "", "Back to your local world", false),
+    command("rollback", "<player>", "Undo everything a player did", true),
+    command("restore", "<id>", "Put the world back to right after a change", true),
+    command("land", "open|parcels", "Whether land is open or claimed by parcel", true),
+    command("rate", "<per min> [voxels/10 min] | off", "Limit how fast players change things", true),
+    command("bevel", "<0-0.3> | off", "Round voxels' edges for everyone", true),
+    command("help", "", "List the commands", false),
+];
+
+fn help() -> String {
+    let line = |admin: bool| {
+        COMMANDS
+            .iter()
+            .filter(|c| c.admin == admin)
+            .map(|c| if c.args.is_empty() { format!("/{}", c.name) } else { format!("/{} {}", c.name, c.args) })
+            .collect::<Vec<_>>()
+            .join(" · ")
+    };
+    format!("Commands: {} · admins: {}", line(false), line(true))
+}
 
 /// Runs `/command args` and returns the reply for the chat.
 pub fn run(text: &str, cx: &mut Context) -> String {
@@ -113,7 +152,7 @@ pub fn run(text: &str, cx: &mut Context) -> String {
             cx.ledger.record(None, None, Action::SetRules { rules });
             format!("{} for everyone in this world.", bevel_line(bevel))
         }
-        _ => HELP.into(),
+        _ => help(),
     }
 }
 

@@ -5,7 +5,7 @@
 //! Also, offline or on: hovering a spot or a build for a moment says who last changed it.
 
 use bevy::{platform::collections::HashMap, prelude::*, window::PrimaryWindow};
-use bevy_egui::{EguiContexts, egui, input::EguiWantsInput};
+use bevy_egui::{EguiContexts, egui};
 use cubelark_net::{Presence, ToServer};
 use cubelark_rules::{
     log::{Action, fnv1a},
@@ -19,7 +19,7 @@ use super::{
     pick,
 };
 use crate::{
-    player::Player,
+    player::{Player, PointerOverUi},
     voxel::{AIR, VoxelModel, VoxelModelSource},
     world::{
         VoxelWorld,
@@ -284,7 +284,7 @@ pub fn hover_credit(
     time: Res<Time>,
     windows: Query<&Window, With<PrimaryWindow>>,
     cameras: Query<(&Camera, &GlobalTransform), With<Camera3d>>,
-    egui_input: Res<EguiWantsInput>,
+    over_ui: Res<PointerOverUi>,
     world: Res<VoxelWorld>,
     ledger: Res<Ledger>,
     creations: Res<Creations>,
@@ -295,7 +295,7 @@ pub fn hover_credit(
     if creations.draft.is_some() || landscape.selecting || landscape.draft.is_some() {
         return Ok(());
     }
-    let Some((cursor, ray)) = cursor_ray(&windows, &cameras, &egui_input) else { return Ok(()) };
+    let Some((cursor, ray)) = cursor_ray(&windows, &cameras, &over_ui) else { return Ok(()) };
     let now = time.elapsed_secs();
     if cursor.distance(rest.0) > 4.0 {
         *rest = (cursor, now);

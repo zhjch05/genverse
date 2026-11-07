@@ -36,7 +36,7 @@ use bevy_egui::{
 use egui_phosphor::regular as icon;
 
 use crate::{
-    player::{self, InputBlocked, Player},
+    player::{self, InputBlocked, Player, PointerOverUi},
     voxel::{
         VoxelModel,
         query::{Hit, overlaps_box, raycast},
@@ -137,6 +137,8 @@ struct Chat {
     name: Option<String>,
     /// The profile editor just opened; its name field takes the keyboard.
     focus_name: bool,
+    /// The highlighted suggestion while typing a slash command.
+    suggestion: usize,
     /// The marker color picked (an index into [`presence::MARKERS`]); none for the one
     /// the player's id gives them.
     marker: Option<u8>,
@@ -148,6 +150,8 @@ struct Chat {
     network: bool,
     /// The share of the window's width the panel covers (0 when hidden).
     covered: f32,
+    /// Where the panel is on screen, in egui points, while any of it shows.
+    panel: Option<egui::Rect>,
     /// The shortcut hints at the bottom of the view are showing (F1 toggles them).
     hints: bool,
 }
@@ -172,11 +176,13 @@ impl Default for Chat {
             focus_input: false,
             name: None,
             focus_name: false,
+            suggestion: 0,
             marker: prefs::get("marker").and_then(|v| v.as_u64()).map(|m| m as u8 % presence::MARKERS.len() as u8),
             server_addr: String::new(),
             play_together: false,
             network: false,
             covered: 0.0,
+            panel: None,
             hints: prefs::get("hints").and_then(|v| v.as_bool()).unwrap_or(true),
         }
     }
@@ -356,8 +362,19 @@ fn start_tool_server(mut commands: Commands, ledger: Res<Ledger>) {
 }
 
 /// Keeps WASD and friends from moving the hero while typing in the chat.
-fn block_game_input(egui: Res<EguiWantsInput>, mut blocked: ResMut<InputBlocked>) {
+fn block_game_input(
+    egui: Res<EguiWantsInput>,
+    chat: Res<Chat>,
+    windows: Query<&Window, With<PrimaryWindow>>,
+    mut blocked: ResMut<InputBlocked>,
+    mut over_ui: ResMut<PointerOverUi>,
+) {
     blocked.0 = egui.wants_keyboard_input();
+    // egui only knows about its windows and popups; the panel is drawn on the background,
+    // so the pointer counts as over it by its rectangle.
+    let cursor = windows.single().ok().and_then(|w| w.cursor_position());
+    let over_panel = chat.panel.zip(cursor).is_some_and(|(panel, at)| panel.contains(egui::pos2(at.x, at.y)));
+    over_ui.0 = egui.is_pointer_over_area() || over_panel;
 }
 
 fn poll_agent(
@@ -668,9 +685,9 @@ const REACH: f32 = 40.0;
 fn cursor_ray(
     windows: &Query<&Window, With<PrimaryWindow>>,
     cameras: &Query<(&Camera, &GlobalTransform), With<Camera3d>>,
-    egui: &EguiWantsInput,
+    over_ui: &PointerOverUi,
 ) -> Option<(Vec2, Ray3d)> {
-    if egui.is_pointer_over_area() {
+    if over_ui.0 {
         return None;
     }
     let cursor = windows.single().ok()?.cursor_position()?;
@@ -696,7 +713,7 @@ fn pick(
 fn follow_cursor(
     windows: Query<&Window, With<PrimaryWindow>>,
     cameras: Query<(&Camera, &GlobalTransform), With<Camera3d>>,
-    egui: Res<EguiWantsInput>,
+    over_ui: Res<PointerOverUi>,
     world: Res<VoxelWorld>,
     creations: Res<Creations>,
     builds: Query<(Entity, &VoxelModel, &GlobalTransform), (With<Creation>, Without<DraftMarker>)>,
@@ -705,7 +722,7 @@ fn follow_cursor(
     let Some(draft) = creations.draft.as_ref().filter(|d| d.follow) else {
         return;
     };
-    let Some((_, ray)) = cursor_ray(&windows, &cameras, &egui) else {
+    let Some((_, ray)) = cursor_ray(&windows, &cameras, &over_ui) else {
         return;
     };
     let Ok((mut transform, creation)) = drafts.get_mut(draft.entity) else {
@@ -755,7 +772,7 @@ fn click_in_world(
     buttons: Res<ButtonInput<MouseButton>>,
     windows: Query<&Window, With<PrimaryWindow>>,
     cameras: Query<(&Camera, &GlobalTransform), With<Camera3d>>,
-    egui: Res<EguiWantsInput>,
+    over_ui: Res<PointerOverUi>,
     world: Res<VoxelWorld>,
     builds: Query<(Entity, &VoxelModel, &GlobalTransform), (With<Creation>, Without<DraftMarker>)>,
     drafts: Query<&Transform, With<DraftMarker>>,
@@ -770,7 +787,7 @@ fn click_in_world(
         *pressed_at = default();
         return;
     }
-    let Some((cursor, ray)) = cursor_ray(&windows, &cameras, &egui) else {
+    let Some((cursor, ray)) = cursor_ray(&windows, &cameras, &over_ui) else {
         return;
     };
     let mut clicked = [false; 3];
@@ -1066,6 +1083,115 @@ fn show_messages(ui: &mut egui::Ui, messages: &[Message], me: &str, mine: egui::
             }
         }
     }
+}
+
+/// The commands matching what's typed after `/`, Discord-style: the highlighted one is
+/// what Tab or Enter fills in, kept in view when the arrows move it. Returns the one
+/// clicked.
+fn command_suggestions(
+    ui: &mut egui::Ui,
+    matches: &[&commands::Command],
+    highlighted: usize,
+    moved: bool,
+    typed: &str,
+    admin: bool,
+) -> Option<&'static str> {
+    let p = theme::palette(ui.ctx());
+    let mut clicked = None;
+    egui::Frame::new()
+        .fill(p.raised)
+        .stroke(egui::Stroke::new(1.0, p.line))
+        .corner_radius(theme::ROUND)
+        .inner_margin(egui::Margin::symmetric(6, 6))
+        .show(ui, |ui| {
+            ui.set_width(ui.available_width());
+            ui.horizontal(|ui| {
+                ui.add_space(4.0);
+                let title = if typed.is_empty() { "Commands".to_string() } else { format!("Commands matching /{typed}") };
+                theme::section(ui, &title);
+                ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                    let keys = format!("{}{} choose · Tab or Enter fills in", icon::ARROW_UP, icon::ARROW_DOWN);
+                    ui.label(egui::RichText::new(keys).size(10.5).color(p.faint));
+                });
+            });
+            ui.add_space(2.0);
+            egui::ScrollArea::vertical().max_height(220.0).auto_shrink([false, true]).show(ui, |ui| {
+                for (i, command) in matches.iter().enumerate() {
+                    let row = command_row(ui, command, i == highlighted, admin);
+                    if i == highlighted && moved {
+                        row.scroll_to_me(None);
+                    }
+                    if row.clicked() {
+                        clicked = Some(command.name);
+                    }
+                }
+            });
+        });
+    clicked
+}
+
+/// One suggested command: its name and arguments, what it does, and whether it's for
+/// admins. Lit when highlighted or under the pointer.
+fn command_row(ui: &mut egui::Ui, command: &commands::Command, highlighted: bool, admin: bool) -> egui::Response {
+    let p = theme::palette(ui.ctx());
+    let background = ui.painter().add(egui::Shape::Noop);
+    let allowed = admin || !command.admin;
+    let inner = ui.horizontal(|ui| {
+        ui.set_width(ui.available_width());
+        ui.add_space(6.0);
+        ui.vertical(|ui| {
+            ui.spacing_mut().item_spacing.y = 1.0;
+            ui.add_space(3.0);
+            ui.horizontal(|ui| {
+                let name = if allowed { p.strong } else { p.muted };
+                ui.label(egui::RichText::new(format!("/{}", command.name)).strong().color(name));
+                if !command.args.is_empty() {
+                    ui.label(egui::RichText::new(command.args).monospace().size(11.5).color(p.muted));
+                }
+                if command.admin {
+                    theme::tag(ui, "ADMIN", if allowed { p.warn } else { p.faint }, p.footer);
+                }
+            });
+            let about = if allowed { command.about.to_string() } else { format!("{} · admins only", command.about) };
+            ui.label(egui::RichText::new(about).size(11.5).color(p.muted));
+            ui.add_space(3.0);
+        });
+    });
+    let rect = inner.response.rect;
+    let response = ui.interact(rect, ui.id().with(("command", command.name)), egui::Sense::click());
+    if highlighted || response.hovered() {
+        let fill = if highlighted { p.primary.gamma_multiply(0.22) } else { p.hover };
+        ui.painter().set(background, egui::Shape::rect_filled(rect, theme::ROUND, fill));
+    }
+    if highlighted {
+        let edge = egui::Rect::from_min_size(rect.min, egui::vec2(3.0, rect.height()));
+        ui.painter().rect_filled(edge, theme::ROUND, p.primary);
+    }
+    response.on_hover_cursor(egui::CursorIcon::PointingHand)
+}
+
+/// How to finish the command being typed, once its name is in.
+fn command_usage(ui: &mut egui::Ui, command: &commands::Command, admin: bool) {
+    let p = theme::palette(ui.ctx());
+    egui::Frame::new()
+        .fill(p.raised)
+        .stroke(egui::Stroke::new(1.0, p.line))
+        .corner_radius(theme::ROUND)
+        .inner_margin(egui::Margin::symmetric(10, 6))
+        .show(ui, |ui| {
+            ui.set_width(ui.available_width());
+            ui.horizontal_wrapped(|ui| {
+                ui.label(egui::RichText::new(format!("/{}", command.name)).strong().color(p.strong));
+                if !command.args.is_empty() {
+                    ui.label(egui::RichText::new(command.args).monospace().size(11.5).color(p.primary));
+                }
+                let mut about = command.about.to_string();
+                if command.admin && !admin {
+                    about.push_str(" · admins only");
+                }
+                ui.label(egui::RichText::new(about).size(11.5).color(p.muted));
+            });
+        });
 }
 
 /// Your name and marker color, as others see them. The color applies as you pick it;
@@ -1519,6 +1645,57 @@ fn chat_panel(
                         "Build me…  (T)".to_string()
                     };
                     let idle = chat.pending.is_none();
+                    // Typing a slash command: the commands it could be, or how to finish it.
+                    let composer = egui::Id::new("composer");
+                    let admin = ledger.land.is_admin(&ledger.profile.id);
+                    let typed = chat.input.trim_start().to_string();
+                    let (word, rest) = typed.strip_prefix('/').map_or((None, None), |t| match t.split_once(' ') {
+                        Some((word, rest)) => (Some(word), Some(rest)),
+                        None => (Some(t), None),
+                    });
+                    let matches: Vec<&commands::Command> = match (word, rest) {
+                        (Some(word), None) => {
+                            let word = word.to_lowercase();
+                            commands::COMMANDS.iter().filter(|c| c.name.starts_with(&word)).collect()
+                        }
+                        _ => Vec::new(),
+                    };
+                    let usage = word.filter(|_| rest.is_some()).and_then(|w| {
+                        let w = w.to_lowercase();
+                        commands::COMMANDS.iter().find(|c| c.name == w)
+                    });
+                    chat.suggestion = chat.suggestion.min(matches.len().saturating_sub(1));
+                    let mut complete = None;
+                    let mut moved = false;
+                    if !matches.is_empty() && ui.memory(|m| m.has_focus(composer)) {
+                        let (up, down, tab) = ui.input_mut(|i| {
+                            (
+                                i.consume_key(egui::Modifiers::NONE, egui::Key::ArrowUp),
+                                i.consume_key(egui::Modifiers::NONE, egui::Key::ArrowDown),
+                                i.consume_key(egui::Modifiers::NONE, egui::Key::Tab),
+                            )
+                        });
+                        let n = matches.len();
+                        moved = up || down;
+                        if up {
+                            chat.suggestion = (chat.suggestion + n - 1) % n;
+                        }
+                        if down {
+                            chat.suggestion = (chat.suggestion + 1) % n;
+                        }
+                        if tab {
+                            complete = Some(matches[chat.suggestion].name);
+                        }
+                    }
+                    if !matches.is_empty() {
+                        if let Some(name) = command_suggestions(ui, &matches, chat.suggestion, moved, word.unwrap_or_default(), admin) {
+                            complete = Some(name);
+                        }
+                        ui.add_space(6.0);
+                    } else if let Some(command) = usage {
+                        command_usage(ui, command, admin);
+                        ui.add_space(6.0);
+                    }
                     egui::Frame::new()
                         .fill(p.input)
                         .stroke(egui::Stroke::new(1.0, p.line))
@@ -1529,6 +1706,9 @@ fn chat_panel(
                                 let input = ui.add_enabled(
                                     idle,
                                     egui::TextEdit::singleline(&mut chat.input)
+                                        .id(composer)
+                                        // Tab fills in commands instead of moving focus on.
+                                        .lock_focus(true)
                                         .frame(egui::Frame::NONE)
                                         .margin(egui::Margin::ZERO)
                                         .hint_text(egui::RichText::new(hint).color(p.faint))
@@ -1537,7 +1717,31 @@ fn chat_panel(
                                 if std::mem::take(&mut chat.focus_input) {
                                     input.request_focus();
                                 }
-                                let enter = input.lost_focus() && ui.input(|i| i.key_pressed(egui::Key::Enter));
+                                let mut enter = input.lost_focus() && ui.input(|i| i.key_pressed(egui::Key::Enter));
+                                // Enter on a half-typed command finishes it; on a whole one
+                                // that needs nothing more, it runs it.
+                                if enter && let Some(pick) = matches.get(chat.suggestion) {
+                                    let whole = word.is_some_and(|w| w.eq_ignore_ascii_case(pick.name));
+                                    if !(whole && pick.args.is_empty()) {
+                                        complete = Some(pick.name);
+                                        enter = false;
+                                    }
+                                }
+                                if let Some(name) = complete.take() {
+                                    chat.input = if commands::COMMANDS.iter().any(|c| c.name == name && !c.args.is_empty()) {
+                                        format!("/{name} ")
+                                    } else {
+                                        format!("/{name}")
+                                    };
+                                    chat.suggestion = 0;
+                                    // The caret goes after what was filled in.
+                                    if let Some(mut state) = egui::TextEdit::load_state(ui.ctx(), composer) {
+                                        let end = egui::text::CCursor::new(chat.input.chars().count());
+                                        state.cursor.set_char_range(Some(egui::text::CCursorRange::one(end)));
+                                        state.store(ui.ctx(), composer);
+                                    }
+                                    input.request_focus();
+                                }
                                 let ready = idle && !chat.input.trim().is_empty();
                                 let color = if ready { p.primary } else { p.faint };
                                 let send = ui
@@ -1589,7 +1793,8 @@ fn chat_panel(
                 });
         });
     // How much of the window the panel covers, mid-slide included, so the view recenters.
-    chat.covered = panel.map_or(0.0, |panel| panel.response.rect.intersect(screen).width() / screen.width().max(1.0));
+    chat.panel = panel.map(|panel| panel.response.rect.intersect(screen)).filter(|r| r.width() > 0.0);
+    chat.covered = chat.panel.map_or(0.0, |r| r.width() / screen.width().max(1.0));
     chat.open = open && !hide;
 
     // While hidden, a button in the corner brings the panel back.
