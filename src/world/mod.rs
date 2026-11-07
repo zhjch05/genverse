@@ -35,7 +35,7 @@ pub const CHUNK: i32 = 32;
 pub const VIEW_RADIUS: i32 = 7;
 const VERTICAL_CHUNKS: i32 = WORLD_HEIGHT / CHUNK;
 const MAX_IN_FLIGHT: usize = if cfg!(target_arch = "wasm32") { 2 } else { 12 };
-const SEED: u32 = 1337;
+pub const SEED: u32 = 1337;
 
 pub struct WorldPlugin;
 

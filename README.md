@@ -78,17 +78,35 @@ made it, which agent did if one did, a hash of the request, and when. A selected
   `.bak`).
 
 Chat commands, until the history panel exists: `/history [n]`, `/revert <id>`, `/rules`,
-`/verify`, and for admins `/rollback <player>`, `/restore <id>`, `/land open|parcels`,
+`/verify`, `/host`, `/join <host[:port]>`, `/leave`, and for admins `/rollback <player>`, `/restore <id>`, `/land open|parcels`,
 `/rate <changes per minute> [voxels per 10 minutes]` or `/rate off`. Try them from someone else's
 side with `CUBELARK_AS=Bo cargo run`, a non-admin guest for one run; script them with
 `CUBELARK_PROMPT="/rate 5; /history"`.
 
 ## Playing together
 
-```sh
-cargo run -p cubelark_server                    # a world on port 7878, kept in server-data/
-CUBELARK_SERVER=127.0.0.1 cargo run             # join it (host or host:port)
-```
+Two ways to host:
+
+- **From the game:** **Host** in the panel (or `/host`) opens your world to others on port 7878.
+  The server runs inside your game on your world's own save, so what you build together stays
+  in your world. Others join with your address; it closes when you quit.
+- **A dedicated server**, for a world that's always up:
+
+  ```sh
+  cargo run --release -p cubelark_server -- --port 7878 --data server-data
+  ```
+
+  It's a small program with no graphics (only the rules and protocol crates), so it runs on any
+  machine with a terminal. Its whole world is `server-data/world.json`; back that file up.
+
+To join, type `host` or `host:port` next to **Join** in the panel, or use `/join host`, or
+start with `CUBELARK_SERVER=host cargo run`. **Leave** (`/leave`) goes back to your local world.
+If the connection drops, the game reconnects by itself and works out which of your changes
+in flight reached the server. A game and server with different world rules refuse to play
+together instead of drifting apart.
+
+Messages are signed but not yet encrypted, so for now host on a local network or a private
+one (Tailscale, WireGuard), not the open internet.
 
 The server holds the world's change log and is the only one who orders changes, like Figma's
 multiplayer: players propose changes, it checks each against the world's rules (signature,
@@ -104,7 +122,7 @@ join a new world is its admin.
   message per line, over TCP (`crates/net`). Login is a signed challenge.
 - Online, your local world and saves aren't touched.
 - Not yet: seeing other players (milestone 3), history browsing beyond `/history`, chunk
-  checks, and snapshots for long-lived worlds (milestone 4).
+  checks, snapshots for long-lived worlds (milestone 4), and encryption (TLS).
 
 The web build is on hold while multiplayer is built (it may return as watch-only). It still
 compiles but isn't tested.

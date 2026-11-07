@@ -117,6 +117,8 @@ struct Chat {
     focus_input: bool,
     /// The player's name as being edited in the panel (loaded from the profile).
     name: Option<String>,
+    /// The server address being typed, to join.
+    server_addr: String,
 }
 
 impl Default for Chat {
@@ -137,6 +139,7 @@ impl Default for Chat {
             pending: None,
             focus_input: false,
             name: None,
+            server_addr: String::new(),
         }
     }
 }
@@ -829,6 +832,9 @@ enum Action {
     ClearArea,
     Claim,
     Release,
+    Join,
+    Host,
+    Leave,
 }
 
 fn chat_panel(
@@ -890,6 +896,34 @@ fn chat_panel(
                     *name = ledger.profile.name.clone();
                 }
                 ui.label(egui::RichText::new("· Tab hides this panel").small().weak());
+            });
+            ui.horizontal(|ui| match &ledger.online {
+                None => {
+                    ui.label(egui::RichText::new("Local world").small().weak());
+                    let field = ui.add(
+                        egui::TextEdit::singleline(&mut chat.server_addr).desired_width(110.0).hint_text("host:port"),
+                    );
+                    let enter = field.lost_focus() && ui.input(|i| i.key_pressed(egui::Key::Enter));
+                    if (ui.small_button("Join").on_hover_text("Play on that server").clicked() || enter)
+                        && !chat.server_addr.trim().is_empty()
+                    {
+                        action = Some(Action::Join);
+                    }
+                    if ui.small_button("Host").on_hover_text("Open this world to others on port 7878").clicked() {
+                        action = Some(Action::Host);
+                    }
+                }
+                Some(online) => {
+                    let status = match (&online.closed, ledger.hosting) {
+                        (Some(_), _) => format!("{} · reconnecting…", online.addr),
+                        (None, Some(addr)) => format!("Hosting on port {}", addr.port()),
+                        (None, None) => format!("Online at {}", online.addr),
+                    };
+                    ui.label(egui::RichText::new(status).small());
+                    if ledger.hosting.is_none() && ui.small_button("Leave").on_hover_text("Back to your local world").clicked() {
+                        action = Some(Action::Leave);
+                    }
+                }
             });
             ui.separator();
 
@@ -1132,6 +1166,22 @@ fn chat_panel(
         }
         Some(Action::SelectArea) => landscape.selecting = true,
         Some(Action::ClearArea) => landscape.area = None,
+        Some(Action::Join | Action::Host | Action::Leave) if creations.draft.is_some() || landscape.draft.is_some() => {
+            chat.say(Role::System, "Keep or discard your draft first.");
+        }
+        Some(Action::Join) => {
+            let addr = chat.server_addr.trim().to_string();
+            let reply = online::join(&mut ledger, &addr);
+            chat.say(Role::System, reply);
+        }
+        Some(Action::Host) => {
+            let reply = online::host(&mut ledger);
+            chat.say(Role::System, reply);
+        }
+        Some(Action::Leave) => {
+            let reply = online::leave(&mut commands, &mut ledger, &mut world, &mut creations, &mut landscape);
+            chat.say(Role::System, reply);
+        }
         Some(Action::Claim) => {
             if let Some(area) = landscape.area {
                 let message = match ledger.check(&area_parcels(area)) {

@@ -18,7 +18,7 @@
 
 use std::collections::{BTreeMap, HashMap};
 #[cfg(not(target_arch = "wasm32"))]
-use std::collections::HashSet;
+use std::net::SocketAddr;
 
 use bevy::prelude::*;
 use cubelark_rules::{
@@ -76,6 +76,9 @@ pub struct Ledger {
     /// The server this world lives on, when playing online.
     #[cfg(not(target_arch = "wasm32"))]
     pub online: Option<Online>,
+    /// Where the server this game hosts listens, if it hosts one.
+    #[cfg(not(target_arch = "wasm32"))]
+    pub hosting: Option<SocketAddr>,
 }
 
 /// A connection to a server and what's in flight on it.
@@ -87,12 +90,15 @@ pub struct Online {
     /// apply one at a time). None until the server welcomes us.
     pub state: Option<Replay>,
     next_request: u64,
-    /// Our proposals the server hasn't answered yet.
-    pub pending: HashSet<u64>,
+    /// Our proposals the server hasn't answered yet, with their signatures (to find
+    /// them in the log if the connection dropped before the answer came).
+    pub pending: HashMap<u64, String>,
     /// Our proposals the server committed: request → change id.
     pub committed: HashMap<u64, u64>,
-    /// Why the connection ended, once it has.
+    /// Why the connection ended, while it's down.
     pub closed: Option<String>,
+    /// Failed reconnects in a row, for backing off.
+    pub attempts: u32,
 }
 
 /// Online, changes are known by request number until the server commits them; these
@@ -112,7 +118,7 @@ impl Ledger {
             let sig = self.key.sign(&signing_bytes(&by, &action));
             let request = online.next_request;
             online.next_request += 1;
-            online.pending.insert(request);
+            online.pending.insert(request, sig.clone());
             online.client.send(cubelark_net::ToServer::Propose { request, by, action, sig });
             return request;
         }
@@ -142,6 +148,38 @@ impl Ledger {
             return if reference >= FIRST_REQUEST { online.committed.get(&reference).copied() } else { Some(reference) };
         }
         Some(reference)
+    }
+
+    /// Joins the server at `addr` (`host` or `host:port`); its world arrives as a
+    /// welcome. The local world stays saved as it is.
+    #[cfg(not(target_arch = "wasm32"))]
+    pub fn go_online(&mut self, addr: &str) -> Result<(), String> {
+        self.online = Some(connect_to(addr, &self.profile, &self.key)?);
+        Ok(())
+    }
+
+    /// Connects again to the server we lost, keeping what's in flight: the welcome that
+    /// follows settles it.
+    #[cfg(not(target_arch = "wasm32"))]
+    pub fn reconnect(&mut self) -> Result<(), String> {
+        let online = self.online.as_mut().ok_or("not online")?;
+        let fresh = connect_to(&online.addr, &self.profile, &self.key)?;
+        online.client = fresh.client;
+        online.state = None;
+        online.closed = None;
+        Ok(())
+    }
+
+    /// Leaves the server and loads the local world again. Returns it replayed, for the
+    /// game to show.
+    #[cfg(not(target_arch = "wasm32"))]
+    pub fn go_offline(&mut self) -> Replay {
+        self.online = None;
+        let (log, _) = load_log(self.log.seed);
+        self.log = log;
+        let full = replay(&self.log);
+        self.adopt(&full);
+        full
     }
 
     pub fn is_online(&self) -> bool {
@@ -385,6 +423,8 @@ fn empty(log: WorldLog, profile: Profile, key: Keypair) -> Ledger {
         version: 0,
         #[cfg(not(target_arch = "wasm32"))]
         online: None,
+        #[cfg(not(target_arch = "wasm32"))]
+        hosting: None,
     }
 }
 
@@ -394,26 +434,26 @@ fn empty(log: WorldLog, profile: Profile, key: Keypair) -> Ledger {
 fn connect(profile: &Profile, key: &Keypair) -> Option<Online> {
     let addr = std::env::var("CUBELARK_SERVER").ok().filter(|a| !a.trim().is_empty())?;
     let (profile, key) = guest().unwrap_or((profile.clone(), key.clone()));
-    let addr = if addr.contains(':') { addr } else { format!("{addr}:{}", cubelark_net::DEFAULT_PORT) };
+    connect_to(&addr, &profile, &key).map_err(|e| error!("{e}; playing the local world instead")).ok()
+}
+
+#[cfg(not(target_arch = "wasm32"))]
+fn connect_to(addr: &str, profile: &Profile, key: &Keypair) -> Result<Online, String> {
+    let addr = addr.trim();
+    let addr = if addr.contains(':') { addr.to_string() } else { format!("{addr}:{}", cubelark_net::DEFAULT_PORT) };
     let signer = key.clone();
-    match cubelark_net::Client::connect(&addr, profile.id.clone(), profile.name.clone(), move |m| signer.sign(m)) {
-        Ok(client) => {
-            info!("joining {addr} as {}", profile.name);
-            Some(Online {
-                addr,
-                client,
-                state: None,
-                next_request: FIRST_REQUEST,
-                pending: HashSet::new(),
-                committed: HashMap::new(),
-                closed: None,
-            })
-        }
-        Err(e) => {
-            error!("{e}; playing the local world instead");
-            None
-        }
-    }
+    let client = cubelark_net::Client::connect(&addr, profile.id.clone(), profile.name.clone(), move |m| signer.sign(m))?;
+    info!("joining {addr} as {}", profile.name);
+    Ok(Online {
+        addr,
+        client,
+        state: None,
+        next_request: FIRST_REQUEST,
+        pending: HashMap::new(),
+        committed: HashMap::new(),
+        closed: None,
+        attempts: 0,
+    })
 }
 
 /// `CUBELARK_AS=Name`: a separate player for this run (not saved, never an admin). Its

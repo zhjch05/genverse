@@ -33,7 +33,7 @@ impl Player {
     fn next(&self) -> ToClient {
         match self.client.recv_timeout(Duration::from_secs(5)) {
             Ok(ClientEvent::Message(m)) => m,
-            Ok(ClientEvent::Closed(why)) => panic!("{} was disconnected: {why}", self.name),
+            Ok(ClientEvent::Closed(why) | ClientEvent::Refused(why)) => panic!("{} was disconnected: {why}", self.name),
             Err(RecvTimeoutError::Timeout) => panic!("{} heard nothing", self.name),
             Err(e) => panic!("{e}"),
         }

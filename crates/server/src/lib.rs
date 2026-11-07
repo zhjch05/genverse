@@ -21,7 +21,7 @@ use std::{
 use cubelark_net::{ToClient, ToServer, VERSION, hello_bytes, read_messages, write_message};
 use cubelark_rules::{
     identity::verify,
-    log::{Action, Change, Replay, WorldLog, replay, signing_bytes},
+    log::{Action, Change, RULES_VERSION, Replay, WorldLog, replay, signing_bytes},
 };
 
 pub struct ServerConfig {
@@ -105,7 +105,8 @@ fn serve(conn: u64, stream: TcpStream, events: Sender<Event>) -> io::Result<()> 
         }
     })?;
     let nonce = random_hex();
-    out.send(ToClient::Challenge { version: VERSION, nonce: nonce.clone() }).map_err(io::Error::other)?;
+    let challenge = ToClient::Challenge { version: VERSION, rules: RULES_VERSION, nonce: nonce.clone() };
+    out.send(challenge).map_err(io::Error::other)?;
     let _ = events.send(Event::Connected { conn, out, nonce });
     thread::Builder::new().name(format!("read-{conn}")).spawn(move || {
         for message in read_messages::<ToServer>(stream) {
@@ -150,9 +151,10 @@ impl World {
         let Some(c) = self.conns.get(&conn) else { return };
         let (out, nonce, player) = (c.out.clone(), c.nonce.clone(), c.player.as_ref().map(|(id, _)| id.clone()));
         match message {
-            ToServer::Hello { version, player, name, sig } => {
-                if version != VERSION {
-                    let _ = out.send(ToClient::Bye { why: format!("this server speaks protocol {VERSION}") });
+            ToServer::Hello { version, rules, player, name, sig } => {
+                if version != VERSION || rules != RULES_VERSION {
+                    let why = format!("this server speaks protocol {VERSION} with world rules {RULES_VERSION}");
+                    let _ = out.send(ToClient::Bye { why });
                     return;
                 }
                 if !verify(&player, &hello_bytes(&nonce, &player, &name), &sig) {

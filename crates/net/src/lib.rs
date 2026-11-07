@@ -20,18 +20,20 @@ use std::{
     time::Duration,
 };
 
-use cubelark_rules::log::{Action, Change, Provenance, WorldLog};
+use cubelark_rules::log::{Action, Change, Provenance, RULES_VERSION, WorldLog};
 use serde::{Deserialize, Serialize};
 
 /// Bumped when the protocol changes incompatibly.
-pub const VERSION: u32 = 1;
+pub const VERSION: u32 = 2;
 pub const DEFAULT_PORT: u16 = 7878;
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
 #[serde(tag = "type", rename_all = "snake_case")]
 pub enum ToServer {
     /// The answer to [`ToClient::Challenge`]: who this is, proven by signing the nonce.
-    Hello { version: u32, player: String, name: String, sig: String },
+    /// `rules` is the client's [`RULES_VERSION`]: both sides must turn changes into the
+    /// same voxels.
+    Hello { version: u32, rules: u32, player: String, name: String, sig: String },
     /// A change the player wants made. `request` is the client's own number for it,
     /// echoed in the answer; `sig` is the player's signature of `by` and `action`.
     Propose { request: u64, by: Provenance, action: Action, sig: String },
@@ -41,7 +43,7 @@ pub enum ToServer {
 #[serde(tag = "type", rename_all = "snake_case")]
 pub enum ToClient {
     /// Sent on connect; the client signs `nonce` to prove who it is.
-    Challenge { version: u32, nonce: String },
+    Challenge { version: u32, rules: u32, nonce: String },
     /// The world so far.
     Welcome { log: WorldLog },
     /// A change the server accepted, for everyone. `request` is set only for the player
@@ -76,8 +78,11 @@ pub fn read_messages<T: for<'de> Deserialize<'de>>(stream: TcpStream) -> impl It
 
 pub enum ClientEvent {
     Message(ToClient),
-    /// The connection ended, and why.
+    /// The connection ended, and why. Worth reconnecting.
     Closed(String),
+    /// This game and the server can't play together (versions differ). Not worth
+    /// reconnecting.
+    Refused(String),
 }
 
 /// A connection to a server, run on background threads. Messages in and out go
@@ -109,14 +114,26 @@ impl Client {
             .spawn(move || {
                 for message in read_messages::<ToClient>(stream) {
                     match message {
-                        Ok(ToClient::Challenge { version, nonce }) => {
-                            if version != VERSION {
-                                let why = format!("the server speaks protocol {version}, this game {VERSION}");
-                                let _ = reader_events.send(ClientEvent::Closed(why));
+                        Ok(ToClient::Challenge { version, rules, nonce }) => {
+                            let mismatch = if version != VERSION {
+                                Some(format!("the server speaks protocol {version}, this game {VERSION}"))
+                            } else if rules != RULES_VERSION {
+                                Some(format!("the server runs world rules {rules}, this game {RULES_VERSION}; update both"))
+                            } else {
+                                None
+                            };
+                            if let Some(why) = mismatch {
+                                let _ = reader_events.send(ClientEvent::Refused(why));
                                 return;
                             }
                             let sig = sign(&hello_bytes(&nonce, &player, &name));
-                            let login = ToServer::Hello { version: VERSION, player: player.clone(), name: name.clone(), sig };
+                            let login = ToServer::Hello {
+                                version: VERSION,
+                                rules: RULES_VERSION,
+                                player: player.clone(),
+                                name: name.clone(),
+                                sig,
+                            };
                             let _ = hello.send(login);
                         }
                         Ok(message) => {
@@ -159,5 +176,29 @@ impl Client {
     /// Waits up to `timeout` for the next event.
     pub fn recv_timeout(&self, timeout: Duration) -> Result<ClientEvent, RecvTimeoutError> {
         self.events.lock().map_err(|_| RecvTimeoutError::Disconnected)?.recv_timeout(timeout)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use std::net::TcpListener;
+
+    use super::*;
+
+    #[test]
+    fn mismatched_rules_are_refused_not_retried() {
+        let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+        let addr = listener.local_addr().unwrap().to_string();
+        thread::spawn(move || {
+            let (mut stream, _) = listener.accept().unwrap();
+            let challenge = ToClient::Challenge { version: VERSION, rules: RULES_VERSION + 1, nonce: "n".into() };
+            write_message(&mut stream, &challenge).unwrap();
+            std::thread::sleep(Duration::from_millis(500));
+        });
+        let client = Client::connect(&addr, "p".into(), "P".into(), |_| String::new()).unwrap();
+        match client.recv_timeout(Duration::from_secs(5)) {
+            Ok(ClientEvent::Refused(why)) => assert!(why.contains("world rules")),
+            _ => panic!("expected a refusal"),
+        }
     }
 }

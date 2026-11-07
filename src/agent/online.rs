@@ -6,6 +6,8 @@
 //!   server's version of it (compiled against the ground as the server had it).
 //!   Undos (reverts, rollbacks) rebuild the world from the log.
 //! - **Rejected:** what we showed is taken back, with the server's reason.
+//! - **Dropped:** we reconnect with growing pauses; the welcome that follows tells which
+//!   of our changes in flight made it, and the rest are taken back.
 
 use bevy::prelude::*;
 use cubelark_net::{ClientEvent, ToClient};
@@ -14,8 +16,79 @@ use cubelark_rules::log::{Action, Change, replay};
 use super::{Chat, Role, creations::Creations, landscape::Landscape};
 use crate::world::{VoxelWorld, ledger::Ledger};
 
+/// Joins the server at `addr`; returns what to tell the player.
+pub fn join(ledger: &mut Ledger, addr: &str) -> String {
+    if ledger.is_online() {
+        return "Already online; /leave first.".into();
+    }
+    match ledger.go_online(addr) {
+        Ok(()) => format!("Joining {addr}…"),
+        Err(e) => format!("⚠ {e}"),
+    }
+}
+
+/// Opens this world to others: starts a server in the game on the world's own save
+/// (so changes made together are kept with it) and joins it.
+pub fn host(ledger: &mut Ledger) -> String {
+    if ledger.is_online() {
+        return "Already online; only your local world can be hosted.".into();
+    }
+    let config = cubelark_server::ServerConfig {
+        data_dir: "saves".into(),
+        port: cubelark_net::DEFAULT_PORT,
+        seed: ledger.log.seed,
+    };
+    let running = match cubelark_server::start(config) {
+        Ok(running) => running,
+        Err(e) => return format!("⚠ Couldn't host: {e}"),
+    };
+    ledger.hosting = Some(running.addr);
+    let port = running.addr.port();
+    if let Err(e) = ledger.go_online(&format!("127.0.0.1:{port}")) {
+        return format!("⚠ {e}");
+    }
+    let lan = lan_ip().map_or(format!("this computer's address, port {port}"), |ip| format!("{ip}:{port}"));
+    format!("Hosting this world until you quit. Others on your network join with {lan}.")
+}
+
+/// Leaves the server for the local world.
+pub fn leave(
+    commands: &mut Commands,
+    ledger: &mut Ledger,
+    world: &mut VoxelWorld,
+    creations: &mut Creations,
+    landscape: &mut Landscape,
+) -> String {
+    if !ledger.is_online() {
+        return "You're in your local world.".into();
+    }
+    if ledger.hosting.is_some() {
+        return "You're hosting this world; it closes when you quit.".into();
+    }
+    let full = ledger.go_offline();
+    world.replace_edits(full.edits.iter().map(|(p, id)| (*p, *id)));
+    creations.resync(commands, &full.builds);
+    landscape.forget_history();
+    "Back in your local world.".into()
+}
+
+/// This computer's address on the local network: the one a route to the internet would
+/// use (connecting a UDP socket sends nothing).
+fn lan_ip() -> Option<std::net::IpAddr> {
+    let socket = std::net::UdpSocket::bind("0.0.0.0:0").ok()?;
+    socket.connect("8.8.8.8:80").ok()?;
+    Some(socket.local_addr().ok()?.ip())
+}
+
+/// Seconds before reconnect attempt `n` (0-based): 2, 4, 8, … up to 30.
+fn backoff(n: u32) -> f32 {
+    (2.0 * 2f32.powi(n.min(4) as i32)).min(30.0)
+}
+
 pub fn sync_online(
     mut commands: Commands,
+    time: Res<Time>,
+    mut retry_at: Local<Option<f32>>,
     mut ledger: ResMut<Ledger>,
     mut world: ResMut<VoxelWorld>,
     mut creations: ResMut<Creations>,
@@ -23,17 +96,42 @@ pub fn sync_online(
     mut chat: ResMut<Chat>,
 ) {
     let Some(online) = &ledger.online else {
+        *retry_at = None;
         return;
     };
+    // Reconnect when it's time.
+    if online.closed.is_some()
+        && let Some(at) = *retry_at
+        && time.elapsed_secs() >= at
+    {
+        match ledger.reconnect() {
+            Ok(()) => *retry_at = None,
+            Err(e) => {
+                let online = ledger.online.as_mut().expect("checked above");
+                online.attempts += 1;
+                *retry_at = Some(time.elapsed_secs() + backoff(online.attempts));
+                info!("reconnect failed: {e}");
+            }
+        }
+        return;
+    }
     let events = online.client.poll();
     for event in events {
         match event {
             ClientEvent::Closed(why) => {
-                let addr = ledger.online.as_ref().map(|o| o.addr.clone()).unwrap_or_default();
-                chat.say(Role::System, format!("⚠ Disconnected from {addr}: {why}"));
+                let Some(online) = &mut ledger.online else { continue };
+                if online.closed.is_none() {
+                    chat.say(Role::System, format!("⚠ Lost the connection to {} ({why}); reconnecting…", online.addr));
+                }
+                online.closed = Some(why);
+                *retry_at = Some(time.elapsed_secs() + backoff(online.attempts));
+            }
+            ClientEvent::Refused(why) => {
+                chat.say(Role::System, format!("⚠ Can't play on this server: {why}"));
                 if let Some(online) = &mut ledger.online {
                     online.closed = Some(why);
                 }
+                *retry_at = None;
             }
             ClientEvent::Message(ToClient::Challenge { .. }) => {}
             ClientEvent::Message(ToClient::Bye { why }) => chat.say(Role::System, format!("⚠ The server says: {why}")),
@@ -43,6 +141,29 @@ pub fn sync_online(
                     continue;
                 }
                 ledger.log = log;
+                // After a reconnect: our changes in flight either made it into the log
+                // (find them by signature) or were lost with the connection.
+                let l = &mut *ledger;
+                if let Some(online) = &mut l.online {
+                    online.attempts = 0;
+                    let pending: Vec<(u64, String)> = online.pending.drain().collect();
+                    let mut lost = 0;
+                    for (request, sig) in pending {
+                        match l.log.changes.iter().find(|c| c.sig.as_deref() == Some(sig.as_str())) {
+                            Some(change) => {
+                                online.committed.insert(request, change.id);
+                            }
+                            None => {
+                                creations.retract(&mut commands, request);
+                                landscape.refused(&mut world, request);
+                                lost += 1;
+                            }
+                        }
+                    }
+                    if lost > 0 {
+                        chat.say(Role::System, format!("⚠ {lost} change(s) didn't reach the server before the connection dropped."));
+                    }
+                }
                 let full = replay(&ledger.log);
                 world.replace_edits(full.edits.iter().map(|(p, id)| (*p, *id)));
                 creations.resync(&mut commands, &full.builds);
@@ -85,7 +206,7 @@ fn committed(
     let Some(mut online) = ledger.online.take() else {
         return;
     };
-    let own = request.filter(|r| online.pending.remove(r));
+    let own = request.filter(|r| online.pending.remove(r).is_some());
     if let Some(reference) = own {
         online.committed.insert(reference, change.id);
     }

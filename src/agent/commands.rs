@@ -4,6 +4,7 @@
 //! - `/revert <id>`: undo one of your own changes (anyone's, for admins).
 //! - `/rules`: the world's rules.
 //! - `/verify`: checks every change is signed by the player it names.
+//! - `/host`, `/join <host[:port]>`, `/leave`: play together.
 //! - Admins: `/rollback <player>` undoes everything a player did; `/restore <id>` puts
 //!   the world back how it was right after change `id`; `/land open|parcels`;
 //!   `/rate <changes per minute> [voxels per 10 minutes]` or `/rate off`.
@@ -27,7 +28,8 @@ pub struct Context<'a, 'w, 's> {
     pub landscape: &'a mut Landscape,
 }
 
-const HELP: &str = "Commands: /history [n] · /revert <id> · /rules · /verify · admins: /rollback <player> · \
+const HELP: &str = "Commands: /history [n] · /revert <id> · /rules · /verify · /host · /join <addr> · /leave · \
+admins: /rollback <player> · \
 /restore <id> · /land open|parcels · /rate <changes/min> [voxels/10 min] | off";
 
 /// Runs `/command args` and returns the reply for the chat.
@@ -49,7 +51,13 @@ pub fn run(text: &str, cx: &mut Context) -> String {
                 format!("{} of {} changes aren't signed by their authors: {}", bad.len(), changes.len(), bad.join(", "))
             }
         }
-        "revert" | "rollback" | "restore" if busy => "Keep or discard your draft first.".into(),
+        "revert" | "rollback" | "restore" | "host" | "join" | "leave" if busy => "Keep or discard your draft first.".into(),
+        "host" => super::online::host(cx.ledger),
+        "join" => match args.first() {
+            Some(addr) => super::online::join(cx.ledger, addr),
+            None => "Usage: /join <host[:port]>".into(),
+        },
+        "leave" => super::online::leave(cx.commands, cx.ledger, cx.world, cx.creations, cx.landscape),
         "revert" => {
             let Some(id) = args.first().and_then(|n| n.parse::<u64>().ok()) else {
                 return "Usage: /revert <change id> (see /history)".into();

@@ -31,6 +31,8 @@ egui-phosphor = "0.14"
 tiny_http = "0.12"
 # Joining a shared world.
 cubelark_net = { path = "crates/net" }
+# Hosting a world from the game.
+cubelark_server = { path = "crates/server" }
 serde_json = "1"
 # Random player keys.
 getrandom = "0.3"
