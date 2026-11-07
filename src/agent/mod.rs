@@ -9,6 +9,7 @@
 //! Land works the same way ([`landscape`]): select an area with G, describe it, and
 //! the agent's terrain operations are previewed in the world until kept.
 
+mod commands;
 mod creations;
 mod landscape;
 mod mcp;
@@ -227,8 +228,8 @@ fn auto_prompt(
     mut creations: ResMut<Creations>,
     mut landscape: ResMut<Landscape>,
     mut overlay: ResMut<ParcelOverlay>,
-    world: Res<VoxelWorld>,
-    ledger: Res<Ledger>,
+    mut world: ResMut<VoxelWorld>,
+    mut ledger: ResMut<Ledger>,
     players: Query<(&Player, &Transform)>,
     cameras: Query<&GlobalTransform, With<Camera3d>>,
 ) {
@@ -257,6 +258,20 @@ fn auto_prompt(
         if std::env::var("CUBELARK_SELECT_LAST").is_ok() {
             creations.selected = creations.placed.last().map(|(e, _)| *e);
         }
+        // Commands, `;`-separated: `CUBELARK_PROMPT="/rate 2; /history"`.
+        if text.trim_start().starts_with('/') {
+            for command in text.split(';') {
+                let cx = &mut commands::Context {
+                    commands: &mut commands,
+                    ledger: &mut ledger,
+                    world: &mut world,
+                    creations: &mut creations,
+                    landscape: &mut landscape,
+                };
+                run_command(&mut chat, command.trim(), cx);
+            }
+            return;
+        }
         chat.input = text;
         if let Some(why) = land_refusal(&creations, &landscape, &ledger) {
             chat.input.clear();
@@ -266,7 +281,14 @@ fn auto_prompt(
         let area = area_context(&creations, &landscape, &world, &ledger, Some(hero.translation), cameras.single().ok());
         chat.send(&mut creations, &mut commands, tools.as_deref(), &ledger.rules, area);
     }
+}
 
+/// Echoes a chat command and its reply.
+fn run_command(chat: &mut Chat, text: &str, cx: &mut commands::Context) {
+    chat.say(Role::Player, text);
+    let reply = commands::run(text, cx);
+    info!("{text} -> {reply}");
+    chat.say(Role::System, reply);
 }
 
 /// Serves the read-only world tools to agents. Without it, agents still work blind.
@@ -1082,6 +1104,17 @@ fn chat_panel(
         });
 
     match action {
+        Some(Action::Send) if chat.input.trim_start().starts_with('/') => {
+            let text = std::mem::take(&mut chat.input);
+            let cx = &mut commands::Context {
+                commands: &mut commands,
+                ledger: &mut ledger,
+                world: &mut world,
+                creations: &mut creations,
+                landscape: &mut landscape,
+            };
+            run_command(&mut chat, text.trim(), cx);
+        }
         Some(Action::Send) => {
             if let Some(why) = land_refusal(&creations, &landscape, &ledger) {
                 chat.say(Role::System, why);

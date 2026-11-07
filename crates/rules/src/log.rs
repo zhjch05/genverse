@@ -102,6 +102,24 @@ pub enum Action {
     LegacyVoxels { edits: Vec<[i32; 4]> },
 }
 
+impl Action {
+    /// A few words for history lists: "placed \"Stone well\"".
+    pub fn describe(&self) -> String {
+        match self {
+            Action::PlaceBuild(b) => format!("placed \"{}\"", b.name),
+            Action::UpdateBuild(b) => format!("changed \"{}\"", b.name),
+            Action::RemoveBuild { build } => format!("removed build {build}"),
+            Action::Terrain { name, .. } => format!("reshaped land: \"{name}\""),
+            Action::ClaimParcels { parcels } => format!("claimed {} parcel(s)", parcels.len()),
+            Action::ReleaseParcels { parcels } => format!("released {} parcel(s)", parcels.len()),
+            Action::Revert { change } => format!("undid change {change}"),
+            Action::Rollback { changes, note } => format!("rolled back {} change(s): {note}", changes.len()),
+            Action::SetRules { .. } => "changed the world's rules".into(),
+            Action::LegacyVoxels { edits } => format!("old hand edits ({} voxels)", edits.len()),
+        }
+    }
+}
+
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 pub struct Change {
     pub id: u64,

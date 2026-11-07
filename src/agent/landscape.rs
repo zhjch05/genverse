@@ -133,6 +133,12 @@ impl Landscape {
         }
     }
 
+    /// Forgets the voxel snapshots kept for undo (after the world was rebuilt from the
+    /// log, they no longer describe it).
+    pub fn forget_history(&mut self) {
+        self.kept.clear();
+    }
+
     /// Puts the ground back how it was before kept change `id`, and records the revert.
     pub fn undo(&mut self, world: &mut VoxelWorld, ledger: &mut Ledger, id: u64) -> Option<String> {
         let index = self.kept.iter().position(|k| k.id == id)?;

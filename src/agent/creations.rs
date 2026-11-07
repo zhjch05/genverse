@@ -245,6 +245,22 @@ impl Creations {
         Some(saved.name)
     }
 
+    /// Makes the placed builds match `builds` (the change log's), after the log changed
+    /// in a way local undo can't express. Undo history no longer applies after that.
+    pub fn resync(&mut self, commands: &mut Commands, builds: &std::collections::BTreeMap<u64, SavedCreation>) {
+        let stale: Vec<u64> =
+            self.placed.iter().filter(|(_, c)| builds.get(&c.build) != Some(c)).map(|(_, c)| c.build).collect();
+        for build in stale {
+            self.take_placed(commands, build);
+        }
+        for c in builds.values() {
+            if !self.placed.iter().any(|(_, p)| p.build == c.build) {
+                self.restore(commands, c.clone());
+            }
+        }
+        self.history.clear();
+    }
+
     /// Records a kept terrain change (its change-log id), so Undo reverts changes in
     /// the order they were made.
     pub fn record_terrain(&mut self, change: u64) {

@@ -87,6 +87,9 @@ pub struct VoxelWorld {
     versions: HashMap<IVec3, u32>,
     /// Loaded chunks whose meshes are out of date.
     dirty: HashSet<IVec3>,
+    /// Loaded chunks to regenerate from the seed and edits (after the edits were
+    /// replaced wholesale, e.g. by a rollback).
+    regen: HashSet<IVec3>,
     unsaved: bool,
     /// Set while a terrain preview is applied, so it isn't saved until it's kept.
     pub hold_saves: bool,
@@ -184,6 +187,38 @@ impl VoxelWorld {
         true
     }
 
+    /// Replaces every edit with `edits` (the result of replaying the change log), and
+    /// regenerates the loaded chunks that differ. For changes that aren't a simple
+    /// stack of undos: rollbacks, restores, and later other players' changes.
+    #[cfg_attr(target_arch = "wasm32", allow(dead_code))]
+    pub fn replace_edits(&mut self, edits: impl IntoIterator<Item = (IVec3, VoxelId)>) {
+        let mut next: HashMap<IVec3, HashMap<IVec3, VoxelId>> = default();
+        for (p, id) in edits {
+            next.entry(chunk_of(p)).or_default().insert(p, id);
+        }
+        let same = |a: &HashMap<IVec3, HashMap<IVec3, VoxelId>>, b: &HashMap<IVec3, HashMap<IVec3, VoxelId>>, c: IVec3| {
+            a.get(&c).filter(|m| !m.is_empty()) == b.get(&c).filter(|m| !m.is_empty())
+        };
+        let owners: HashSet<IVec3> = self.edits.keys().chain(next.keys()).copied().collect();
+        let changed: Vec<IVec3> = owners.into_iter().filter(|c| !same(&self.edits, &next, *c)).collect();
+        self.edits = next;
+        // A chunk's padded grid also holds its neighbors' border voxels.
+        for owner in changed {
+            for z in -1..=1 {
+                for y in -1..=1 {
+                    for x in -1..=1 {
+                        let c = owner + IVec3::new(x, y, z);
+                        *self.versions.entry(c).or_default() += 1;
+                        if self.loaded.contains_key(&c) {
+                            self.regen.insert(c);
+                        }
+                    }
+                }
+            }
+        }
+        self.unsaved = true;
+    }
+
     /// Edits inside the padded grid of chunk `c`.
     fn edits_for(&self, c: IVec3) -> Vec<(IVec3, VoxelId)> {
         let (min, max) = (c * CHUNK - IVec3::ONE, c * CHUNK + IVec3::splat(CHUNK));
@@ -250,6 +285,7 @@ fn setup_world(mut commands: Commands, mut materials: ResMut<Assets<StandardMate
         edits,
         versions: default(),
         dirty: default(),
+        regen: default(),
         unsaved: false,
         hold_saves: false,
     });
@@ -304,6 +340,7 @@ fn stream_chunks(
         .collect();
     for c in far {
         world.dirty.remove(&c);
+        world.regen.remove(&c);
         if let Some(chunk) = world.loaded.remove(&c) {
             for e in chunk.entities {
                 commands.entity(e).despawn();
@@ -311,7 +348,13 @@ fn stream_chunks(
         }
     }
 
-    // Edited chunks remesh first: the player is looking right at them.
+    // Regenerated chunks first, then edited ones: the player is looking right at them.
+    let regen: Vec<IVec3> = world.regen.iter().copied().filter(|c| !world.pending.contains_key(c)).collect();
+    for c in regen {
+        world.regen.remove(&c);
+        world.dirty.remove(&c);
+        world.spawn_task(c, None);
+    }
     let dirty: Vec<IVec3> = world.dirty.iter().copied().filter(|c| !world.pending.contains_key(c)).collect();
     for c in dirty {
         world.dirty.remove(&c);
@@ -392,6 +435,10 @@ fn finish_chunks(
         // those (for collision) and remesh again. A chunk loading for the first time
         // just starts over.
         if world.versions.get(&c).copied().unwrap_or_default() != version {
+            // Its edits were replaced while it built; a fresh build is queued.
+            if world.regen.contains(&c) {
+                continue;
+            }
             match world.loaded.get(&c) {
                 Some(loaded) => {
                     built.voxels = (*loaded.voxels).clone();
@@ -443,6 +490,7 @@ mod tests {
             edits: default(),
             versions: default(),
             dirty: default(),
+            regen: default(),
             unsaved: false,
             hold_saves: false,
         }
