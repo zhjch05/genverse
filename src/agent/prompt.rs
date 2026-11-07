@@ -1,9 +1,11 @@
 //! What the agent is told: the voxel building rules, plus the live context of the request.
 
-use super::spec::{BuildSpec, limits};
-use cubelark_rules::sculpt::{TerrainSpec, limits as terrain_limits};
+use super::spec::BuildSpec;
+use cubelark_rules::{sculpt::TerrainSpec, settings::WorldRules};
 
-pub fn system(with_tools: bool) -> String {
+/// The system prompt, with this world's limits.
+pub fn system(with_tools: bool, rules: &WorldRules) -> String {
+    let (limits, terrain_limits) = (&rules.build, &rules.terrain);
     let mut out = format!(
         r##"You are the builder in Cubelark, a cozy voxel world with a soft, HD voxel art style.
 The player chats with you and you design one voxel object at a time, or reshape an area of
@@ -46,12 +48,12 @@ Example "build" for a small lamp post:
   {{"kind":"cylinder","color":"iron","from":[2,2,2],"to":[5,17,5],"radius":null,"wobble":null}},
   {{"kind":"box","color":"light","from":[1,17,1],"to":[6,21,6],"radius":null,"wobble":null}},
   {{"kind":"box","color":"iron","from":[0,21,0],"to":[7,22,7],"radius":null,"wobble":null}}]}}"##,
-        max_size = limits::MAX_SIZE,
-        max_shapes = limits::MAX_SHAPES,
-        max_colors = limits::MAX_COLORS,
-        max_voxels = limits::MAX_VOXELS,
-        max_faces = limits::MAX_FACES,
-        max_glow = limits::MAX_GLOW_VOXELS,
+        max_size = limits.max_size,
+        max_shapes = limits.max_shapes,
+        max_colors = limits.max_colors,
+        max_voxels = limits.max_voxels,
+        max_faces = limits.max_faces,
+        max_glow = limits.max_glow_voxels,
     );
     out.push_str(&format!(
         r##"
@@ -89,9 +91,9 @@ Example "terrain" for a small pond in a 10 × 8 m area:
    "level_m":null,"depth_m":1.25,"width_m":null,"edge_m":1.5,"material":null,"item":null,"density":null}},
  {{"kind":"scatter","area":null,"points":null,"amount_m":null,"level_m":null,"depth_m":null,
    "width_m":null,"edge_m":1,"material":null,"item":"plants","density":0.7}}]}}"##,
-        max_change = terrain_limits::MAX_HEIGHT_CHANGE_M,
-        max_points = terrain_limits::MAX_PATH_POINTS,
-        max_ops = terrain_limits::MAX_OPS,
+        max_change = terrain_limits.max_height_change_m,
+        max_points = terrain_limits.max_path_points,
+        max_ops = terrain_limits.max_ops,
     ));
     if with_tools {
         out.push_str(

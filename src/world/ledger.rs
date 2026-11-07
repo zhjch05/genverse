@@ -15,8 +15,10 @@ use std::collections::{BTreeMap, HashMap};
 
 use bevy::prelude::*;
 use cubelark_rules::{
-    budget::{Budgets, Footprint, Usage, limits as budget},
+    budget::{Budgets, Footprint, Usage},
     land::Land,
+    rate::Rates,
+    settings::WorldRules,
     log::{Action, BuildState, Provenance, WorldLog, replay, replay_land},
 };
 use serde::{Deserialize, Serialize};
@@ -45,6 +47,10 @@ pub struct Ledger {
     pub builds: BTreeMap<u64, BuildState>,
     /// Who owns what, as of the latest change.
     pub land: Land,
+    /// The world's rules in force now.
+    pub rules: WorldRules,
+    /// Who changed how much recently, for rate limits.
+    pub rates: Rates,
     /// What's used of each parcel's and player's budget.
     pub budgets: Budgets,
     /// Each placed build's share of the budgets.
@@ -62,10 +68,21 @@ impl Ledger {
         self.version += 1;
         let state = replay_land(&self.log);
         self.land = state.land;
+        self.rules = state.rules;
+        self.rates = state.rates;
         self.budgets = state.budgets;
         self.footprints = state.footprints;
         self.save();
         id
+    }
+
+    /// Whether the server's rate limits let the local player make a change of `cost`
+    /// voxels now (admins are exempt).
+    pub fn check_rate(&self, cost: usize) -> Result<(), String> {
+        if self.land.is_admin(&self.profile.id) {
+            return Ok(());
+        }
+        self.rates.check(&self.rules.rates, &self.profile.id, now(), cost)
     }
 
     /// Whether the local player may change `parcels`; returns the free ones the change
@@ -84,16 +101,16 @@ impl Ledger {
         let fullest = parcels
             .iter()
             .map(|p| self.budgets.parcel(*p))
-            .max_by_key(|u| u.faces * 1000 / budget::PARCEL_FACES.max(1) + u.builds as usize * 1000 / budget::PARCEL_BUILDS as usize)
+            .max_by_key(|u| u.faces * 1000 / self.rules.budgets.parcel_faces.max(1) + u.builds as usize * 1000 / self.rules.budgets.parcel_builds as usize)
             .unwrap_or_default();
         format!(
             "Parcel budget: {}/{} builds · {}/{} faces · {}/{} glow",
             fullest.builds,
-            budget::PARCEL_BUILDS,
+            self.rules.budgets.parcel_builds,
             short(fullest.faces),
-            short(budget::PARCEL_FACES),
+            short(self.rules.budgets.parcel_faces),
             short(fullest.glow),
-            short(budget::PARCEL_GLOW)
+            short(self.rules.budgets.parcel_glow)
         )
     }
 
@@ -103,11 +120,11 @@ impl Ledger {
         format!(
             "Your budget: {}/{} builds · {}/{} build voxels · {}/{} terrain voxels",
             u.builds,
-            budget::PLAYER_BUILDS,
+            self.rules.budgets.player_builds,
             short(u.voxels),
-            short(budget::PLAYER_VOXELS),
+            short(self.rules.budgets.player_voxels),
             short(u.terrain),
-            short(budget::PLAYER_TERRAIN)
+            short(self.rules.budgets.player_terrain)
         )
     }
 
@@ -242,6 +259,8 @@ pub fn load(seed: u32) -> (Ledger, HashMap<IVec3, VoxelId>) {
         profile,
         builds: replayed.builds,
         land: replayed.land,
+        rules: replayed.rules,
+        rates: replayed.rates,
         budgets: replayed.budgets,
         footprints: replayed.footprints,
         version: 1,

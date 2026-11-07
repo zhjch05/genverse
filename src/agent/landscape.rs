@@ -21,8 +21,9 @@ use bevy_egui::input::EguiWantsInput;
 use cubelark_rules::{
     land::{Access, PARCEL, area_parcels},
     log::{Action, terrain_footprint},
+    settings::LandMode,
 };
-use cubelark_rules::sculpt::{self, Area, Columns, SculptStats, TerrainEdit, TerrainSpec, level_of, limits, surface};
+use cubelark_rules::sculpt::{self, Area, Columns, SculptStats, TerrainEdit, TerrainSpec, level_of, surface};
 
 use super::{Chat, cursor_ray};
 use crate::{
@@ -210,20 +211,30 @@ fn prepare(world: &VoxelWorld, ledger: &Ledger, spec: &TerrainSpec, area: Area) 
     let columns = Columns::read(area, |x, z, out| world.column(x, z, out)).ok_or_else(|| {
         PreviewError::Invalid(vec!["part of the area isn't loaded; the player needs to be closer".to_string()])
     })?;
-    let mut edit = sculpt::compile(spec, area, world.terrain, columns).map_err(PreviewError::Invalid)?;
+    let mut edit =
+        sculpt::compile(spec, area, world.terrain, columns, &ledger.rules.terrain).map_err(PreviewError::Invalid)?;
     let (_, edits) =
         ledger.land.authorize_terrain(&ledger.profile.id, area, edit.edits).map_err(PreviewError::Refused)?;
     edit.stats.changed = edits.len();
     edit.edits = edits;
     ledger
         .budgets
-        .check(&terrain_footprint(&ledger.profile.id, edit.stats.changed), None)
+        .check(&terrain_footprint(&ledger.profile.id, edit.stats.changed), None, &ledger.rules.budgets)
         .map_err(PreviewError::Refused)?;
+    ledger.check_rate(edit.stats.changed).map_err(PreviewError::Refused)?;
     Ok(edit)
 }
 
 /// Who may change the parcels under `area`, in a few words for the panel and the agent.
 pub fn land_summary(ledger: &Ledger, area: Area) -> String {
+    if ledger.land.mode == LandMode::Open {
+        let spawn = area_parcels(area).into_iter().any(|p| ledger.land.in_spawn(p));
+        return match (spawn, ledger.land.is_admin(&ledger.profile.id)) {
+            (false, _) => "Open world: anyone can change this land".into(),
+            (true, true) => "Part of this is the protected spawn (you're an admin)".into(),
+            (true, false) => "Part of this is the protected spawn, which only admins change".into(),
+        };
+    }
     let (mut yours, mut free, mut spawn) = (0, 0, 0);
     let mut others: Vec<String> = Vec::new();
     for parcel in area_parcels(area) {
@@ -362,6 +373,7 @@ pub fn select_area(
     egui: Res<EguiWantsInput>,
     world: Res<VoxelWorld>,
     chat: Res<Chat>,
+    ledger: Res<Ledger>,
     mut landscape: ResMut<Landscape>,
     mut lock: ResMut<OrbitLock>,
 ) {
@@ -383,7 +395,7 @@ pub fn select_area(
     let Some(from) = landscape.drag_from else {
         return;
     };
-    let max = (limits::MAX_AREA_M / VOXEL_SIZE) as i32 - 1;
+    let max = (ledger.rules.terrain.max_area_m / VOXEL_SIZE) as i32 - 1;
     if let Some(to) = cell {
         let to = from + (to - from).clamp(IVec2::splat(-max), IVec2::splat(max));
         landscape.area = Some(Area::from_corners(from, to));

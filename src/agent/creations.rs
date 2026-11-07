@@ -7,6 +7,7 @@ use bevy::prelude::*;
 pub use cubelark_rules::log::BuildState as SavedCreation;
 use cubelark_rules::{
     budget::{Footprint, Usage},
+    build::BuildLimits,
     log::{Action, parcels_of},
 };
 
@@ -143,7 +144,7 @@ impl Creations {
         };
         commands.entity(draft.entity).despawn();
         if let Some(original) = draft.replaces
-            && let Ok(build) = compile(&original.spec)
+            && let Ok(build) = compile(&original.spec, &BuildLimits::ACCEPTED)
         {
             let entity = spawn_placed(commands, &build.model, &original);
             self.placed.push((entity, original));
@@ -158,7 +159,7 @@ impl Creations {
         }
         let entity = self.selected?;
         let index = self.placed.iter().position(|(e, _)| *e == entity)?;
-        let stats = compile(&self.placed[index].1.spec).ok()?.stats;
+        let stats = compile(&self.placed[index].1.spec, &BuildLimits::ACCEPTED).ok()?.stats;
         let (_, saved) = self.placed.remove(index);
         self.selected = None;
         commands.entity(entity).remove::<SolidModel>().insert(DraftMarker);
@@ -183,7 +184,10 @@ impl Creations {
     pub fn delete_selected(&mut self, commands: &mut Commands, ledger: &mut Ledger) -> Result<String, String> {
         let entity = self.selected.ok_or("nothing is selected")?;
         let index = self.placed.iter().position(|(e, _)| *e == entity).ok_or("nothing is selected")?;
-        ledger.check(&parcels_of(&self.placed[index].1)).map_err(|why| format!("Can't delete it: {why}."))?;
+        ledger
+            .check(&parcels_of(&self.placed[index].1))
+            .and_then(|_| ledger.check_rate(0))
+            .map_err(|why| format!("Can't delete it: {why}."))?;
         self.selected = None;
         let (_, saved) = self.placed.remove(index);
         commands.entity(entity).despawn();
@@ -211,7 +215,7 @@ impl Creations {
             parcels: here,
             usage: Usage { builds: 1, voxels: s.voxels, faces: s.faces, glow: s.glow, terrain: 0 },
         };
-        ledger.budgets.check(&new, old).err()
+        ledger.budgets.check(&new, old, &ledger.rules.budgets).and_then(|_| ledger.check_rate(s.voxels)).err()
     }
 
     /// Starts a new following draft that copies a placed build (Minecraft's pick block).
@@ -220,7 +224,7 @@ impl Creations {
             return None;
         }
         let saved = self.placed.iter().find(|(e, _)| *e == entity).map(|(_, c)| c.clone())?;
-        let build = compile(&saved.spec).ok()?;
+        let build = compile(&saved.spec, &BuildLimits::ACCEPTED).ok()?;
         let yaw = at.rotation.to_euler(EulerRot::YXZ).0;
         let draft = spawn(commands, &build.model, &saved.name, at.translation, yaw);
         commands.entity(draft).insert(DraftMarker);
@@ -345,7 +349,7 @@ impl Creations {
     }
 
     fn restore(&mut self, commands: &mut Commands, saved: SavedCreation) -> Option<Entity> {
-        let build = compile(&saved.spec).ok()?;
+        let build = compile(&saved.spec, &BuildLimits::ACCEPTED).ok()?;
         let entity = spawn_placed(commands, &build.model, &saved);
         self.placed.push((entity, saved));
         Some(entity)
@@ -356,7 +360,7 @@ impl Creations {
 pub fn load_creations(mut commands: Commands, mut creations: ResMut<Creations>, ledger: Res<Ledger>) {
     for c in ledger.builds.values() {
         // Saved specs are re-validated, so tightened limits apply to old builds too.
-        match compile(&c.spec) {
+        match compile(&c.spec, &BuildLimits::ACCEPTED) {
             Ok(build) => {
                 let entity = spawn_placed(&mut commands, &build.model, c);
                 creations.placed.push((entity, c.clone()));

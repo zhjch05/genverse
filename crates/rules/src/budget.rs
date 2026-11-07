@@ -12,23 +12,42 @@ use std::{
 };
 
 use bevy_math::IVec2;
+use serde::{Deserialize, Serialize};
 
 use crate::{
-    build::{BuildSpec, compile},
+    build::{BuildLimits, BuildSpec, compile},
     log::fnv1a,
 };
 
-pub mod limits {
-    pub const PARCEL_BUILDS: u32 = 12;
+/// What a parcel and a player may hold. Each server sets its own
+/// ([`crate::settings::WorldRules`]).
+#[derive(Clone, Copy, Debug, PartialEq, Serialize, Deserialize)]
+#[serde(default)]
+pub struct BudgetLimits {
+    pub parcel_builds: u32,
     /// Visible faces of builds: what a parcel costs to draw.
-    pub const PARCEL_FACES: usize = 40_000;
-    pub const PARCEL_VOXELS: usize = 150_000;
+    pub parcel_faces: usize,
+    pub parcel_voxels: usize,
     /// Glowing voxels, which also light the scene.
-    pub const PARCEL_GLOW: usize = 4_000;
-    pub const PLAYER_BUILDS: u32 = 60;
-    pub const PLAYER_VOXELS: usize = 1_500_000;
+    pub parcel_glow: usize,
+    pub player_builds: u32,
+    pub player_voxels: usize,
     /// Voxels changed by a player's terrain changes, in total.
-    pub const PLAYER_TERRAIN: usize = 2_000_000;
+    pub player_terrain: usize,
+}
+
+impl Default for BudgetLimits {
+    fn default() -> Self {
+        Self {
+            parcel_builds: 12,
+            parcel_faces: 40_000,
+            parcel_voxels: 150_000,
+            parcel_glow: 4_000,
+            player_builds: 60,
+            player_voxels: 1_500_000,
+            player_terrain: 2_000_000,
+        }
+    }
 }
 
 #[derive(Clone, Copy, Debug, Default, PartialEq)]
@@ -66,7 +85,7 @@ pub fn build_usage(spec: &BuildSpec) -> Usage {
     if let Some(usage) = cache.lock().ok().and_then(|c| c.get(&key).copied()) {
         return usage;
     }
-    let usage = compile(spec).map_or(Usage { builds: 1, ..Default::default() }, |b| Usage {
+    let usage = compile(spec, &BuildLimits::ACCEPTED).map_or(Usage { builds: 1, ..Default::default() }, |b| Usage {
         builds: 1,
         voxels: b.stats.voxels,
         faces: b.stats.faces,
@@ -109,18 +128,26 @@ impl Budgets {
 
     /// Whether adding `new` (replacing `old`, if a build is being changed) fits. The
     /// reason names the budget it breaks.
-    pub fn check(&self, new: &Footprint, old: Option<&Footprint>) -> Result<(), String> {
-        use limits::*;
+    pub fn check(&self, new: &Footprint, old: Option<&Footprint>, limits: &BudgetLimits) -> Result<(), String> {
+        let BudgetLimits {
+            parcel_builds,
+            parcel_faces,
+            parcel_voxels,
+            parcel_glow,
+            player_builds,
+            player_voxels,
+            player_terrain,
+        } = *limits;
         for parcel in &new.parcels {
             let mut u = self.parcel(*parcel);
             if let Some(old) = old.filter(|o| o.parcels.contains(parcel)) {
                 u.sub(old.usage);
             }
             u.add(new.usage);
-            let problem = over("this parcel", "builds", u.builds as usize, PARCEL_BUILDS as usize)
-                .or_else(|| over("this parcel", "visible build faces", u.faces, PARCEL_FACES))
-                .or_else(|| over("this parcel", "build voxels", u.voxels, PARCEL_VOXELS))
-                .or_else(|| over("this parcel", "glowing voxels", u.glow, PARCEL_GLOW));
+            let problem = over("this parcel", "builds", u.builds as usize, parcel_builds as usize)
+                .or_else(|| over("this parcel", "visible build faces", u.faces, parcel_faces))
+                .or_else(|| over("this parcel", "build voxels", u.voxels, parcel_voxels))
+                .or_else(|| over("this parcel", "glowing voxels", u.glow, parcel_glow));
             if let Some(problem) = problem {
                 return Err(problem);
             }
@@ -130,9 +157,9 @@ impl Budgets {
             u.sub(old.usage);
         }
         u.add(new.usage);
-        over("you", "builds", u.builds as usize, PLAYER_BUILDS as usize)
-            .or_else(|| over("you", "build voxels", u.voxels, PLAYER_VOXELS))
-            .or_else(|| over("you", "voxels changed by terrain changes", u.terrain, PLAYER_TERRAIN))
+        over("you", "builds", u.builds as usize, player_builds as usize)
+            .or_else(|| over("you", "build voxels", u.voxels, player_voxels))
+            .or_else(|| over("you", "voxels changed by terrain changes", u.terrain, player_terrain))
             .map_or(Ok(()), Err)
     }
 
@@ -166,19 +193,19 @@ mod tests {
         let big = footprint("a", &here, 30_000);
         budgets.add(&big);
         // Another 30k faces on the same parcel is too much...
-        let err = budgets.check(&footprint("b", &here, 30_000), None).unwrap_err();
+        let err = budgets.check(&footprint("b", &here, 30_000), None, &BudgetLimits::default()).unwrap_err();
         assert!(err.contains("visible build faces"), "{err}");
         // ...but fine next door, or as a replacement of the big one.
-        assert!(budgets.check(&footprint("b", &[IVec2::new(4, 3)], 30_000), None).is_ok());
-        assert!(budgets.check(&footprint("a", &here, 35_000), Some(&big)).is_ok());
+        assert!(budgets.check(&footprint("b", &[IVec2::new(4, 3)], 30_000), None, &BudgetLimits::default()).is_ok());
+        assert!(budgets.check(&footprint("a", &here, 35_000), Some(&big), &BudgetLimits::default()).is_ok());
         budgets.remove(&big);
-        assert!(budgets.check(&footprint("b", &here, 30_000), None).is_ok());
+        assert!(budgets.check(&footprint("b", &here, 30_000), None, &BudgetLimits::default()).is_ok());
 
         // Build count per parcel.
-        for _ in 0..limits::PARCEL_BUILDS {
+        for _ in 0..BudgetLimits::default().parcel_builds {
             budgets.add(&footprint("c", &here, 10));
         }
-        let err = budgets.check(&footprint("c", &here, 10), None).unwrap_err();
+        let err = budgets.check(&footprint("c", &here, 10), None, &BudgetLimits::default()).unwrap_err();
         assert_eq!(err, "this parcel would have 13 builds (the budget is 12)");
     }
 }

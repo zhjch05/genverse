@@ -1,9 +1,12 @@
-//! Who may change which land: parcels, the protected spawn, and admins.
+//! Who may change which land: the protected spawn, admins, and (in a parcels world)
+//! parcel owners.
 //!
-//! Land is split into parcels, one chunk's footprint (8 × 8 m). A parcel is unclaimed,
-//! or owned by a player who may add builders. A change must be allowed on every parcel
-//! it touches; unclaimed parcels it touches are claimed for its author. The spawn area
-//! can't be claimed or changed except by admins (the world's creator).
+//! In an open world ([`LandMode::Open`], the default) anyone may change any land
+//! outside the spawn. In a parcels world, land is split into parcels, one chunk's
+//! footprint (8 × 8 m); a parcel is unclaimed, or owned by a player who may add
+//! builders. A change must be allowed on every parcel it touches, and unclaimed parcels
+//! it touches are claimed for its author. Either way the spawn can only be changed by
+//! admins (the world's creator).
 //!
 //! Land isn't saved: it's derived from the change log, so replaying the log (or
 //! rolling part of it back) always agrees with who owns what.
@@ -13,7 +16,7 @@ use std::collections::{BTreeSet, HashMap};
 use bevy_math::{IVec2, IVec3, Vec2, Vec3};
 use serde::{Deserialize, Serialize};
 
-use crate::{build, sculpt::Area, terrain::VOXEL_SIZE};
+use crate::{build, sculpt::Area, settings::LandMode, terrain::VOXEL_SIZE};
 
 /// Parcel edge length in terrain voxels (one chunk).
 pub const PARCEL: i32 = 32;
@@ -52,6 +55,8 @@ pub enum Access {
 
 #[derive(Clone, Debug, Default)]
 pub struct Land {
+    pub mode: LandMode,
+    /// Claims, kept even while the world is open (they apply again in parcels mode).
     pub parcels: HashMap<IVec2, Parcel>,
     pub admins: Vec<String>,
     pub spawn: Spawn,
@@ -89,8 +94,8 @@ pub fn build_parcels(position: Vec3, yaw: f32, size: &[i64]) -> Vec<IVec2> {
 }
 
 impl Land {
-    pub fn new(admins: Vec<String>, spawn: Spawn) -> Self {
-        Self { parcels: HashMap::new(), admins, spawn }
+    pub fn new(admins: Vec<String>, spawn: Spawn, mode: LandMode) -> Self {
+        Self { mode, parcels: HashMap::new(), admins, spawn }
     }
 
     pub fn is_admin(&self, player: &str) -> bool {
@@ -106,6 +111,9 @@ impl Land {
     }
 
     pub fn access(&self, player: &str, parcel: IVec2) -> Access {
+        if self.mode == LandMode::Open {
+            return if self.in_spawn(parcel) { Access::Spawn } else { Access::Free };
+        }
         match self.parcels.get(&parcel) {
             Some(p) if p.owner == player => Access::Yours,
             Some(p) if p.builders.iter().any(|b| b == player) => Access::Shared,
@@ -125,7 +133,7 @@ impl Land {
         let mut claims = BTreeSet::new();
         for &parcel in parcels {
             match self.access(player, parcel) {
-                Access::Free => {
+                Access::Free if self.mode == LandMode::Parcels => {
                     claims.insert((parcel.x, parcel.y));
                 }
                 Access::Spawn if !self.is_admin(player) => {
@@ -180,7 +188,7 @@ mod tests {
     use super::*;
 
     fn land() -> Land {
-        let mut land = Land::new(vec!["admin".into()], Spawn::default());
+        let mut land = Land::new(vec!["admin".into()], Spawn::default(), LandMode::Parcels);
         land.claim("ada", "Ada", &[IVec2::new(10, 0)]);
         land
     }
@@ -209,6 +217,15 @@ mod tests {
         assert!(land.parcels.contains_key(&ada));
         land.release("ada", &[ada]);
         assert!(!land.parcels.contains_key(&ada));
+    }
+
+    #[test]
+    fn open_land_ignores_claims_but_keeps_spawn() {
+        let mut land = land();
+        land.mode = LandMode::Open;
+        let (ada, spawn) = (IVec2::new(10, 0), IVec2::ZERO);
+        assert_eq!(land.authorize("cy", &[ada, IVec2::new(12, 0)]), Ok(vec![]));
+        assert!(land.authorize("cy", &[spawn]).is_err());
     }
 
     #[test]

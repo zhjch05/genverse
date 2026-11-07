@@ -9,17 +9,20 @@ use std::fmt::Write;
 use bevy::prelude::*;
 use serde_json::{Value, json};
 
+use cubelark_rules::{build::BuildLimits, settings::WorldRules};
+
 use super::{
     creations::{Creations, SavedCreation, anchor_in_front},
     landscape::{Landscape, sample},
     mcp::{McpServer, ToolCall},
-    spec::{BuildSpec, VOXEL_SIZE, compile, limits},
+    spec::{BuildSpec, VOXEL_SIZE, compile},
 };
 use crate::{
     player::Player,
     voxel::{AIR, VoxelId},
     world::{
         VoxelWorld,
+        ledger::Ledger,
         terrain::{self, block},
     },
 };
@@ -50,8 +53,8 @@ impl BuildSite {
     }
 }
 
-pub fn definitions() -> Value {
-    let size = json!({ "type": "integer", "minimum": 2, "maximum": limits::MAX_SIZE });
+pub fn definitions(rules: &WorldRules) -> Value {
+    let size = json!({ "type": "integer", "minimum": 2, "maximum": rules.build.max_size });
     json!([
         {
             "name": "get_build_site",
@@ -118,6 +121,7 @@ pub fn update_build_site(
     chat: Res<super::Chat>,
     creations: Res<Creations>,
     world: Res<VoxelWorld>,
+    ledger: Res<Ledger>,
     players: Query<&Transform, With<Player>>,
     transforms: Query<&Transform>,
 ) {
@@ -128,7 +132,7 @@ pub fn update_build_site(
     if let Some(t) = target.and_then(|e| transforms.get(e).ok()) {
         *site = BuildSite { origin: t.translation, yaw: t.rotation.to_euler(EulerRot::YXZ).0 };
     } else if let Ok(player) = players.single() {
-        let (origin, yaw) = anchor_in_front(player, &world, UVec3::splat(limits::MAX_SIZE / 2));
+        let (origin, yaw) = anchor_in_front(player, &world, UVec3::splat(ledger.rules.build.max_size / 2));
         *site = BuildSite { origin, yaw };
     }
 }
@@ -139,6 +143,7 @@ pub fn answer_tool_calls(
     world: Res<VoxelWorld>,
     creations: Res<Creations>,
     landscape: Res<Landscape>,
+    ledger: Res<Ledger>,
     players: Query<&Transform, With<Player>>,
     transforms: Query<&Transform>,
 ) {
@@ -155,7 +160,7 @@ pub fn answer_tool_calls(
         .filter_map(|(e, c)| transforms.get(*e).ok().map(|t| (*t, c)))
         .collect();
     for ToolCall { name, args, reply } in calls {
-        let ctx = Ctx { site: *site, world: &world, creations: &creations, placed: &placed };
+        let ctx = Ctx { site: *site, world: &world, creations: &creations, placed: &placed, limits: &ledger.rules.build };
         let result = match name.as_str() {
             "get_build_site" => Ok(ctx.build_site(&args, players.single().ok())),
             "list_nearby_builds" => Ok(ctx.nearby(&args)),
@@ -179,6 +184,7 @@ fn sample_terrain(world: &VoxelWorld, landscape: &Landscape, args: &Value) -> Re
 }
 
 struct Ctx<'a> {
+    limits: &'a BuildLimits,
     site: BuildSite,
     world: &'a VoxelWorld,
     creations: &'a Creations,
@@ -231,7 +237,7 @@ impl Ctx<'_> {
     }
 
     fn build_site(&self, args: &Value, player: Option<&Transform>) -> String {
-        let dim = |key: &str| args[key].as_u64().unwrap_or(32).clamp(2, limits::MAX_SIZE as u64) as u32;
+        let dim = |key: &str| args[key].as_u64().unwrap_or(32).clamp(2, self.limits.max_size as u64) as u32;
         let (width, depth) = (dim("width"), dim("depth"));
         let mut out = String::new();
         let _ = writeln!(
@@ -327,7 +333,7 @@ impl Ctx<'_> {
     fn check(&self, args: &Value) -> Result<String, String> {
         let spec: BuildSpec =
             serde_json::from_value(args["build"].clone()).map_err(|e| format!("build doesn't match the schema: {e}"))?;
-        let build = compile(&spec).map_err(|errors| format!("Rejected:\n- {}", errors.join("\n- ")))?;
+        let build = compile(&spec, self.limits).map_err(|errors| format!("Rejected:\n- {}", errors.join("\n- ")))?;
         let s = build.stats;
         let grid = &build.model.grid;
         let (w, d) = (s.size.x as f32, s.size.z as f32);
@@ -360,7 +366,7 @@ impl Ctx<'_> {
         let mut out = format!(
             "Valid: {}×{}×{} voxels, {} solid, {} visible faces, {} glowing (limits {} / {} / {}).\n",
             s.size.x, s.size.y, s.size.z, s.voxels, s.faces, s.glow,
-            limits::MAX_VOXELS, limits::MAX_FACES, limits::MAX_GLOW_VOXELS
+            self.limits.max_voxels, self.limits.max_faces, self.limits.max_glow_voxels
         );
         let _ = writeln!(
             out,

@@ -10,6 +10,8 @@ pub mod budget;
 pub mod build;
 pub mod land;
 pub mod log;
+pub mod rate;
 pub mod sculpt;
+pub mod settings;
 pub mod terrain;
 pub mod voxel;

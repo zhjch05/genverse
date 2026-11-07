@@ -33,7 +33,11 @@ use crate::{
     },
     world::{VoxelWorld, ledger::Ledger},
 };
-use cubelark_rules::{land::area_parcels, log::Action as LogAction};
+use cubelark_rules::{
+    land::area_parcels,
+    log::Action as LogAction,
+    settings::{LandMode, WorldRules},
+};
 use creations::{
     Adjust, Creation, Creations, DraftMarker, Undone, load_creations, outline_creations, placement_for_hit,
 };
@@ -143,13 +147,14 @@ impl Chat {
     fn start(
         &mut self,
         tools: Option<&McpServer>,
+        rules: &WorldRules,
         provider: Provider,
         prompt: String,
         request: String,
         repairs: u8,
         restore: bool,
     ) {
-        let job = runner::start(provider, prompt::system(tools.is_some()), request, tools);
+        let job = runner::start(provider, prompt::system(tools.is_some(), rules), request, tools);
         self.status = format!("{} is working…", provider.label());
         self.pending = Some(Pending { job: Mutex::new(job), provider, prompt, repairs, restore });
     }
@@ -157,7 +162,14 @@ impl Chat {
     /// Sends the input. With no draft but a selected build, the message revises that
     /// build: it becomes a pinned draft the agent edits in place. Otherwise, with an
     /// area selected (`area` describes it), the message reshapes that land.
-    fn send(&mut self, creations: &mut Creations, commands: &mut Commands, tools: Option<&McpServer>, area: Option<String>) {
+    fn send(
+        &mut self,
+        creations: &mut Creations,
+        commands: &mut Commands,
+        tools: Option<&McpServer>,
+        rules: &WorldRules,
+        area: Option<String>,
+    ) {
         let text = self.input.trim().to_string();
         if text.is_empty() || self.pending.is_some() {
             return;
@@ -174,7 +186,7 @@ impl Chat {
         let draft = creations.draft.as_ref().map(|d| &d.spec);
         let request = prompt::request(history, draft, area.as_deref(), &text);
         self.say(Role::Player, text.clone());
-        self.start(tools, self.provider, text, request, 0, restore);
+        self.start(tools, rules, self.provider, text, request, 0, restore);
     }
 }
 
@@ -252,14 +264,14 @@ fn auto_prompt(
             return;
         }
         let area = area_context(&creations, &landscape, &world, &ledger, Some(hero.translation), cameras.single().ok());
-        chat.send(&mut creations, &mut commands, tools.as_deref(), area);
+        chat.send(&mut creations, &mut commands, tools.as_deref(), &ledger.rules, area);
     }
 
 }
 
 /// Serves the read-only world tools to agents. Without it, agents still work blind.
-fn start_tool_server(mut commands: Commands) {
-    match McpServer::start(tools::definitions(), tools::INSTRUCTIONS) {
+fn start_tool_server(mut commands: Commands, ledger: Res<Ledger>) {
+    match McpServer::start(tools::definitions(&ledger.rules), tools::INSTRUCTIONS) {
         Ok(server) => {
             info!("agent world tools at {}", server.url);
             commands.insert_resource(server);
@@ -355,7 +367,8 @@ fn poll_agent(
                     warn!("terrain rejected, asking for a fix: {errors:?}");
                     chat.say(Role::System, format!("Land change broke {} rule(s); asking for a fix…", errors.len()));
                     let request = prompt::repair_terrain(&terrain, &errors);
-                    chat.start(tools.as_deref(), pending.provider, pending.prompt.clone(), request, 1, false);
+                    let rules = &ledger.rules;
+                    chat.start(tools.as_deref(), rules, pending.provider, pending.prompt.clone(), request, 1, false);
                     repairing = true;
                 }
                 Err(PreviewError::Invalid(errors)) => {
@@ -369,7 +382,7 @@ fn poll_agent(
         keep_original(&mut creations, &mut chat);
         return;
     };
-    match compile(&spec) {
+    match compile(&spec, &ledger.rules.build) {
         Ok(build) => {
             // A revision stays where the current draft stands; a new build goes on the
             // site the agent was shown.
@@ -401,6 +414,7 @@ fn poll_agent(
             let request = prompt::repair(&spec, &errors);
             chat.start(
                 tools.as_deref(),
+                &ledger.rules,
                 pending.provider,
                 pending.prompt.clone(),
                 request,
@@ -746,7 +760,7 @@ fn shortcut_hints(
         }
         None if chat.pending.is_some() => return Ok(()),
         None if landscape.area.is_some() => "T: describe what this land should become   G: select again   Esc: clear the area",
-        None => "T: describe a build   G: reshape the ground   P: parcels   Click a build: select   Middle-click a build: copy",
+        None => "T: describe a build   G: reshape the ground   P: land   Click a build: select   Middle-click a build: copy",
     };
     let ctx = contexts.ctx_mut()?;
     egui::Area::new("shortcut_hints".into())
@@ -979,18 +993,20 @@ fn chat_panel(
                                 action = Some(Action::ClearArea);
                             }
                         });
-                        ui.horizontal(|ui| {
-                            if ui
-                                .button(format!("{} Claim", icon::FLAG))
-                                .on_hover_text("Make the unclaimed parcels here yours, so only you can change them")
-                                .clicked()
-                            {
-                                action = Some(Action::Claim);
-                            }
-                            if ui.button("Release").on_hover_text("Give up your parcels here").clicked() {
-                                action = Some(Action::Release);
-                            }
-                        });
+                        if ledger.land.mode == LandMode::Parcels {
+                            ui.horizontal(|ui| {
+                                if ui
+                                    .button(format!("{} Claim", icon::FLAG))
+                                    .on_hover_text("Make the unclaimed parcels here yours, so only you can change them")
+                                    .clicked()
+                                {
+                                    action = Some(Action::Claim);
+                                }
+                                if ui.button("Release").on_hover_text("Give up your parcels here").clicked() {
+                                    action = Some(Action::Release);
+                                }
+                            });
+                        }
                         ui.label(egui::RichText::new("Describe what it should become: a pond, a path, a hill…").small().weak());
                     });
                 } else if landscape.selecting {
@@ -1072,7 +1088,7 @@ fn chat_panel(
             } else {
                 let player = players.single().ok().map(|t| t.translation);
                 let area = area_context(&creations, &landscape, &world, &ledger, player, cameras.single().ok());
-                chat.send(&mut creations, &mut commands, tools.as_deref(), area);
+                chat.send(&mut creations, &mut commands, tools.as_deref(), &ledger.rules, area);
             }
         }
         Some(Action::KeepTerrain) => keep_terrain(&mut creations, &mut landscape, &mut world, &mut ledger, &mut chat),

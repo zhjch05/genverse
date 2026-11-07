@@ -21,16 +21,49 @@ pub const SCHEMA: &str = include_str!("build_spec.schema.json");
 /// Object voxels are 12.5 cm: finer than terrain (25 cm), coarser than characters (5 cm).
 pub const VOXEL_SIZE: f32 = 0.125;
 
-/// Hard limits, checked before and after rasterizing.
-pub mod limits {
-    pub const MAX_SIZE: u32 = 64;
-    pub const MAX_SHAPES: usize = 200;
-    pub const MAX_COLORS: usize = 24;
-    pub const MAX_VOXELS: usize = 120_000;
+/// Limits one build must pass, checked before and after rasterizing. Each server sets
+/// its own ([`crate::settings::WorldRules`]); the defaults suit a shared world.
+#[derive(Clone, Copy, Debug, PartialEq, Serialize, Deserialize)]
+#[serde(default)]
+pub struct BuildLimits {
+    /// Longest axis, in build voxels.
+    pub max_size: u32,
+    pub max_shapes: usize,
+    pub max_colors: usize,
+    pub max_voxels: usize,
     /// Visible faces after meshing: the real rendering cost of a build.
-    pub const MAX_FACES: usize = 60_000;
-    pub const MAX_GLOW_VOXELS: usize = 3_000;
-    pub const MAX_GLASS_VOXELS: usize = 20_000;
+    pub max_faces: usize,
+    pub max_glow_voxels: usize,
+    pub max_glass_voxels: usize,
+}
+
+impl Default for BuildLimits {
+    fn default() -> Self {
+        Self {
+            max_size: 64,
+            max_shapes: 200,
+            max_colors: 24,
+            max_voxels: 120_000,
+            max_faces: 60_000,
+            max_glow_voxels: 3_000,
+            max_glass_voxels: 20_000,
+        }
+    }
+}
+
+impl BuildLimits {
+    /// For builds the world already accepted under the rules of their time: they keep
+    /// rendering if a server tightens its limits later. Still bounded, so a broken spec
+    /// can't exhaust memory.
+    pub const ACCEPTED: Self = Self {
+        max_size: 256,
+        max_shapes: 4096,
+        max_colors: 255,
+        max_voxels: usize::MAX,
+        max_faces: usize::MAX,
+        max_glow_voxels: usize::MAX,
+        max_glass_voxels: usize::MAX,
+    };
 }
 
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
@@ -89,18 +122,19 @@ fn vec3(v: &[f64], what: &str, errors: &mut Vec<String>) -> (f32, f32, f32) {
 
 /// Checks the spec, rasterizes it, and measures the result.
 /// Errors are phrased so they can be shown to the player or fed back to the agent.
-pub fn compile(spec: &BuildSpec) -> Result<CompiledBuild, Vec<String>> {
-    use limits::*;
+pub fn compile(spec: &BuildSpec, limits: &BuildLimits) -> Result<CompiledBuild, Vec<String>> {
+    let BuildLimits { max_size, max_shapes, max_colors, max_voxels, max_faces, max_glow_voxels, max_glass_voxels } =
+        *limits;
     let mut errors = Vec::new();
 
-    if spec.size.len() != 3 || spec.size.iter().any(|&s| s < 1 || s > MAX_SIZE as i64) {
-        errors.push(format!("size must be [x, y, z] with each between 1 and {MAX_SIZE}"));
+    if spec.size.len() != 3 || spec.size.iter().any(|&s| s < 1 || s > max_size as i64) {
+        errors.push(format!("size must be [x, y, z] with each between 1 and {max_size}"));
     }
-    if spec.shapes.is_empty() || spec.shapes.len() > MAX_SHAPES {
-        errors.push(format!("use between 1 and {MAX_SHAPES} shapes (got {})", spec.shapes.len()));
+    if spec.shapes.is_empty() || spec.shapes.len() > max_shapes {
+        errors.push(format!("use between 1 and {max_shapes} shapes (got {})", spec.shapes.len()));
     }
-    if spec.palette.is_empty() || spec.palette.len() > MAX_COLORS {
-        errors.push(format!("use between 1 and {MAX_COLORS} colors (got {})", spec.palette.len()));
+    if spec.palette.is_empty() || spec.palette.len() > max_colors {
+        errors.push(format!("use between 1 and {max_colors} colors (got {})", spec.palette.len()));
     }
     if !errors.is_empty() {
         return Err(errors);
@@ -235,17 +269,17 @@ pub fn compile(spec: &BuildSpec) -> Result<CompiledBuild, Vec<String>> {
     if stats.voxels == 0 {
         errors.push("the build is empty".into());
     }
-    if stats.voxels > MAX_VOXELS {
-        errors.push(format!("{} voxels is over the limit of {MAX_VOXELS}; hollow it out or shrink it", stats.voxels));
+    if stats.voxels > max_voxels {
+        errors.push(format!("{} voxels is over the limit of {max_voxels}; hollow it out or shrink it", stats.voxels));
     }
-    if stats.faces > MAX_FACES {
-        errors.push(format!("{} visible faces is over the limit of {MAX_FACES}; use fewer, larger shapes", stats.faces));
+    if stats.faces > max_faces {
+        errors.push(format!("{} visible faces is over the limit of {max_faces}; use fewer, larger shapes", stats.faces));
     }
-    if stats.glow > MAX_GLOW_VOXELS {
-        errors.push(format!("{} glowing voxels is over the limit of {MAX_GLOW_VOXELS}", stats.glow));
+    if stats.glow > max_glow_voxels {
+        errors.push(format!("{} glowing voxels is over the limit of {max_glow_voxels}", stats.glow));
     }
-    if glass > MAX_GLASS_VOXELS {
-        errors.push(format!("{glass} glass voxels is over the limit of {MAX_GLASS_VOXELS}"));
+    if glass > max_glass_voxels {
+        errors.push(format!("{glass} glass voxels is over the limit of {max_glass_voxels}"));
     }
     if errors.is_empty() { Ok(CompiledBuild { model, stats }) } else { Err(errors) }
 }
@@ -277,7 +311,7 @@ mod tests {
 
     #[test]
     fn prompt_example_compiles() {
-        let build = compile(&lamp()).expect("the example in the system prompt must be valid");
+        let build = compile(&lamp(), &BuildLimits::default()).expect("the example in the system prompt must be valid");
         assert_eq!(build.stats.size, UVec3::new(7, 22, 7));
         assert_eq!(build.stats.glow, 5 * 4 * 5);
         assert!(build.stats.faces > 0);
@@ -287,10 +321,10 @@ mod tests {
     fn rejects_unknown_colors_and_oversize() {
         let mut spec = lamp();
         spec.size = vec![7, 200, 7];
-        assert!(compile(&spec).is_err());
+        assert!(compile(&spec, &BuildLimits::default()).is_err());
         let mut spec = lamp();
         spec.shapes[0].color = "gold".into();
-        let errors = compile(&spec).err().unwrap();
+        let errors = compile(&spec, &BuildLimits::default()).err().unwrap();
         assert!(errors[0].contains("unknown color"));
     }
 
@@ -299,7 +333,7 @@ mod tests {
         let mut spec = lamp();
         spec.size = vec![64, 64, 64];
         spec.shapes = vec![shape("box", "iron", [0.0, 0.0, 0.0], [64.0, 64.0, 64.0])];
-        let errors = compile(&spec).err().unwrap();
+        let errors = compile(&spec, &BuildLimits::default()).err().unwrap();
         assert!(errors.iter().any(|e| e.contains("voxels is over the limit")));
     }
 

@@ -18,15 +18,32 @@ use crate::voxel::{
     noise::{hash01, value},
 };
 
-pub mod limits {
+/// Limits one terrain change must pass. Each server sets its own
+/// ([`crate::settings::WorldRules`]).
+#[derive(Clone, Copy, Debug, PartialEq, Serialize, Deserialize)]
+#[serde(default)]
+pub struct TerrainLimits {
     /// Longest side of a selected area, in meters.
-    pub const MAX_AREA_M: f32 = 48.0;
-    pub const MAX_OPS: usize = 24;
+    pub max_area_m: f32,
+    pub max_ops: usize,
     /// Largest raise or lower, and deepest water, in meters.
-    pub const MAX_HEIGHT_CHANGE_M: f32 = 8.0;
-    pub const MAX_PATH_POINTS: usize = 32;
-    pub const MAX_TREES: usize = 60;
-    pub const MAX_CHANGED_VOXELS: usize = 600_000;
+    pub max_height_change_m: f32,
+    pub max_path_points: usize,
+    pub max_trees: usize,
+    pub max_changed_voxels: usize,
+}
+
+impl Default for TerrainLimits {
+    fn default() -> Self {
+        Self {
+            max_area_m: 48.0,
+            max_ops: 24,
+            max_height_change_m: 8.0,
+            max_path_points: 32,
+            max_trees: 60,
+            max_changed_voxels: 600_000,
+        }
+    }
 }
 
 pub const OP_KINDS: [&str; 9] = ["raise", "lower", "flatten", "smooth", "terrace", "water", "paint", "scatter", "path"];
@@ -429,15 +446,15 @@ fn finite(v: Option<f64>) -> Option<f32> {
 }
 
 /// Checks a spec without touching any terrain. Errors are phrased for the agent.
-pub fn validate(spec: &TerrainSpec, area: Area) -> Vec<String> {
-    use limits::*;
+pub fn validate(spec: &TerrainSpec, area: Area, limits: &TerrainLimits) -> Vec<String> {
+    let TerrainLimits { max_ops, max_height_change_m, max_path_points, .. } = *limits;
     let mut errors = Vec::new();
     let whole = area.size_m();
     if spec.ops.is_empty() {
         errors.push("ops is empty".into());
     }
-    if spec.ops.len() > MAX_OPS {
-        errors.push(format!("{} ops, at most {MAX_OPS}", spec.ops.len()));
+    if spec.ops.len() > max_ops {
+        errors.push(format!("{} ops, at most {max_ops}", spec.ops.len()));
     }
     for (n, op) in spec.ops.iter().enumerate() {
         let at = format!("op {n} ({})", op.kind);
@@ -468,8 +485,8 @@ pub fn validate(spec: &TerrainSpec, area: Area) -> Vec<String> {
             }
         }
         let amount = finite(op.amount_m).unwrap_or(0.0).abs();
-        if amount > MAX_HEIGHT_CHANGE_M || finite(op.depth_m).unwrap_or(0.0).abs() > MAX_HEIGHT_CHANGE_M {
-            errors.push(format!("{at}: changes are at most {MAX_HEIGHT_CHANGE_M} m"));
+        if amount > max_height_change_m || finite(op.depth_m).unwrap_or(0.0).abs() > max_height_change_m {
+            errors.push(format!("{at}: changes are at most {max_height_change_m} m"));
         }
         match op.kind.as_str() {
             "raise" | "lower" if op.amount_m.is_none() => errors.push(format!("{at}: needs amount_m")),
@@ -483,8 +500,8 @@ pub fn validate(spec: &TerrainSpec, area: Area) -> Vec<String> {
             "scatter" if op.item.is_none() => errors.push(format!("{at}: needs an item")),
             "path" => {
                 let points = op.points.as_deref().unwrap_or_default();
-                if points.len() < 2 || points.len() > MAX_PATH_POINTS || points.iter().any(|p| p.len() != 2 || p.iter().any(|v| !v.is_finite())) {
-                    errors.push(format!("{at}: points needs 2..{MAX_PATH_POINTS} [x, z] pairs"));
+                if points.len() < 2 || points.len() > max_path_points || points.iter().any(|p| p.len() != 2 || p.iter().any(|v| !v.is_finite())) {
+                    errors.push(format!("{at}: points needs 2..{max_path_points} [x, z] pairs"));
                 }
             }
             _ => {}
@@ -494,8 +511,14 @@ pub fn validate(spec: &TerrainSpec, area: Area) -> Vec<String> {
 }
 
 /// Applies `spec` to the columns under `area` and returns the voxels that change.
-pub fn compile(spec: &TerrainSpec, area: Area, terrain: Terrain, mut columns: Columns) -> Result<TerrainEdit, Vec<String>> {
-    let errors = validate(spec, area);
+pub fn compile(
+    spec: &TerrainSpec,
+    area: Area,
+    terrain: Terrain,
+    mut columns: Columns,
+    limits: &TerrainLimits,
+) -> Result<TerrainEdit, Vec<String>> {
+    let errors = validate(spec, area, limits);
     if !errors.is_empty() {
         return Err(errors);
     }
@@ -715,11 +738,11 @@ pub fn compile(spec: &TerrainSpec, area: Area, terrain: Terrain, mut columns: Co
     let edits = columns.diff();
     stats.changed = edits.len();
     let mut errors = Vec::new();
-    if stats.changed > limits::MAX_CHANGED_VOXELS {
-        errors.push(format!("changes {} voxels, at most {}", stats.changed, limits::MAX_CHANGED_VOXELS));
+    if stats.changed > limits.max_changed_voxels {
+        errors.push(format!("changes {} voxels, at most {}", stats.changed, limits.max_changed_voxels));
     }
-    if stats.trees > limits::MAX_TREES {
-        errors.push(format!("adds {} trees, at most {}", stats.trees, limits::MAX_TREES));
+    if stats.trees > limits.max_trees {
+        errors.push(format!("adds {} trees, at most {}", stats.trees, limits.max_trees));
     }
     if errors.is_empty() { Ok(TerrainEdit { edits, stats }) } else { Err(errors) }
 }
@@ -890,7 +913,7 @@ mod tests {
 
     fn run(area: Area, ops: Vec<TerrainOp>) -> (Columns, TerrainEdit) {
         let spec = TerrainSpec { name: "test".into(), ops };
-        let edit = compile(&spec, area, TERRAIN, columns(area)).unwrap();
+        let edit = compile(&spec, area, TERRAIN, columns(area), &TerrainLimits::default()).unwrap();
         let mut after = columns(area);
         for (p, id) in &edit.edits {
             after.set(*p, *id);
@@ -949,7 +972,7 @@ mod tests {
         let mut up = op("raise");
         up.amount_m = Some(20.0);
         let spec = TerrainSpec { name: "too much".into(), ops: vec![up, op("teleport")] };
-        let errors = validate(&spec, area);
+        let errors = validate(&spec, area, &TerrainLimits::default());
         assert_eq!(errors.len(), 2, "{errors:?}");
 
         let mut up = op("raise");

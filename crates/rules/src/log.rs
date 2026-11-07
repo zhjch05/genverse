@@ -4,11 +4,14 @@
 //! left). That's what a save is, what a server would replicate, and what makes
 //! rollback a matter of replaying without some changes.
 //!
-//! Undo never deletes history: it appends a [`Action::Revert`] of the change it undoes.
+//! Undo never deletes history: it appends a [`Action::Revert`] of the change it undoes
+//! (players revert only their own changes), and admins can [`Action::Rollback`] any
+//! set of changes: a player's, or everything after some point (restoring a version).
+//! Reverts can themselves be reverted.
 //!
-//! Replay also enforces the land rules ([`crate::land`]) as of each change, so a log
-//! can't place things where its author wasn't allowed to, and who owns which parcel
-//! falls out of the log too.
+//! Replay also enforces the world's rules ([`crate::settings`]) as of each change:
+//! land, limits, budgets and rate limits. So a log can't hold anything its authors
+//! weren't allowed to do, and ownership and budgets fall out of the log too.
 
 use std::collections::{BTreeMap, HashMap, HashSet};
 
@@ -18,8 +21,10 @@ use serde::{Deserialize, Serialize};
 use crate::{
     budget::{Budgets, Footprint, Usage, build_usage},
     build::BuildSpec,
-    land::{Land, Spawn, area_parcels, build_parcels},
+    land::{Land, area_parcels, build_parcels},
+    rate::Rates,
     sculpt::{self, Area, Columns, TerrainSpec},
+    settings::WorldRules,
     terrain::{Terrain, WORLD_HEIGHT},
     voxel::VoxelId,
 };
@@ -87,8 +92,12 @@ pub enum Action {
     ClaimParcels { parcels: Vec<[i32; 2]> },
     /// Gives up the author's parcels.
     ReleaseParcels { parcels: Vec<[i32; 2]> },
-    /// Undoes an earlier change.
+    /// Undoes an earlier change of the same player (admins may revert anyone's).
     Revert { change: u64 },
+    /// An admin undoing many changes at once: a player's, or everything after a point.
+    Rollback { changes: Vec<u64>, note: String },
+    /// An admin changing the world's rules from here on.
+    SetRules { rules: WorldRules },
     /// Voxel edits made before the log existed (hand edits), as `[x, y, z, block]`.
     LegacyVoxels { edits: Vec<[i32; 4]> },
 }
@@ -104,17 +113,19 @@ pub struct Change {
 pub struct WorldLog {
     pub seed: u32,
     pub rules_version: u32,
-    /// Players who aren't bound by parcels or the spawn protection.
+    /// Players who aren't bound by the land rules or rate limits, and who may change
+    /// the rules and roll back anyone's changes.
     #[serde(default)]
     pub admins: Vec<String>,
+    /// The rules the world started with; admins' `SetRules` changes replace them.
     #[serde(default)]
-    pub spawn: Spawn,
+    pub rules: WorldRules,
     pub changes: Vec<Change>,
 }
 
 impl WorldLog {
     pub fn new(seed: u32) -> Self {
-        Self { seed, rules_version: RULES_VERSION, admins: Vec::new(), spawn: Spawn::default(), changes: Vec::new() }
+        Self { seed, rules_version: RULES_VERSION, admins: Vec::new(), rules: WorldRules::default(), changes: Vec::new() }
     }
 
     /// Appends a change and returns its id.
@@ -124,19 +135,40 @@ impl WorldLog {
         id
     }
 
-    /// Changes that count: not reverted, and not reverts themselves.
+    pub fn is_admin(&self, player: &str) -> bool {
+        self.admins.iter().any(|a| a == player)
+    }
+
+    /// Whether `player` may revert change `id`: their own, or anyone's for admins.
+    pub fn may_revert(&self, player: &str, id: u64) -> bool {
+        self.is_admin(player) || self.changes.iter().any(|c| c.id == id && c.by.player == player)
+    }
+
+    /// Changes undone by reverts and rollbacks. Newest first, so undoing an undo
+    /// brings its changes back.
+    pub fn undone(&self) -> HashSet<u64> {
+        let mut undone = HashSet::new();
+        for c in self.changes.iter().rev() {
+            if undone.contains(&c.id) {
+                continue;
+            }
+            match &c.action {
+                Action::Revert { change } if self.may_revert(&c.by.player, *change) => {
+                    undone.insert(*change);
+                }
+                Action::Rollback { changes, .. } if self.is_admin(&c.by.player) => undone.extend(changes),
+                _ => {}
+            }
+        }
+        undone
+    }
+
+    /// Changes that count: not undone, and not undos themselves.
     pub fn effective(&self) -> impl Iterator<Item = &Change> {
-        let reverted: HashSet<u64> = self
-            .changes
-            .iter()
-            .filter_map(|c| match c.action {
-                Action::Revert { change } => Some(change),
-                _ => None,
-            })
-            .collect();
-        self.changes
-            .iter()
-            .filter(move |c| !reverted.contains(&c.id) && !matches!(c.action, Action::Revert { .. }))
+        let undone = self.undone();
+        self.changes.iter().filter(move |c| {
+            !undone.contains(&c.id) && !matches!(c.action, Action::Revert { .. } | Action::Rollback { .. })
+        })
     }
 
     /// A stable fingerprint of the whole log, for checking a cache is current.
@@ -153,6 +185,9 @@ impl WorldLog {
             .iter()
             .filter(|c| match c.action {
                 Action::Revert { change } => !dropped.contains(&c.id) && !dropped.contains(&change),
+                Action::Rollback { ref changes, .. } => {
+                    !dropped.contains(&c.id) && !changes.iter().any(|id| dropped.contains(id))
+                }
                 _ => !dropped.contains(&c.id),
             })
             .cloned()
@@ -173,6 +208,9 @@ pub struct Replay {
     /// Voxel edits on top of the seed.
     pub edits: HashMap<IVec3, VoxelId>,
     pub land: Land,
+    /// The rules in force after the last change.
+    pub rules: WorldRules,
+    pub rates: Rates,
     pub budgets: Budgets,
     /// What each placed build costs, and whom it's charged to.
     pub footprints: HashMap<u64, Footprint>,
@@ -202,11 +240,28 @@ pub fn replay_land(log: &WorldLog) -> Replay {
 
 fn walk(log: &WorldLog, voxels: bool) -> Replay {
     let terrain = Terrain { seed: log.seed };
-    let mut out = Replay { land: Land::new(log.admins.clone(), log.spawn.clone()), ..Default::default() };
+    let rules = log.rules.clone();
+    let land = Land::new(log.admins.clone(), rules.spawn.clone(), rules.land);
+    let mut out = Replay { land, rules, ..Default::default() };
     for change in log.effective() {
         let by = &change.by;
         let refused = |why: String| format!("change {} by {}: {why}", change.id, by.player_name);
         let parcels = |list: &[[i32; 2]]| list.iter().map(|p| IVec2::from_array(*p)).collect::<Vec<_>>();
+        let admin = log.is_admin(&by.player);
+        // Rate limits count changes that add to the world, by their voxels.
+        let cost = match &change.action {
+            Action::PlaceBuild(b) | Action::UpdateBuild(b) => Some(build_usage(&b.spec).voxels),
+            Action::Terrain { changed, .. } => Some(*changed),
+            Action::RemoveBuild { .. } | Action::ClaimParcels { .. } => Some(0),
+            _ => None,
+        };
+        if let Some(cost) = cost.filter(|_| !admin)
+            && let Err(why) = out.rates.check(&out.rules.rates, &by.player, by.at, cost)
+        {
+            out.problems.push(refused(why));
+            continue;
+        }
+        let problems = out.problems.len();
         match &change.action {
             Action::PlaceBuild(b) | Action::UpdateBuild(b) => {
                 // Moving a build needs rights where it was and where it goes.
@@ -219,7 +274,7 @@ fn walk(log: &WorldLog, voxels: bool) -> Replay {
                     usage: build_usage(&b.spec),
                 };
                 let allowed = out.land.authorize(&by.player, &touched).and_then(|claims| {
-                    out.budgets.check(&new, old)?;
+                    out.budgets.check(&new, old, &out.rules.budgets)?;
                     Ok(claims)
                 });
                 match allowed {
@@ -250,7 +305,7 @@ fn walk(log: &WorldLog, voxels: bool) -> Replay {
             Action::Terrain { name, area, spec, changed } => {
                 let cost = terrain_footprint(&by.player, *changed);
                 let allowed = out.land.authorize(&by.player, &area_parcels(*area)).and_then(|claims| {
-                    out.budgets.check(&cost, None)?;
+                    out.budgets.check(&cost, None, &out.rules.budgets)?;
                     Ok(claims)
                 });
                 let claims = match allowed {
@@ -263,7 +318,7 @@ fn walk(log: &WorldLog, voxels: bool) -> Replay {
                 out.budgets.add(&cost);
                 if voxels {
                     let columns = ground_columns(terrain, *area, &out.edits);
-                    match sculpt::compile(spec, *area, terrain, columns) {
+                    match sculpt::compile(spec, *area, terrain, columns, &out.rules.terrain) {
                         Ok(edit) => {
                             let (_, edits) = out
                                 .land
@@ -286,7 +341,17 @@ fn walk(log: &WorldLog, voxels: bool) -> Replay {
                     out.edits.extend(edits.iter().map(|[x, y, z, id]| (IVec3::new(*x, *y, *z), *id as VoxelId)));
                 }
             }
-            Action::Revert { .. } => {}
+            Action::SetRules { rules } if admin => {
+                out.land.mode = rules.land;
+                out.land.spawn = rules.spawn.clone();
+                out.rules = rules.clone();
+            }
+            Action::SetRules { .. } => out.problems.push(refused("only admins change the rules".into())),
+            Action::Revert { .. } | Action::Rollback { .. } => {}
+        }
+        // A change that went through counts toward its author's rate.
+        if let Some(cost) = cost.filter(|_| !admin && out.problems.len() == problems) {
+            out.rates.add(&by.player, by.at, cost);
         }
     }
     out
@@ -399,6 +464,7 @@ mod tests {
     #[test]
     fn replay_enforces_land() {
         let mut log = WorldLog::new(1337);
+        log.rules.land = crate::settings::LandMode::Parcels;
         log.push(by("a"), lamp(1));
         // Lamp 1 stands at the origin, in the spawn: only admins may, so it's refused...
         assert_eq!(replay_land(&log).problems.len(), 1);
@@ -426,6 +492,63 @@ mod tests {
         // Rolling b back frees the land, and c's lamp stands after all.
         let rolled = replay_land(&log.without(|ch| ch.by.player == "b"));
         assert_eq!(rolled.builds.keys().copied().collect::<Vec<_>>(), vec![1, 3]);
+
+        // An admin opens the world: from then on anyone builds anywhere but the spawn.
+        let rules = WorldRules { land: crate::settings::LandMode::Open, ..log.rules.clone() };
+        log.push(by("a"), Action::SetRules { rules });
+        let mut d = away.clone();
+        if let Action::PlaceBuild(b) = &mut d {
+            b.build = 4;
+        }
+        log.push(by("d"), d);
+        assert!(replay_land(&log).builds.contains_key(&4));
+        // Only admins change rules.
+        log.push(by("d"), Action::SetRules { rules: WorldRules::default() });
+        assert!(replay_land(&log).problems.last().unwrap().contains("only admins"));
+    }
+
+    fn at(player: &str, t: u64) -> Provenance {
+        Provenance::new(player, player, None, None, t)
+    }
+
+    fn lamp_at(build: u64, x: f32) -> Action {
+        let mut a = lamp(build);
+        if let Action::PlaceBuild(b) = &mut a {
+            b.position = [x, 10.0, 100.0];
+        }
+        a
+    }
+
+    #[test]
+    fn undo_is_own_only_and_chains() {
+        let mut log = WorldLog::new(1337);
+        log.admins.push("admin".into());
+        let a = log.push(at("a", 0), lamp_at(1, 100.0));
+        log.push(at("b", 0), lamp_at(2, 120.0));
+        // b can't undo a's change; a can, and can undo the undo.
+        log.push(at("b", 1), Action::Revert { change: a });
+        assert_eq!(replay_land(&log).builds.len(), 2);
+        let undo = log.push(at("a", 2), Action::Revert { change: a });
+        assert_eq!(replay_land(&log).builds.len(), 1);
+        log.push(at("a", 3), Action::Revert { change: undo });
+        assert_eq!(replay_land(&log).builds.len(), 2);
+        // An admin rolls b back; a non-admin's rollback does nothing.
+        log.push(at("b", 4), Action::Rollback { changes: vec![a], note: "nope".into() });
+        log.push(at("admin", 5), Action::Rollback { changes: vec![2], note: "griefing".into() });
+        assert_eq!(replay_land(&log).builds.keys().copied().collect::<Vec<_>>(), vec![1]);
+    }
+
+    #[test]
+    fn rate_limits_come_from_the_rules() {
+        let mut log = WorldLog::new(1337);
+        log.rules.rates.changes_per_minute = Some(2);
+        for (i, t) in [0, 10, 20, 90].into_iter().enumerate() {
+            log.push(at("a", t), lamp_at(i as u64 + 1, 100.0 + 10.0 * i as f32));
+        }
+        let state = replay_land(&log);
+        // The third change in a minute is refused; a minute later it's fine again.
+        assert_eq!(state.builds.keys().copied().collect::<Vec<_>>(), vec![1, 2, 4]);
+        assert!(state.problems[0].contains("2 changes a minute"), "{:?}", state.problems);
     }
 
     #[test]
