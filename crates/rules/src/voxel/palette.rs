@@ -1,9 +1,9 @@
-use bevy::prelude::*;
+use bevy_color::LinearRgba;
 
 use super::grid::{AIR, VoxelId};
 
-/// How light interacts with a group of voxels. Every surface becomes one
-/// [`StandardMaterial`]; voxel colors come from vertex colors.
+/// How light interacts with a group of voxels. The game renders every surface as one
+/// material; voxel colors come from vertex colors.
 #[derive(Clone, Debug)]
 pub struct Surface {
     pub name: String,
@@ -19,22 +19,6 @@ pub struct Surface {
 impl Surface {
     pub fn is_transparent(&self) -> bool {
         self.alpha < 1.0
-    }
-
-    pub fn to_material(&self) -> StandardMaterial {
-        StandardMaterial {
-            base_color: Color::srgba(1.0, 1.0, 1.0, self.alpha),
-            perceptual_roughness: self.roughness,
-            metallic: self.metallic,
-            reflectance: self.reflectance,
-            emissive: self.emissive,
-            alpha_mode: if self.is_transparent() {
-                AlphaMode::Blend
-            } else {
-                AlphaMode::Opaque
-            },
-            ..default()
-        }
     }
 }
 

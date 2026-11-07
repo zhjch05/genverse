@@ -5,14 +5,15 @@
 //! compiled into a regular voxel model, then measured; the same checks are meant to
 //! run on a server later, so nothing here trusts the agent.
 
-use bevy::prelude::*;
+use bevy_color::prelude::*;
+use bevy_math::prelude::*;
 use serde::{Deserialize, Serialize};
 
-use crate::world::sculpt::TerrainSpec;
+use crate::sculpt::TerrainSpec;
 use crate::voxel::{
-    VoxelModelAsset,
-    asset::{Fill, Geom, ModelDef, NoiseDef, OpDef, PaletteDef, SurfaceDef, build},
-    mesher::mesh_grid,
+    ModelData,
+    faces::count_visible,
+    model::{Fill, Geom, ModelDef, NoiseDef, OpDef, PaletteDef, SurfaceDef, build},
 };
 
 pub const SCHEMA: &str = include_str!("build_spec.schema.json");
@@ -32,14 +33,14 @@ pub mod limits {
     pub const MAX_GLASS_VOXELS: usize = 20_000;
 }
 
-#[derive(Clone, Debug, Serialize, Deserialize)]
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 pub struct AgentAnswer {
     pub reply: String,
     pub build: Option<BuildSpec>,
     pub terrain: Option<TerrainSpec>,
 }
 
-#[derive(Clone, Debug, Serialize, Deserialize)]
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 pub struct BuildSpec {
     pub name: String,
     pub size: Vec<i64>,
@@ -47,14 +48,14 @@ pub struct BuildSpec {
     pub shapes: Vec<ShapeSpec>,
 }
 
-#[derive(Clone, Debug, Serialize, Deserialize)]
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 pub struct ColorSpec {
     pub name: String,
     pub hex: String,
     pub material: String,
 }
 
-#[derive(Clone, Debug, Serialize, Deserialize)]
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 pub struct ShapeSpec {
     pub kind: String,
     pub color: String,
@@ -74,7 +75,7 @@ pub struct BuildStats {
 
 /// A validated build, ready to spawn.
 pub struct CompiledBuild {
-    pub model: VoxelModelAsset,
+    pub model: ModelData,
     pub stats: BuildStats,
 }
 
@@ -207,9 +208,9 @@ pub fn compile(spec: &BuildSpec) -> Result<CompiledBuild, Vec<String>> {
         lights: Vec::new(),
         parts: Vec::new(),
     };
-    let model = build(def).map_err(|e| vec![e.to_string()])?;
+    let model = build(def).map_err(|e| vec![e])?;
 
-    let mut stats = BuildStats { size, ..default() };
+    let mut stats = BuildStats { size, ..Default::default() };
     let (mut glass, grid) = (0, &model.grid);
     for z in 0..size.z as i32 {
         for y in 0..size.y as i32 {
@@ -229,10 +230,7 @@ pub fn compile(spec: &BuildSpec) -> Result<CompiledBuild, Vec<String>> {
             }
         }
     }
-    stats.faces = mesh_grid(grid, &model.palette, VOXEL_SIZE)
-        .iter()
-        .map(|c| c.mesh.indices().map_or(0, |i| i.len() / 6))
-        .sum();
+    stats.faces = count_visible(grid, &model.palette);
 
     if stats.voxels == 0 {
         errors.push("the build is empty".into());

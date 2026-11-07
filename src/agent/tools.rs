@@ -306,7 +306,7 @@ impl Ctx<'_> {
                 out,
                 "- id {} \"{}\" size {}×{}×{} at x={:+.0} y={:+.0} z={:+.0} ({distance:.1} m away), turned {:.0}°, \
                  made for \"{}\"",
-                c.id, c.name, c.spec.size[0], c.spec.size[1], c.spec.size[2], p.x, p.y, p.z, turn, c.prompt
+                c.build, c.name, c.spec.size[0], c.spec.size[1], c.spec.size[2], p.x, p.y, p.z, turn, c.prompt
             );
         }
         out
@@ -319,7 +319,7 @@ impl Ctx<'_> {
             self.creations.draft.as_ref().map(|d| &d.spec).ok_or("there is no draft")?
         } else {
             let n: u64 = id.parse().map_err(|_| format!("unknown id {id:?}"))?;
-            self.creations.placed.iter().find(|(_, c)| c.id == n).map(|(_, c)| &c.spec).ok_or(format!("no build {n}"))?
+            self.creations.placed.iter().find(|(_, c)| c.build == n).map(|(_, c)| &c.spec).ok_or(format!("no build {n}"))?
         };
         serde_json::to_string(spec).map_err(|e| e.to_string())
     }
@@ -373,16 +373,16 @@ impl Ctx<'_> {
         let r = reach(w, d);
         let lo = self.site.origin - Vec3::new(r, 0.0, r);
         let hi = self.site.origin + Vec3::new(r, s.size.y as f32 * VOXEL_SIZE, r);
-        let replaced = self.creations.draft.as_ref().and_then(|d| d.replaces.as_ref()).map(|r| r.id);
+        let replaced = self.creations.draft.as_ref().and_then(|d| d.replaces.as_ref()).map(|r| r.build);
         let overlaps: Vec<_> = self
             .placed
             .iter()
-            .filter(|(_, c)| Some(c.id) != replaced)
+            .filter(|(_, c)| Some(c.build) != replaced)
             .filter_map(|(t, c)| {
                 let r = reach(c.spec.size[0] as f32, c.spec.size[2] as f32);
                 let height = c.spec.size[1] as f32 * VOXEL_SIZE;
                 let (blo, bhi) = (t.translation - Vec3::new(r, 0.0, r), t.translation + Vec3::new(r, height, r));
-                (lo.cmplt(bhi).all() && blo.cmplt(hi).all()).then(|| format!("\"{}\" (id {})", c.name, c.id))
+                (lo.cmplt(bhi).all() && blo.cmplt(hi).all()).then(|| format!("\"{}\" (id {})", c.name, c.build))
             })
             .collect();
         if overlaps.is_empty() {

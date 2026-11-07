@@ -4,12 +4,13 @@
 //! pool, then spawned as mesh entities. Each loaded chunk keeps its voxels (with a
 //! one-voxel border copied from its neighbors) for collision queries.
 //!
-//! Terrain changes are stored as a sparse layer on top of the seed ([`VoxelWorld::set`]).
-//! They're applied whenever a chunk is (re)built, so the world stays "seed + edits":
-//! cheap to save, and exactly what a server would replicate.
+//! Terrain changes are stored as a sparse layer of voxel edits on top of the seed
+//! ([`VoxelWorld::set`]), applied whenever a chunk is (re)built. The edits are what the
+//! change log in [`ledger`] replays to, so the world stays "seed + changes".
 
-pub mod sculpt;
-pub mod terrain;
+pub mod ledger;
+
+pub use cubelark_rules::terrain;
 
 use std::sync::Arc;
 
@@ -19,13 +20,14 @@ use bevy::{
     prelude::*,
     tasks::{AsyncComputeTaskPool, Task, futures::check_ready},
 };
-use serde::{Deserialize, Serialize};
 
 use crate::voxel::{
+    SurfaceMaterial,
     AIR, Palette, VoxelGrid, VoxelId,
     mesher::mesh_region,
     query::{Hit, march},
 };
+use ledger::Ledger;
 use terrain::{Terrain, VOXEL_SIZE, WORLD_HEIGHT};
 
 pub const CHUNK: i32 = 32;
@@ -34,8 +36,6 @@ pub const VIEW_RADIUS: i32 = 7;
 const VERTICAL_CHUNKS: i32 = WORLD_HEIGHT / CHUNK;
 const MAX_IN_FLIGHT: usize = if cfg!(target_arch = "wasm32") { 2 } else { 12 };
 const SEED: u32 = 1337;
-#[cfg(not(target_arch = "wasm32"))]
-const EDITS_PATH: &str = "saves/world_edits.json";
 
 pub struct WorldPlugin;
 
@@ -72,14 +72,6 @@ struct PendingChunk {
     task: Task<BuiltChunk>,
     /// The chunk's edit version when the task started; a newer edit means remesh again.
     version: u32,
-}
-
-/// What the save file holds: the seed plus every edited voxel.
-#[derive(Serialize, Deserialize)]
-struct SavedEdits {
-    seed: u32,
-    /// `[x, y, z, block]` in world voxel coordinates.
-    edits: Vec<[i32; 4]>,
 }
 
 #[derive(Resource)]
@@ -243,11 +235,12 @@ fn setup_world(mut commands: Commands, mut materials: ResMut<Assets<StandardMate
         .iter()
         .map(|s| materials.add(s.to_material()))
         .collect();
+    let (ledger, loaded) = ledger::load(SEED);
     let mut edits: HashMap<IVec3, HashMap<IVec3, VoxelId>> = default();
-    for [x, y, z, id] in load_edits() {
-        let p = IVec3::new(x, y, z);
-        edits.entry(chunk_of(p)).or_default().insert(p, id as VoxelId);
+    for (p, id) in loaded {
+        edits.entry(chunk_of(p)).or_default().insert(p, id);
     }
+    commands.insert_resource(ledger);
     commands.insert_resource(VoxelWorld {
         terrain: Terrain { seed: SEED },
         palette: Arc::new(palette),
@@ -262,54 +255,26 @@ fn setup_world(mut commands: Commands, mut materials: ResMut<Assets<StandardMate
     });
 }
 
-#[cfg(not(target_arch = "wasm32"))]
-fn load_edits() -> Vec<[i32; 4]> {
-    let Ok(text) = std::fs::read_to_string(EDITS_PATH) else {
-        return Vec::new();
-    };
-    match serde_json::from_str::<SavedEdits>(&text) {
-        Ok(saved) if saved.seed == SEED => saved.edits,
-        Ok(saved) => {
-            warn!("ignoring {EDITS_PATH}: it was made for seed {}, not {SEED}", saved.seed);
-            Vec::new()
-        }
-        Err(e) => {
-            error!("couldn't read {EDITS_PATH}: {e}");
-            Vec::new()
-        }
-    }
-}
-
-/// The web build has no save file yet; edits last for the session.
-#[cfg(target_arch = "wasm32")]
-fn load_edits() -> Vec<[i32; 4]> {
-    Vec::new()
-}
-
-/// Writes edits at most every couple of seconds.
-fn save_edits(time: Res<Time>, mut world: ResMut<VoxelWorld>, mut last: Local<f32>) {
+/// Writes the voxel cache at most every couple of seconds, when the voxels or the log
+/// changed (never while a preview is applied).
+fn save_edits(
+    time: Res<Time>,
+    ledger: Res<Ledger>,
+    mut world: ResMut<VoxelWorld>,
+    mut last: Local<(f32, u64)>,
+) {
     let now = time.elapsed_secs();
-    if !world.unsaved || world.hold_saves || now - *last < 2.0 {
+    if !(world.unsaved || ledger.version != last.1) || world.hold_saves || now - last.0 < 2.0 {
         return;
     }
-    *last = now;
+    *last = (now, ledger.version);
     world.unsaved = false;
     let edits: Vec<[i32; 4]> = world
         .edits
         .values()
         .flat_map(|chunk| chunk.iter().map(|(p, id)| [p.x, p.y, p.z, *id as i32]))
         .collect();
-    let saved = SavedEdits { seed: SEED, edits };
-    #[cfg(not(target_arch = "wasm32"))]
-    {
-        let result = std::fs::create_dir_all("saves")
-            .and_then(|_| std::fs::write(EDITS_PATH, serde_json::to_string(&saved).unwrap_or_default()));
-        if let Err(e) = result {
-            error!("couldn't save {EDITS_PATH}: {e}");
-        }
-    }
-    #[cfg(target_arch = "wasm32")]
-    let _ = saved;
+    ledger::write_cache(&ledger.log, edits);
 }
 
 fn stream_chunks(

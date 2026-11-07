@@ -1,4 +1,4 @@
-use bevy::math::{IVec3, UVec3};
+use bevy_math::{IVec3, UVec3};
 
 /// Index into a [`Palette`](super::palette::Palette). `0` is reserved for empty space.
 pub type VoxelId = u8;

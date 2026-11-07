@@ -1,6 +1,6 @@
 //! Small deterministic hash and value noise, so models rasterize identically everywhere.
 
-use bevy::math::{IVec3, Vec3};
+use bevy_math::{IVec3, Vec3};
 
 fn hash(x: i32, y: i32, z: i32, seed: u32) -> u32 {
     let mut h = (x as u32).wrapping_mul(0x8da6_b343)

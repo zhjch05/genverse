@@ -2519,6 +2519,7 @@ version = "0.1.0"
 dependencies = [
  "bevy",
  "bevy_egui",
+ "cubelark_rules",
  "egui-phosphor",
  "log",
  "ron",
@@ -2526,6 +2527,16 @@ dependencies = [
  "serde_json",
  "tiny_http",
  "tracing",
+]
+
+[[package]]
+name = "cubelark_rules"
+version = "0.1.0"
+dependencies = [
+ "bevy_color",
+ "bevy_math",
+ "serde",
+ "serde_json",
 ]
 
 [[package]]

@@ -4,8 +4,7 @@
 //! The agent answers with a [`TerrainSpec`] (a few operations, never voxels) and
 //! [`sculpt::compile`] turns it into voxel edits against the current ground. A preview
 //! is applied to the world for real and put back voxel by voxel if it's discarded.
-//! Kept changes are logged as specs in `saves/terrain_changes.json`; the voxels
-//! themselves are saved with the world's edits.
+//! Kept changes go into the world's change log as their spec, never voxels.
 
 use std::fmt::Write;
 
@@ -18,7 +17,12 @@ use bevy::{
     window::PrimaryWindow,
 };
 use bevy_egui::input::EguiWantsInput;
-use serde::{Deserialize, Serialize};
+
+use cubelark_rules::{
+    land::{Access, PARCEL, area_parcels},
+    log::{Action, terrain_footprint},
+};
+use cubelark_rules::sculpt::{self, Area, Columns, SculptStats, TerrainEdit, TerrainSpec, level_of, limits, surface};
 
 use super::{Chat, cursor_ray};
 use crate::{
@@ -26,25 +30,13 @@ use crate::{
     voxel::{AIR, VoxelId},
     world::{
         VoxelWorld,
-        sculpt::{self, Area, Columns, SculptStats, TerrainEdit, TerrainSpec, level_of, limits, surface},
+        ledger::Ledger,
         terrain::{VOXEL_SIZE, WORLD_HEIGHT, block},
     },
 };
 
-const LOG_PATH: &str = "saves/terrain_changes.json";
 /// A click without a drag selects a square this wide, in meters.
 const CLICK_AREA_M: f32 = 6.0;
-
-/// A kept terrain change, as saved: what was asked and the operations, not voxels.
-#[derive(Clone, Serialize, Deserialize)]
-pub struct SavedTerrainChange {
-    pub id: u64,
-    pub name: String,
-    pub prompt: String,
-    pub provider: String,
-    pub area: Area,
-    pub spec: TerrainSpec,
-}
 
 /// How a voxel was before a change touched it.
 struct Before {
@@ -77,7 +69,6 @@ pub struct Landscape {
     pub draft: Option<TerrainDraft>,
     /// Kept changes this session, for Undo.
     kept: Vec<Kept>,
-    log: Vec<SavedTerrainChange>,
 }
 
 impl Landscape {
@@ -91,16 +82,17 @@ impl Landscape {
     pub fn preview(
         &mut self,
         world: &mut VoxelWorld,
+        ledger: &Ledger,
         spec: TerrainSpec,
         prompt: String,
         provider: String,
-    ) -> Result<SculptStats, Vec<String>> {
-        let area = self.target().ok_or_else(|| vec!["no area is selected".to_string()])?;
+    ) -> Result<SculptStats, PreviewError> {
+        let area = self.target().ok_or_else(|| PreviewError::Invalid(vec!["no area is selected".to_string()]))?;
         let old = self.draft.take();
         if let Some(old) = &old {
             revert(world, &old.before);
         }
-        match compile_in(world, &spec, area) {
+        match prepare(world, ledger, &spec, area) {
             Ok(edit) => {
                 let before = apply(world, &edit.edits);
                 world.hold_saves = true;
@@ -109,7 +101,7 @@ impl Landscape {
             }
             Err(errors) => {
                 if let Some(mut old) = old
-                    && let Ok(edit) = compile_in(world, &old.spec, old.area)
+                    && let Ok(edit) = prepare(world, ledger, &old.spec, old.area)
                 {
                     old.before = apply(world, &edit.edits);
                     self.draft = Some(old);
@@ -121,22 +113,15 @@ impl Landscape {
         }
     }
 
-    /// Keeps the preview. Returns its id (for the shared undo history) and name.
-    pub fn keep(&mut self, world: &mut VoxelWorld) -> Option<(u64, String)> {
+    /// Keeps the preview, recording it in the change log. Returns its change id (for
+    /// the shared undo history) and name.
+    pub fn keep(&mut self, world: &mut VoxelWorld, ledger: &mut Ledger) -> Option<(u64, String)> {
         let draft = self.draft.take()?;
         world.hold_saves = false;
-        let id = self.log.iter().map(|c| c.id + 1).max().unwrap_or(1);
         let name = draft.spec.name.clone();
+        let action = Action::Terrain { name: name.clone(), area: draft.area, spec: draft.spec, changed: draft.stats.changed };
+        let id = ledger.record(Some(&draft.provider), Some(&draft.prompt), action);
         self.kept.push(Kept { id, name: name.clone(), before: draft.before });
-        self.log.push(SavedTerrainChange {
-            id,
-            name: name.clone(),
-            prompt: draft.prompt,
-            provider: draft.provider,
-            area: draft.area,
-            spec: draft.spec,
-        });
-        self.save();
         Some((id, name))
     }
 
@@ -147,32 +132,28 @@ impl Landscape {
         }
     }
 
-    /// Puts the ground back how it was before kept change `id`.
-    pub fn undo(&mut self, world: &mut VoxelWorld, id: u64) -> Option<String> {
+    /// Puts the ground back how it was before kept change `id`, and records the revert.
+    pub fn undo(&mut self, world: &mut VoxelWorld, ledger: &mut Ledger, id: u64) -> Option<String> {
         let index = self.kept.iter().position(|k| k.id == id)?;
         let kept = self.kept.remove(index);
         revert(world, &kept.before);
-        self.log.retain(|c| c.id != id);
-        self.save();
+        ledger.revert(id);
         Some(format!("Put the ground back how it was before \"{}\".", kept.name))
-    }
-
-    fn save(&self) {
-        let result = std::fs::create_dir_all("saves")
-            .and_then(|_| std::fs::write(LOG_PATH, serde_json::to_string_pretty(&self.log).unwrap_or_default()));
-        if let Err(e) = result {
-            error!("couldn't save {LOG_PATH}: {e}");
-        }
     }
 
     /// What the agent is told about the area: size, frame, a coarse height map, where
     /// the player is, and the preview it may be revising.
-    pub fn context(&self, world: &VoxelWorld, player: Option<Vec3>, view: Option<Vec3>) -> Option<String> {
+    pub fn context(&self, world: &VoxelWorld, ledger: &Ledger, player: Option<Vec3>, view: Option<Vec3>) -> Option<String> {
         let area = self.target()?;
         let size = area.size_m();
         let mut out = format!(
             "Selected area: {:.1} × {:.1} m (x 0..{:.1}, z 0..{:.1}). x runs along world east, z along world south.\n",
             size.x, size.y, size.x, size.y
+        );
+        let _ = writeln!(
+            out,
+            "{}. Changes reaching past the area into someone else's parcel are cut off there.",
+            land_summary(ledger, area)
         );
         out.push_str(&sample(world, area, Vec2::ZERO, size, 16));
         if let Some(p) = player {
@@ -211,10 +192,67 @@ fn axis(v: Vec2) -> &'static str {
     }
 }
 
-fn compile_in(world: &VoxelWorld, spec: &TerrainSpec, area: Area) -> Result<TerrainEdit, Vec<String>> {
-    let columns = Columns::read(area, |x, z, out| world.column(x, z, out))
-        .ok_or_else(|| vec!["part of the area isn't loaded; the player needs to be closer".to_string()])?;
-    sculpt::compile(spec, area, world.terrain, columns)
+/// Why a terrain change can't be previewed.
+pub enum PreviewError {
+    /// The spec breaks the rules or limits; the agent may be able to fix it.
+    Invalid(Vec<String>),
+    /// The land rules don't allow changing this area; no spec would help.
+    Refused(String),
+}
+
+/// Compiles `spec` against the loaded ground and keeps the edits the land rules allow,
+/// exactly as replaying the change log will.
+fn prepare(world: &VoxelWorld, ledger: &Ledger, spec: &TerrainSpec, area: Area) -> Result<TerrainEdit, PreviewError> {
+    let refused = ledger.check(&area_parcels(area)).err();
+    if let Some(why) = refused {
+        return Err(PreviewError::Refused(why));
+    }
+    let columns = Columns::read(area, |x, z, out| world.column(x, z, out)).ok_or_else(|| {
+        PreviewError::Invalid(vec!["part of the area isn't loaded; the player needs to be closer".to_string()])
+    })?;
+    let mut edit = sculpt::compile(spec, area, world.terrain, columns).map_err(PreviewError::Invalid)?;
+    let (_, edits) =
+        ledger.land.authorize_terrain(&ledger.profile.id, area, edit.edits).map_err(PreviewError::Refused)?;
+    edit.stats.changed = edits.len();
+    edit.edits = edits;
+    ledger
+        .budgets
+        .check(&terrain_footprint(&ledger.profile.id, edit.stats.changed), None)
+        .map_err(PreviewError::Refused)?;
+    Ok(edit)
+}
+
+/// Who may change the parcels under `area`, in a few words for the panel and the agent.
+pub fn land_summary(ledger: &Ledger, area: Area) -> String {
+    let (mut yours, mut free, mut spawn) = (0, 0, 0);
+    let mut others: Vec<String> = Vec::new();
+    for parcel in area_parcels(area) {
+        match ledger.land.access(&ledger.profile.id, parcel) {
+            Access::Yours | Access::Shared => yours += 1,
+            Access::Free => free += 1,
+            Access::Spawn => spawn += 1,
+            Access::Taken { owner_name } => {
+                if !others.contains(&owner_name) {
+                    others.push(owner_name);
+                }
+            }
+        }
+    }
+    let mut parts = Vec::new();
+    if yours > 0 {
+        parts.push(format!("{yours} yours"));
+    }
+    if free > 0 {
+        parts.push(format!("{free} unclaimed"));
+    }
+    if spawn > 0 {
+        parts.push(format!("{spawn} in the protected spawn"));
+    }
+    if !others.is_empty() {
+        parts.push(format!("owned by {}", others.join(", ")));
+    }
+    let admin = if ledger.land.is_admin(&ledger.profile.id) { " (you're an admin)" } else { "" };
+    format!("Parcels: {}{admin}", parts.join(", "))
 }
 
 fn apply(world: &mut VoxelWorld, edits: &[(IVec3, VoxelId)]) -> Vec<Before> {
@@ -313,16 +351,6 @@ fn surface_code(id: VoxelId) -> char {
         id if block::SAND.contains(&id) => 's',
         block::SNOW => 'n',
         _ => '?',
-    }
-}
-
-pub fn load_terrain_log(mut landscape: ResMut<Landscape>) {
-    let Ok(text) = std::fs::read_to_string(LOG_PATH) else {
-        return;
-    };
-    match serde_json::from_str(&text) {
-        Ok(log) => landscape.log = log,
-        Err(e) => error!("couldn't read {LOG_PATH}: {e}"),
     }
 }
 
@@ -596,4 +624,86 @@ pub fn describe_stats(area: Area, s: &SculptStats) -> String {
         parts.push(format!("{:.0} m² of new water", s.water_columns as f32 * VOXEL_SIZE * VOXEL_SIZE));
     }
     parts.join(" · ")
+}
+
+/// P shows who owns the land around the hero.
+#[derive(Resource, Default)]
+pub struct ParcelOverlay {
+    pub visible: bool,
+}
+
+/// How far around the hero the overlay reaches, in parcels.
+const OVERLAY_RADIUS: i32 = 5;
+
+/// The overlay's outlines, rebuilt when the hero crosses into another parcel or the
+/// land changes.
+#[derive(Default)]
+pub struct ParcelOutlines {
+    key: Option<(IVec2, u64)>,
+    lines: Vec<(Access, Vec<Vec3>)>,
+}
+
+pub fn draw_parcels(
+    overlay: Res<ParcelOverlay>,
+    ledger: Res<Ledger>,
+    world: Res<VoxelWorld>,
+    players: Query<&Transform, With<crate::player::Player>>,
+    mut cache: Local<ParcelOutlines>,
+    mut bold: Gizmos<AreaGizmos>,
+) {
+    let Ok(hero) = players.single() else {
+        return;
+    };
+    if !overlay.visible {
+        cache.key = None;
+        return;
+    }
+    let here = cubelark_rules::land::parcel_of(VoxelWorld::voxel_at(hero.translation).xz());
+    if cache.key != Some((here, ledger.version)) {
+        cache.key = Some((here, ledger.version));
+        cache.lines.clear();
+        let mut column = vec![AIR; WORLD_HEIGHT as usize];
+        let mut height = |c: IVec2| {
+            world.column(c.x, c.y, &mut column).then(|| {
+                let (g, w, _) = surface(&column);
+                (g.max(w) + 1) as f32 * VOXEL_SIZE + 0.1
+            })
+        };
+        for dz in -OVERLAY_RADIUS..=OVERLAY_RADIUS {
+            for dx in -OVERLAY_RADIUS..=OVERLAY_RADIUS {
+                let parcel = here + IVec2::new(dx, dz);
+                let access = ledger.land.access(&ledger.profile.id, parcel);
+                if access == Access::Free {
+                    continue;
+                }
+                // Inset by a voxel so neighbors' outlines don't overlap.
+                let (lo, hi) = (parcel * PARCEL + 1, parcel * PARCEL + PARCEL - 1);
+                let corners = [lo, IVec2::new(hi.x, lo.y), hi, IVec2::new(lo.x, hi.y), lo];
+                let mut points = Vec::new();
+                for edge in corners.windows(2) {
+                    let (a, b) = (edge[0], edge[1]);
+                    for s in (0..(b - a).abs().max_element()).step_by(2) {
+                        let c = a + (b - a).signum() * s;
+                        if let Some(y) = height(c) {
+                            points.push(Vec3::new(c.x as f32 + 0.5, 0.0, c.y as f32 + 0.5) * VOXEL_SIZE + Vec3::Y * y);
+                        }
+                    }
+                }
+                if let Some(&first) = points.first() {
+                    points.push(first);
+                }
+                cache.lines.push((access, points));
+            }
+        }
+    }
+    for (access, points) in &cache.lines {
+        let (r, g, b) = match access {
+            Access::Yours => (0.3, 1.0, 0.4),
+            Access::Shared => (0.2, 0.9, 0.9),
+            Access::Spawn => (0.45, 0.6, 1.0),
+            Access::Taken { .. } => (1.0, 0.35, 0.3),
+            Access::Free => continue,
+        };
+        bold.linestrip(points.iter().copied(), Color::LinearRgba(LinearRgba::rgb(r * 2.0, g * 2.0, b * 2.0)));
+    }
 }

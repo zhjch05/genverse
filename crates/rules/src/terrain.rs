@@ -1,7 +1,8 @@
 //! Deterministic terrain: every voxel is a pure function of its position and the seed,
 //! so chunks generate independently (and in parallel) without seams.
 
-use bevy::prelude::*;
+use bevy_color::prelude::*;
+use bevy_math::prelude::*;
 
 use crate::voxel::{
     AIR, Palette, PaletteEntry, Surface, VoxelGrid, VoxelId,

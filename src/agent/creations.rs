@@ -1,31 +1,20 @@
-//! Agent-made objects: a draft preview, placed creations, selection, editing, undo,
-//! and saving to disk.
+//! Agent-made objects: a draft preview, placed creations, selection, editing, and
+//! undo. Every change is recorded in the world's change log ([`Ledger`]).
 
 use std::f32::consts::{FRAC_PI_2, PI};
 
 use bevy::prelude::*;
-use serde::{Deserialize, Serialize};
+pub use cubelark_rules::log::BuildState as SavedCreation;
+use cubelark_rules::{
+    budget::{Footprint, Usage},
+    log::{Action, parcels_of},
+};
 
 use super::spec::{BuildSpec, BuildStats, VOXEL_SIZE, compile};
 use crate::{
-    voxel::{DepthBias, VoxelModel, VoxelModelAsset},
-    world::{SolidModel, VoxelWorld, terrain::is_solid},
+    voxel::{DepthBias, ModelData, VoxelModel},
+    world::{SolidModel, VoxelWorld, ledger::Ledger, terrain::is_solid},
 };
-
-const SAVE_PATH: &str = "saves/creations.json";
-
-/// What gets written to disk: the spec (not voxels), so saves stay small and are
-/// rebuilt with the current rules on load.
-#[derive(Clone, Serialize, Deserialize)]
-pub struct SavedCreation {
-    pub id: u64,
-    pub name: String,
-    pub prompt: String,
-    pub provider: String,
-    pub position: [f32; 3],
-    pub yaw: f32,
-    pub spec: BuildSpec,
-}
 
 pub struct Draft {
     pub entity: Entity,
@@ -39,9 +28,14 @@ pub struct Draft {
     pub lift: f32,
     /// Set while the draft overlaps the hero; it can't be placed there.
     pub blocked: bool,
+    /// Why the land rules don't allow it where it stands, if they don't.
+    pub denied: Option<String>,
     /// Following drafts stick to the cursor; pinned ones (revisions of a placed build)
     /// stay put until picked up.
     pub follow: bool,
+    /// The agent designed this version (rather than a copy or a move), so placing it
+    /// is recorded as the agent's change.
+    pub by_agent: bool,
 }
 
 #[derive(Resource, Default)]
@@ -54,14 +48,14 @@ pub struct Creations {
     next_id: u64,
 }
 
-/// One undoable change to the placed builds.
+/// One undoable change, with the id of its entry in the change log.
 enum Change {
-    Placed(u64),
-    Deleted(SavedCreation),
+    Placed { build: u64, change: u64 },
+    Deleted { before: SavedCreation, change: u64 },
     /// A build was moved or revised; holds how it was before.
-    Replaced(SavedCreation),
-    /// A kept terrain change, undone by the landscape (by id).
-    Terrain(u64),
+    Replaced { before: SavedCreation, change: u64 },
+    /// A kept terrain change, undone by the landscape.
+    Terrain { change: u64 },
 }
 
 /// What [`Creations::undo`] did, or left for the caller to do.
@@ -80,13 +74,13 @@ pub struct Creation {
 pub struct DraftMarker;
 
 /// Spawns a placed (solid) creation.
-fn spawn_placed(commands: &mut Commands, model: &VoxelModelAsset, saved: &SavedCreation) -> Entity {
+fn spawn_placed(commands: &mut Commands, model: &ModelData, saved: &SavedCreation) -> Entity {
     let entity = spawn(commands, model, &saved.name, saved.position.into(), saved.yaw);
     commands.entity(entity).insert(SolidModel);
     entity
 }
 
-fn spawn(commands: &mut Commands, model: &VoxelModelAsset, name: &str, position: Vec3, yaw: f32) -> Entity {
+fn spawn(commands: &mut Commands, model: &ModelData, name: &str, position: Vec3, yaw: f32) -> Entity {
     let size = model.grid.size().as_vec3() * VOXEL_SIZE;
     commands
         .spawn((
@@ -128,7 +122,7 @@ impl Creations {
     pub fn set_draft(
         &mut self,
         commands: &mut Commands,
-        model: &VoxelModelAsset,
+        model: &ModelData,
         draft: (BuildSpec, BuildStats, String, String),
         at: (Vec3, f32),
     ) {
@@ -139,7 +133,7 @@ impl Creations {
         let (spec, stats, prompt, provider) = draft;
         let entity = spawn(commands, model, &spec.name, at.0, at.1);
         commands.entity(entity).insert(DraftMarker);
-        self.draft = Some(Draft { entity, spec, stats, prompt, provider, replaces, lift, blocked: false, follow });
+        self.draft = Some(Draft { entity, spec, stats, prompt, provider, replaces, lift, blocked: false, denied: None, follow, by_agent: true });
     }
 
     /// Drops the draft; if it was an edit, the original build comes back unchanged.
@@ -178,20 +172,46 @@ impl Creations {
             replaces: Some(saved),
             lift: 0.0,
             blocked: false,
+            denied: None,
             follow,
+            by_agent: false,
         });
         Some(name)
     }
 
-    pub fn delete_selected(&mut self, commands: &mut Commands) -> Option<String> {
-        let entity = self.selected.take()?;
-        let index = self.placed.iter().position(|(e, _)| *e == entity)?;
+    /// Removes the selected build if the land rules allow it; returns its name, or why not.
+    pub fn delete_selected(&mut self, commands: &mut Commands, ledger: &mut Ledger) -> Result<String, String> {
+        let entity = self.selected.ok_or("nothing is selected")?;
+        let index = self.placed.iter().position(|(e, _)| *e == entity).ok_or("nothing is selected")?;
+        ledger.check(&parcels_of(&self.placed[index].1)).map_err(|why| format!("Can't delete it: {why}."))?;
+        self.selected = None;
         let (_, saved) = self.placed.remove(index);
         commands.entity(entity).despawn();
         let name = saved.name.clone();
-        self.history.push(Change::Deleted(saved));
-        self.save();
-        Some(name)
+        let change = ledger.record(None, None, Action::RemoveBuild { build: saved.build });
+        self.history.push(Change::Deleted { before: saved, change });
+        Ok(name)
+    }
+
+    /// Whether the land rules allow the draft at `transform` (a moved or revised build
+    /// also needs rights where it stood).
+    pub fn check_draft(&self, transform: &Transform, ledger: &Ledger) -> Option<String> {
+        let draft = self.draft.as_ref()?;
+        let yaw = transform.rotation.to_euler(EulerRot::YXZ).0;
+        let here = cubelark_rules::land::build_parcels(transform.translation, yaw, &draft.spec.size);
+        let mut parcels = here.clone();
+        parcels.extend(draft.replaces.as_ref().map(parcels_of).unwrap_or_default());
+        if let Err(why) = ledger.check(&parcels) {
+            return Some(why);
+        }
+        let old = draft.replaces.as_ref().and_then(|r| ledger.footprints.get(&r.build));
+        let s = draft.stats;
+        let new = Footprint {
+            owner: old.map_or(ledger.profile.id.clone(), |o| o.owner.clone()),
+            parcels: here,
+            usage: Usage { builds: 1, voxels: s.voxels, faces: s.faces, glow: s.glow, terrain: 0 },
+        };
+        ledger.budgets.check(&new, old).err()
     }
 
     /// Starts a new following draft that copies a placed build (Minecraft's pick block).
@@ -214,14 +234,17 @@ impl Creations {
             replaces: None,
             lift: 0.0,
             blocked: false,
+            denied: None,
             follow: true,
+            by_agent: false,
         });
         Some(saved.name)
     }
 
-    /// Records a kept terrain change, so Undo reverts changes in the order they were made.
-    pub fn record_terrain(&mut self, id: u64) {
-        self.history.push(Change::Terrain(id));
+    /// Records a kept terrain change (its change-log id), so Undo reverts changes in
+    /// the order they were made.
+    pub fn record_terrain(&mut self, change: u64) {
+        self.history.push(Change::Terrain { change });
     }
 
     pub fn can_undo(&self) -> bool {
@@ -233,70 +256,86 @@ impl Creations {
         self.placed.iter().find(|(e, _)| *e == entity).map(|(_, c)| c)
     }
 
-    /// Makes the draft permanent where it stands (`transform` is the draft's).
-    pub fn place_draft(&mut self, commands: &mut Commands, transform: &Transform) -> Option<String> {
-        if self.draft.as_ref()?.blocked {
-            return None;
+    /// Makes the draft permanent where it stands (`transform` is the draft's). Returns
+    /// its name, or why it can't be placed there.
+    pub fn place_draft(&mut self, commands: &mut Commands, transform: &Transform, ledger: &mut Ledger) -> Result<String, String> {
+        let draft = self.draft.as_ref().ok_or("there's no draft")?;
+        if draft.blocked {
+            return Err("Can't place it on top of you; point somewhere else.".into());
         }
-        let draft = self.draft.take()?;
+        if let Some(why) = self.check_draft(transform, ledger) {
+            return Err(format!("Can't place it here: {why}."));
+        }
+        let draft = self.draft.take().expect("checked above");
         commands.entity(draft.entity).remove::<DraftMarker>().insert(SolidModel);
-        self.next_id = self.next_id.max(self.placed.iter().map(|(_, c)| c.id + 1).max().unwrap_or(0));
+        let known = self.placed.iter().map(|(_, c)| c.build).chain(ledger.builds.keys().copied());
+        self.next_id = self.next_id.max(known.max().map_or(1, |b| b + 1));
         // An edit keeps its original id.
-        let id = draft.replaces.as_ref().map(|r| r.id).unwrap_or_else(|| {
+        let build = draft.replaces.as_ref().map(|r| r.build).unwrap_or_else(|| {
             self.next_id += 1;
             self.next_id - 1
         });
         let saved = SavedCreation {
-            id,
+            build,
             name: draft.spec.name.clone(),
-            prompt: draft.prompt,
-            provider: draft.provider,
+            prompt: draft.prompt.clone(),
+            provider: draft.provider.clone(),
             position: transform.translation.into(),
             yaw: transform.rotation.to_euler(EulerRot::YXZ).0,
             spec: draft.spec,
         };
         let name = saved.name.clone();
+        let (agent, prompt) = match draft.by_agent {
+            true => (Some(draft.provider.as_str()), Some(draft.prompt.as_str())),
+            false => (None, None),
+        };
+        let action = match draft.replaces {
+            Some(_) => Action::UpdateBuild(saved.clone()),
+            None => Action::PlaceBuild(saved.clone()),
+        };
+        let change = ledger.record(agent, prompt, action);
         self.history.push(match draft.replaces {
-            Some(before) => Change::Replaced(before),
-            None => Change::Placed(id),
+            Some(before) => Change::Replaced { before, change },
+            None => Change::Placed { build, change },
         });
         self.placed.push((draft.entity, saved));
         // Stay selected so a follow-up chat message ("make it blue") applies to it.
         self.selected = Some(draft.entity);
-        self.save();
-        Some(name)
+        Ok(name)
     }
 
     /// Reverts the latest change; returns a message describing what happened.
-    pub fn undo(&mut self, commands: &mut Commands) -> Option<Undone> {
+    /// Terrain changes are left to the caller (the landscape puts the voxels back).
+    pub fn undo(&mut self, commands: &mut Commands, ledger: &mut Ledger) -> Option<Undone> {
         if self.draft.is_some() {
             return None;
         }
-        let change = self.history.pop()?;
-        let message = match change {
-            Change::Placed(id) => {
-                let (_, saved) = self.take_placed(commands, id)?;
+        let message = match self.history.pop()? {
+            Change::Placed { build, change } => {
+                let (_, saved) = self.take_placed(commands, build)?;
+                ledger.revert(change);
                 format!("Removed \"{}\".", saved.name)
             }
-            Change::Deleted(saved) => {
-                let name = saved.name.clone();
-                self.restore(commands, saved)?;
-                format!("Brought back \"{name}\".")
-            }
-            Change::Replaced(before) => {
-                self.take_placed(commands, before.id)?;
+            Change::Deleted { before, change } => {
                 let name = before.name.clone();
                 self.restore(commands, before)?;
+                ledger.revert(change);
+                format!("Brought back \"{name}\".")
+            }
+            Change::Replaced { before, change } => {
+                self.take_placed(commands, before.build)?;
+                let name = before.name.clone();
+                self.restore(commands, before)?;
+                ledger.revert(change);
                 format!("Put \"{name}\" back how it was.")
             }
-            Change::Terrain(id) => return Some(Undone::Terrain(id)),
+            Change::Terrain { change } => return Some(Undone::Terrain(change)),
         };
-        self.save();
         Some(Undone::Message(message))
     }
 
-    fn take_placed(&mut self, commands: &mut Commands, id: u64) -> Option<(Entity, SavedCreation)> {
-        let index = self.placed.iter().position(|(_, c)| c.id == id)?;
+    fn take_placed(&mut self, commands: &mut Commands, build: u64) -> Option<(Entity, SavedCreation)> {
+        let index = self.placed.iter().position(|(_, c)| c.build == build)?;
         let (entity, saved) = self.placed.remove(index);
         if self.selected == Some(entity) {
             self.selected = None;
@@ -311,37 +350,16 @@ impl Creations {
         self.placed.push((entity, saved));
         Some(entity)
     }
-
-    fn save(&self) {
-        // A build being edited stays saved as it was until the edit is placed.
-        let editing = self.draft.as_ref().and_then(|d| d.replaces.as_ref());
-        let list: Vec<_> = self.placed.iter().map(|(_, c)| c).chain(editing).collect();
-        let result = std::fs::create_dir_all("saves").and_then(|_| {
-            std::fs::write(SAVE_PATH, serde_json::to_string_pretty(&list).unwrap_or_default())
-        });
-        if let Err(e) = result {
-            error!("couldn't save creations to {SAVE_PATH}: {e}");
-        }
-    }
 }
 
-pub fn load_creations(mut commands: Commands, mut creations: ResMut<Creations>) {
-    let Ok(text) = std::fs::read_to_string(SAVE_PATH) else {
-        return;
-    };
-    let saved: Vec<SavedCreation> = match serde_json::from_str(&text) {
-        Ok(saved) => saved,
-        Err(e) => {
-            error!("couldn't read {SAVE_PATH}: {e}");
-            return;
-        }
-    };
-    for c in saved {
+/// Spawns the builds the change log describes.
+pub fn load_creations(mut commands: Commands, mut creations: ResMut<Creations>, ledger: Res<Ledger>) {
+    for c in ledger.builds.values() {
         // Saved specs are re-validated, so tightened limits apply to old builds too.
         match compile(&c.spec) {
             Ok(build) => {
-                let entity = spawn_placed(&mut commands, &build.model, &c);
-                creations.placed.push((entity, c));
+                let entity = spawn_placed(&mut commands, &build.model, c);
+                creations.placed.push((entity, c.clone()));
             }
             Err(errors) => warn!("skipping saved creation {:?}: {}", c.name, errors.join("; ")),
         }
@@ -356,7 +374,7 @@ pub fn outline_creations(
     query: Query<(Entity, &Transform, &Creation, Has<DraftMarker>)>,
 ) {
     let pulse = 0.6 + 0.4 * (time.elapsed_secs() * 3.0).sin();
-    let blocked = creations.draft.as_ref().is_some_and(|d| d.blocked);
+    let blocked = creations.draft.as_ref().is_some_and(|d| d.blocked || d.denied.is_some());
     for (entity, transform, creation, is_draft) in &query {
         let color = if is_draft && blocked {
             Color::srgba(1.0, 0.3, 0.25, pulse)

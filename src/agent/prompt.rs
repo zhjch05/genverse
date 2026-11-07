@@ -1,7 +1,7 @@
 //! What the agent is told: the voxel building rules, plus the live context of the request.
 
 use super::spec::{BuildSpec, limits};
-use crate::world::sculpt::{TerrainSpec, limits as terrain_limits};
+use cubelark_rules::sculpt::{TerrainSpec, limits as terrain_limits};
 
 pub fn system(with_tools: bool) -> String {
     let mut out = format!(

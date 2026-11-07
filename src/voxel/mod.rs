@@ -8,19 +8,35 @@
 //! Gameplay code can mutate `VoxelModel::grid` directly and the change shows up next frame.
 
 pub mod asset;
-mod grid;
 pub mod mesher;
-pub mod noise;
-mod palette;
 pub mod query;
 
 use std::sync::Arc;
 
 use bevy::{light::NotShadowCaster, platform::collections::HashSet, prelude::*};
 
-pub use asset::{ModelLight, ModelPart, VoxelModelAsset};
-pub use grid::{AIR, VoxelGrid, VoxelId};
-pub use palette::{Palette, PaletteEntry, Surface};
+pub use asset::VoxelModelAsset;
+pub use cubelark_rules::voxel::{AIR, ModelData, ModelLight, ModelPart, Palette, Surface, VoxelGrid, VoxelId, noise};
+
+/// How the game renders a [`Surface`]: one [`StandardMaterial`] per surface, with
+/// voxel colors from vertex colors.
+pub trait SurfaceMaterial {
+    fn to_material(&self) -> StandardMaterial;
+}
+
+impl SurfaceMaterial for Surface {
+    fn to_material(&self) -> StandardMaterial {
+        StandardMaterial {
+            base_color: Color::srgba(1.0, 1.0, 1.0, self.alpha),
+            perceptual_roughness: self.roughness,
+            metallic: self.metallic,
+            reflectance: self.reflectance,
+            emissive: self.emissive,
+            alpha_mode: if self.is_transparent() { AlphaMode::Blend } else { AlphaMode::Opaque },
+            ..default()
+        }
+    }
+}
 
 pub struct VoxelPlugin;
 
@@ -52,6 +68,12 @@ pub struct VoxelModel {
 
 impl From<&VoxelModelAsset> for VoxelModel {
     fn from(a: &VoxelModelAsset) -> Self {
+        Self::from(&a.0)
+    }
+}
+
+impl From<&ModelData> for VoxelModel {
+    fn from(a: &ModelData) -> Self {
         Self {
             grid: a.grid.clone(),
             palette: a.palette.clone(),
@@ -64,7 +86,7 @@ impl From<&VoxelModelAsset> for VoxelModel {
 
 impl VoxelModel {
     /// Cuts `part` out of `asset` as a standalone model pivoting around the part's joint.
-    pub fn from_part(asset: &VoxelModelAsset, part: &ModelPart) -> Self {
+    pub fn from_part(asset: &ModelData, part: &ModelPart) -> Self {
         let size = (part.max - part.min).max(IVec3::ZERO);
         let mut grid = VoxelGrid::new(size.as_uvec3());
         for z in 0..size.z {

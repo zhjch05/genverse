@@ -8,12 +8,11 @@
 //! Frames: an [`Area`] is a rectangle of world voxel columns. Operations use meters in
 //! the area's frame: x and z run from its min corner (world +X and +Z). Levels are
 //! meters relative to sea level (the sea surface is 0).
-#![cfg_attr(target_arch = "wasm32", allow(dead_code))]
 
-use bevy::prelude::*;
+use bevy_math::prelude::*;
 use serde::{Deserialize, Serialize};
 
-use super::terrain::{SEA_LEVEL, Terrain, VOXEL_SIZE, WORLD_HEIGHT, block, is_ground, pick};
+use crate::terrain::{SEA_LEVEL, Terrain, VOXEL_SIZE, WORLD_HEIGHT, block, is_ground, pick};
 use crate::voxel::{
     AIR, VoxelGrid, VoxelId,
     noise::{hash01, value},
@@ -102,14 +101,14 @@ pub fn surface(column: &[VoxelId]) -> (i32, i32, VoxelId) {
     (ground as i32, water as i32, column[ground])
 }
 
-#[derive(Clone, Debug, Serialize, Deserialize)]
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 pub struct TerrainSpec {
     pub name: String,
     pub ops: Vec<TerrainOp>,
 }
 
 /// One operation. Every field is present (strict structured output); unused ones are null.
-#[derive(Clone, Debug, Serialize, Deserialize)]
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 pub struct TerrainOp {
     pub kind: String,
     /// Where it applies; null means the whole selected area.
@@ -132,7 +131,7 @@ pub struct TerrainOp {
     pub density: Option<f64>,
 }
 
-#[derive(Clone, Debug, Serialize, Deserialize)]
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 pub struct OpArea {
     /// "rect" or "ellipse" (inscribed in the rect).
     pub shape: String,
@@ -170,11 +169,16 @@ pub struct Columns {
 }
 
 impl Columns {
+    /// The world columns [`read`](Self::read) asks for: `area` plus a margin, as
+    /// `(min, size)`.
+    pub fn bounds(area: Area) -> (IVec2, IVec2) {
+        (area.min() - MARGIN, area.size() + 2 * MARGIN)
+    }
+
     /// Reads the columns under `area`. `read(x, z, out)` fills one world column
     /// (`y = 0..WORLD_HEIGHT`) and returns false if it isn't loaded.
     pub fn read(area: Area, mut read: impl FnMut(i32, i32, &mut [VoxelId]) -> bool) -> Option<Self> {
-        let min = area.min() - MARGIN;
-        let size = area.size() + 2 * MARGIN;
+        let (min, size) = Self::bounds(area);
         let n = (size.x * size.y) as usize;
         let mut vox = vec![AIR; n * H];
         for i in 0..n {
@@ -316,7 +320,7 @@ impl Columns {
             return;
         }
         const NEIGHBORS: [IVec3; 6] = [IVec3::X, IVec3::NEG_X, IVec3::Y, IVec3::NEG_Y, IVec3::Z, IVec3::NEG_Z];
-        let mut seen = bevy::platform::collections::HashSet::new();
+        let mut seen = std::collections::HashSet::new();
         let mut stack = seeds;
         let mut trunk = Vec::new();
         while let Some(p) = stack.pop() {
