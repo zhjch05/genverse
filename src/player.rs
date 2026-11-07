@@ -109,13 +109,18 @@ impl Default for FollowCamera {
 }
 
 fn spawn_player(mut commands: Commands, asset_server: Res<AssetServer>, world: Res<VoxelWorld>) {
-    // Walk outward from the origin to the first dry column.
+    // Walk outward from the origin to the first dry column. `CUBELARK_SPAWN=x,z` (meters)
+    // starts elsewhere, e.g. to keep test players apart.
     let terrain = world.terrain;
-    let (mut x, mut z) = (0, 0);
+    let origin = std::env::var("CUBELARK_SPAWN")
+        .ok()
+        .and_then(|v| v.split_once(',').and_then(|(x, z)| Some((x.trim().parse::<f32>().ok()?, z.trim().parse::<f32>().ok()?))))
+        .map_or(IVec2::ZERO, |(x, z)| (Vec2::new(x, z) / VOXEL_SIZE).as_ivec2());
+    let (mut x, mut z) = (origin.x, origin.y);
     for i in 0..400 {
         let angle = i as f32 * 2.4;
         let r = (i as f32).sqrt() * 6.0;
-        (x, z) = ((angle.cos() * r) as i32, (angle.sin() * r) as i32);
+        (x, z) = (origin.x + (angle.cos() * r) as i32, origin.y + (angle.sin() * r) as i32);
         if terrain.height(x, z) > SEA_LEVEL + 2 {
             break;
         }

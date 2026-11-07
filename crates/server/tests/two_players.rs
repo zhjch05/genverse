@@ -101,11 +101,24 @@ fn two_players_share_one_ordered_world() {
     assert!(matches!(ada.next(), ToClient::Committed { request: Some(8), .. }));
     assert!(matches!(bo.next(), ToClient::Committed { .. }));
 
+    // Presence goes to others, never to the sender, and isn't kept.
+    let here = cubelark_net::Presence { position: [1.0, 2.0, 3.0], status: Some("designing".into()), ..Default::default() };
+    ada.client.send(ToServer::Presence(here.clone()));
+    match bo.next() {
+        ToClient::Presence { name, presence, .. } => assert_eq!((name.as_str(), presence), ("Ada", here)),
+        other => panic!("{other:?}"),
+    }
+    // A newcomer hears who's here; when someone leaves, others hear that too.
+    let cy = Player::join(&addr, 3, "Cy");
+    assert!(matches!(cy.next(), ToClient::Presence { name, .. } if name == "Ada"));
+    drop(cy);
+    assert!(matches!(ada.next(), ToClient::Gone { .. }));
+
     // A restarted server has the same log.
     drop((ada, bo));
     let again = start(ServerConfig { data_dir: dir.clone(), port: 0, seed: 1337 }).unwrap();
-    let cy = Player::join(&again.addr.to_string(), 3, "Cy");
-    drop(cy);
+    let dee = Player::join(&again.addr.to_string(), 4, "Dee");
+    drop(dee);
     let saved: cubelark_rules::log::WorldLog =
         serde_json::from_str(&std::fs::read_to_string(dir.join("world.json")).unwrap()).unwrap();
     assert_eq!(saved.changes.len(), 2);

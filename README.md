@@ -121,8 +121,14 @@ join a new world is its admin.
 - The server is plain Rust with no game engine (`crates/server`); the protocol is JSON, one
   message per line, over TCP (`crates/net`). Login is a signed challenge.
 - Online, your local world and saves aren't touched.
-- Not yet: seeing other players (milestone 3), history browsing beyond `/history`, chunk
-  checks, snapshots for long-lived worlds (milestone 4), and encryption (TLS).
+- **You see each other**, like Figma's live cursors: other players appear as heroes with a
+  name tag in their own color, a ring at their feet, their selected area or build outlined,
+  a ghost of the build they're drafting, a pulsing outline while they preview a land change,
+  and "Claude Code is designing…" while their agent works. Presence is sent when it changes
+  (at most ten times a second) and never stored.
+- Rest the cursor on a build or on reshaped ground to see who changed it last (offline too).
+- Not yet: history browsing beyond `/history`, chunk checks, snapshots for long-lived worlds
+  (milestone 4), and encryption (TLS).
 
 The web build is on hold while multiplayer is built (it may return as watch-only). It still
 compiles but isn't tested.
@@ -186,7 +192,7 @@ can bump into and stand on them) and recorded in the world's change log.
 | Hero | `src/player.rs` | Builds the character from model parts, kinematic movement with voxel collision and step-up, walk animation, follow camera |
 | Voxel rendering | `src/voxel/` | Materials, mesher with baked AO, `.vox.ron` asset loader, picking |
 | Scene | `src/scene.rs` | Sky, sun, fog, post-processing |
-| Builder | `src/agent/` | egui chat, CLI runner, drafts and placed builds, area selection, land previews and the land overlay (`landscape.rs`), chat commands (`commands.rs`), applying what the server sends (`online.rs`) (desktop only) |
+| Builder | `src/agent/` | egui chat, CLI runner, drafts and placed builds, area selection, land previews and the land overlay (`landscape.rs`), chat commands (`commands.rs`), applying what the server sends (`online.rs`), other players (`presence.rs`) (desktop only) |
 
 ## Voxel models (`assets/**/*.vox.ron`)
 

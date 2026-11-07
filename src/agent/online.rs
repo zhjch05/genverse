@@ -13,7 +13,7 @@ use bevy::prelude::*;
 use cubelark_net::{ClientEvent, ToClient};
 use cubelark_rules::log::{Action, Change, replay};
 
-use super::{Chat, Role, creations::Creations, landscape::Landscape};
+use super::{Chat, Role, creations::Creations, landscape::Landscape, presence::Peers};
 use crate::world::{VoxelWorld, ledger::Ledger};
 
 /// Joins the server at `addr`; returns what to tell the player.
@@ -94,9 +94,12 @@ pub fn sync_online(
     mut creations: ResMut<Creations>,
     mut landscape: ResMut<Landscape>,
     mut chat: ResMut<Chat>,
+    mut peers: ResMut<Peers>,
+    assets: Res<AssetServer>,
 ) {
     let Some(online) = &ledger.online else {
         *retry_at = None;
+        peers.clear(&mut commands);
         return;
     };
     // Reconnect when it's time.
@@ -125,6 +128,7 @@ pub fn sync_online(
                 }
                 online.closed = Some(why);
                 *retry_at = Some(time.elapsed_secs() + backoff(online.attempts));
+                peers.clear(&mut commands);
             }
             ClientEvent::Refused(why) => {
                 chat.say(Role::System, format!("⚠ Can't play on this server: {why}"));
@@ -135,7 +139,12 @@ pub fn sync_online(
             }
             ClientEvent::Message(ToClient::Challenge { .. }) => {}
             ClientEvent::Message(ToClient::Bye { why }) => chat.say(Role::System, format!("⚠ The server says: {why}")),
+            ClientEvent::Message(ToClient::Presence { player, name, presence }) => {
+                peers.seen(&mut commands, &assets, player, name, presence);
+            }
+            ClientEvent::Message(ToClient::Gone { player }) => peers.gone(&mut commands, &player),
             ClientEvent::Message(ToClient::Welcome { log }) => {
+                peers.clear(&mut commands);
                 if log.seed != world.terrain.seed {
                     chat.say(Role::System, "⚠ This server's world has a different seed; can't join it.");
                     continue;

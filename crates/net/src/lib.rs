@@ -20,11 +20,14 @@ use std::{
     time::Duration,
 };
 
-use cubelark_rules::log::{Action, Change, Provenance, RULES_VERSION, WorldLog};
+use cubelark_rules::{
+    log::{Action, Change, Provenance, RULES_VERSION, WorldLog},
+    sculpt::Area,
+};
 use serde::{Deserialize, Serialize};
 
 /// Bumped when the protocol changes incompatibly.
-pub const VERSION: u32 = 2;
+pub const VERSION: u32 = 3;
 pub const DEFAULT_PORT: u16 = 7878;
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
@@ -37,6 +40,27 @@ pub enum ToServer {
     /// A change the player wants made. `request` is the client's own number for it,
     /// echoed in the answer; `sig` is the player's signature of `by` and `action`.
     Propose { request: u64, by: Provenance, action: Action, sig: String },
+    /// Where the player is and what they're doing, for others to see. Not kept.
+    Presence(Presence),
+}
+
+/// What others see of a player, live: like Figma's cursors and selections. Sent when it
+/// changes, and never stored.
+#[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
+pub struct Presence {
+    /// Feet, in world meters.
+    pub position: [f32; 3],
+    pub yaw: f32,
+    /// The land they've selected, or are previewing a change to.
+    pub area: Option<Area>,
+    /// They're previewing a land change in `area` (not kept yet).
+    pub previewing: bool,
+    /// The ghost of a build draft: bottom-center, turn, and size in meters.
+    pub draft: Option<([f32; 3], f32, [f32; 3])>,
+    /// The placed build they've selected.
+    pub selected: Option<u64>,
+    /// E.g. "Claude Code is designing…".
+    pub status: Option<String>,
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
@@ -53,6 +77,10 @@ pub enum ToClient {
     Rejected { request: u64, why: String },
     /// The server is closing this connection.
     Bye { why: String },
+    /// Another player's presence (sent when it changes, and to newcomers).
+    Presence { player: String, name: String, presence: Presence },
+    /// A player left.
+    Gone { player: String },
 }
 
 /// What a player signs to log in.
@@ -90,6 +118,14 @@ pub enum ClientEvent {
 pub struct Client {
     events: Mutex<Receiver<ClientEvent>>,
     outgoing: Sender<ToServer>,
+    /// To hang up when the client is dropped (the reader thread holds the socket open).
+    socket: TcpStream,
+}
+
+impl Drop for Client {
+    fn drop(&mut self) {
+        let _ = self.socket.shutdown(std::net::Shutdown::Both);
+    }
 }
 
 impl Client {
@@ -104,6 +140,7 @@ impl Client {
         let stream = TcpStream::connect(addr).map_err(|e| format!("couldn't reach {addr}: {e}"))?;
         let _ = stream.set_nodelay(true);
         let mut writer = stream.try_clone().map_err(|e| e.to_string())?;
+        let socket = stream.try_clone().map_err(|e| e.to_string())?;
         let (events_tx, events) = mpsc::channel();
         let (outgoing, outgoing_rx) = mpsc::channel::<ToServer>();
 
@@ -161,7 +198,7 @@ impl Client {
                 }
             })
             .map_err(|e| e.to_string())?;
-        Ok(Self { events: Mutex::new(events), outgoing })
+        Ok(Self { events: Mutex::new(events), outgoing, socket })
     }
 
     pub fn send(&self, message: ToServer) {

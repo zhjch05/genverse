@@ -18,7 +18,7 @@ use std::{
     time::{SystemTime, UNIX_EPOCH},
 };
 
-use cubelark_net::{ToClient, ToServer, VERSION, hello_bytes, read_messages, write_message};
+use cubelark_net::{Presence, ToClient, ToServer, VERSION, hello_bytes, read_messages, write_message};
 use cubelark_rules::{
     identity::verify,
     log::{Action, Change, RULES_VERSION, Replay, WorldLog, replay, signing_bytes},
@@ -52,6 +52,8 @@ struct Conn {
     nonce: String,
     /// The player's id (public key) and name, once they've said hello.
     player: Option<(String, String)>,
+    /// What others see of them, once they've sent it.
+    presence: Option<Presence>,
 }
 
 struct World {
@@ -134,11 +136,12 @@ fn run(mut world: World, events: Receiver<Event>) {
     for event in events {
         match event {
             Event::Connected { conn, out, nonce } => {
-                world.conns.insert(conn, Conn { out, nonce, player: None });
+                world.conns.insert(conn, Conn { out, nonce, player: None, presence: None });
             }
             Event::Left { conn } => {
-                if let Some((_, name)) = world.conns.remove(&conn).and_then(|c| c.player) {
+                if let Some((player, name)) = world.conns.remove(&conn).and_then(|c| c.player) {
                     println!("{name} left");
+                    world.tell_others(conn, ToClient::Gone { player });
                 }
             }
             Event::Message { conn, message } => world.handle(conn, message),
@@ -172,6 +175,19 @@ impl World {
                     c.player = Some((player, name));
                 }
                 let _ = out.send(ToClient::Welcome { log: self.log.clone() });
+                // Who's here already.
+                for (other, c) in &self.conns {
+                    if let (true, Some((player, name)), Some(presence)) = (*other != conn, &c.player, &c.presence) {
+                        let presence = presence.clone();
+                        let _ = out.send(ToClient::Presence { player: player.clone(), name: name.clone(), presence });
+                    }
+                }
+            }
+            ToServer::Presence(presence) => {
+                let Some(c) = self.conns.get_mut(&conn) else { return };
+                let Some((player, name)) = c.player.clone() else { return };
+                c.presence = Some(presence.clone());
+                self.tell_others(conn, ToClient::Presence { player, name, presence });
             }
             ToServer::Propose { request, by, action, sig } => match self.commit(player, by, action, sig) {
                 Ok(change) => self.broadcast(change, conn, request),
@@ -226,6 +242,15 @@ impl World {
         self.save();
         println!("{} {}", change.by.player_name, change.action.describe());
         Ok(change)
+    }
+
+    /// Sends `message` to every logged-in player but the one on `from`.
+    fn tell_others(&self, from: u64, message: ToClient) {
+        for (conn, c) in &self.conns {
+            if *conn != from && c.player.is_some() {
+                let _ = c.out.send(message.clone());
+            }
+        }
     }
 
     fn broadcast(&self, change: Change, from: u64, request: u64) {

@@ -14,6 +14,7 @@ mod creations;
 mod landscape;
 mod mcp;
 mod online;
+mod presence;
 mod prompt;
 mod runner;
 use cubelark_rules::build as spec;
@@ -65,6 +66,7 @@ impl Plugin for AgentPlugin {
             .init_resource::<BuildSite>()
             .init_resource::<Landscape>()
             .init_resource::<ParcelOverlay>()
+            .init_resource::<presence::Peers>()
             .init_gizmo_group::<AreaGizmos>()
             .add_systems(Startup, (load_creations, configure_area_gizmos, start_tool_server))
             .add_systems(
@@ -72,12 +74,14 @@ impl Plugin for AgentPlugin {
                 (
                     block_game_input,
                     (online::sync_online, update_build_site, answer_tool_calls, poll_agent).chain(),
+                    (presence::send_presence, presence::move_avatars, presence::draw_peers),
                     auto_prompt,
                     (shortcuts, select_area, follow_cursor, check_clearance, click_in_world, outline_creations, draw_area, highlight_area, draw_parcels)
                         .chain(),
                 ),
             )
-            .add_systems(EguiPrimaryContextPass, (install_icon_font, chat_panel, shortcut_hints).chain());
+            .add_systems(EguiPrimaryContextPass, (install_icon_font, chat_panel, shortcut_hints).chain())
+            .add_systems(EguiPrimaryContextPass, (presence::name_tags, presence::hover_credit));
     }
 }
 
