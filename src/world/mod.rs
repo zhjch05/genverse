@@ -22,8 +22,7 @@ use bevy::{
 };
 
 use crate::voxel::{
-    SurfaceMaterial,
-    AIR, Palette, VoxelGrid, VoxelId,
+    AIR, Palette, SurfaceMaterial, VoxelGrid, VoxelId, VoxelMaterial,
     mesher::mesh_region,
     query::{Hit, march},
 };
@@ -42,7 +41,19 @@ pub struct WorldPlugin;
 impl Plugin for WorldPlugin {
     fn build(&self, app: &mut App) {
         app.add_systems(PreStartup, setup_world)
-            .add_systems(Update, (stream_chunks, finish_chunks, save_edits).chain());
+            .add_systems(Update, ((stream_chunks, finish_chunks, save_edits).chain(), apply_look));
+    }
+}
+
+/// Keeps every voxel material, including ones made since, drawn the way the world's
+/// rules say.
+fn apply_look(ledger: Res<Ledger>, mut materials: ResMut<Assets<VoxelMaterial>>) {
+    let bevel = ledger.rules.look.bevel;
+    let stale: Vec<_> = materials.iter().filter(|(_, m)| m.extension.width() != bevel).map(|(id, _)| id).collect();
+    for id in stale {
+        if let Some(mut material) = materials.get_mut(id) {
+            material.extension.set_width(bevel);
+        }
     }
 }
 
@@ -78,7 +89,7 @@ struct PendingChunk {
 pub struct VoxelWorld {
     pub terrain: Terrain,
     palette: Arc<Palette>,
-    materials: Vec<Handle<StandardMaterial>>,
+    materials: Vec<Handle<VoxelMaterial>>,
     loaded: HashMap<IVec3, LoadedChunk>,
     pending: HashMap<IVec3, PendingChunk>,
     /// Edited voxels, grouped by the chunk that owns them.
@@ -263,7 +274,7 @@ impl VoxelWorld {
     }
 }
 
-fn setup_world(mut commands: Commands, mut materials: ResMut<Assets<StandardMaterial>>) {
+fn setup_world(mut commands: Commands, mut materials: ResMut<Assets<VoxelMaterial>>) {
     let palette = terrain::palette();
     let materials = palette
         .surfaces

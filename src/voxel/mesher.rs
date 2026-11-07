@@ -4,6 +4,10 @@
 //! baked ambient occlusion from its three neighbors and a per-voxel color jitter; together
 //! with the renderer's SSAO and soft shadows this gives the smooth "HD voxel" look rather
 //! than flat, textured blocks.
+//!
+//! Each face also carries what `voxel_bevel.wesl` needs to round its outside edges: its
+//! position across the face (UV 0), which of its edges turn away from it (UV 1), and the
+//! direction across it (the tangent).
 
 use bevy::{
     asset::RenderAssetUsages,
@@ -52,6 +56,9 @@ struct MeshBuilder {
     positions: Vec<[f32; 3]>,
     normals: Vec<[f32; 3]>,
     colors: Vec<[f32; 4]>,
+    uvs: Vec<[f32; 2]>,
+    edges: Vec<[f32; 2]>,
+    tangents: Vec<[f32; 4]>,
     indices: Vec<u32>,
 }
 
@@ -61,8 +68,30 @@ impl MeshBuilder {
             .with_inserted_attribute(Mesh::ATTRIBUTE_POSITION, self.positions)
             .with_inserted_attribute(Mesh::ATTRIBUTE_NORMAL, self.normals)
             .with_inserted_attribute(Mesh::ATTRIBUTE_COLOR, self.colors)
+            .with_inserted_attribute(Mesh::ATTRIBUTE_UV_0, self.uvs)
+            .with_inserted_attribute(Mesh::ATTRIBUTE_UV_1, self.edges)
+            .with_inserted_attribute(Mesh::ATTRIBUTE_TANGENT, self.tangents)
             .with_inserted_indices(Indices::U32(self.indices))
     }
+}
+
+/// A face corner's position across the face, in the order of [`Face::corners`].
+const CORNER_UVS: [[f32; 2]; 4] = [[0.0, 0.0], [1.0, 0.0], [1.0, 1.0], [0.0, 1.0]];
+
+/// Which edges of the face of `id` at `p` are outside edges, where the voxel's side
+/// face beyond them shows too: bit 0 for u = 0, 1 for u = 1, 2 for v = 0, 3 for v = 1.
+/// Transparent voxels stay sharp, so water and glass meet flat.
+fn outside_edges(get: &impl Fn(IVec3) -> VoxelId, palette: &Palette, p: IVec3, id: VoxelId, face: &Face) -> u32 {
+    if !palette.is_opaque(id) {
+        return 0;
+    }
+    let u = face.corners[1] - face.corners[0];
+    let v = face.corners[3] - face.corners[0];
+    [-u, u, -v, v]
+        .iter()
+        .enumerate()
+        .filter(|(_, d)| face_visible(palette, id, get(p + **d)))
+        .fold(0, |bits, (i, _)| bits | 1 << i)
 }
 
 /// Number of unoccluded neighbors (0..=3) around one face corner.
@@ -122,13 +151,21 @@ pub fn mesh_region(
                         continue;
                     }
                     let light = face.corners.map(|c| corner_light(&get, palette, p, face, c));
+                    let edges = outside_edges(&get, palette, p, id, face) as f32;
+                    let u = (face.corners[1] - face.corners[0]).as_vec3();
+                    let v = (face.corners[3] - face.corners[0]).as_vec3();
+                    // Bevy's bitangent is `w * cross(normal, tangent)`; make it point along v.
+                    let w = face.normal.as_vec3().cross(u).dot(v).signum();
                     let start = b.positions.len() as u32;
-                    for (corner, l) in face.corners.iter().zip(light) {
+                    for ((corner, l), uv) in face.corners.iter().zip(light).zip(CORNER_UVS) {
                         let local = (p - min + *corner).as_vec3() * voxel_size;
                         let shade = AO_CURVE[l];
                         b.positions.push(local.into());
                         b.normals.push(face.normal.as_vec3().into());
                         b.colors.push([base.red * shade, base.green * shade, base.blue * shade, 1.0]);
+                        b.uvs.push(uv);
+                        b.edges.push([edges, 0.0]);
+                        b.tangents.push([u.x, u.y, u.z, w]);
                     }
                     // Split the quad along the brighter diagonal so AO
                     // gradients don't show a visible crease.

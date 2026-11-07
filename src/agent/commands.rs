@@ -7,14 +7,15 @@
 //! - `/host`, `/join <host[:port]>`, `/leave`: play together.
 //! - Admins: `/rollback <player>` undoes everything a player did; `/restore <id>` puts
 //!   the world back how it was right after change `id`; `/land open|parcels`;
-//!   `/rate <changes per minute> [voxels per 10 minutes]` or `/rate off`.
+//!   `/rate <changes per minute> [voxels per 10 minutes]` or `/rate off`; `/bevel <0-0.3>`
+//!   or `/bevel off` rounds voxels' edges for everyone.
 //!
 //! Anything that undoes changes other than your latest rebuilds the world from the log.
 
 use bevy::prelude::*;
 use cubelark_rules::{
     log::{Action, replay},
-    settings::{LandMode, RateLimits},
+    settings::{LandMode, Look, RateLimits},
 };
 
 use super::{creations::Creations, landscape::Landscape};
@@ -30,7 +31,7 @@ pub struct Context<'a, 'w, 's> {
 
 const HELP: &str = "Commands: /history [n] · /revert <id> · /rules · /verify · /host · /join <addr> · /leave · \
 admins: /rollback <player> · \
-/restore <id> · /land open|parcels · /rate <changes/min> [voxels/10 min] | off";
+/restore <id> · /land open|parcels · /rate <changes/min> [voxels/10 min] | off · /bevel <0-0.3> | off";
 
 /// Runs `/command args` and returns the reply for the chat.
 pub fn run(text: &str, cx: &mut Context) -> String {
@@ -62,7 +63,7 @@ pub fn run(text: &str, cx: &mut Context) -> String {
             Some(id) => revert(cx, id),
             None => "Usage: /revert <change id> (see /history)".into(),
         },
-        "rollback" | "restore" | "land" | "rate" if !admin => "Only admins can do that.".into(),
+        "rollback" | "restore" | "land" | "rate" | "bevel" if !admin => "Only admins can do that.".into(),
         "rollback" => match args.first() {
             Some(who) => rollback(cx, who),
             None => "Usage: /rollback <player name>".into(),
@@ -96,6 +97,21 @@ pub fn run(text: &str, cx: &mut Context) -> String {
             rules.rates = rates;
             cx.ledger.record(None, None, Action::SetRules { rules });
             format!("Rate limits set. {}", rate_line(&rates))
+        }
+        "bevel" => {
+            const USAGE: &str = "Usage: /bevel <0-0.3>: how far voxels' edges are rounded, as a share of a voxel (/bevel off for sharp cubes)";
+            let bevel = match args.first().copied() {
+                Some("off") => 0.0,
+                Some(n) => match n.parse::<f32>() {
+                    Ok(n) if (0.0..=Look::MAX_BEVEL).contains(&n) => n,
+                    _ => return USAGE.into(),
+                },
+                None => return USAGE.into(),
+            };
+            let mut rules = cx.ledger.rules.clone();
+            rules.look.bevel = bevel;
+            cx.ledger.record(None, None, Action::SetRules { rules });
+            format!("{} for everyone in this world.", bevel_line(bevel))
         }
         _ => HELP.into(),
     }
@@ -194,6 +210,10 @@ fn rate_line(rates: &RateLimits) -> String {
     }
 }
 
+fn bevel_line(bevel: f32) -> String {
+    if bevel > 0.0 { format!("Voxel edges are rounded ({bevel})") } else { "Voxels have sharp edges".into() }
+}
+
 fn rules(ledger: &Ledger) -> String {
     let r = &ledger.rules;
     let land = match r.land {
@@ -202,7 +222,7 @@ fn rules(ledger: &Ledger) -> String {
     };
     format!(
         "Land is {land}. Spawn: {:.0} m around the start. One build: up to {} voxels a side, {} voxels, {} faces. \
-         One land change: areas up to {:.0} m, {} voxels. {} Admins: {}.",
+         One land change: areas up to {:.0} m, {} voxels. {} {}. Admins: {}.",
         r.spawn.radius_m,
         r.build.max_size,
         r.build.max_voxels,
@@ -210,6 +230,7 @@ fn rules(ledger: &Ledger) -> String {
         r.terrain.max_area_m,
         r.terrain.max_changed_voxels,
         rate_line(&r.rates),
+        bevel_line(r.look.bevel),
         ledger.log.admins.len()
     )
 }

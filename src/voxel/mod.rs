@@ -13,20 +13,56 @@ pub mod query;
 
 use std::sync::Arc;
 
-use bevy::{light::NotShadowCaster, platform::collections::HashSet, prelude::*};
+use bevy::{
+    light::NotShadowCaster,
+    pbr::{ExtendedMaterial, MaterialExtension},
+    platform::collections::HashSet,
+    prelude::*,
+    render::render_resource::AsBindGroup,
+    shader::ShaderRef,
+};
 
 pub use asset::VoxelModelAsset;
 pub use cubelark_rules::voxel::{AIR, ModelData, ModelLight, ModelPart, Palette, Surface, VoxelGrid, VoxelId, noise};
 
-/// How the game renders a [`Surface`]: one [`StandardMaterial`] per surface, with
+/// Voxels are drawn with the standard PBR material plus [`Bevel`].
+pub type VoxelMaterial = ExtendedMaterial<StandardMaterial, Bevel>;
+
+/// Softly rounded outside edges, drawn by bending normals in `voxel_bevel.wesl`; the
+/// mesher marks which edges of each face turn away from it. The world's rules set the
+/// width ([`cubelark_rules::settings::Look`]); it starts sharp.
+#[derive(Asset, AsBindGroup, Reflect, Debug, Clone, Default)]
+pub struct Bevel {
+    /// x: the fillet width, as a share of a voxel; the rest is padding for WebGL2.
+    #[uniform(100)]
+    settings: Vec4,
+}
+
+impl Bevel {
+    pub fn width(&self) -> f32 {
+        self.settings.x
+    }
+
+    pub fn set_width(&mut self, width: f32) {
+        self.settings.x = width;
+    }
+}
+
+impl MaterialExtension for Bevel {
+    fn fragment_shader() -> ShaderRef {
+        "shaders/voxel_bevel.wesl".into()
+    }
+}
+
+/// How the game renders a [`Surface`]: one [`VoxelMaterial`] per surface, with
 /// voxel colors from vertex colors.
 pub trait SurfaceMaterial {
-    fn to_material(&self) -> StandardMaterial;
+    fn to_material(&self) -> VoxelMaterial;
 }
 
 impl SurfaceMaterial for Surface {
-    fn to_material(&self) -> StandardMaterial {
-        StandardMaterial {
+    fn to_material(&self) -> VoxelMaterial {
+        let base = StandardMaterial {
             base_color: Color::srgba(1.0, 1.0, 1.0, self.alpha),
             perceptual_roughness: self.roughness,
             metallic: self.metallic,
@@ -34,7 +70,8 @@ impl SurfaceMaterial for Surface {
             emissive: self.emissive,
             alpha_mode: if self.is_transparent() { AlphaMode::Blend } else { AlphaMode::Opaque },
             ..default()
-        }
+        };
+        ExtendedMaterial { base, extension: Bevel::default() }
     }
 }
 
@@ -42,7 +79,8 @@ pub struct VoxelPlugin;
 
 impl Plugin for VoxelPlugin {
     fn build(&self, app: &mut App) {
-        app.init_asset::<VoxelModelAsset>()
+        app.add_plugins(MaterialPlugin::<VoxelMaterial>::default())
+            .init_asset::<VoxelModelAsset>()
             .init_asset_loader::<asset::VoxelModelLoader>()
             .add_systems(Update, (sync_from_asset, rebuild_models).chain());
     }
@@ -147,7 +185,7 @@ fn sync_from_asset(
 fn rebuild_models(
     mut commands: Commands,
     mut meshes: ResMut<Assets<Mesh>>,
-    mut materials: ResMut<Assets<StandardMaterial>>,
+    mut materials: ResMut<Assets<VoxelMaterial>>,
     mut models: Query<
         (Entity, &VoxelModel, Option<&mut VoxelModelParts>, Option<&DepthBias>),
         Changed<VoxelModel>,
@@ -166,7 +204,7 @@ fn rebuild_models(
             .iter()
             .map(|s| {
                 let mut material = s.to_material();
-                material.depth_bias = bias.map_or(0.0, |b| b.0);
+                material.base.depth_bias = bias.map_or(0.0, |b| b.0);
                 materials.add(material)
             })
             .collect();
