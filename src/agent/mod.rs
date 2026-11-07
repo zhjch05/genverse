@@ -11,6 +11,7 @@
 
 mod commands;
 mod creations;
+mod fps;
 mod history;
 mod lan;
 mod landscape;
@@ -77,6 +78,7 @@ impl Plugin for AgentPlugin {
             .init_resource::<ParcelOverlay>()
             .init_resource::<presence::Peers>()
             .init_resource::<history::History>()
+            .init_resource::<fps::Fps>()
             .init_resource::<lan::Lan>()
             .init_gizmo_group::<AreaGizmos>()
             .init_gizmo_group::<presence::RingGizmos>()
@@ -87,14 +89,14 @@ impl Plugin for AgentPlugin {
                     block_game_input,
                     center_view,
                     (online::sync_online, lan::update_lan, update_build_site, answer_tool_calls, poll_agent).chain(),
-                    (presence::send_presence, presence::move_avatars, presence::draw_peers, history::toggle_history),
+                    (presence::send_presence, presence::move_avatars, presence::draw_peers, history::toggle_history, fps::track_frames),
                     auto_prompt,
                     (shortcuts, select_area, follow_cursor, check_clearance, click_in_world, outline_creations, draw_area, highlight_area, draw_parcels)
                         .chain(),
                 ),
             )
             .add_systems(EguiPrimaryContextPass, (install_icon_font, chat_panel, shortcut_hints).chain())
-            .add_systems(EguiPrimaryContextPass, (presence::name_tags, presence::hover_credit, history::history_window));
+            .add_systems(EguiPrimaryContextPass, (presence::name_tags, presence::hover_credit, history::history_window, fps::fps_overlay));
     }
 }
 

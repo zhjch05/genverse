@@ -268,6 +268,11 @@ impl VoxelWorld {
     }
 
     /// Whether every chunk in the column containing `pos` is loaded.
+    /// How many chunks are loaded, and how many are still being built.
+    pub fn chunk_counts(&self) -> (usize, usize) {
+        (self.loaded.len(), self.pending.len())
+    }
+
     pub fn column_loaded(&self, pos: Vec3) -> bool {
         let c = chunk_of(Self::voxel_at(pos));
         (0..VERTICAL_CHUNKS).all(|y| self.loaded.contains_key(&c.with_y(y)))
