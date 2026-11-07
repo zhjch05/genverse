@@ -251,10 +251,19 @@ impl VoxelWorld {
     /// unloaded chunks.
     #[cfg_attr(target_arch = "wasm32", allow(dead_code))]
     pub fn raycast(&self, ray: Ray3d, max: f32) -> Option<Hit> {
+        self.raycast_where(ray, max, terrain::is_solid)
+    }
+
+    /// Like [`Self::raycast`], but sees only the ground and water surface: trees,
+    /// tufts and flowers let the ray through, so selecting land isn't caught on them.
+    pub fn raycast_ground(&self, ray: Ray3d, max: f32) -> Option<Hit> {
+        self.raycast_where(ray, max, |id| terrain::is_ground(id) || id == terrain::block::WATER)
+    }
+
+    fn raycast_where(&self, ray: Ray3d, max: f32, hits: impl Fn(VoxelId) -> bool) -> Option<Hit> {
         let origin = ray.origin / VOXEL_SIZE;
         let dir = *ray.direction / VOXEL_SIZE;
-        let (distance, normal) =
-            march(origin, dir, 0.0, max, |cell| self.get(cell).map(terrain::is_solid))?;
+        let (distance, normal) = march(origin, dir, 0.0, max, |cell| self.get(cell).map(&hits))?;
         Some(Hit { distance, normal: normal.as_vec3() })
     }
 

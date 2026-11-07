@@ -416,7 +416,8 @@ pub fn select_area(
         return;
     }
     let cell = cursor_ray(&windows, &cameras, &egui).and_then(|(_, ray)| {
-        let hit = world.raycast(ray, 60.0)?;
+        // Through trees and plants to the ground, so the corner doesn't jump onto them.
+        let hit = world.raycast_ground(ray, 60.0)?;
         Some(VoxelWorld::voxel_at(ray.get_point(hit.distance) - hit.normal * 0.01).xz())
     });
     if buttons.just_pressed(MouseButton::Left) {
