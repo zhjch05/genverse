@@ -1,4 +1,4 @@
-//! A headless Cubelark server. It owns the world's change log: players propose
+//! A headless Cubewish server. It owns the world's change log: players propose
 //! changes, it checks each against the world's rules (signature, land, limits,
 //! budgets, rate limits), puts accepted ones in order, and sends them to everyone.
 //! Land changes are compiled against the ground as it is when they arrive, so a change
@@ -27,8 +27,8 @@ use std::{
     time::{SystemTime, UNIX_EPOCH},
 };
 
-use cubelark_net::{Presence, ToClient, ToServer, VERSION, hello_bytes, read_messages, write_message};
-use cubelark_rules::{
+use cubewish_net::{Presence, ToClient, ToServer, VERSION, hello_bytes, read_messages, write_message};
+use cubewish_rules::{
     identity::verify,
     log::{
         Action, Change, RULES_VERSION, Replay, Snapshot, WorldLog, chunk_edits, chunk_of, chunk_prints, replay, replay_from,
@@ -223,7 +223,7 @@ impl World {
                 self.tell_others(conn, ToClient::Presence { player, name, presence });
             }
             ToServer::FetchChunks { chunks } => {
-                let chunks: Vec<_> = chunks.into_iter().take(256).map(cubelark_rules::IVec3::from_array).collect();
+                let chunks: Vec<_> = chunks.into_iter().take(256).map(cubewish_rules::IVec3::from_array).collect();
                 let edits = chunk_edits(&self.state.edits, &chunks);
                 let _ = out.send(ToClient::Chunks { chunks: edits.into_iter().map(|(c, e)| (c.to_array(), e)).collect() });
             }
@@ -240,7 +240,7 @@ impl World {
     fn commit(
         &mut self,
         player: Option<String>,
-        by: cubelark_rules::log::Provenance,
+        by: cubewish_rules::log::Provenance,
         action: Action,
         sig: String,
     ) -> Result<(Change, Vec<([i32; 3], u64)>), String> {
@@ -255,7 +255,7 @@ impl World {
             return Err("your clock is more than 10 minutes off from the server's".into());
         }
         // The request text stays on the player's machine; only its hash is shared.
-        let by = cubelark_rules::log::Provenance { prompt: None, ..by };
+        let by = cubewish_rules::log::Provenance { prompt: None, ..by };
         let id = self.log.changes.last().map_or(1, |c| c.id + 1);
         let change = Change { id, by, action, sig: Some(sig) };
         let mut made = Vec::new();

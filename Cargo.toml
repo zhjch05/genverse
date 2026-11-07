@@ -2,13 +2,13 @@
 members = ["crates/rules", "crates/net", "crates/server"]
 
 [package]
-name = "cubelark"
+name = "cubewish"
 version = "0.1.0"
 edition = "2024"
 
 [dependencies]
 bevy = "0.20"
-cubelark_rules = { path = "crates/rules" }
+cubewish_rules = { path = "crates/rules" }
 ron = "0.12"
 serde = { version = "1", features = ["derive"] }
 # Set max log levels. This helps avoid unwanted low-severity log spam, which can affect performance.
@@ -30,9 +30,9 @@ egui-phosphor = "0.14"
 # Local MCP server that gives agents read-only world tools.
 tiny_http = "0.12"
 # Joining a shared world.
-cubelark_net = { path = "crates/net" }
+cubewish_net = { path = "crates/net" }
 # Hosting a world from the game.
-cubelark_server = { path = "crates/server" }
+cubewish_server = { path = "crates/server" }
 serde_json = "1"
 # Random player keys.
 getrandom = "0.3"
@@ -55,13 +55,13 @@ type_complexity = "allow"
 opt-level = 1
 
 # World generation and meshing are hot loops; optimize them even in dev and web builds.
-[profile.dev.package.cubelark]
+[profile.dev.package.cubewish]
 opt-level = 3
 
-[profile.dev.package.cubelark_rules]
+[profile.dev.package.cubewish_rules]
 opt-level = 3
 
-[profile.dev.package.cubelark_server]
+[profile.dev.package.cubewish_server]
 opt-level = 3
 
 # Enable a large amount of optimization in the dev profile for dependencies.

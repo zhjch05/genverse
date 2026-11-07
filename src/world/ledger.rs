@@ -1,4 +1,4 @@
-//! The world's change log in the game ([`cubelark_rules::log`]): loading it, recording
+//! The world's change log in the game ([`cubewish_rules::log`]): loading it, recording
 //! changes with who made them, and saving.
 //!
 //! On desktop the log is `saves/world.json`. Replaying it is the truth;
@@ -6,10 +6,10 @@
 //! matches the log. Saves from before the log are migrated once (the old files are
 //! kept as `.bak`). The local player is `saves/profile.json`: a name and a secret key
 //! whose public half is the player's id, and every change is signed with it. The
-//! world's first player is its admin. `CUBELARK_AS=Name` plays as a different
+//! world's first player is its admin. `CUBEWISH_AS=Name` plays as a different
 //! (non-admin) player for this run, to try the rules from someone else's side.
 //!
-//! Online (`CUBELARK_SERVER=host:port`), the server's log is the world: changes are
+//! Online (`CUBEWISH_SERVER=host:port`), the server's log is the world: changes are
 //! signed and proposed to it instead of recorded here, and what it commits (anyone's)
 //! comes back to be applied. Local saves aren't touched while online.
 //!
@@ -21,7 +21,7 @@ use std::collections::{BTreeMap, HashMap};
 use std::net::SocketAddr;
 
 use bevy::prelude::*;
-use cubelark_rules::{
+use cubewish_rules::{
     budget::{Budgets, Footprint, Usage},
     identity::Keypair,
     land::Land,
@@ -49,7 +49,7 @@ pub struct Profile {
     /// The secret key, in hex. Profiles from before keys have none and get one.
     #[serde(default)]
     pub secret: Option<String>,
-    /// A `CUBELARK_AS` guest, never saved.
+    /// A `CUBEWISH_AS` guest, never saved.
     #[serde(skip)]
     pub guest: bool,
 }
@@ -86,7 +86,7 @@ pub struct Ledger {
 #[cfg(not(target_arch = "wasm32"))]
 pub struct Online {
     pub addr: String,
-    pub client: cubelark_net::Client,
+    pub client: cubewish_net::Client,
     /// The world as the server has committed it (voxels included, so remote changes
     /// apply one at a time). None until the server welcomes us.
     pub state: Option<Replay>,
@@ -120,7 +120,7 @@ impl Ledger {
             let request = online.next_request;
             online.next_request += 1;
             online.pending.insert(request, sig.clone());
-            online.client.send(cubelark_net::ToServer::Propose { request, by, action, sig });
+            online.client.send(cubewish_net::ToServer::Propose { request, by, action, sig });
             return request;
         }
         self.log.push_signed(by, action, &self.key);
@@ -255,7 +255,7 @@ impl Ledger {
             return;
         }
         self.profile.name = name.chars().take(32).collect();
-        // A guest (CUBELARK_AS) is only for this run.
+        // A guest (CUBEWISH_AS) is only for this run.
         #[cfg(not(target_arch = "wasm32"))]
         if !self.profile.guest {
             write_json(PROFILE_PATH, &self.profile);
@@ -429,11 +429,11 @@ fn empty(log: WorldLog, profile: Profile, key: Keypair) -> Ledger {
     }
 }
 
-/// `CUBELARK_SERVER=host:port`: joins that server instead of the local world. If it
+/// `CUBEWISH_SERVER=host:port`: joins that server instead of the local world. If it
 /// can't be reached, the local world loads instead.
 #[cfg(not(target_arch = "wasm32"))]
 fn connect(profile: &Profile, key: &Keypair) -> Option<Online> {
-    let addr = std::env::var("CUBELARK_SERVER").ok().filter(|a| !a.trim().is_empty())?;
+    let addr = std::env::var("CUBEWISH_SERVER").ok().filter(|a| !a.trim().is_empty())?;
     let (profile, key) = guest().unwrap_or((profile.clone(), key.clone()));
     connect_to(&addr, &profile, &key).map_err(|e| error!("{e}; playing the local world instead")).ok()
 }
@@ -441,9 +441,9 @@ fn connect(profile: &Profile, key: &Keypair) -> Option<Online> {
 #[cfg(not(target_arch = "wasm32"))]
 fn connect_to(addr: &str, profile: &Profile, key: &Keypair) -> Result<Online, String> {
     let addr = addr.trim();
-    let addr = if addr.contains(':') { addr.to_string() } else { format!("{addr}:{}", cubelark_net::DEFAULT_PORT) };
+    let addr = if addr.contains(':') { addr.to_string() } else { format!("{addr}:{}", cubewish_net::DEFAULT_PORT) };
     let signer = key.clone();
-    let client = cubelark_net::Client::connect(&addr, profile.id.clone(), profile.name.clone(), move |m| signer.sign(m))?;
+    let client = cubewish_net::Client::connect(&addr, profile.id.clone(), profile.name.clone(), move |m| signer.sign(m))?;
     info!("joining {addr} as {}", profile.name);
     Ok(Online {
         addr,
@@ -457,18 +457,20 @@ fn connect_to(addr: &str, profile: &Profile, key: &Keypair) -> Result<Online, St
     })
 }
 
-/// `CUBELARK_AS=Name`: a separate player for this run (not saved, never an admin). Its
+/// `CUBEWISH_AS=Name`: a separate player for this run (not saved, never an admin). Its
 /// key comes from the name, so the same guest is the same player every run.
 fn guest() -> Option<(Profile, Keypair)> {
     #[cfg(target_arch = "wasm32")]
     return None;
     #[cfg(not(target_arch = "wasm32"))]
-    std::env::var("CUBELARK_AS").ok().filter(|n| !n.trim().is_empty()).map(|name| {
+    std::env::var("CUBEWISH_AS").ok().filter(|n| !n.trim().is_empty()).map(|name| {
         info!("playing as {name}");
+        // The game's old name: the key is derived from it, so changing it makes every guest
+        // someone new who no longer owns their land.
         let tag = format!("cubelark guest {}", name.trim().to_lowercase());
         let mut seed = [0; 32];
         for (i, chunk) in seed.chunks_mut(8).enumerate() {
-            chunk.copy_from_slice(&cubelark_rules::log::fnv1a(format!("{tag} {i}").as_bytes()).to_le_bytes());
+            chunk.copy_from_slice(&cubewish_rules::log::fnv1a(format!("{tag} {i}").as_bytes()).to_le_bytes());
         }
         let key = Keypair::from_seed(seed);
         let profile = Profile { id: key.player_id(), name: name.trim().into(), secret: None, guest: true };
@@ -546,7 +548,7 @@ fn migrate(seed: u32, voxels: Option<SavedEdits>) -> WorldLog {
         provider: String,
         position: [f32; 3],
         yaw: f32,
-        spec: cubelark_rules::build::BuildSpec,
+        spec: cubewish_rules::build::BuildSpec,
     }
 
     let mut log = WorldLog::new(seed);

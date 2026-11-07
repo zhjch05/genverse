@@ -15,7 +15,7 @@ use bevy::{
     prelude::*,
 };
 
-use cubelark_rules::voxel::faces::face_visible;
+use cubewish_rules::voxel::faces::face_visible;
 
 use super::{AIR, Palette, VoxelGrid, VoxelId, noise::hash01};
 

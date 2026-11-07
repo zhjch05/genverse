@@ -2554,14 +2554,14 @@ dependencies = [
 ]
 
 [[package]]
-name = "cubelark"
+name = "cubewish"
 version = "0.1.0"
 dependencies = [
  "bevy",
  "bevy_egui",
- "cubelark_net",
- "cubelark_rules",
- "cubelark_server",
+ "cubewish_net",
+ "cubewish_rules",
+ "cubewish_server",
  "egui-phosphor",
  "getrandom 0.3.4",
  "log",
@@ -2573,10 +2573,10 @@ dependencies = [
 ]
 
 [[package]]
-name = "cubelark_net"
+name = "cubewish_net"
 version = "0.1.0"
 dependencies = [
- "cubelark_rules",
+ "cubewish_rules",
  "if-addrs",
  "serde",
  "serde_json",
@@ -2584,7 +2584,7 @@ dependencies = [
 ]
 
 [[package]]
-name = "cubelark_rules"
+name = "cubewish_rules"
 version = "0.1.0"
 dependencies = [
  "bevy_color",
@@ -2595,11 +2595,11 @@ dependencies = [
 ]
 
 [[package]]
-name = "cubelark_server"
+name = "cubewish_server"
 version = "0.1.0"
 dependencies = [
- "cubelark_net",
- "cubelark_rules",
+ "cubewish_net",
+ "cubewish_rules",
  "getrandom 0.3.4",
  "serde_json",
 ]

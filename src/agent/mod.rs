@@ -23,7 +23,7 @@ mod prompt;
 mod runner;
 mod settings;
 mod theme;
-use cubelark_rules::build as spec;
+use cubewish_rules::build as spec;
 mod tools;
 
 use std::{
@@ -47,7 +47,7 @@ use crate::{
     },
     world::{VoxelWorld, ledger::Ledger},
 };
-use cubelark_rules::{
+use cubewish_rules::{
     land::area_parcels,
     log::Action as LogAction,
     settings::{LandMode, WorldRules},
@@ -283,8 +283,8 @@ fn land_refusal(creations: &Creations, landscape: &Landscape, ledger: &Ledger) -
     Some(format!("⚠ Can't change this land: {why}. Select an area you can change (P shows parcels)."))
 }
 
-/// `CUBELARK_PROMPT="a red mailbox" cargo run` sends one message once the hero has
-/// landed. Pair with `CUBELARK_SHOT` to script a build end to end. `CUBELARK_AREA=12`
+/// `CUBEWISH_PROMPT="a red mailbox" cargo run` sends one message once the hero has
+/// landed. Pair with `CUBEWISH_SHOT` to script a build end to end. `CUBEWISH_AREA=12`
 /// selects a 12 m square of ground in front of the hero (first, or on its own).
 fn auto_prompt(
     mut commands: Commands,
@@ -306,25 +306,25 @@ fn auto_prompt(
         return;
     }
     *sent = true;
-    if std::env::var("CUBELARK_PARCELS").is_ok() {
+    if std::env::var("CUBEWISH_PARCELS").is_ok() {
         overlay.visible = true;
     }
-    if let Some(size) = std::env::var("CUBELARK_AREA").ok().and_then(|s| s.parse::<f32>().ok()) {
+    if let Some(size) = std::env::var("CUBEWISH_AREA").ok().and_then(|s| s.parse::<f32>().ok()) {
         let forward = (hero.rotation * Vec3::NEG_Z).xz().normalize_or_zero();
         let center = hero.translation.xz() + forward * (size / 2.0 + 2.0);
         let half = Vec2::splat(size / 2.0);
         let cell = |p: Vec2| (p / crate::world::terrain::VOXEL_SIZE).floor().as_ivec2();
-        landscape.area = Some(cubelark_rules::sculpt::Area::from_corners(cell(center - half), cell(center + half) - 1));
+        landscape.area = Some(cubewish_rules::sculpt::Area::from_corners(cell(center - half), cell(center + half) - 1));
     }
-    if let Ok(text) = std::env::var("CUBELARK_PROMPT") {
-        if let Ok(provider) = std::env::var("CUBELARK_AGENT") {
+    if let Ok(text) = std::env::var("CUBEWISH_PROMPT") {
+        if let Ok(provider) = std::env::var("CUBEWISH_AGENT") {
             chat.provider = if provider == "codex" { Provider::Codex } else { Provider::Claude };
         }
-        // `CUBELARK_SELECT_LAST=1` targets the most recent build, like clicking it first.
-        if std::env::var("CUBELARK_SELECT_LAST").is_ok() {
+        // `CUBEWISH_SELECT_LAST=1` targets the most recent build, like clicking it first.
+        if std::env::var("CUBEWISH_SELECT_LAST").is_ok() {
             creations.selected = creations.placed.last().map(|(e, _)| *e);
         }
-        // Commands, `;`-separated: `CUBELARK_PROMPT="/rate 2; /history"`.
+        // Commands, `;`-separated: `CUBEWISH_PROMPT="/rate 2; /history"`.
         if text.trim_start().starts_with('/') {
             for command in text.split(';') {
                 let cx = &mut commands::Context {
@@ -460,8 +460,8 @@ fn poll_agent(
                             describe_stats(area, &stats)
                         ),
                     );
-                    // `CUBELARK_KEEP=1` keeps a scripted preview, as if Enter was pressed.
-                    if std::env::var("CUBELARK_KEEP").is_ok() {
+                    // `CUBEWISH_KEEP=1` keeps a scripted preview, as if Enter was pressed.
+                    if std::env::var("CUBEWISH_KEEP").is_ok() {
                         keep_terrain(&mut creations, &mut landscape, &mut world, &mut ledger, &mut chat);
                     }
                 }
@@ -1510,7 +1510,7 @@ fn chat_panel(
                             theme::note(ui, format!("{}×{}×{} · {} voxels · {} faces", s.size.x, s.size.y, s.size.z, s.voxels, s.faces));
                             if let Ok(transform) = transforms.get(draft.entity) {
                                 let yaw = transform.rotation.to_euler(EulerRot::YXZ).0;
-                                let parcels = cubelark_rules::land::build_parcels(transform.translation, yaw, &draft.spec.size);
+                                let parcels = cubewish_rules::land::build_parcels(transform.translation, yaw, &draft.spec.size);
                                 theme::note(ui, ledger.parcel_line(&parcels));
                             }
                             if let Some(why) = &draft.denied {

@@ -6,8 +6,8 @@
 
 use bevy::{platform::collections::HashMap, prelude::*, window::PrimaryWindow};
 use bevy_egui::{EguiContexts, egui};
-use cubelark_net::{Presence, ToServer};
-use cubelark_rules::{
+use cubewish_net::{Presence, ToServer};
+use cubewish_rules::{
     log::{Action, fnv1a},
     sculpt::{Area, surface},
 };

@@ -1,4 +1,4 @@
-# Cubelark
+# Cubewish
 
 A small HD voxel game on Bevy 0.20 ECS: an endless, streamed voxel world and a chibi voxel
 hero you walk around in third person. Voxels are small (25 cm terrain, 5 cm characters) and
@@ -16,7 +16,7 @@ Controls: `WASD`/arrows move, `Shift` runs, `Space` jumps, drag to look, scroll 
 
 ## Reshaping the land (desktop)
 
-Cubelark is AI-native: you don't stack 25 cm voxels by hand, you say what the land should
+Cubewish is AI-native: you don't stack 25 cm voxels by hand, you say what the land should
 become. Press `G`, drag across the ground to select an area (a click selects a 6 m square, up
 to 48 m a side), then press `T` and describe it: "a pond with sandy banks", "a winding stone
 path to the hill", "terraced hillside with a few trees".
@@ -33,8 +33,8 @@ go into the world's change log as operations, never voxels (see below). The area
 selected for follow-ups; `Esc` clears it. Agents also get a `sample_terrain` tool for a finer
 height map of part of the area.
 
-Script one: `CUBELARK_AREA=14 CUBELARK_PROMPT="a small pond" cargo run` selects a 14 m square
-in front of the hero and sends the message (add `CUBELARK_KEEP=1` to keep the preview).
+Script one: `CUBEWISH_AREA=14 CUBEWISH_PROMPT="a small pond" cargo run` selects a 14 m square
+in front of the hero and sends the message (add `CUBEWISH_KEEP=1` to keep the preview).
 
 There's no hand editing of single voxels: land only changes through these described edits.
 The edits are a sparse layer on top of the world seed (`src/world/mod.rs`): chunks apply them
@@ -43,7 +43,7 @@ background. Agents' `get_build_site` sees the reshaped terrain too.
 
 ## An open world, kept as a log
 
-Cubelark is heading for shared, open worlds: anyone can build and reshape land with their own
+Cubewish is heading for shared, open worlds: anyone can build and reshape land with their own
 agent, nothing is lost, and every change says who made it. Everything below works the same in
 single player and on a server.
 
@@ -62,7 +62,7 @@ made it, which agent did if one did, a hash of the request, and when. A selected
   Admins (the world's first player) can roll back a player, or restore the world to an earlier
   change; those are undoable too. When the log changes in a way a simple undo can't express,
   the game rebuilds from it, regenerating only what differs.
-- **Each world sets its own rules** (`cubelark_rules::settings`), kept in the log so replay
+- **Each world sets its own rules** (`cubewish_rules::settings`), kept in the log so replay
   always applies the rules of the time: land mode, spawn, limits on one build or land change,
   budgets, and rate limits.
   - **Land:** open by default, so anyone changes anything outside the protected spawn (24 m
@@ -84,8 +84,8 @@ also **Restore to here** (undo everything after a change) and **Roll back** a pl
 Chat commands do the same and more: `/history [n]`, `/revert <id>`, `/rules`,
 `/verify`, `/host`, `/join <host[:port]>`, `/play`, `/leave`, and for admins `/rollback <player>`, `/restore <id>`, `/land open|parcels`,
 `/rate <changes per minute> [voxels per 10 minutes]` or `/rate off`. Try them from someone else's
-side with `CUBELARK_AS=Bo cargo run`, a non-admin guest for one run; script them with
-`CUBELARK_PROMPT="/rate 5; /history"`.
+side with `CUBEWISH_AS=Bo cargo run`, a non-admin guest for one run; script them with
+`CUBEWISH_PROMPT="/rate 5; /history"`.
 
 ## Playing together
 
@@ -97,7 +97,7 @@ Two ways to host:
 - **A dedicated server**, for a world that's always up:
 
   ```sh
-  cargo run --release -p cubelark_server -- --port 7878 --data server-data
+  cargo run --release -p cubewish_server -- --port 7878 --data server-data
   ```
 
   It's a small program with no graphics (only the rules and protocol crates), so it runs on any
@@ -113,7 +113,7 @@ announcements; typing the address still works then. The first time you host, all
 connections if macOS asks.
 
 To join by address, type `host` or `host:port` next to **Join** in the panel, or use `/join host`, or
-start with `CUBELARK_SERVER=host cargo run`. **Leave** (`/leave`) goes back to your local world.
+start with `CUBEWISH_SERVER=host cargo run`. **Leave** (`/leave`) goes back to your local world.
 If the connection drops, the game reconnects by itself and works out which of your changes
 in flight reached the server. A game and server with different world rules refuse to play
 together instead of drifting apart.
@@ -193,14 +193,14 @@ can bump into and stand on them) and recorded in the world's change log.
 - Every build passes the same limits a server would enforce (`crates/rules/src/build.rs`):
   size ≤ 64³ voxels at 12.5 cm, ≤ 200 shapes, ≤ 24 colors, ≤ 120k voxels, ≤ 60k visible
   faces, ≤ 3k glowing voxels. A rejected build is sent back to the agent once for a fix.
-- Script a build: `CUBELARK_PROMPT="a red mailbox" CUBELARK_AGENT=codex cargo run`
-  (add `CUBELARK_SELECT_LAST=1` to revise the most recent build instead).
+- Script a build: `CUBEWISH_PROMPT="a red mailbox" CUBEWISH_AGENT=codex cargo run`
+  (add `CUBEWISH_SELECT_LAST=1` to revise the most recent build instead).
 
 ## How it fits together
 
 | Piece | Where | Role |
 | --- | --- | --- |
-| World rules | `crates/rules/` (`cubelark_rules`) | Everything that decides what the world is, with no rendering, so a server can share it: voxel models, the terrain generator (`terrain.rs`), terrain changes (`sculpt.rs`), build specs (`build.rs`), the change log and replay (`log.rs`), world rules (`settings.rs`), land (`land.rs`), budgets (`budget.rs`), rate limits (`rate.rs`), player keys (`identity.rs`) |
+| World rules | `crates/rules/` (`cubewish_rules`) | Everything that decides what the world is, with no rendering, so a server can share it: voxel models, the terrain generator (`terrain.rs`), terrain changes (`sculpt.rs`), build specs (`build.rs`), the change log and replay (`log.rs`), world rules (`settings.rs`), land (`land.rs`), budgets (`budget.rs`), rate limits (`rate.rs`), player keys (`identity.rs`) |
 | World streaming | `src/world/mod.rs` | Generates and meshes 32³ chunks around each `ChunkLoader` on the async pool; answers voxel queries for collision |
 | Change log | `src/world/ledger.rs` | Loads, migrates, records and saves the log; the player profile; live land and budgets |
 | Protocol | `crates/net` | Client/server messages, the game's background connection, and finding games on the local network (`lan.rs`) |
@@ -226,4 +226,4 @@ On native, saving a model while the game runs reloads it live.
 `assets/models/sakura_island.vox.ron` is the earlier showcase model, kept as a format example;
 spawn it with `VoxelModelSource(asset_server.load("models/sakura_island.vox.ron"))`.
 
-To render a still: `CUBELARK_SHOT=shot.png CUBELARK_YAW=0.2 CUBELARK_PITCH=0.4 cargo run`.
+To render a still: `CUBEWISH_SHOT=shot.png CUBEWISH_YAW=0.2 CUBEWISH_PITCH=0.4 cargo run`.

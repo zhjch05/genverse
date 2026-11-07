@@ -13,7 +13,7 @@
 //! Anything that undoes changes other than your latest rebuilds the world from the log.
 
 use bevy::prelude::*;
-use cubelark_rules::{
+use cubewish_rules::{
     log::{Action, replay},
     settings::{LandMode, Look, RateLimits},
 };

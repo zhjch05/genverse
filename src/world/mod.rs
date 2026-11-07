@@ -10,7 +10,7 @@
 
 pub mod ledger;
 
-pub use cubelark_rules::terrain;
+pub use cubewish_rules::terrain;
 
 use std::sync::Arc;
 

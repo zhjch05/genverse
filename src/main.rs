@@ -12,7 +12,7 @@ fn main() -> AppExit {
     let mut app = App::new();
     app.add_plugins(DefaultPlugins.set(WindowPlugin {
             primary_window: Some(Window {
-                title: "Cubelark".into(),
+                title: "Cubewish".into(),
                 // On the web, size the canvas to the page instead of a fixed resolution.
                 fit_canvas_to_parent: true,
                 ..default()

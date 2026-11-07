@@ -4,7 +4,7 @@
 
 use bevy::prelude::*;
 use bevy_egui::{EguiContexts, egui};
-use cubelark_rules::log::Action;
+use cubewish_rules::log::Action;
 use egui_phosphor::regular as icon;
 
 use super::{
@@ -35,7 +35,7 @@ enum Pick {
     Rollback(String, String),
 }
 
-/// H opens and closes it; `CUBELARK_HISTORY=1` opens it at start.
+/// H opens and closes it; `CUBEWISH_HISTORY=1` opens it at start.
 pub fn toggle_history(
     keys: Res<ButtonInput<KeyCode>>,
     blocked: Res<InputBlocked>,
@@ -44,7 +44,7 @@ pub fn toggle_history(
 ) {
     if !*started {
         *started = true;
-        history.open = std::env::var("CUBELARK_HISTORY").is_ok();
+        history.open = std::env::var("CUBEWISH_HISTORY").is_ok();
     }
     if !blocked.0 && keys.just_pressed(KeyCode::KeyH) {
         history.open = !history.open;

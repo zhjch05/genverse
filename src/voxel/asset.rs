@@ -1,5 +1,5 @@
 //! Loads `.vox.ron` model files. The format and rasterization live in
-//! [`cubelark_rules::voxel::model`]; with Bevy's `file_watcher` feature, saving the file
+//! [`cubewish_rules::voxel::model`]; with Bevy's `file_watcher` feature, saving the file
 //! re-rasterizes the model live.
 
 use bevy::{
@@ -7,7 +7,7 @@ use bevy::{
     ecs::error::BevyError,
     prelude::*,
 };
-use cubelark_rules::voxel::model::{ModelDef, build};
+use cubewish_rules::voxel::model::{ModelDef, build};
 
 use super::ModelData;
 

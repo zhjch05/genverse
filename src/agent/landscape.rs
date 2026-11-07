@@ -16,12 +16,12 @@ use bevy::{
     prelude::*,
     window::PrimaryWindow,
 };
-use cubelark_rules::{
+use cubewish_rules::{
     land::{Access, PARCEL, area_parcels},
     log::{Action, terrain_footprint},
     settings::LandMode,
 };
-use cubelark_rules::sculpt::{self, Area, Columns, SculptStats, TerrainEdit, TerrainSpec, level_of, surface};
+use cubewish_rules::sculpt::{self, Area, Columns, SculptStats, TerrainEdit, TerrainSpec, level_of, surface};
 
 use super::{Chat, cursor_ray};
 use crate::{
@@ -714,7 +714,7 @@ pub fn draw_parcels(
         cache.key = None;
         return;
     }
-    let here = cubelark_rules::land::parcel_of(VoxelWorld::voxel_at(hero.translation).xz());
+    let here = cubewish_rules::land::parcel_of(VoxelWorld::voxel_at(hero.translation).xz());
     if cache.key != Some((here, ledger.version)) {
         cache.key = Some((here, ledger.version));
         cache.lines.clear();

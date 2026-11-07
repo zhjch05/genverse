@@ -1,16 +1,16 @@
 [package]
-name = "cubelark_server"
+name = "cubewish_server"
 version = "0.1.0"
 edition = "2024"
-description = "A headless Cubelark server: holds the world's change log, checks and orders every change, and shares it with everyone."
+description = "A headless Cubewish server: holds the world's change log, checks and orders every change, and shares it with everyone."
 
 [[bin]]
-name = "cubelark-server"
+name = "cubewish-server"
 path = "src/main.rs"
 
 [dependencies]
-cubelark_rules = { path = "../rules" }
-cubelark_net = { path = "../net" }
+cubewish_rules = { path = "../rules" }
+cubewish_net = { path = "../net" }
 serde_json = "1"
 getrandom = "0.3"
 

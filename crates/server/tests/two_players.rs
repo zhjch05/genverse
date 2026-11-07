@@ -5,12 +5,12 @@ use std::{
     time::{Duration, SystemTime, UNIX_EPOCH},
 };
 
-use cubelark_net::{Client, ClientEvent, ToClient, ToServer};
-use cubelark_rules::{
+use cubewish_net::{Client, ClientEvent, ToClient, ToServer};
+use cubewish_rules::{
     identity::Keypair,
     log::{Action, BuildState, Provenance, signing_bytes},
 };
-use cubelark_server::{ServerConfig, start};
+use cubewish_server::{ServerConfig, start};
 
 struct Player {
     key: Keypair,
@@ -72,7 +72,7 @@ fn pond() -> Action {
     });
     Action::Terrain {
         name: "Pond".into(),
-        area: cubelark_rules::sculpt::Area { min: [400, 400], size: [24, 24] },
+        area: cubewish_rules::sculpt::Area { min: [400, 400], size: [24, 24] },
         spec: serde_json::from_value(serde_json::json!({ "name": "Pond", "ops": [op] })).unwrap(),
         changed: 500,
     }
@@ -80,7 +80,7 @@ fn pond() -> Action {
 
 #[test]
 fn two_players_share_one_ordered_world() {
-    let dir = std::env::temp_dir().join(format!("cubelark-server-test-{}", std::process::id()));
+    let dir = std::env::temp_dir().join(format!("cubewish-server-test-{}", std::process::id()));
     let _ = std::fs::remove_dir_all(&dir);
     let server = start(ServerConfig { data_dir: dir.clone(), port: 0, seed: 1337 }).unwrap();
     let addr = server.addr.to_string();
@@ -131,14 +131,14 @@ fn two_players_share_one_ordered_world() {
     };
     let edits: std::collections::HashMap<_, _> = fetched
         .iter()
-        .flat_map(|(_, e)| e.iter().map(|[x, y, z, id]| (cubelark_rules::IVec3::new(*x, *y, *z), *id as u8)))
+        .flat_map(|(_, e)| e.iter().map(|[x, y, z, id]| (cubewish_rules::IVec3::new(*x, *y, *z), *id as u8)))
         .collect();
-    let chunks: Vec<_> = prints.iter().map(|(c, _)| cubelark_rules::IVec3::from_array(*c)).collect();
-    assert_eq!(cubelark_rules::log::chunk_prints(&edits, &chunks), prints);
+    let chunks: Vec<_> = prints.iter().map(|(c, _)| cubewish_rules::IVec3::from_array(*c)).collect();
+    assert_eq!(cubewish_rules::log::chunk_prints(&edits, &chunks), prints);
 
     // Presence goes to others, never to the sender, and isn't kept. It carries a rename
     // and a marker color made after joining.
-    let here = cubelark_net::Presence {
+    let here = cubewish_net::Presence {
         position: [1.0, 2.0, 3.0],
         status: Some("designing".into()),
         name: "Ada L.".into(),
@@ -161,7 +161,7 @@ fn two_players_share_one_ordered_world() {
     let again = start(ServerConfig { data_dir: dir.clone(), port: 0, seed: 1337 }).unwrap();
     let dee = Player::join(&again.addr.to_string(), 4, "Dee");
     drop(dee);
-    let saved: cubelark_rules::log::WorldLog =
+    let saved: cubewish_rules::log::WorldLog =
         serde_json::from_str(&std::fs::read_to_string(dir.join("world.json")).unwrap()).unwrap();
     assert_eq!(saved.changes.len(), 3);
     assert!(saved.changes.iter().all(|c| c.verified()));

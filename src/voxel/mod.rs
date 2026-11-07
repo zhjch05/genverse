@@ -23,14 +23,14 @@ use bevy::{
 };
 
 pub use asset::VoxelModelAsset;
-pub use cubelark_rules::voxel::{AIR, ModelData, ModelLight, ModelPart, Palette, Surface, VoxelGrid, VoxelId, noise};
+pub use cubewish_rules::voxel::{AIR, ModelData, ModelLight, ModelPart, Palette, Surface, VoxelGrid, VoxelId, noise};
 
 /// Voxels are drawn with the standard PBR material plus [`Bevel`].
 pub type VoxelMaterial = ExtendedMaterial<StandardMaterial, Bevel>;
 
 /// Softly rounded outside edges, drawn by bending normals in `voxel_bevel.wesl`; the
 /// mesher marks which edges of each face turn away from it. The world's rules set the
-/// width ([`cubelark_rules::settings::Look`]); it starts sharp.
+/// width ([`cubewish_rules::settings::Look`]); it starts sharp.
 #[derive(Asset, AsBindGroup, Reflect, Debug, Clone, Default)]
 pub struct Bevel {
     /// x: the fillet width, as a share of a voxel; the rest is padding for WebGL2.

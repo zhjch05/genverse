@@ -9,7 +9,7 @@ use std::fmt::Write;
 use bevy::prelude::*;
 use serde_json::{Value, json};
 
-use cubelark_rules::{build::BuildLimits, settings::WorldRules};
+use cubewish_rules::{build::BuildLimits, settings::WorldRules};
 
 use super::{
     creations::{Creations, SavedCreation, anchor_in_front},
@@ -27,7 +27,7 @@ use crate::{
     },
 };
 
-pub const INSTRUCTIONS: &str = "Read-only tools for the Cubelark voxel world. Coordinates are build voxels \
+pub const INSTRUCTIONS: &str = "Read-only tools for the Cubewish voxel world. Coordinates are build voxels \
 (12.5 cm) in the frame of the build site: y=0 is the ground there, z=0 is the front row facing the player.";
 
 /// Where the next build goes, frozen while a request runs so tool answers stay consistent.

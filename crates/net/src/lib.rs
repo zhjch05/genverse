@@ -1,4 +1,4 @@
-//! The wire protocol between Cubelark clients and a server.
+//! The wire protocol between Cubewish clients and a server.
 //!
 //! The server holds the world's change log and is the only one who orders changes.
 //! A client proposes a change (signed by its player); the server checks it against
@@ -22,7 +22,7 @@ use std::{
     time::Duration,
 };
 
-use cubelark_rules::{
+use cubewish_rules::{
     log::{Action, Change, Provenance, RULES_VERSION, Snapshot, WorldLog},
     sculpt::Area,
 };
@@ -100,7 +100,7 @@ pub enum ToClient {
 
 /// What a player signs to log in.
 pub fn hello_bytes(nonce: &str, player: &str, name: &str) -> Vec<u8> {
-    format!("cubelark hello {nonce} {player} {name}").into_bytes()
+    format!("cubewish hello {nonce} {player} {name}").into_bytes()
 }
 
 /// Writes one message as a line.

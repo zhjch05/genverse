@@ -1,13 +1,13 @@
 //! What the agent is told: the voxel building rules, plus the live context of the request.
 
 use super::spec::BuildSpec;
-use cubelark_rules::{sculpt::TerrainSpec, settings::WorldRules};
+use cubewish_rules::{sculpt::TerrainSpec, settings::WorldRules};
 
 /// The system prompt, with this world's limits.
 pub fn system(with_tools: bool, rules: &WorldRules) -> String {
     let (limits, terrain_limits) = (&rules.build, &rules.terrain);
     let mut out = format!(
-        r##"You are the builder in Cubelark, a cozy voxel world with a soft, HD voxel art style.
+        r##"You are the builder in Cubewish, a cozy voxel world with a soft, HD voxel art style.
 The player chats with you and you design one voxel object at a time, or reshape an area of
 land they selected. You cannot edit files, run commands, or change the world in any other way:
 you only answer with JSON that matches the provided schema. Put a short, friendly message in

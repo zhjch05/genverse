@@ -88,8 +88,8 @@ impl Display {
     }
 }
 
-/// Saved settings, applied at the start. `CUBELARK_QUALITY=low|medium|high|ultra`
-/// starts from that preset instead, for one run; `CUBELARK_SETTINGS=1` opens the window.
+/// Saved settings, applied at the start. `CUBEWISH_QUALITY=low|medium|high|ultra`
+/// starts from that preset instead, for one run; `CUBEWISH_SETTINGS=1` opens the window.
 pub fn load_settings(
     mut settings: ResMut<SettingsWindow>,
     mut graphics: ResMut<Graphics>,
@@ -99,12 +99,12 @@ pub fn load_settings(
     if let Some(saved) = prefs::get("graphics").and_then(|v| serde_json::from_value(v).ok()) {
         *graphics = saved;
     }
-    if let Some(q) = std::env::var("CUBELARK_QUALITY").ok().and_then(|k| Quality::from_key(&k)) {
+    if let Some(q) = std::env::var("CUBEWISH_QUALITY").ok().and_then(|k| Quality::from_key(&k)) {
         *graphics = q.settings(graphics.render_scale);
     }
     let display: Display = prefs::get("display").and_then(|v| serde_json::from_value(v).ok()).unwrap_or_default();
     settings.display = display;
-    settings.open = std::env::var("CUBELARK_SETTINGS").is_ok();
+    settings.open = std::env::var("CUBEWISH_SETTINGS").is_ok();
     if display != Display::default()
         && let Ok(mut window) = windows.single_mut()
     {
@@ -274,7 +274,7 @@ pub fn settings_window(
     settings.open = open;
     if display != before {
         settings.display = display;
-    settings.open = std::env::var("CUBELARK_SETTINGS").is_ok();
+    settings.open = std::env::var("CUBEWISH_SETTINGS").is_ok();
         display.apply(&mut window, monitor);
         prefs::set("display", serde_json::to_value(display).unwrap_or_default());
     }

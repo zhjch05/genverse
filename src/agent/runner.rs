@@ -80,7 +80,7 @@ pub fn start(provider: Provider, system: String, prompt: String, tools: Option<&
 }
 
 fn scratch_dir() -> Result<PathBuf, String> {
-    let dir = std::env::temp_dir().join("cubelark-agent");
+    let dir = std::env::temp_dir().join("cubewish-agent");
     std::fs::create_dir_all(&dir).map_err(|e| format!("can't create {}: {e}", dir.display()))?;
     Ok(dir)
 }
@@ -125,11 +125,11 @@ fn run(
                 cmd.arg("-c")
                     .arg(format!("mcp_servers.{SERVER_NAME}.url=\"{}\"", tools.url))
                     .arg("-c")
-                    .arg(format!("mcp_servers.{SERVER_NAME}.bearer_token_env_var=\"CUBELARK_MCP_TOKEN\""))
+                    .arg(format!("mcp_servers.{SERVER_NAME}.bearer_token_env_var=\"CUBEWISH_MCP_TOKEN\""))
                     // Headless runs can't ask for approval; these tools are read-only.
                     .arg("-c")
                     .arg(format!("mcp_servers.{SERVER_NAME}.default_tools_approval_mode=\"approve\""))
-                    .env("CUBELARK_MCP_TOKEN", &tools.token);
+                    .env("CUBEWISH_MCP_TOKEN", &tools.token);
             }
             cmd
                 .arg("--output-schema")

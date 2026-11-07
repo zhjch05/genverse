@@ -12,8 +12,8 @@
 //!   of our changes in flight made it, and the rest are taken back.
 
 use bevy::prelude::*;
-use cubelark_net::{ClientEvent, ToClient, ToServer};
-use cubelark_rules::{
+use cubewish_net::{ClientEvent, ToClient, ToServer};
+use cubewish_rules::{
     IVec3,
     log::{Action, Change, chunk_of, chunk_prints, replay, replay_from},
 };
@@ -38,12 +38,12 @@ pub fn host(ledger: &mut Ledger) -> String {
     if ledger.is_online() {
         return "Already online; only your local world can be hosted.".into();
     }
-    let config = cubelark_server::ServerConfig {
+    let config = cubewish_server::ServerConfig {
         data_dir: "saves".into(),
-        port: cubelark_net::DEFAULT_PORT,
+        port: cubewish_net::DEFAULT_PORT,
         seed: ledger.log.seed,
     };
-    let running = match cubelark_server::start(config) {
+    let running = match cubewish_server::start(config) {
         Ok(running) => running,
         Err(e) => return format!("⚠ Couldn't host: {e}"),
     };
@@ -251,9 +251,9 @@ fn committed(
                 (Action::PlaceBuild(b) | Action::UpdateBuild(b), None) => creations.upsert(commands, b),
                 (Action::RemoveBuild { build }, None) => creations.remove(commands, *build),
                 (_, None) => {
-                    // `CUBELARK_DESYNC=1` drops some of others' land edits, to watch
+                    // `CUBEWISH_DESYNC=1` drops some of others' land edits, to watch
                     // fingerprints catch it and the chunks heal.
-                    let drift = std::env::var("CUBELARK_DESYNC").is_ok();
+                    let drift = std::env::var("CUBEWISH_DESYNC").is_ok();
                     for (i, (p, id)) in edits.iter().enumerate() {
                         if drift && i % 7 == 0 {
                             state.edits.remove(p);
