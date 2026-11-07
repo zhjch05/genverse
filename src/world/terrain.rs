@@ -77,12 +77,21 @@ pub fn palette() -> Palette {
     Palette { surfaces, entries }
 }
 
+/// Whether this is ground (as opposed to water, plants, trees, or air).
+pub fn is_ground(id: VoxelId) -> bool {
+    block::GRASS.contains(&id)
+        || block::DIRT.contains(&id)
+        || block::STONE.contains(&id)
+        || block::SAND.contains(&id)
+        || id == block::SNOW
+}
+
 /// Whether the player collides with this block. Water and small plants are walk-through.
 pub fn is_solid(id: VoxelId) -> bool {
     id != AIR && id != block::WATER && id != block::TUFT && !block::FLOWERS.contains(&id)
 }
 
-fn pick<const N: usize>(ids: [VoxelId; N], t: f32) -> VoxelId {
+pub fn pick<const N: usize>(ids: [VoxelId; N], t: f32) -> VoxelId {
     ids[((t.clamp(0.0, 0.999)) * N as f32) as usize]
 }
 
@@ -195,12 +204,19 @@ impl Terrain {
         if ground <= SEA_LEVEL + 1 || ground > 70 || steep > 5 {
             return;
         }
-        let trunk_height = 13 + (hash01(key, self.seed + 63) * 8.0) as i32;
-        let crown = IVec3::new(x, ground + trunk_height, z);
         let grid_max = min + grid.size().as_ivec3();
-        if ground + 1 >= grid_max.y || crown.y + 16 < min.y {
+        if ground + 1 >= grid_max.y || ground + 37 < min.y {
             return;
         }
+        self.grow_tree(grid, min, IVec3::new(x, ground, z), key);
+    }
+
+    /// Grows a tree whose 2x2 trunk stands on `base` (the ground voxel), into the part
+    /// of `grid` (covering world voxels from `min`) it reaches. `key` picks its variation.
+    pub fn grow_tree(&self, grid: &mut VoxelGrid, min: IVec3, base: IVec3, key: IVec3) {
+        let (x, ground, z) = (base.x, base.y, base.z);
+        let trunk_height = 13 + (hash01(key, self.seed + 63) * 8.0) as i32;
+        let crown = IVec3::new(x, ground + trunk_height, z);
 
         // 2x2 trunk.
         for y in ground + 1..crown.y {

@@ -8,6 +8,7 @@
 use bevy::prelude::*;
 use serde::{Deserialize, Serialize};
 
+use crate::world::sculpt::TerrainSpec;
 use crate::voxel::{
     VoxelModelAsset,
     asset::{Fill, Geom, ModelDef, NoiseDef, OpDef, PaletteDef, SurfaceDef, build},
@@ -35,6 +36,7 @@ pub mod limits {
 pub struct AgentAnswer {
     pub reply: String,
     pub build: Option<BuildSpec>,
+    pub terrain: Option<TerrainSpec>,
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize)]

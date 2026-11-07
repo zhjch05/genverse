@@ -14,9 +14,31 @@ bevy run web --open # in the browser (WebGPU)
 
 Controls: `WASD`/arrows move, `Shift` runs, `Space` jumps, drag to look, scroll to zoom.
 
+## Reshaping the land (desktop)
+
+Cubelark is AI-native: you don't stack 25 cm voxels by hand, you say what the land should
+become. Press `G`, drag across the ground to select an area (a click selects a 6 m square, up
+to 48 m a side), then press `T` and describe it: "a pond with sandy banks", "a winding stone
+path to the hill", "terraced hillside with a few trees".
+
+The agent never returns voxels. It answers with a few terrain operations in the area's frame
+(meters from its corner, levels relative to sea level): `raise`, `lower`, `flatten`, `smooth`,
+`terrace`, `water`, `paint`, `scatter` (trees, bushes, rocks, flowers, grass), `path`, and
+`clear`, each with an optional rectangle or ellipse and a soft edge. `src/world/sculpt.rs`
+checks them against limits and turns them into voxels the same way every time.
+
+The result is a live preview in the world: `Enter` keeps it, `Esc` puts the ground back
+exactly, and further messages revise it. Kept changes join the undo history with builds, and
+are logged as operations in `saves/terrain_changes.json` (the voxels are saved with the
+world's edits). The area stays selected for follow-ups; `Esc` clears it. Agents also get a
+`sample_terrain` tool for a finer height map of part of the area.
+
+Script one: `CUBELARK_AREA=14 CUBELARK_PROMPT="a small pond" cargo run` selects a 14 m square
+in front of the hero and sends the message.
+
 ## Block editing
 
-Press `B` (or a number key) for block mode, Minecraft-style. Clicks are press-and-release
+For touch-ups, press `B` (or a number key) for block mode. Clicks are press-and-release
 without dragging the camera: left-click breaks the block under the cursor, right-click places
 the selected block against the face you point at, middle-click picks that block into the
 hotbar. `1`-`9` choose grass, dirt, stone, sand, wood, leaves, snow, water or flowers, `X`
@@ -49,12 +71,15 @@ can bump into and stand on them) and saved to `saves/creations.json`.
 
   | Context | Shortcuts |
   | --- | --- |
-  | Anywhere | `T`/`Enter` talk to the agent · click a build to select · middle-click to copy it · `Ctrl/Cmd+Z` undo |
+  | Anywhere | `T`/`Enter` talk to the agent · `G` select ground to reshape · click a build to select · middle-click to copy it · `Ctrl/Cmd+Z` undo |
+  | Selecting ground | drag across the ground · right-drag look · `G`/`Esc` stop |
+  | Area selected | `T` describe the change · `G` select again · `Esc` clear |
+  | Land preview | `Enter` keep · `T` ask for changes · `Esc` put the ground back |
   | Selected build | `M` or double-click move · `Delete`/`Backspace` delete · `T` change it · `Esc`/right-click deselect |
   | Draft following the cursor | click place · `Q`/`E` turn · `R`/`F` raise/lower · `Esc`/right-click cancel |
   | Pinned revision | `Enter` keep · `M` pick it up · `T` ask for more · `Esc` cancel |
 
-  Undo steps back through placing, deleting, moving, and revising builds.
+  Undo steps back through placing, deleting, moving, and revising builds, and kept land changes.
 
 - Needs `claude` and/or `codex` on your `PATH`, already logged in.
 - The agents get no other tools: no shell, no file edits, no other MCP servers, and no user config
@@ -77,10 +102,11 @@ can bump into and stand on them) and saved to `saves/creations.json`.
 | --- | --- | --- |
 | World streaming | `src/world/mod.rs` | Generates and meshes 32³ chunks around each `ChunkLoader` on the async pool; answers voxel queries for collision |
 | Terrain | `src/world/terrain.rs` | Block palette and a deterministic generator: hills, beaches, water, groves of trees, grass and flowers |
+| Terrain changes | `src/world/sculpt.rs` | Terrain operations (raise, water, path, scatter, ...) compiled into voxel edits, with limits |
 | Hero | `src/player.rs` | Builds the character from model parts, kinematic movement with voxel collision and step-up, walk animation, follow camera |
 | Voxel engine | `src/voxel/` | `VoxelGrid`, `Palette`/`Surface`, mesher with baked AO, `.vox.ron` model loader |
 | Scene | `src/scene.rs` | Sky, sun, fog, post-processing |
-| Builder | `src/agent/` | egui chat, CLI runner, build spec + limits, drafts and saved creations (desktop only) |
+| Builder | `src/agent/` | egui chat, CLI runner, build spec + limits, drafts and saved creations, area selection and land previews (`landscape.rs`) (desktop only) |
 
 ## Voxel models (`assets/**/*.vox.ron`)
 

@@ -60,6 +60,14 @@ enum Change {
     Deleted(SavedCreation),
     /// A build was moved or revised; holds how it was before.
     Replaced(SavedCreation),
+    /// A kept terrain change, undone by the landscape (by id).
+    Terrain(u64),
+}
+
+/// What [`Creations::undo`] did, or left for the caller to do.
+pub enum Undone {
+    Message(String),
+    Terrain(u64),
 }
 
 /// Marks a creation entity; drafts also carry [`DraftMarker`].
@@ -211,6 +219,11 @@ impl Creations {
         Some(saved.name)
     }
 
+    /// Records a kept terrain change, so Undo reverts changes in the order they were made.
+    pub fn record_terrain(&mut self, id: u64) {
+        self.history.push(Change::Terrain(id));
+    }
+
     pub fn can_undo(&self) -> bool {
         self.draft.is_none() && !self.history.is_empty()
     }
@@ -255,7 +268,7 @@ impl Creations {
     }
 
     /// Reverts the latest change; returns a message describing what happened.
-    pub fn undo(&mut self, commands: &mut Commands) -> Option<String> {
+    pub fn undo(&mut self, commands: &mut Commands) -> Option<Undone> {
         if self.draft.is_some() {
             return None;
         }
@@ -276,9 +289,10 @@ impl Creations {
                 self.restore(commands, before)?;
                 format!("Put \"{name}\" back how it was.")
             }
+            Change::Terrain(id) => return Some(Undone::Terrain(id)),
         };
         self.save();
-        Some(message)
+        Some(Undone::Message(message))
     }
 
     fn take_placed(&mut self, commands: &mut Commands, id: u64) -> Option<(Entity, SavedCreation)> {

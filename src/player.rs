@@ -31,6 +31,7 @@ pub struct PlayerPlugin;
 impl Plugin for PlayerPlugin {
     fn build(&self, app: &mut App) {
         app.init_resource::<InputBlocked>()
+            .init_resource::<OrbitLock>()
             .add_systems(Startup, spawn_player)
             .add_systems(
                 Update,
@@ -48,6 +49,10 @@ impl Plugin for PlayerPlugin {
 /// Set while a UI (like the builder chat) is taking keyboard input.
 #[derive(Resource, Default)]
 pub struct InputBlocked(pub bool);
+
+/// While set, left-drag no longer turns the camera (another tool owns it); right-drag still does.
+#[derive(Resource, Default)]
+pub struct OrbitLock(pub bool);
 
 #[derive(Component)]
 pub struct Player {
@@ -388,6 +393,7 @@ fn follow_camera(
     buttons: Res<ButtonInput<MouseButton>>,
     motion: Res<AccumulatedMouseMotion>,
     scroll: Res<AccumulatedMouseScroll>,
+    lock: Res<OrbitLock>,
     world: Res<VoxelWorld>,
     players: Query<&Transform, (With<Player>, Without<FollowCamera>)>,
     mut cameras: Query<(&mut FollowCamera, &mut Transform)>,
@@ -397,7 +403,7 @@ fn follow_camera(
     };
     let dt = time.delta_secs();
     for (mut cam, mut transform) in &mut cameras {
-        if buttons.pressed(MouseButton::Left) || buttons.pressed(MouseButton::Right) {
+        if (buttons.pressed(MouseButton::Left) && !lock.0) || buttons.pressed(MouseButton::Right) {
             cam.yaw -= motion.delta.x * 0.005;
             cam.pitch = (cam.pitch + motion.delta.y * 0.004).clamp(-0.3, 1.3);
         }

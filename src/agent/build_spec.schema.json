@@ -1,7 +1,11 @@
 {
   "type": "object",
   "additionalProperties": false,
-  "required": ["reply", "build"],
+  "required": [
+    "reply",
+    "build",
+    "terrain"
+  ],
   "properties": {
     "reply": {
       "type": "string",
@@ -9,25 +13,60 @@
     },
     "build": {
       "description": "The object to create, or null when only replying.",
-      "anyOf": [{ "type": "null" }, { "$ref": "#/$defs/build" }]
+      "anyOf": [
+        {
+          "type": "null"
+        },
+        {
+          "$ref": "#/$defs/build"
+        }
+      ]
+    },
+    "terrain": {
+      "description": "Terrain changes for the selected area, or null when no area is selected or nothing should change.",
+      "anyOf": [
+        {
+          "type": "null"
+        },
+        {
+          "$ref": "#/$defs/terrain"
+        }
+      ]
     }
   },
   "$defs": {
     "build": {
       "type": "object",
       "additionalProperties": false,
-      "required": ["name", "size", "palette", "shapes"],
+      "required": [
+        "name",
+        "size",
+        "palette",
+        "shapes"
+      ],
       "properties": {
-        "name": { "type": "string", "description": "Short name, e.g. \"Stone well\"." },
+        "name": {
+          "type": "string",
+          "description": "Short name, e.g. \"Stone well\"."
+        },
         "size": {
           "type": "array",
-          "items": { "type": "integer" },
+          "items": {
+            "type": "integer"
+          },
           "description": "[x, y, z] build volume in voxels, each between 1 and 64. +Y is up."
         },
-        "palette": { "type": "array", "items": { "$ref": "#/$defs/color" } },
+        "palette": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/color"
+          }
+        },
         "shapes": {
           "type": "array",
-          "items": { "$ref": "#/$defs/shape" },
+          "items": {
+            "$ref": "#/$defs/shape"
+          },
           "description": "Applied in order; later shapes overwrite earlier ones."
         }
       }
@@ -35,29 +74,309 @@
     "color": {
       "type": "object",
       "additionalProperties": false,
-      "required": ["name", "hex", "material"],
+      "required": [
+        "name",
+        "hex",
+        "material"
+      ],
       "properties": {
-        "name": { "type": "string" },
-        "hex": { "type": "string", "description": "#rrggbb" },
-        "material": { "type": "string", "enum": ["matte", "glossy", "metal", "glass", "glow"] }
+        "name": {
+          "type": "string"
+        },
+        "hex": {
+          "type": "string",
+          "description": "#rrggbb"
+        },
+        "material": {
+          "type": "string",
+          "enum": [
+            "matte",
+            "glossy",
+            "metal",
+            "glass",
+            "glow"
+          ]
+        }
       }
     },
     "shape": {
       "type": "object",
       "additionalProperties": false,
-      "required": ["kind", "color", "from", "to", "radius", "wobble"],
+      "required": [
+        "kind",
+        "color",
+        "from",
+        "to",
+        "radius",
+        "wobble"
+      ],
       "properties": {
-        "kind": { "type": "string", "enum": ["box", "ellipsoid", "cylinder", "capsule"] },
-        "color": { "type": "string", "description": "A palette name, or \"air\" to carve." },
-        "from": { "type": "array", "items": { "type": "number" }, "description": "[x, y, z]" },
-        "to": { "type": "array", "items": { "type": "number" }, "description": "[x, y, z]" },
+        "kind": {
+          "type": "string",
+          "enum": [
+            "box",
+            "ellipsoid",
+            "cylinder",
+            "capsule"
+          ]
+        },
+        "color": {
+          "type": "string",
+          "description": "A palette name, or \"air\" to carve."
+        },
+        "from": {
+          "type": "array",
+          "items": {
+            "type": "number"
+          },
+          "description": "[x, y, z]"
+        },
+        "to": {
+          "type": "array",
+          "items": {
+            "type": "number"
+          },
+          "description": "[x, y, z]"
+        },
         "radius": {
           "description": "Capsule radius in voxels; null for other kinds.",
-          "anyOf": [{ "type": "number" }, { "type": "null" }]
+          "anyOf": [
+            {
+              "type": "number"
+            },
+            {
+              "type": "null"
+            }
+          ]
         },
         "wobble": {
           "description": "0 to 0.4: noisy, organic edges (foliage, rocks). null or 0 for clean shapes.",
-          "anyOf": [{ "type": "number" }, { "type": "null" }]
+          "anyOf": [
+            {
+              "type": "number"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        }
+      }
+    },
+    "terrain": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "name",
+        "ops"
+      ],
+      "properties": {
+        "name": {
+          "type": "string",
+          "description": "Short name, e.g. \"Lily pond\"."
+        },
+        "ops": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/terrain_op"
+          },
+          "description": "Applied in order."
+        }
+      }
+    },
+    "terrain_op": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "kind",
+        "area",
+        "points",
+        "amount_m",
+        "level_m",
+        "depth_m",
+        "width_m",
+        "edge_m",
+        "material",
+        "item",
+        "density"
+      ],
+      "properties": {
+        "kind": {
+          "type": "string",
+          "enum": [
+            "raise",
+            "lower",
+            "flatten",
+            "smooth",
+            "terrace",
+            "water",
+            "paint",
+            "scatter",
+            "path",
+            "clear"
+          ]
+        },
+        "area": {
+          "description": "Where it applies, in meters in the area frame; null for the whole selected area.",
+          "anyOf": [
+            {
+              "type": "null"
+            },
+            {
+              "$ref": "#/$defs/op_area"
+            }
+          ]
+        },
+        "points": {
+          "description": "path only: [x, z] points in meters.",
+          "anyOf": [
+            {
+              "type": "null"
+            },
+            {
+              "type": "array",
+              "items": {
+                "type": "array",
+                "items": {
+                  "type": "number"
+                }
+              }
+            }
+          ]
+        },
+        "amount_m": {
+          "description": "raise/lower: meters; terrace: step height.",
+          "anyOf": [
+            {
+              "type": "number"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "level_m": {
+          "description": "flatten/water: level in meters relative to sea level; null picks one.",
+          "anyOf": [
+            {
+              "type": "number"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "depth_m": {
+          "description": "water: depth below the level.",
+          "anyOf": [
+            {
+              "type": "number"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "width_m": {
+          "description": "path: width.",
+          "anyOf": [
+            {
+              "type": "number"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "edge_m": {
+          "description": "Soft edge: the change fades in over this many meters from the shape's border.",
+          "anyOf": [
+            {
+              "type": "number"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "material": {
+          "description": "paint/path: ground material.",
+          "anyOf": [
+            {
+              "type": "string",
+              "enum": [
+                "grass",
+                "dirt",
+                "stone",
+                "sand",
+                "snow"
+              ]
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "item": {
+          "description": "scatter/clear: what to add or remove.",
+          "anyOf": [
+            {
+              "type": "string",
+              "enum": [
+                "tree",
+                "bush",
+                "rock",
+                "flowers",
+                "grass",
+                "plants"
+              ]
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "density": {
+          "description": "0..1: scatter amount, paint coverage, smooth strength.",
+          "anyOf": [
+            {
+              "type": "number"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        }
+      }
+    },
+    "op_area": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "shape",
+        "x",
+        "z",
+        "w",
+        "d"
+      ],
+      "properties": {
+        "shape": {
+          "type": "string",
+          "enum": [
+            "rect",
+            "ellipse"
+          ]
+        },
+        "x": {
+          "type": "number"
+        },
+        "z": {
+          "type": "number"
+        },
+        "w": {
+          "type": "number"
+        },
+        "d": {
+          "type": "number"
         }
       }
     }

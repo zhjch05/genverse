@@ -5,8 +5,12 @@
 //! Flow: chat message -> [`runner`] runs the CLI headless with the build schema ->
 //! [`spec::compile`] validates and rasterizes the answer (asking the agent to fix it once
 //! if it breaks a limit) -> a draft appears in the world -> Place saves it.
+//!
+//! Land works the same way ([`landscape`]): select an area with G, describe it, and
+//! the agent's terrain operations are previewed in the world until kept.
 
 mod creations;
+mod landscape;
 mod mcp;
 mod prompt;
 mod runner;
@@ -30,7 +34,11 @@ use crate::{
     world::{VoxelWorld, edit::BlockMode},
 };
 use creations::{
-    Adjust, Creation, Creations, DraftMarker, load_creations, outline_creations, placement_for_hit,
+    Adjust, Creation, Creations, DraftMarker, Undone, load_creations, outline_creations, placement_for_hit,
+};
+use landscape::{
+    AreaGizmos, Landscape, configure_area_gizmos, describe_stats, draw_area, highlight_area, load_terrain_log,
+    select_area,
 };
 use mcp::McpServer;
 use runner::{AgentEvent, AgentJob, Provider};
@@ -49,14 +57,17 @@ impl Plugin for AgentPlugin {
             .init_resource::<Chat>()
             .init_resource::<Creations>()
             .init_resource::<BuildSite>()
-            .add_systems(Startup, (load_creations, start_tool_server))
+            .init_resource::<Landscape>()
+            .init_gizmo_group::<AreaGizmos>()
+            .add_systems(Startup, (load_creations, load_terrain_log, configure_area_gizmos, start_tool_server))
             .add_systems(
                 Update,
                 (
                     block_game_input,
                     (update_build_site, answer_tool_calls, poll_agent).chain(),
                     auto_prompt,
-                    (shortcuts, follow_cursor, check_clearance, click_in_world, outline_creations).chain(),
+                    (shortcuts, select_area, follow_cursor, check_clearance, click_in_world, outline_creations, draw_area, highlight_area)
+                        .chain(),
                 ),
             )
             .add_systems(EguiPrimaryContextPass, (install_icon_font, chat_panel, shortcut_hints).chain());
@@ -109,7 +120,8 @@ impl Default for Chat {
                 role: Role::System,
                 text: "Describe something to build, e.g. \"a cozy wooden bench\" or \"a glowing mushroom lamp\". \
                        It appears in front of you as a draft. Click a placed build to select it; while it's \
-                       selected, messages change that build."
+                       selected, messages change that build. To reshape the land, press G, drag across the \
+                       ground, and describe it: \"a pond with reeds\", \"a winding path\", \"terraced hillside\"."
                     .into(),
             }],
             status: String::new(),
@@ -139,14 +151,15 @@ impl Chat {
     }
 
     /// Sends the input. With no draft but a selected build, the message revises that
-    /// build: it becomes a pinned draft the agent edits in place.
-    fn send(&mut self, creations: &mut Creations, commands: &mut Commands, tools: Option<&McpServer>) {
+    /// build: it becomes a pinned draft the agent edits in place. Otherwise, with an
+    /// area selected (`area` describes it), the message reshapes that land.
+    fn send(&mut self, creations: &mut Creations, commands: &mut Commands, tools: Option<&McpServer>, area: Option<String>) {
         let text = self.input.trim().to_string();
         if text.is_empty() || self.pending.is_some() {
             return;
         }
         self.input.clear();
-        let restore = creations.draft.is_none() && creations.edit_selected(commands, false).is_some();
+        let restore = area.is_none() && creations.draft.is_none() && creations.edit_selected(commands, false).is_some();
         let turns: Vec<_> = self
             .messages
             .iter()
@@ -155,26 +168,54 @@ impl Chat {
             .collect();
         let history = &turns[turns.len().saturating_sub(HISTORY)..];
         let draft = creations.draft.as_ref().map(|d| &d.spec);
-        let request = prompt::request(history, draft, &text);
+        let request = prompt::request(history, draft, area.as_deref(), &text);
         self.say(Role::Player, text.clone());
         self.start(tools, self.provider, text, request, 0, restore);
     }
 }
 
+/// What the agent is told about the selected area, if this message is about land.
+fn area_context(
+    creations: &Creations,
+    landscape: &Landscape,
+    world: &VoxelWorld,
+    player: Option<Vec3>,
+    camera: Option<&GlobalTransform>,
+) -> Option<String> {
+    if creations.draft.is_some() || creations.selected.is_some() {
+        return None;
+    }
+    landscape.context(world, player, camera.map(|c| *c.forward()))
+}
+
 /// `CUBELARK_PROMPT="a red mailbox" cargo run` sends one message once the hero has
-/// landed. Pair with `CUBELARK_SHOT` to script a build end to end.
+/// landed. Pair with `CUBELARK_SHOT` to script a build end to end. `CUBELARK_AREA=12`
+/// selects a 12 m square of ground in front of the hero (first, or on its own).
 fn auto_prompt(
     mut commands: Commands,
     tools: Option<Res<McpServer>>,
     mut sent: Local<bool>,
     mut chat: ResMut<Chat>,
     mut creations: ResMut<Creations>,
-    players: Query<&Player>,
+    mut landscape: ResMut<Landscape>,
+    world: Res<VoxelWorld>,
+    players: Query<(&Player, &Transform)>,
+    cameras: Query<&GlobalTransform, With<Camera3d>>,
 ) {
-    if *sent || !players.single().is_ok_and(|p| p.has_landed()) {
+    let Ok((player, hero)) = players.single() else {
+        return;
+    };
+    if *sent || !player.has_landed() {
         return;
     }
     *sent = true;
+    if let Some(size) = std::env::var("CUBELARK_AREA").ok().and_then(|s| s.parse::<f32>().ok()) {
+        let forward = (hero.rotation * Vec3::NEG_Z).xz().normalize_or_zero();
+        let center = hero.translation.xz() + forward * (size / 2.0 + 2.0);
+        let half = Vec2::splat(size / 2.0);
+        let cell = |p: Vec2| (p / crate::world::terrain::VOXEL_SIZE).floor().as_ivec2();
+        landscape.area = Some(crate::world::sculpt::Area::from_corners(cell(center - half), cell(center + half) - 1));
+    }
     if let Ok(text) = std::env::var("CUBELARK_PROMPT") {
         if let Ok(provider) = std::env::var("CUBELARK_AGENT") {
             chat.provider = if provider == "codex" { Provider::Codex } else { Provider::Claude };
@@ -184,7 +225,8 @@ fn auto_prompt(
             creations.selected = creations.placed.last().map(|(e, _)| *e);
         }
         chat.input = text;
-        chat.send(&mut creations, &mut commands, tools.as_deref());
+        let area = area_context(&creations, &landscape, &world, Some(hero.translation), cameras.single().ok());
+        chat.send(&mut creations, &mut commands, tools.as_deref(), area);
     }
 }
 
@@ -208,6 +250,8 @@ fn poll_agent(
     mut commands: Commands,
     mut chat: ResMut<Chat>,
     mut creations: ResMut<Creations>,
+    mut landscape: ResMut<Landscape>,
+    mut world: ResMut<VoxelWorld>,
     site: Res<BuildSite>,
     tools: Option<Res<McpServer>>,
     drafts: Query<&Transform, With<DraftMarker>>,
@@ -254,6 +298,38 @@ fn poll_agent(
     if !answer.reply.trim().is_empty() {
         chat.say(Role::Agent(pending.provider.label()), answer.reply.trim().to_string());
     }
+    // Land first: a rejected change asks the agent for a fix (and drops any build with it).
+    let mut repairing = false;
+    if let Some(terrain) = answer.terrain {
+        let name = terrain.name.clone();
+        let provider = pending.provider.label().to_string();
+        match landscape.target() {
+            None => chat.say(Role::System, "The agent sent land changes, but no area is selected (G)."),
+            Some(area) => match landscape.preview(&mut world, terrain.clone(), pending.prompt.clone(), provider) {
+                Ok(stats) => {
+                    info!("terrain preview {name:?}: {stats:?} from {}", serde_json::to_string(&terrain).unwrap_or_default());
+                    chat.say(
+                        Role::System,
+                        format!(
+                            "Preview \"{name}\": {}. Enter keeps it, Esc puts the ground back, or ask for changes.",
+                            describe_stats(area, &stats)
+                        ),
+                    );
+                }
+                Err(errors) if pending.repairs == 0 => {
+                    warn!("terrain rejected, asking for a fix: {errors:?}");
+                    chat.say(Role::System, format!("Land change broke {} rule(s); asking for a fix…", errors.len()));
+                    let request = prompt::repair_terrain(&terrain, &errors);
+                    chat.start(tools.as_deref(), pending.provider, pending.prompt.clone(), request, 1, false);
+                    repairing = true;
+                }
+                Err(errors) => {
+                    warn!("terrain rejected again: {errors:?}");
+                    chat.say(Role::System, format!("⚠ Land change rejected:\n• {}", errors.join("\n• ")));
+                }
+            },
+        }
+    }
     let Some(spec) = answer.build else {
         keep_original(&mut creations, &mut chat);
         return;
@@ -284,7 +360,7 @@ fn poll_agent(
             let provider = pending.provider.label().to_string();
             creations.set_draft(&mut commands, &build.model, (spec, s, pending.prompt, provider), at);
         }
-        Err(errors) if pending.repairs == 0 => {
+        Err(errors) if pending.repairs == 0 && !repairing => {
             warn!("build rejected, asking for a fix: {errors:?}");
             chat.say(Role::System, format!("Build broke {} rule(s); asking for a fix…", errors.len()));
             let request = prompt::repair(&spec, &errors);
@@ -314,19 +390,24 @@ fn shortcuts(
     mut chat: ResMut<Chat>,
     mut creations: ResMut<Creations>,
     mut block_mode: ResMut<BlockMode>,
+    mut landscape: ResMut<Landscape>,
+    mut world: ResMut<VoxelWorld>,
     mut transforms: Query<&mut Transform, With<DraftMarker>>,
 ) {
     if blocked.0 {
         return;
     }
-    // A draft and block editing both own the mouse; the draft wins.
-    if creations.draft.is_some() && block_mode.active {
+    // Drafts, previews, area selection, and block editing all own the mouse; drafts win.
+    if (creations.draft.is_some() || landscape.draft.is_some()) && block_mode.active {
         block_mode.active = false;
+    }
+    if block_mode.active {
+        landscape.selecting = false;
     }
     let command = keys.any_pressed([KeyCode::ControlLeft, KeyCode::ControlRight, KeyCode::SuperLeft, KeyCode::SuperRight]);
     if command && keys.just_pressed(KeyCode::KeyZ) {
-        if let Some(message) = creations.undo(&mut commands) {
-            chat.say(Role::System, message);
+        if landscape.draft.is_none() {
+            undo(&mut commands, &mut creations, &mut landscape, &mut world, &mut chat);
         }
         return;
     }
@@ -337,6 +418,16 @@ fn shortcuts(
     if keys.just_pressed(KeyCode::KeyT) {
         chat.open = true;
         chat.focus_input = true;
+        return;
+    }
+
+    // G: select an area of ground to reshape.
+    if keys.just_pressed(KeyCode::KeyG) && creations.draft.is_none() && landscape.draft.is_none() && chat.pending.is_none() {
+        landscape.selecting = !landscape.selecting;
+        if landscape.selecting {
+            block_mode.active = false;
+            creations.selected = None;
+        }
         return;
     }
 
@@ -376,6 +467,22 @@ fn shortcuts(
         return;
     }
 
+    if landscape.draft.is_some() {
+        if keys.just_pressed(KeyCode::Enter) {
+            keep_terrain(&mut creations, &mut landscape, &mut world, &mut chat);
+        } else if keys.just_pressed(KeyCode::Escape) {
+            landscape.discard(&mut world);
+            chat.say(Role::System, "Put the ground back.");
+        }
+        return;
+    }
+    if landscape.selecting {
+        if keys.just_pressed(KeyCode::Escape) {
+            landscape.selecting = false;
+        }
+        return;
+    }
+
     // In block mode the keys belong to the hotbar.
     if block_mode.active {
         return;
@@ -395,9 +502,31 @@ fn shortcuts(
             chat.open = true;
             chat.focus_input = true;
         }
+    } else if keys.just_pressed(KeyCode::Escape) {
+        landscape.area = None;
     } else if keys.just_pressed(KeyCode::Enter) {
         chat.open = true;
         chat.focus_input = true;
+    }
+}
+
+/// Undoes the latest build or terrain change, whichever came last.
+fn undo(commands: &mut Commands, creations: &mut Creations, landscape: &mut Landscape, world: &mut VoxelWorld, chat: &mut Chat) {
+    match creations.undo(commands) {
+        Some(Undone::Message(message)) => chat.say(Role::System, message),
+        Some(Undone::Terrain(id)) => {
+            if let Some(message) = landscape.undo(world, id) {
+                chat.say(Role::System, message);
+            }
+        }
+        None => {}
+    }
+}
+
+fn keep_terrain(creations: &mut Creations, landscape: &mut Landscape, world: &mut VoxelWorld, chat: &mut Chat) {
+    if let Some((id, name)) = landscape.keep(world) {
+        creations.record_terrain(id);
+        chat.say(Role::System, format!("Kept \"{name}\". Ctrl/Cmd+Z undoes it; the area stays selected for more changes."));
     }
 }
 
@@ -494,10 +623,11 @@ fn click_in_world(
     mut creations: ResMut<Creations>,
     mut chat: ResMut<Chat>,
     block_mode: Res<BlockMode>,
+    landscape: Res<Landscape>,
     mut pressed_at: Local<[Option<Vec2>; 3]>,
     mut last_select: Local<Option<(Entity, f32)>>,
 ) {
-    if block_mode.active {
+    if block_mode.active || landscape.selecting {
         *pressed_at = default();
         return;
     }
@@ -560,6 +690,7 @@ fn shortcut_hints(
     chat: Res<Chat>,
     creations: Res<Creations>,
     block_mode: Res<BlockMode>,
+    landscape: Res<Landscape>,
 ) -> Result {
     // The block hotbar shows its own hints.
     if block_mode.active {
@@ -568,11 +699,16 @@ fn shortcut_hints(
     let hint = match &creations.draft {
         Some(d) if d.follow => "Click: place   Q/E: turn   R/F: raise / lower   Esc or right-click: cancel   T: ask for changes",
         Some(_) => "Enter: keep the change   M: move it   T: ask for more   Esc: cancel",
+        None if landscape.draft.is_some() => "Enter: keep the change   T: ask for changes   Esc: put the ground back   Right-drag: look",
+        None if landscape.selecting => {
+            "Drag across the ground to select an area (a click selects 6 m)   Right-drag: look   G or Esc: stop"
+        }
         None if creations.selected.is_some() => {
             "T: change it   M or double-click: move   Delete: remove   Middle-click: copy   Esc: deselect   Ctrl/Cmd+Z: undo"
         }
         None if chat.pending.is_some() => return Ok(()),
-        None => "T: describe a build   Click a build: select   Middle-click a build: copy   B: edit blocks",
+        None if landscape.area.is_some() => "T: describe what this land should become   G: select again   Esc: clear the area",
+        None => "T: describe a build   G: reshape the ground   Click a build: select   Middle-click a build: copy   B: blocks",
     };
     let ctx = contexts.ctx_mut()?;
     egui::Area::new("shortcut_hints".into())
@@ -612,6 +748,10 @@ enum Action {
     Move,
     Delete,
     Deselect,
+    KeepTerrain,
+    DiscardTerrain,
+    SelectArea,
+    ClearArea,
 }
 
 fn chat_panel(
@@ -623,6 +763,10 @@ fn chat_panel(
     mut commands: Commands,
     tools: Option<Res<McpServer>>,
     mut transforms: Query<&mut Transform, Without<Player>>,
+    mut landscape: ResMut<Landscape>,
+    mut world: ResMut<VoxelWorld>,
+    players: Query<&Transform, With<Player>>,
+    cameras: Query<&GlobalTransform, With<Camera3d>>,
 ) -> Result {
     if keys.just_pressed(KeyCode::Tab) && !egui_input.wants_keyboard_input() {
         chat.open = !chat.open;
@@ -739,6 +883,40 @@ fn chat_panel(
                         ui.label(egui::RichText::new("T: describe a change · middle-click copies it").small().weak());
                     });
                 }
+                if let Some(draft) = &landscape.draft {
+                    ui.add_space(4.0);
+                    ui.group(|ui| {
+                        ui.label(egui::RichText::new(format!("Land preview: {}", draft.spec.name)).strong());
+                        ui.label(describe_stats(draft.area, &draft.stats));
+                        ui.horizontal(|ui| {
+                            if ui.button(format!("{} Keep", icon::CHECK)).on_hover_text("Enter").clicked() {
+                                action = Some(Action::KeepTerrain);
+                            }
+                            if ui.button(format!("{} Put back", icon::X)).on_hover_text("Esc").clicked() {
+                                action = Some(Action::DiscardTerrain);
+                            }
+                        });
+                        ui.label(egui::RichText::new("Ask for changes · Keep applies it · Put back restores the ground").small().weak());
+                    });
+                } else if let Some(area) = landscape.area.filter(|_| creations.draft.is_none() && creations.selected.is_none()) {
+                    ui.add_space(4.0);
+                    ui.group(|ui| {
+                        let size = area.size_m();
+                        ui.label(egui::RichText::new(format!("Area: {:.1} × {:.1} m", size.x, size.y)).strong());
+                        ui.horizontal(|ui| {
+                            if ui.button(format!("{} Select again", icon::SELECTION)).on_hover_text("G").clicked() {
+                                action = Some(Action::SelectArea);
+                            }
+                            if ui.button("Clear").on_hover_text("Esc").clicked() {
+                                action = Some(Action::ClearArea);
+                            }
+                        });
+                        ui.label(egui::RichText::new("Describe what it should become: a pond, a path, a hill…").small().weak());
+                    });
+                } else if landscape.selecting {
+                    ui.add_space(4.0);
+                    ui.label(egui::RichText::new(format!("{} Drag across the ground to select an area", icon::SELECTION)).weak());
+                }
                 if chat.pending.is_some() {
                     ui.horizontal(|ui| {
                         ui.spinner();
@@ -753,7 +931,13 @@ fn chat_panel(
                     let input = ui.add_enabled(
                         chat.pending.is_none(),
                         egui::TextEdit::singleline(&mut chat.input)
-                            .hint_text(if creations.selected.is_some() { "Change it…  (T)" } else { "Build me…  (T)" })
+                            .hint_text(if creations.selected.is_some() {
+                                "Change it…  (T)"
+                            } else if landscape.target().is_some() && creations.draft.is_none() {
+                                "Make this land…  (T)"
+                            } else {
+                                "Build me…  (T)"
+                            })
                             .desired_width(ui.available_width() - 36.0),
                     );
                     if std::mem::take(&mut chat.focus_input) {
@@ -770,7 +954,10 @@ fn chat_panel(
                 ui.horizontal(|ui| {
                     ui.label(egui::RichText::new(format!("{} placed", creations.placed.len())).small().weak());
                     let undo = ui
-                        .add_enabled(creations.can_undo(), egui::Button::new(format!("{} Undo", icon::ARROW_U_UP_LEFT)).small())
+                        .add_enabled(
+                            creations.can_undo() && landscape.draft.is_none(),
+                            egui::Button::new(format!("{} Undo", icon::ARROW_U_UP_LEFT)).small(),
+                        )
                         .on_hover_text("Ctrl/Cmd+Z");
                     if undo.clicked() {
                         action = Some(Action::Undo);
@@ -799,7 +986,18 @@ fn chat_panel(
         });
 
     match action {
-        Some(Action::Send) => chat.send(&mut creations, &mut commands, tools.as_deref()),
+        Some(Action::Send) => {
+            let player = players.single().ok().map(|t| t.translation);
+            let area = area_context(&creations, &landscape, &world, player, cameras.single().ok());
+            chat.send(&mut creations, &mut commands, tools.as_deref(), area);
+        }
+        Some(Action::KeepTerrain) => keep_terrain(&mut creations, &mut landscape, &mut world, &mut chat),
+        Some(Action::DiscardTerrain) => {
+            landscape.discard(&mut world);
+            chat.say(Role::System, "Put the ground back.");
+        }
+        Some(Action::SelectArea) => landscape.selecting = true,
+        Some(Action::ClearArea) => landscape.area = None,
         Some(Action::Stop) => {
             if let Some(p) = &chat.pending
                 && let Ok(job) = p.job.lock()
@@ -836,11 +1034,7 @@ fn chat_panel(
             }
         }
         Some(Action::Deselect) => creations.selected = None,
-        Some(Action::Undo) => {
-            if let Some(message) = creations.undo(&mut commands) {
-                chat.say(Role::System, message);
-            }
-        }
+        Some(Action::Undo) => undo(&mut commands, &mut creations, &mut landscape, &mut world, &mut chat),
         None => {}
     }
     Ok(())

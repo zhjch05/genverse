@@ -11,6 +11,7 @@ use serde_json::{Value, json};
 
 use super::{
     creations::{Creations, SavedCreation, anchor_in_front},
+    landscape::{Landscape, sample},
     mcp::{McpServer, ToolCall},
     spec::{BuildSpec, VOXEL_SIZE, compile, limits},
 };
@@ -82,6 +83,19 @@ pub fn definitions() -> Value {
             },
         },
         {
+            "name": "sample_terrain",
+            "description": "A finer height map of part of the selected area, for terrain requests. Meters in the \
+                area frame (x, z from its corner); levels relative to sea level.",
+            "inputSchema": {
+                "type": "object",
+                "properties": {
+                    "x": { "type": "number" }, "z": { "type": "number" },
+                    "w": { "type": "number", "minimum": 0.5 }, "d": { "type": "number", "minimum": 0.5 },
+                },
+                "required": ["x", "z", "w", "d"],
+            },
+        },
+        {
             "name": "check_build",
             "description": "Validate a build against the limits and report how it sits on the ground at the site: \
                 floating columns, voxels buried in terrain or under water, and overlaps with nearby builds. \
@@ -124,6 +138,7 @@ pub fn answer_tool_calls(
     site: Res<BuildSite>,
     world: Res<VoxelWorld>,
     creations: Res<Creations>,
+    landscape: Res<Landscape>,
     players: Query<&Transform, With<Player>>,
     transforms: Query<&Transform>,
 ) {
@@ -146,11 +161,21 @@ pub fn answer_tool_calls(
             "list_nearby_builds" => Ok(ctx.nearby(&args)),
             "get_build_spec" => ctx.spec(&args),
             "check_build" => ctx.check(&args),
+            "sample_terrain" => sample_terrain(&world, &landscape, &args),
             other => Err(format!("unknown tool {other}")),
         };
         info!("agent tool {name}: {}", if result.is_ok() { "ok" } else { "error" });
         let _ = reply.send(result);
     }
+}
+
+fn sample_terrain(world: &VoxelWorld, landscape: &Landscape, args: &Value) -> Result<String, String> {
+    let area = landscape.target().ok_or("no area is selected; this tool is for terrain requests")?;
+    let num = |key: &str| args[key].as_f64().filter(|v| v.is_finite()).map(|v| v as f32);
+    let size = area.size_m();
+    let from = Vec2::new(num("x").unwrap_or(0.0), num("z").unwrap_or(0.0)).clamp(Vec2::ZERO, size - 0.25);
+    let span = Vec2::new(num("w").unwrap_or(size.x), num("d").unwrap_or(size.y)).max(Vec2::splat(0.25)).min(size - from);
+    Ok(sample(world, area, from, span, 24))
 }
 
 struct Ctx<'a> {

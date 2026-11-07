@@ -9,6 +9,7 @@
 //! cheap to save, and exactly what a server would replicate.
 
 pub mod edit;
+pub mod sculpt;
 pub mod terrain;
 
 use std::sync::Arc;
@@ -97,6 +98,8 @@ pub struct VoxelWorld {
     /// Loaded chunks whose meshes are out of date.
     dirty: HashSet<IVec3>,
     unsaved: bool,
+    /// Set while a terrain preview is applied, so it isn't saved until it's kept.
+    pub hold_saves: bool,
 }
 
 fn chunk_of(p: IVec3) -> IVec3 {
@@ -123,15 +126,59 @@ impl VoxelWorld {
         self.loaded.get(&chunk).map(|c| c.voxels.get(local))
     }
 
+    /// Fills `out` with world column `(x, z)`, `y = 0..WORLD_HEIGHT`. Returns false
+    /// if any of its chunks isn't loaded.
+    #[cfg_attr(target_arch = "wasm32", allow(dead_code))]
+    pub fn column(&self, x: i32, z: i32, out: &mut [VoxelId]) -> bool {
+        let c = chunk_of(IVec3::new(x, 0, z));
+        for cy in 0..VERTICAL_CHUNKS {
+            let Some(chunk) = self.loaded.get(&c.with_y(cy)) else {
+                return false;
+            };
+            let local = IVec3::new(x - c.x * CHUNK + 1, 1, z - c.z * CHUNK + 1);
+            for y in 0..CHUNK {
+                out[(cy * CHUNK + y) as usize] = chunk.voxels.get(local + IVec3::Y * y);
+            }
+        }
+        true
+    }
+
+    /// The edit stored at `p`, if any (otherwise it's whatever the seed made).
+    #[cfg_attr(target_arch = "wasm32", allow(dead_code))]
+    pub fn edit_at(&self, p: IVec3) -> Option<VoxelId> {
+        self.edits.get(&chunk_of(p)).and_then(|c| c.get(&p)).copied()
+    }
+
     /// Changes one voxel. Loaded chunks (and neighbors whose border holds it) update
     /// immediately for collision and remesh in the background. Returns false outside
     /// the editable range (the bottom layer is bedrock).
     pub fn set(&mut self, p: IVec3, id: VoxelId) -> bool {
+        self.write(p, Some(id), id)
+    }
+
+    /// Puts back a voxel as recorded by [`edit_at`](Self::edit_at) and [`get`](Self::get)
+    /// before it was changed.
+    #[cfg_attr(target_arch = "wasm32", allow(dead_code))]
+    pub fn restore(&mut self, p: IVec3, edit: Option<VoxelId>, visible: VoxelId) {
+        self.write(p, edit, visible);
+    }
+
+    fn write(&mut self, p: IVec3, edit: Option<VoxelId>, visible: VoxelId) -> bool {
         if p.y < 1 || p.y >= WORLD_HEIGHT {
             return false;
         }
-        self.edits.entry(chunk_of(p)).or_default().insert(p, id);
+        match edit {
+            Some(id) => {
+                self.edits.entry(chunk_of(p)).or_default().insert(p, id);
+            }
+            None => {
+                if let Some(chunk) = self.edits.get_mut(&chunk_of(p)) {
+                    chunk.remove(&p);
+                }
+            }
+        }
         self.unsaved = true;
+        let id = visible;
         // Every chunk whose padded grid contains `p`.
         let lo = chunk_of(p - IVec3::ONE);
         let hi = chunk_of(p + IVec3::ONE);
@@ -215,6 +262,7 @@ fn setup_world(mut commands: Commands, mut materials: ResMut<Assets<StandardMate
         versions: default(),
         dirty: default(),
         unsaved: false,
+        hold_saves: false,
     });
 }
 
@@ -245,7 +293,7 @@ fn load_edits() -> Vec<[i32; 4]> {
 /// Writes edits at most every couple of seconds.
 fn save_edits(time: Res<Time>, mut world: ResMut<VoxelWorld>, mut last: Local<f32>) {
     let now = time.elapsed_secs();
-    if !world.unsaved || now - *last < 2.0 {
+    if !world.unsaved || world.hold_saves || now - *last < 2.0 {
         return;
     }
     *last = now;
@@ -379,13 +427,20 @@ fn finish_chunks(
     }
     for (c, version, mut built) in done {
         world.pending.remove(&c);
-        // Edits made while the task ran: apply them now (for collision) and remesh again.
+        // Edits made while the task ran: the loaded voxels already have them, so keep
+        // those (for collision) and remesh again. A chunk loading for the first time
+        // just starts over.
         if world.versions.get(&c).copied().unwrap_or_default() != version {
-            let padded_min = c * CHUNK - IVec3::ONE;
-            for (p, id) in world.edits_for(c) {
-                built.voxels.set(p - padded_min, id);
+            match world.loaded.get(&c) {
+                Some(loaded) => {
+                    built.voxels = (*loaded.voxels).clone();
+                    world.dirty.insert(c);
+                }
+                None => {
+                    world.spawn_task(c, None);
+                    continue;
+                }
             }
-            world.dirty.insert(c);
         }
         let translation = (c * CHUNK).as_vec3() * VOXEL_SIZE;
         let entities = built
@@ -428,6 +483,7 @@ mod tests {
             versions: default(),
             dirty: default(),
             unsaved: false,
+            hold_saves: false,
         }
     }
 
@@ -461,6 +517,21 @@ mod tests {
         assert_eq!(border, AIR);
         assert!(world.dirty.contains(&a) && world.dirty.contains(&b));
         assert!(!world.dirty.contains(&IVec3::NEG_X));
+    }
+
+    #[test]
+    fn restore_puts_back_the_seed() {
+        let mut world = world();
+        load(&mut world, IVec3::ZERO);
+        let p = IVec3::new(4, 20, 4);
+        let (edit, visible) = (world.edit_at(p), world.get(p).unwrap());
+        world.set(p, block::SNOW);
+        world.restore(p, edit, visible);
+        assert_eq!(world.edit_at(p), None);
+        assert_eq!(world.get(p), Some(visible));
+        let mut column = vec![AIR; WORLD_HEIGHT as usize];
+        // Only the bottom chunk is loaded.
+        assert!(!world.column(4, 4, &mut column));
     }
 
     #[test]

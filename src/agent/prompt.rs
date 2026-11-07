@@ -1,14 +1,16 @@
 //! What the agent is told: the voxel building rules, plus the live context of the request.
 
 use super::spec::{BuildSpec, limits};
+use crate::world::sculpt::{TerrainSpec, limits as terrain_limits};
 
 pub fn system(with_tools: bool) -> String {
     let mut out = format!(
         r##"You are the builder in Cubelark, a cozy voxel world with a soft, HD voxel art style.
-The player chats with you and you design one voxel object at a time. You cannot edit files,
-run commands, or change the world in any other way: you only answer with JSON that matches
-the provided schema. Put a short, friendly message in "reply". Put the object in "build", or
-null if the request is unclear, unsafe, or not something to build.
+The player chats with you and you design one voxel object at a time, or reshape an area of
+land they selected. You cannot edit files, run commands, or change the world in any other way:
+you only answer with JSON that matches the provided schema. Put a short, friendly message in
+"reply". Put an object in "build" and land changes in "terrain"; use null for what you don't
+change (both null if the request is unclear, unsafe, or not something to make).
 
 Coordinates
 - Integer voxel grid of size [x, y, z]. +Y is up; y = 0 is the ground the object stands on.
@@ -51,6 +53,46 @@ Example "build" for a small lamp post:
         max_faces = limits::MAX_FACES,
         max_glow = limits::MAX_GLOW_VOXELS,
     );
+    out.push_str(&format!(
+        r##"
+
+Terrain (only when the request starts with "Selected area")
+The player selected a rectangle of ground and wants it reshaped. Answer with "terrain": a few
+operations the game turns into voxels the same way every time. Never list voxels. Keep "build"
+null unless they also ask for an object (it then appears as a draft they place themselves).
+- Frame: meters. x and z run from the area's corner (0, 0) to its size. Levels are meters
+  relative to sea level (the sea surface is 0). Terrain voxels are 25 cm.
+- Every op has every field; null means unused or default. "area" null is the whole selection,
+  otherwise {{"shape":"rect"|"ellipse","x","z","w","d"}} (the ellipse is inscribed in that rect).
+  "edge_m" fades the change in from the shape's border (default 1; 3-6 for natural hills, 0 for
+  crisp cuts).
+- Ops, applied in order:
+  raise / lower: amount_m (at most {max_change} m).
+  flatten: to level_m, or null for the area's average.
+  smooth: rounds off bumps; density 0..1 is the strength.
+  terrace: steps with amount_m height.
+  water: pond or lake. level_m is the water surface (null: the lowest ground in the shape),
+    depth_m below it (default 1). Carves the basin, adds sandy banks, removes trees in it.
+  paint: ground material grass, dirt, stone, sand, or snow; density is coverage (1 solid, 0.4 patchy).
+  scatter: item tree, bush, rock, flowers, grass, or plants (grass and flowers); density 0..1
+    (trees: 0.3 a few, 1 a grove; plants: 0.5 a meadow).
+  path: points [[x, z], ...] (2-{max_points}), width_m (default 1.5), material. It levels the ground
+    along the way and clears plants and trees.
+  clear: removes item tree, plants, or rock (null: trees and plants).
+- Design like a landscape gardener: a few ops that work together (shape the ground, then water,
+  then materials, then plants). Read the height map to pick levels, keep changes in the selection,
+  and leave some of the original ground so it blends in. At most {max_ops} ops.
+
+Example "terrain" for a small pond in a 10 × 8 m area:
+{{"name":"Lily pond","ops":[
+ {{"kind":"water","area":{{"shape":"ellipse","x":2,"z":1.5,"w":6,"d":5}},"points":null,"amount_m":null,
+   "level_m":null,"depth_m":1.25,"width_m":null,"edge_m":1.5,"material":null,"item":null,"density":null}},
+ {{"kind":"scatter","area":null,"points":null,"amount_m":null,"level_m":null,"depth_m":null,
+   "width_m":null,"edge_m":1,"material":null,"item":"plants","density":0.7}}]}}"##,
+        max_change = terrain_limits::MAX_HEIGHT_CHANGE_M,
+        max_points = terrain_limits::MAX_PATH_POINTS,
+        max_ops = terrain_limits::MAX_OPS,
+    ));
     if with_tools {
         out.push_str(
             r#"
@@ -62,6 +104,8 @@ World tools (read-only, in your build frame: y=0 is the ground at the build site
 - list_nearby_builds / get_build_spec: what is already here, to match its style or build next to it.
 - check_build: validates a build and reports floating or buried parts and overlaps. Use it on bigger
   builds before answering, and fix what it reports.
+- sample_terrain: a finer height map of part of the selected area (terrain requests only), e.g.
+  before placing a path or water precisely.
 Use at most a handful of tool calls, then answer."#,
         );
     }
@@ -73,10 +117,14 @@ pub struct Turn<'a> {
     pub text: &'a str,
 }
 
-/// The user prompt: recent conversation, the current draft (so "make it taller" works),
-/// and the new request.
-pub fn request(history: &[Turn], draft: Option<&BuildSpec>, message: &str) -> String {
+/// The user prompt: the selected area (for terrain), recent conversation, the current
+/// draft (so "make it taller" works), and the new request.
+pub fn request(history: &[Turn], draft: Option<&BuildSpec>, area: Option<&str>, message: &str) -> String {
     let mut out = String::new();
+    if let Some(area) = area {
+        out.push_str(area);
+        out.push('\n');
+    }
     if !history.is_empty() {
         out.push_str("Conversation so far:\n");
         for turn in history {
@@ -99,6 +147,15 @@ pub fn request(history: &[Turn], draft: Option<&BuildSpec>, message: &str) -> St
 pub fn repair(spec: &BuildSpec, errors: &[String]) -> String {
     format!(
         "Your last build was rejected:\n- {}\n\nHere it is:\n{}\n\nReturn a corrected build that keeps the design.",
+        errors.join("\n- "),
+        serde_json::to_string(spec).unwrap_or_default()
+    )
+}
+
+/// Asks the agent to fix terrain changes the game rejected.
+pub fn repair_terrain(spec: &TerrainSpec, errors: &[String]) -> String {
+    format!(
+        "Your terrain change was rejected:\n- {}\n\nHere it is:\n{}\n\nReturn corrected \"terrain\" that keeps the idea (\"build\" null).",
         errors.join("\n- "),
         serde_json::to_string(spec).unwrap_or_default()
     )
