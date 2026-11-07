@@ -2,8 +2,8 @@
 
 use super::spec::{BuildSpec, limits};
 
-pub fn system() -> String {
-    format!(
+pub fn system(with_tools: bool) -> String {
+    let mut out = format!(
         r##"You are the builder in Cubelark, a cozy voxel world with a soft, HD voxel art style.
 The player chats with you and you design one voxel object at a time. You cannot edit files,
 run commands, or change the world in any other way: you only answer with JSON that matches
@@ -50,7 +50,22 @@ Example "build" for a small lamp post:
         max_voxels = limits::MAX_VOXELS,
         max_faces = limits::MAX_FACES,
         max_glow = limits::MAX_GLOW_VOXELS,
-    )
+    );
+    if with_tools {
+        out.push_str(
+            r#"
+
+World tools (read-only, in your build frame: y=0 is the ground at the build site, z=0 faces the player)
+- get_build_site: the ground heights and surface under a footprint. Call it first when the build should
+  fit the terrain (slopes, water, trees) or the player mentions the surroundings, then shape the base to
+  the ground: extend legs or foundations down to it, or step the build with the slope.
+- list_nearby_builds / get_build_spec: what is already here, to match its style or build next to it.
+- check_build: validates a build and reports floating or buried parts and overlaps. Use it on bigger
+  builds before answering, and fix what it reports.
+Use at most a handful of tool calls, then answer."#,
+        );
+    }
+    out
 }
 
 pub struct Turn<'a> {

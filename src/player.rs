@@ -10,9 +10,9 @@ use bevy::{
 };
 
 use crate::{
-    voxel::{VoxelModel, VoxelModelAsset},
+    voxel::{VoxelModel, VoxelModelAsset, query::overlaps_box},
     world::{
-        ChunkLoader, VoxelWorld,
+        ChunkLoader, SolidModel, VoxelWorld,
         terrain::{SEA_LEVEL, VOXEL_SIZE, is_solid},
     },
 };
@@ -70,6 +70,7 @@ struct Hero {
 
 impl Player {
     /// True once the ground under the spawn point has loaded and the hero stands on it.
+    #[cfg_attr(target_arch = "wasm32", allow(dead_code))] // Used by the desktop-only builder.
     pub fn has_landed(&self) -> bool {
         self.spawned && self.grounded
     }
@@ -201,20 +202,34 @@ fn build_hero_parts(
     }
 }
 
-fn collides(world: &VoxelWorld, feet: Vec3) -> bool {
-    let min = VoxelWorld::voxel_at(feet - Vec3::new(HALF_WIDTH, 0.0, HALF_WIDTH));
-    let max = VoxelWorld::voxel_at(feet + Vec3::new(HALF_WIDTH, HEIGHT, HALF_WIDTH) - 1e-4);
-    for z in min.z..=max.z {
-        for y in min.y..=max.y {
-            for x in min.x..=max.x {
-                // Unloaded space counts as solid so the hero never falls through it.
-                if world.get(IVec3::new(x, y, z)).is_none_or(is_solid) {
-                    return true;
+/// The hero's collision box for feet at `feet`, as `(min, max)`.
+pub fn bounds(feet: Vec3) -> (Vec3, Vec3) {
+    (feet - Vec3::new(HALF_WIDTH, 0.0, HALF_WIDTH), feet + Vec3::new(HALF_WIDTH, HEIGHT, HALF_WIDTH))
+}
+
+/// Everything the hero can bump into: terrain plus nearby solid models.
+struct Obstacles<'a> {
+    world: &'a VoxelWorld,
+    models: Vec<(&'a VoxelModel, &'a GlobalTransform)>,
+}
+
+impl Obstacles<'_> {
+    fn collides(&self, feet: Vec3) -> bool {
+        let (lo, hi) = bounds(feet);
+        let min = VoxelWorld::voxel_at(lo);
+        let max = VoxelWorld::voxel_at(hi - 1e-4);
+        for z in min.z..=max.z {
+            for y in min.y..=max.y {
+                for x in min.x..=max.x {
+                    // Unloaded space counts as solid so the hero never falls through it.
+                    if self.world.get(IVec3::new(x, y, z)).is_none_or(is_solid) {
+                        return true;
+                    }
                 }
             }
         }
+        self.models.iter().any(|(model, transform)| overlaps_box(model, transform, lo, hi))
     }
-    false
 }
 
 fn move_player(
@@ -223,6 +238,7 @@ fn move_player(
     blocked: Res<InputBlocked>,
     world: Res<VoxelWorld>,
     cameras: Query<&FollowCamera>,
+    solids: Query<(&VoxelModel, &GlobalTransform), With<SolidModel>>,
     mut players: Query<(&mut Player, &mut Transform)>,
 ) {
     let dt = time.delta_secs().min(1.0 / 20.0);
@@ -231,9 +247,21 @@ fn move_player(
         if !world.column_loaded(transform.translation) {
             continue;
         }
+        // Only models whose bounds could reach the hero this frame.
+        let here = transform.translation;
+        let obstacles = Obstacles {
+            world: &world,
+            models: solids
+                .iter()
+                .filter(|(model, t)| {
+                    let reach = model.grid.size().as_vec3().length() * model.voxel_size + 2.0;
+                    t.translation().distance(here) < reach
+                })
+                .collect(),
+        };
         // Drop into place once the ground under the spawn point has loaded.
         if !player.spawned {
-            while collides(&world, transform.translation) {
+            while obstacles.collides(transform.translation) {
                 transform.translation.y += VOXEL_SIZE;
             }
             player.spawned = true;
@@ -277,7 +305,7 @@ fn move_player(
         player.grounded = false;
         for _ in 0..steps {
             let next = pos + Vec3::Y * step.y;
-            if collides(&world, next) {
+            if obstacles.collides(next) {
                 if step.y < 0.0 {
                     player.grounded = true;
                 }
@@ -287,7 +315,7 @@ fn move_player(
             }
             for axis in [Vec3::X, Vec3::Z] {
                 let next = pos + axis * step.dot(axis);
-                if !collides(&world, next) {
+                if !obstacles.collides(next) {
                     pos = next;
                     continue;
                 }
@@ -295,7 +323,7 @@ fn move_player(
                 let lift = [VOXEL_SIZE, STEP_HEIGHT]
                     .into_iter()
                     .map(|h| Vec3::Y * (h + 1e-3))
-                    .find(|up| !collides(&world, pos + *up) && !collides(&world, next + *up));
+                    .find(|up| !obstacles.collides(pos + *up) && !obstacles.collides(next + *up));
                 match lift {
                     Some(up) if was_grounded || player.grounded => pos = next + up,
                     _ => {
@@ -309,7 +337,7 @@ fn move_player(
             }
         }
         if !player.grounded {
-            player.grounded = collides(&world, pos - Vec3::Y * 0.02);
+            player.grounded = obstacles.collides(pos - Vec3::Y * 0.02);
         }
         transform.translation = pos;
         transform.rotation = Quat::from_rotation_y(player.facing);

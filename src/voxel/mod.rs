@@ -12,6 +12,7 @@ mod grid;
 pub mod mesher;
 pub mod noise;
 mod palette;
+pub mod query;
 
 use std::sync::Arc;
 
@@ -84,6 +85,12 @@ impl VoxelModel {
     }
 }
 
+/// Pushes a model's depth toward the camera so it wins ties with coplanar faces of
+/// other geometry (e.g. a build resting exactly on terrain), instead of z-fighting.
+/// Positive values bias toward the camera; see [`StandardMaterial::depth_bias`].
+#[derive(Component, Clone, Copy)]
+pub struct DepthBias(pub f32);
+
 /// Child entities generated from a [`VoxelModel`], replaced on every rebuild.
 #[derive(Component, Default)]
 struct VoxelModelParts(Vec<Entity>);
@@ -119,9 +126,12 @@ fn rebuild_models(
     mut commands: Commands,
     mut meshes: ResMut<Assets<Mesh>>,
     mut materials: ResMut<Assets<StandardMaterial>>,
-    mut models: Query<(Entity, &VoxelModel, Option<&mut VoxelModelParts>), Changed<VoxelModel>>,
+    mut models: Query<
+        (Entity, &VoxelModel, Option<&mut VoxelModelParts>, Option<&DepthBias>),
+        Changed<VoxelModel>,
+    >,
 ) {
-    for (entity, model, parts) in &mut models {
+    for (entity, model, parts, bias) in &mut models {
         let started = bevy::platform::time::Instant::now();
         let old = parts.map(|mut p| std::mem::take(&mut p.0)).unwrap_or_default();
         for e in old {
@@ -132,7 +142,11 @@ fn rebuild_models(
             .palette
             .surfaces
             .iter()
-            .map(|s| materials.add(s.to_material()))
+            .map(|s| {
+                let mut material = s.to_material();
+                material.depth_bias = bias.map_or(0.0, |b| b.0);
+                materials.add(material)
+            })
             .collect();
         let offset = -model.pivot * model.voxel_size;
         let chunks = mesher::mesh_grid(&model.grid, &model.palette, model.voxel_size);

@@ -15,7 +15,11 @@ use bevy::{
     tasks::{AsyncComputeTaskPool, Task, futures::check_ready},
 };
 
-use crate::voxel::{Palette, VoxelGrid, VoxelId, mesher::mesh_region};
+use crate::voxel::{
+    Palette, VoxelGrid, VoxelId,
+    mesher::mesh_region,
+    query::{Hit, march},
+};
 use terrain::{Terrain, VOXEL_SIZE, WORLD_HEIGHT};
 
 pub const CHUNK: i32 = 32;
@@ -39,6 +43,10 @@ pub struct ChunkLoader;
 
 #[derive(Component)]
 pub struct WorldChunk;
+
+/// A [`VoxelModel`](crate::voxel::VoxelModel) the hero collides with, like a placed build.
+#[derive(Component)]
+pub struct SolidModel;
 
 struct LoadedChunk {
     /// `(CHUNK + 2)^3` voxels: the chunk plus a one-voxel border.
@@ -74,6 +82,17 @@ impl VoxelWorld {
         let chunk = chunk.with_y(chunk.y.clamp(0, VERTICAL_CHUNKS - 1));
         let local = p - chunk * CHUNK + IVec3::ONE;
         self.loaded.get(&chunk).map(|c| c.voxels.get(local))
+    }
+
+    /// The first solid terrain voxel hit by `ray` within `max` meters. Stops at
+    /// unloaded chunks.
+    #[cfg_attr(target_arch = "wasm32", allow(dead_code))] // Used by the desktop-only builder.
+    pub fn raycast(&self, ray: Ray3d, max: f32) -> Option<Hit> {
+        let origin = ray.origin / VOXEL_SIZE;
+        let dir = *ray.direction / VOXEL_SIZE;
+        let (distance, normal) =
+            march(origin, dir, 0.0, max, |cell| self.get(cell).map(terrain::is_solid))?;
+        Some(Hit { distance, normal: normal.as_vec3() })
     }
 
     /// Whether every chunk in the column containing `pos` is loaded.

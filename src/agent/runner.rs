@@ -18,7 +18,10 @@ use std::{
 
 use serde_json::Value;
 
-use super::spec::{AgentAnswer, SCHEMA};
+use super::{
+    mcp::{McpServer, SERVER_NAME},
+    spec::{AgentAnswer, SCHEMA},
+};
 
 const TIMEOUT: Duration = Duration::from_secs(300);
 
@@ -57,12 +60,20 @@ impl AgentJob {
     }
 }
 
-pub fn start(provider: Provider, system: String, prompt: String) -> AgentJob {
+/// Where the game's world tools are served, if they are.
+#[derive(Clone)]
+struct ToolServer {
+    url: String,
+    token: String,
+}
+
+pub fn start(provider: Provider, system: String, prompt: String, tools: Option<&McpServer>) -> AgentJob {
     let (tx, rx) = mpsc::channel();
     let cancel = Arc::new(AtomicBool::new(false));
     let flag = cancel.clone();
+    let tools = tools.map(|t| ToolServer { url: t.url.clone(), token: t.token.clone() });
     thread::spawn(move || {
-        let result = run(provider, &system, &prompt, &tx, &flag);
+        let result = run(provider, &system, &prompt, tools.as_ref(), &tx, &flag);
         let _ = tx.send(AgentEvent::Finished(result));
     });
     AgentJob { events: rx, cancel, started: Instant::now() }
@@ -78,6 +89,7 @@ fn run(
     provider: Provider,
     system: &str,
     prompt: &str,
+    tools: Option<&ToolServer>,
     tx: &Sender<AgentEvent>,
     cancel: &AtomicBool,
 ) -> Result<AgentAnswer, String> {
@@ -91,6 +103,16 @@ fn run(
                 .args(["--json-schema", SCHEMA, "--system-prompt", system])
                 .args(["--tools", "", "--strict-mcp-config", "--setting-sources", ""])
                 .args(["--disable-slash-commands", "--no-session-persistence"]);
+            // Only the game's own read-only tools; no other MCP servers load.
+            if let Some(tools) = tools {
+                let config = serde_json::json!({ "mcpServers": { SERVER_NAME: {
+                    "type": "http",
+                    "url": tools.url,
+                    "headers": { "Authorization": format!("Bearer {}", tools.token) },
+                }}});
+                cmd.args(["--mcp-config", &config.to_string()])
+                    .args(["--allowedTools", &format!("mcp__{SERVER_NAME}")]);
+            }
         }
         Provider::Codex => {
             let schema = dir.join("build_spec.schema.json");
@@ -98,7 +120,18 @@ fn run(
             let _ = std::fs::remove_file(&last_message);
             cmd = Command::new("codex");
             cmd.args(["exec", "--json", "--ignore-user-config", "--ephemeral", "--skip-git-repo-check"])
-                .args(["--sandbox", "read-only", "-c", "model_reasoning_effort=\"low\""])
+                .args(["--sandbox", "read-only", "-c", "model_reasoning_effort=\"low\""]);
+            if let Some(tools) = tools {
+                cmd.arg("-c")
+                    .arg(format!("mcp_servers.{SERVER_NAME}.url=\"{}\"", tools.url))
+                    .arg("-c")
+                    .arg(format!("mcp_servers.{SERVER_NAME}.bearer_token_env_var=\"CUBELARK_MCP_TOKEN\""))
+                    // Headless runs can't ask for approval; these tools are read-only.
+                    .arg("-c")
+                    .arg(format!("mcp_servers.{SERVER_NAME}.default_tools_approval_mode=\"approve\""))
+                    .env("CUBELARK_MCP_TOKEN", &tools.token);
+            }
+            cmd
                 .arg("--output-schema")
                 .arg(&schema)
                 .arg("-o")
@@ -162,7 +195,17 @@ fn run(
         match provider {
             Provider::Claude => match event["type"].as_str() {
                 Some("assistant") => {
-                    let _ = tx.send(AgentEvent::Status("designing…".into()));
+                    let tool = event["message"]["content"]
+                        .as_array()
+                        .and_then(|c| c.iter().find(|b| b["type"] == "tool_use"))
+                        .and_then(|b| b["name"].as_str());
+                    let status = match tool {
+                        Some(name) if name.starts_with("mcp__") => {
+                            format!("using {}…", name.rsplit("__").next().unwrap_or(name))
+                        }
+                        _ => "designing…".into(),
+                    };
+                    let _ = tx.send(AgentEvent::Status(status));
                 }
                 Some("result") => {
                     if event["is_error"].as_bool() == Some(true) {
@@ -176,6 +219,10 @@ fn run(
             Provider::Codex => match event["type"].as_str() {
                 Some("item.completed") if event["item"]["type"] == "reasoning" => {
                     let _ = tx.send(AgentEvent::Status("thinking…".into()));
+                }
+                Some("item.started") if event["item"]["type"] == "mcp_tool_call" => {
+                    let tool = event["item"]["tool"].as_str().unwrap_or("a tool");
+                    let _ = tx.send(AgentEvent::Status(format!("using {tool}…")));
                 }
                 Some("turn.failed") | Some("error") => {
                     let message = event["error"]["message"].as_str().or(event["message"].as_str());
