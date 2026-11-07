@@ -20,6 +20,9 @@ tracing = { version = "0.1", features = [
 # Live reload of `.vox.ron` models. Not available on Wasm.
 [target.'cfg(not(target_arch = "wasm32"))'.dependencies]
 bevy = { version = "0.20", features = ["file_watcher"] }
+# Chat panel and local agent (Claude Code / Codex CLI) integration.
+bevy_egui = "0.43"
+serde_json = "1"
 
 # The physical sky needs compute shaders, which WebGL2 lacks.
 [package.metadata.bevy_cli.web]
@@ -37,6 +40,10 @@ type_complexity = "allow"
 # Enable a small amount of optimization in the dev profile.
 [profile.dev]
 opt-level = 1
+
+# World generation and meshing are hot loops; optimize them even in dev and web builds.
+[profile.dev.package.cubelark]
+opt-level = 3
 
 # Enable a large amount of optimization in the dev profile for dependencies.
 [profile.dev.package."*"]

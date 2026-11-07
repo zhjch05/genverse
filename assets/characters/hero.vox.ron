@@ -1,0 +1,113 @@
+// A small chibi adventurer: big head, compact body, scarf and backpack.
+// 5 cm voxels, about 1.4 m tall. Faces -Z. Boxes are [min, max) in voxels.
+//
+// `parts` cut the figure into limbs that the game animates around their joints.
+(
+    voxel_size: 0.05,
+    size: (20, 32, 14),
+    pivot: (10, 0, 6.5), // between the feet
+
+    surfaces: [
+        (name: "cloth", roughness: 0.9, reflectance: 0.3),
+        (name: "skin", roughness: 0.6, reflectance: 0.4),
+        (name: "hair", roughness: 0.65, reflectance: 0.45),
+        (name: "gloss", roughness: 0.15, reflectance: 0.6),
+        (name: "metal", roughness: 0.35, metallic: 0.8, reflectance: 0.5),
+    ],
+
+    palette: [
+        (name: "skin", color: "#f3caa6", surface: "skin", variation: 0.02),
+        (name: "blush", color: "#f2a0a0", surface: "skin"),
+        (name: "mouth", color: "#a3564b", surface: "skin"),
+        (name: "eye", color: "#2b2333", surface: "gloss"),
+        (name: "eye_shine", color: "#ffffff", surface: "gloss"),
+        (name: "hair", color: "#5c3b2a", surface: "hair", variation: 0.06),
+        (name: "hair_light", color: "#74503a", surface: "hair", variation: 0.06),
+        (name: "scarf", color: "#d9534f", surface: "cloth", variation: 0.04),
+        (name: "scarf_dark", color: "#b8413e", surface: "cloth", variation: 0.04),
+        (name: "tunic", color: "#3f8f86", surface: "cloth", variation: 0.04),
+        (name: "tunic_dark", color: "#2f736c", surface: "cloth", variation: 0.04),
+        (name: "trim", color: "#eadbb0", surface: "cloth", variation: 0.03),
+        (name: "belt", color: "#5b3a26", surface: "cloth", variation: 0.04),
+        (name: "buckle", color: "#d9b45a", surface: "metal"),
+        (name: "pants", color: "#3b4663", surface: "cloth", variation: 0.04),
+        (name: "boot", color: "#4d3527", surface: "cloth", variation: 0.04),
+        (name: "sole", color: "#2e211a", surface: "cloth"),
+        (name: "bag", color: "#8a5a3a", surface: "cloth", variation: 0.05),
+        (name: "bag_dark", color: "#6d4630", surface: "cloth", variation: 0.05),
+    ],
+
+    ops: [
+        // ---- Legs ----------------------------------------------------------
+        Shape(geom: Box(min: (5, 3, 4), max: (9, 8, 9)), fill: Solid("pants")),
+        Shape(geom: Box(min: (11, 3, 4), max: (15, 8, 9)), fill: Solid("pants")),
+        Shape(geom: Box(min: (5, 0, 3), max: (9, 3, 9)), fill: Solid("boot")),
+        Shape(geom: Box(min: (11, 0, 3), max: (15, 3, 9)), fill: Solid("boot")),
+        Shape(geom: Box(min: (5, 0, 3), max: (9, 1, 9)), fill: Solid("sole")),
+        Shape(geom: Box(min: (11, 0, 3), max: (15, 1, 9)), fill: Solid("sole")),
+        Shape(geom: Box(min: (5, 2, 3), max: (9, 3, 9)), fill: Solid("trim")),
+        Shape(geom: Box(min: (11, 2, 3), max: (15, 3, 9)), fill: Solid("trim")),
+
+        // ---- Torso -------------------------------------------------------
+        Shape(geom: Box(min: (5, 8, 3), max: (15, 16, 10)), fill: Noise(mats: ["tunic", "tunic", "tunic_dark"], scale: 3)),
+        // Flared hem.
+        Shape(geom: Box(min: (5, 8, 2), max: (15, 10, 11)), fill: Solid("tunic_dark")),
+        Shape(geom: Box(min: (5, 8, 2), max: (15, 9, 11)), fill: Solid("trim")),
+        Shape(geom: Box(min: (5, 10, 2), max: (15, 11, 11)), fill: Solid("belt")),
+        Shape(geom: Box(min: (9, 10, 1), max: (11, 11, 2)), fill: Solid("buckle")),
+        // Scarf with a knot hanging in front.
+        Shape(geom: Box(min: (5, 15, 2), max: (15, 17, 11)), fill: Noise(mats: ["scarf", "scarf_dark"], scale: 2)),
+        Shape(geom: Box(min: (11, 12, 1), max: (13, 15, 2)), fill: Noise(mats: ["scarf", "scarf_dark"], scale: 1.5)),
+        // Backpack and bedroll.
+        Shape(geom: Box(min: (6, 10, 10), max: (14, 15, 13)), fill: Solid("bag")),
+        Shape(geom: Box(min: (6, 13, 10), max: (14, 15, 13)), fill: Solid("bag_dark")),
+        Shape(geom: Box(min: (9, 12, 13), max: (11, 13, 14)), fill: Solid("buckle")),
+        Shape(geom: Capsule(a: (6, 15.5, 11.5), b: (14, 15.5, 11.5), radius_a: 1.4, radius_b: 1.4), fill: Solid("trim")),
+
+        // ---- Arms --------------------------------------------------------
+        Shape(geom: Box(min: (2, 11, 5), max: (5, 16, 8)), fill: Solid("tunic")),
+        Shape(geom: Box(min: (15, 11, 5), max: (18, 16, 8)), fill: Solid("tunic")),
+        Shape(geom: Box(min: (2, 11, 5), max: (5, 12, 8)), fill: Solid("trim")),
+        Shape(geom: Box(min: (15, 11, 5), max: (18, 12, 8)), fill: Solid("trim")),
+        Shape(geom: Box(min: (2, 9, 5), max: (5, 11, 8)), fill: Solid("skin")),
+        Shape(geom: Box(min: (15, 9, 5), max: (18, 11, 8)), fill: Solid("skin")),
+
+        // ---- Head --------------------------------------------------------
+        Shape(geom: Box(min: (4, 17, 1), max: (16, 28, 12)), fill: Solid("skin")),
+        // Hair: a rounded shell over the head, then cleared off the face.
+        Shape(
+            geom: Ellipsoid(center: (10, 26, 6.5), radii: (7.2, 5.2, 7.2)),
+            fill: Noise(mats: ["hair", "hair_light"], scale: 2.5),
+            mask: ["air"],
+        ),
+        Shape(geom: Box(min: (4, 26, 1), max: (16, 28, 12)), fill: Noise(mats: ["hair", "hair_light"], scale: 2.5)),
+        Shape(geom: Box(min: (4, 18, 9), max: (16, 26, 13)), fill: Noise(mats: ["hair", "hair_light"], scale: 2.5)),
+        Shape(geom: Box(min: (5, 17, 0), max: (15, 24, 1)), fill: Solid("air")),
+        Shape(geom: Box(min: (2, 17, 0), max: (18, 21, 14)), fill: Solid("air"), mask: ["hair", "hair_light"]),
+        // Bangs.
+        Shape(geom: Box(min: (4, 25, 0), max: (16, 26, 1)), fill: Solid("hair")),
+        Shape(geom: Box(min: (5, 24, 0), max: (8, 25, 1)), fill: Solid("hair")),
+        Shape(geom: Box(min: (9, 23, 0), max: (12, 25, 1)), fill: Solid("hair_light")),
+        Shape(geom: Box(min: (13, 24, 0), max: (15, 25, 1)), fill: Solid("hair")),
+        // Cowlick.
+        Shape(geom: Box(min: (9, 30, 5), max: (11, 32, 7)), fill: Solid("hair_light")),
+        Shape(geom: Box(min: (10, 31, 4), max: (11, 32, 5)), fill: Solid("hair_light")),
+        // Face, painted on the front layer.
+        Shape(geom: Box(min: (6, 20, 1), max: (8, 23, 2)), fill: Solid("eye")),
+        Shape(geom: Box(min: (12, 20, 1), max: (14, 23, 2)), fill: Solid("eye")),
+        Shape(geom: Box(min: (6, 22, 1), max: (7, 23, 2)), fill: Solid("eye_shine")),
+        Shape(geom: Box(min: (12, 22, 1), max: (13, 23, 2)), fill: Solid("eye_shine")),
+        Shape(geom: Box(min: (5, 19, 1), max: (7, 20, 2)), fill: Solid("blush")),
+        Shape(geom: Box(min: (13, 19, 1), max: (15, 20, 2)), fill: Solid("blush")),
+        Shape(geom: Box(min: (9, 18, 1), max: (11, 19, 2)), fill: Solid("mouth")),
+    ],
+
+    parts: [
+        (name: "leg_l", min: (4, 0, 2), max: (10, 8, 12), joint: (7, 8, 6.5)),
+        (name: "leg_r", min: (10, 0, 2), max: (16, 8, 12), joint: (13, 8, 6.5)),
+        (name: "torso", min: (5, 8, 0), max: (15, 17, 14), joint: (10, 8, 6.5)),
+        (name: "arm_l", min: (1, 8, 4), max: (5, 17, 9), joint: (3.5, 15.5, 6.5), parent: "torso"),
+        (name: "arm_r", min: (15, 8, 4), max: (19, 17, 9), joint: (16.5, 15.5, 6.5), parent: "torso"),
+        (name: "head", min: (2, 17, 0), max: (18, 32, 14), joint: (10, 17, 6.5), parent: "torso"),
+    ],
+)

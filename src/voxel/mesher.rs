@@ -80,7 +80,13 @@ fn face_visible(palette: &Palette, id: VoxelId, neighbor: VoxelId) -> bool {
 }
 
 /// Number of unoccluded neighbors (0..=3) around one face corner.
-fn corner_light(grid: &VoxelGrid, palette: &Palette, p: IVec3, face: &Face, corner: IVec3) -> usize {
+fn corner_light(
+    get: &impl Fn(IVec3) -> VoxelId,
+    palette: &Palette,
+    p: IVec3,
+    face: &Face,
+    corner: IVec3,
+) -> usize {
     let layer = p + face.normal;
     let mut offsets = [IVec3::ZERO; 2];
     let mut n = 0;
@@ -90,7 +96,7 @@ fn corner_light(grid: &VoxelGrid, palette: &Palette, p: IVec3, face: &Face, corn
             n += 1;
         }
     }
-    let solid = |q: IVec3| palette.is_opaque(grid.get(q));
+    let solid = |q: IVec3| palette.is_opaque(get(q));
     let side1 = solid(layer + offsets[0]);
     let side2 = solid(layer + offsets[1]);
     if side1 && side2 {
@@ -100,64 +106,77 @@ fn corner_light(grid: &VoxelGrid, palette: &Palette, p: IVec3, face: &Face, corn
     3 - (side1 as usize + side2 as usize + corner as usize)
 }
 
+/// Meshes the voxels in `min..max`, reading neighbors (which may lie outside the
+/// region) through `get`. Returns one mesh per surface, positioned relative to `min`.
+pub fn mesh_region(
+    get: impl Fn(IVec3) -> VoxelId,
+    palette: &Palette,
+    voxel_size: f32,
+    min: IVec3,
+    max: IVec3,
+) -> Vec<(usize, Mesh)> {
+    let mut builders: Vec<MeshBuilder> =
+        palette.surfaces.iter().map(|_| MeshBuilder::default()).collect();
+
+    for z in min.z..max.z {
+        for y in min.y..max.y {
+            for x in min.x..max.x {
+                let p = IVec3::new(x, y, z);
+                let id = get(p);
+                if id == AIR {
+                    continue;
+                }
+                let entry = palette.entry(id);
+                let jitter = 1.0 + entry.variation * (hash01(p, id as u32) * 2.0 - 1.0);
+                let base = entry.color * jitter;
+                let b = &mut builders[entry.surface];
+
+                for face in &FACES {
+                    if !face_visible(palette, id, get(p + face.normal)) {
+                        continue;
+                    }
+                    let light = face.corners.map(|c| corner_light(&get, palette, p, face, c));
+                    let start = b.positions.len() as u32;
+                    for (corner, l) in face.corners.iter().zip(light) {
+                        let local = (p - min + *corner).as_vec3() * voxel_size;
+                        let shade = AO_CURVE[l];
+                        b.positions.push(local.into());
+                        b.normals.push(face.normal.as_vec3().into());
+                        b.colors.push([base.red * shade, base.green * shade, base.blue * shade, 1.0]);
+                    }
+                    // Split the quad along the brighter diagonal so AO
+                    // gradients don't show a visible crease.
+                    let quad = if light[0] + light[2] >= light[1] + light[3] {
+                        [0, 1, 2, 0, 2, 3]
+                    } else {
+                        [1, 2, 3, 1, 3, 0]
+                    };
+                    b.indices.extend(quad.map(|i| start + i));
+                }
+            }
+        }
+    }
+
+    builders
+        .into_iter()
+        .enumerate()
+        .filter(|(_, b)| !b.indices.is_empty())
+        .map(|(surface, b)| (surface, b.build()))
+        .collect()
+}
+
+/// Meshes a whole grid in [`CHUNK_SIZE`] chunks.
 pub fn mesh_grid(grid: &VoxelGrid, palette: &Palette, voxel_size: f32) -> Vec<ChunkMesh> {
     let size = grid.size().as_ivec3();
     let chunk_counts = (size + IVec3::splat(CHUNK_SIZE - 1)) / CHUNK_SIZE;
     let mut out = Vec::new();
-
     for cz in 0..chunk_counts.z {
         for cy in 0..chunk_counts.y {
             for cx in 0..chunk_counts.x {
                 let origin = IVec3::new(cx, cy, cz) * CHUNK_SIZE;
                 let end = (origin + IVec3::splat(CHUNK_SIZE)).min(size);
-                let mut builders: Vec<MeshBuilder> =
-                    palette.surfaces.iter().map(|_| MeshBuilder::default()).collect();
-
-                for z in origin.z..end.z {
-                    for y in origin.y..end.y {
-                        for x in origin.x..end.x {
-                            let p = IVec3::new(x, y, z);
-                            let id = grid.get(p);
-                            if id == AIR {
-                                continue;
-                            }
-                            let entry = palette.entry(id);
-                            let jitter = 1.0 + entry.variation * (hash01(p, id as u32) * 2.0 - 1.0);
-                            let base = entry.color * jitter;
-                            let b = &mut builders[entry.surface];
-
-                            for face in &FACES {
-                                if !face_visible(palette, id, grid.get(p + face.normal)) {
-                                    continue;
-                                }
-                                let light = face
-                                    .corners
-                                    .map(|c| corner_light(grid, palette, p, face, c));
-                                let start = b.positions.len() as u32;
-                                for (corner, l) in face.corners.iter().zip(light) {
-                                    let local = (p - origin + *corner).as_vec3() * voxel_size;
-                                    let shade = AO_CURVE[l];
-                                    b.positions.push(local.into());
-                                    b.normals.push(face.normal.as_vec3().into());
-                                    b.colors.push([base.red * shade, base.green * shade, base.blue * shade, 1.0]);
-                                }
-                                // Split the quad along the brighter diagonal so AO
-                                // gradients don't show a visible crease.
-                                let quad = if light[0] + light[2] >= light[1] + light[3] {
-                                    [0, 1, 2, 0, 2, 3]
-                                } else {
-                                    [1, 2, 3, 1, 3, 0]
-                                };
-                                b.indices.extend(quad.map(|i| start + i));
-                            }
-                        }
-                    }
-                }
-
-                for (surface, b) in builders.into_iter().enumerate() {
-                    if !b.indices.is_empty() {
-                        out.push(ChunkMesh { origin, surface, mesh: b.build() });
-                    }
+                for (surface, mesh) in mesh_region(|p| grid.get(p), palette, voxel_size, origin, end) {
+                    out.push(ChunkMesh { origin, surface, mesh });
                 }
             }
         }

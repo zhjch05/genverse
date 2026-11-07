@@ -1,49 +1,65 @@
 # Cubelark
 
-A small HD voxel renderer built on Bevy 0.20 ECS. Voxels are tiny (16 per meter) and lit
-like a modern diorama render: baked per-vertex AO, per-voxel color jitter, PBR surfaces,
-soft cascaded shadows, SSAO, TAA, bloom, emissive voxels, and a physical sky.
+A small HD voxel game on Bevy 0.20 ECS: an endless, streamed voxel world and a chibi voxel
+hero you walk around in third person. Voxels are small (25 cm terrain, 5 cm characters) and
+lit like a modern diorama render: baked per-vertex AO, per-voxel color jitter, PBR surfaces,
+soft cascaded shadows, SSAO, TAA, bloom, distance fog, and a physical sky.
+
+![preview](docs/preview.png)
 
 ```sh
 bevy run            # or: cargo run
+bevy run web --open # in the browser (WebGPU)
 ```
 
-In the browser:
-
-```sh
-bevy run web --open
-```
+Controls: `WASD`/arrows move, `Shift` runs, `Space` jumps, drag to look, scroll to zoom.
 
 Web builds use WebGPU, which the physical sky needs, so they need a WebGPU browser (recent
-Chrome, Edge, Safari or Firefox). On the web, SSAO and model hot reload are off; everything
-else matches native.
+Chrome, Edge, Safari or Firefox). On the web, SSAO and model hot reload are off, and chunks
+generate on a single thread, so the world fills in more slowly; `bevy run --release web`
+helps a lot.
 
-Controls: drag to orbit, scroll to zoom, `R` toggles auto-rotate, `G` toggles XYZ axes.
+## Builder chat (desktop)
+
+Press `Tab` for the builder panel, pick **Claude Code** or **Codex CLI**, and describe
+something to build. The agent answers with a small JSON build spec; the game validates it,
+turns it into voxels, and shows it in front of you as a draft (Place / Move here / Discard,
+plus Undo for placed builds). Placed builds are saved to `saves/creations.json`.
+
+- Needs `claude` and/or `codex` on your `PATH`, already logged in.
+- The agents get no tools: no shell, no file edits, no MCP servers, and no user config
+  (`--tools ""` / `--sandbox read-only --ignore-user-config`). They run in an empty temp
+  directory and can only return JSON matching `src/agent/build_spec.schema.json`.
+- Every build passes the same limits a server would enforce (`src/agent/spec.rs`):
+  size ≤ 64³ voxels at 12.5 cm, ≤ 200 shapes, ≤ 24 colors, ≤ 120k voxels, ≤ 60k visible
+  faces, ≤ 3k glowing voxels. A rejected build is sent back to the agent once for a fix.
+- Script a build: `CUBELARK_PROMPT="a red mailbox" CUBELARK_AGENT=codex cargo run`.
 
 ## How it fits together
 
 | Piece | Where | Role |
 | --- | --- | --- |
-| `VoxelModelSource` | `src/voxel/mod.rs` | Component pointing an entity at a `.vox.ron` model |
-| `VoxelModel` | `src/voxel/mod.rs` | Runtime data: `VoxelGrid` + `Palette` + scale. Mutate it and the mesh rebuilds |
-| `VoxelGrid` | `src/voxel/grid.rs` | Dense `(x, y, z)` storage, `+Y` up, `0` = air |
-| `Palette` / `Surface` | `src/voxel/palette.rs` | Voxel colors; each surface becomes one `StandardMaterial` |
-| mesher | `src/voxel/mesher.rs` | 32³ chunks, face culling, baked AO, one mesh per chunk × surface |
-| loader | `src/voxel/asset.rs` | Parses `.vox.ron` and rasterizes its ops into a grid |
-| scene | `src/scene.rs` | Sky, sun, post-processing, orbit camera |
+| World streaming | `src/world/mod.rs` | Generates and meshes 32³ chunks around each `ChunkLoader` on the async pool; answers voxel queries for collision |
+| Terrain | `src/world/terrain.rs` | Block palette and a deterministic generator: hills, beaches, water, groves of trees, grass and flowers |
+| Hero | `src/player.rs` | Builds the character from model parts, kinematic movement with voxel collision and step-up, walk animation, follow camera |
+| Voxel engine | `src/voxel/` | `VoxelGrid`, `Palette`/`Surface`, mesher with baked AO, `.vox.ron` model loader |
+| Scene | `src/scene.rs` | Sky, sun, fog, post-processing |
+| Builder | `src/agent/` | egui chat, CLI runner, build spec + limits, drafts and saved creations (desktop only) |
 
-## Model format (`assets/models/*.vox.ron`)
+## Voxel models (`assets/**/*.vox.ron`)
 
-A model declares `surfaces` (roughness, metallic, emissive, alpha), a `palette` of named
-colors that reference a surface, and an ordered list of `ops`:
+Characters and props are data. A model declares `surfaces` (roughness, metallic, emissive,
+alpha), a `palette` of named colors that reference a surface, and an ordered list of `ops`:
 
 - `Shape(geom, fill, noise?, mask?)` with `Box`, `Ellipsoid`, `Capsule` or `Cylinder` geometry.
   `noise` distorts the boundary; `mask` only overwrites the listed materials (`"air"` too).
-- `Island(...)` builds a floating island with a heightmap top and layered soil and rock.
-- `Scatter(...)` decorates exposed top faces: tufts, flowers, petals.
-- `Settle(...)` and `Spill(...)` make liquids rest on ground and pour over ledges.
+- `Island(...)`, `Scatter(...)`, `Settle(...)`, `Spill(...)` for terrain-like generation.
 
-A `fill` is either `Solid("name")` or `Noise(mats: [...], scale)`. Point `lights` can be
-attached in voxel coordinates. Save the file while the app runs and the model reloads live.
+`parts` cut a model into named pieces that rotate around a `joint` and can hang off a
+`parent`; that is how the hero (`assets/characters/hero.vox.ron`) gets animatable limbs.
+On native, saving a model while the game runs reloads it live.
 
-To render a still: `CUBELARK_SHOT=shot.png CUBELARK_YAW=0.2 cargo run`.
+`assets/models/sakura_island.vox.ron` is the earlier showcase model, kept as a format example;
+spawn it with `VoxelModelSource(asset_server.load("models/sakura_island.vox.ron"))`.
+
+To render a still: `CUBELARK_SHOT=shot.png CUBELARK_YAW=0.2 CUBELARK_PITCH=0.4 cargo run`.

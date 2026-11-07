@@ -1,0 +1,65 @@
+{
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["reply", "build"],
+  "properties": {
+    "reply": {
+      "type": "string",
+      "description": "One or two friendly sentences to the player about what you made or why you could not."
+    },
+    "build": {
+      "description": "The object to create, or null when only replying.",
+      "anyOf": [{ "type": "null" }, { "$ref": "#/$defs/build" }]
+    }
+  },
+  "$defs": {
+    "build": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["name", "size", "palette", "shapes"],
+      "properties": {
+        "name": { "type": "string", "description": "Short name, e.g. \"Stone well\"." },
+        "size": {
+          "type": "array",
+          "items": { "type": "integer" },
+          "description": "[x, y, z] build volume in voxels, each between 1 and 64. +Y is up."
+        },
+        "palette": { "type": "array", "items": { "$ref": "#/$defs/color" } },
+        "shapes": {
+          "type": "array",
+          "items": { "$ref": "#/$defs/shape" },
+          "description": "Applied in order; later shapes overwrite earlier ones."
+        }
+      }
+    },
+    "color": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["name", "hex", "material"],
+      "properties": {
+        "name": { "type": "string" },
+        "hex": { "type": "string", "description": "#rrggbb" },
+        "material": { "type": "string", "enum": ["matte", "glossy", "metal", "glass", "glow"] }
+      }
+    },
+    "shape": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["kind", "color", "from", "to", "radius", "wobble"],
+      "properties": {
+        "kind": { "type": "string", "enum": ["box", "ellipsoid", "cylinder", "capsule"] },
+        "color": { "type": "string", "description": "A palette name, or \"air\" to carve." },
+        "from": { "type": "array", "items": { "type": "number" }, "description": "[x, y, z]" },
+        "to": { "type": "array", "items": { "type": "number" }, "description": "[x, y, z]" },
+        "radius": {
+          "description": "Capsule radius in voxels; null for other kinds.",
+          "anyOf": [{ "type": "number" }, { "type": "null" }]
+        },
+        "wobble": {
+          "description": "0 to 0.4: noisy, organic edges (foliage, rocks). null or 0 for clean shapes.",
+          "anyOf": [{ "type": "number" }, { "type": "null" }]
+        }
+      }
+    }
+  }
+}

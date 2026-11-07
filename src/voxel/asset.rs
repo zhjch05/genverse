@@ -21,19 +21,33 @@ use super::{
 // File format
 // ---------------------------------------------------------------------------
 
-type V3 = (f32, f32, f32);
+pub(crate) type V3 = (f32, f32, f32);
 
 #[derive(Deserialize)]
-struct ModelDef {
-    voxel_size: f32,
-    size: (u32, u32, u32),
+pub(crate) struct ModelDef {
+    pub(crate) voxel_size: f32,
+    pub(crate) size: (u32, u32, u32),
     /// Point (in voxel coordinates) placed at the entity's origin.
-    pivot: V3,
-    surfaces: Vec<SurfaceDef>,
-    palette: Vec<PaletteDef>,
-    ops: Vec<OpDef>,
+    pub(crate) pivot: V3,
+    pub(crate) surfaces: Vec<SurfaceDef>,
+    pub(crate) palette: Vec<PaletteDef>,
+    pub(crate) ops: Vec<OpDef>,
     #[serde(default)]
-    lights: Vec<LightDef>,
+    pub(crate) lights: Vec<LightDef>,
+    #[serde(default)]
+    pub(crate) parts: Vec<PartDef>,
+}
+
+/// A named box of voxels cut out as its own model, rotating around `joint`.
+#[derive(Deserialize)]
+pub(crate) struct PartDef {
+    pub(crate) name: String,
+    pub(crate) min: (i32, i32, i32),
+    pub(crate) max: (i32, i32, i32),
+    pub(crate) joint: V3,
+    /// Part this one is attached to; its joint moves with the parent.
+    #[serde(default)]
+    pub(crate) parent: Option<String>,
 }
 
 fn one() -> f32 {
@@ -49,48 +63,48 @@ fn default_reflectance() -> f32 {
 }
 
 #[derive(Deserialize)]
-struct SurfaceDef {
-    name: String,
+pub(crate) struct SurfaceDef {
+    pub(crate) name: String,
     #[serde(default = "default_roughness")]
-    roughness: f32,
+    pub(crate) roughness: f32,
     #[serde(default)]
-    metallic: f32,
+    pub(crate) metallic: f32,
     #[serde(default = "default_reflectance")]
-    reflectance: f32,
+    pub(crate) reflectance: f32,
     /// `(hex color, strength)`.
     #[serde(default)]
-    emissive: Option<(String, f32)>,
+    pub(crate) emissive: Option<(String, f32)>,
     #[serde(default = "one")]
-    alpha: f32,
+    pub(crate) alpha: f32,
 }
 
 #[derive(Deserialize)]
-struct PaletteDef {
-    name: String,
-    color: String,
-    surface: String,
+pub(crate) struct PaletteDef {
+    pub(crate) name: String,
+    pub(crate) color: String,
+    pub(crate) surface: String,
     #[serde(default)]
-    variation: f32,
+    pub(crate) variation: f32,
 }
 
 /// What to write into each covered cell.
 #[derive(Deserialize, Clone)]
-enum Fill {
+pub(crate) enum Fill {
     Solid(String),
     /// Picks among `mats` using 3D fractal noise with features about `scale` voxels wide.
     Noise { mats: Vec<String>, scale: f32, #[serde(default)] seed: u32 },
 }
 
 #[derive(Deserialize, Clone, Copy)]
-struct NoiseDef {
-    scale: f32,
-    amplitude: f32,
+pub(crate) struct NoiseDef {
+    pub(crate) scale: f32,
+    pub(crate) amplitude: f32,
     #[serde(default)]
-    seed: u32,
+    pub(crate) seed: u32,
 }
 
 #[derive(Deserialize)]
-enum Geom {
+pub(crate) enum Geom {
     Box { min: V3, max: V3 },
     Ellipsoid { center: V3, radii: V3 },
     /// Tapered capsule between two points: trunks, branches, pillars.
@@ -100,7 +114,7 @@ enum Geom {
 }
 
 #[derive(Deserialize)]
-enum ScatterMode {
+pub(crate) enum ScatterMode {
     /// Stack new voxels on top of the matched surface voxel.
     Above,
     /// Recolor the matched surface voxel itself.
@@ -108,7 +122,7 @@ enum ScatterMode {
 }
 
 #[derive(Deserialize)]
-enum OpDef {
+pub(crate) enum OpDef {
     Shape {
         geom: Geom,
         fill: Fill,
@@ -167,12 +181,12 @@ fn default_height() -> (u32, u32) {
 }
 
 #[derive(Deserialize)]
-struct LightDef {
-    position: V3,
-    color: String,
+pub(crate) struct LightDef {
+    pub(crate) position: V3,
+    pub(crate) color: String,
     /// Luminous power in lumens.
-    intensity: f32,
-    range: f32,
+    pub(crate) intensity: f32,
+    pub(crate) range: f32,
 }
 
 // ---------------------------------------------------------------------------
@@ -188,6 +202,17 @@ pub struct ModelLight {
     pub range: f32,
 }
 
+/// A sub-model for animation: voxels in `min..max`, rotating around `joint`.
+#[derive(Clone, Debug)]
+pub struct ModelPart {
+    pub name: String,
+    pub min: IVec3,
+    pub max: IVec3,
+    /// Voxel coordinates in the full model.
+    pub joint: Vec3,
+    pub parent: Option<String>,
+}
+
 #[derive(Asset, TypePath, Clone)]
 pub struct VoxelModelAsset {
     pub grid: VoxelGrid,
@@ -195,6 +220,7 @@ pub struct VoxelModelAsset {
     pub voxel_size: f32,
     pub pivot: Vec3,
     pub lights: Vec<ModelLight>,
+    pub parts: Vec<ModelPart>,
 }
 
 #[derive(Default, TypePath)]
@@ -236,7 +262,7 @@ fn color(hex: &str) -> Result<Srgba, BevyError> {
     Ok(Srgba::hex(hex).map_err(|e| format!("bad color {hex:?}: {e}"))?)
 }
 
-fn build(def: ModelDef) -> Result<VoxelModelAsset, BevyError> {
+pub(crate) fn build(def: ModelDef) -> Result<VoxelModelAsset, BevyError> {
     let surfaces = def
         .surfaces
         .iter()
@@ -297,12 +323,25 @@ fn build(def: ModelDef) -> Result<VoxelModelAsset, BevyError> {
         })
         .collect::<Result<_, BevyError>>()?;
 
+    let parts = def
+        .parts
+        .iter()
+        .map(|p| ModelPart {
+            name: p.name.clone(),
+            min: IVec3::new(p.min.0, p.min.1, p.min.2),
+            max: IVec3::new(p.max.0, p.max.1, p.max.2),
+            joint: v3(p.joint),
+            parent: p.parent.clone(),
+        })
+        .collect();
+
     Ok(VoxelModelAsset {
         grid,
         palette: Arc::new(palette),
         voxel_size: def.voxel_size,
         pivot: v3(def.pivot),
         lights,
+        parts,
     })
 }
 

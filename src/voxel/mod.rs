@@ -7,19 +7,19 @@
 //!
 //! Gameplay code can mutate `VoxelModel::grid` directly and the change shows up next frame.
 
-mod asset;
+pub mod asset;
 mod grid;
-mod mesher;
-mod noise;
+pub mod mesher;
+pub mod noise;
 mod palette;
 
 use std::sync::Arc;
 
 use bevy::{light::NotShadowCaster, platform::collections::HashSet, prelude::*};
 
-pub use asset::{ModelLight, VoxelModelAsset};
-pub use grid::VoxelGrid;
-pub use palette::Palette;
+pub use asset::{ModelLight, ModelPart, VoxelModelAsset};
+pub use grid::{AIR, VoxelGrid, VoxelId};
+pub use palette::{Palette, PaletteEntry, Surface};
 
 pub struct VoxelPlugin;
 
@@ -57,6 +57,29 @@ impl From<&VoxelModelAsset> for VoxelModel {
             voxel_size: a.voxel_size,
             pivot: a.pivot,
             lights: a.lights.clone(),
+        }
+    }
+}
+
+impl VoxelModel {
+    /// Cuts `part` out of `asset` as a standalone model pivoting around the part's joint.
+    pub fn from_part(asset: &VoxelModelAsset, part: &ModelPart) -> Self {
+        let size = (part.max - part.min).max(IVec3::ZERO);
+        let mut grid = VoxelGrid::new(size.as_uvec3());
+        for z in 0..size.z {
+            for y in 0..size.y {
+                for x in 0..size.x {
+                    let p = IVec3::new(x, y, z);
+                    grid.set(p, asset.grid.get(part.min + p));
+                }
+            }
+        }
+        Self {
+            grid,
+            palette: asset.palette.clone(),
+            voxel_size: asset.voxel_size,
+            pivot: part.joint - part.min.as_vec3(),
+            lights: Vec::new(),
         }
     }
 }

@@ -1,11 +1,15 @@
+#[cfg(not(target_arch = "wasm32"))]
+mod agent;
+mod player;
 mod scene;
 mod voxel;
+mod world;
 
 use bevy::prelude::*;
 
 fn main() -> AppExit {
-    App::new()
-        .add_plugins(DefaultPlugins.set(WindowPlugin {
+    let mut app = App::new();
+    app.add_plugins(DefaultPlugins.set(WindowPlugin {
             primary_window: Some(Window {
                 title: "Cubelark".into(),
                 // On the web, size the canvas to the page instead of a fixed resolution.
@@ -14,6 +18,14 @@ fn main() -> AppExit {
             }),
             ..default()
         }))
-        .add_plugins((voxel::VoxelPlugin, scene::ScenePlugin))
-        .run()
+        .add_plugins((
+            voxel::VoxelPlugin,
+            world::WorldPlugin,
+            player::PlayerPlugin,
+            scene::ScenePlugin,
+        ));
+    // Local agents (Claude Code, Codex CLI) only exist on desktop.
+    #[cfg(not(target_arch = "wasm32"))]
+    app.add_plugins(agent::AgentPlugin);
+    app.run()
 }
