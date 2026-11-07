@@ -2571,6 +2571,15 @@ dependencies = [
 ]
 
 [[package]]
+name = "cubelark_net"
+version = "0.1.0"
+dependencies = [
+ "cubelark_rules",
+ "serde",
+ "serde_json",
+]
+
+[[package]]
 name = "cubelark_rules"
 version = "0.1.0"
 dependencies = [
@@ -2578,6 +2587,16 @@ dependencies = [
  "bevy_math",
  "ed25519-dalek",
  "serde",
+ "serde_json",
+]
+
+[[package]]
+name = "cubelark_server"
+version = "0.1.0"
+dependencies = [
+ "cubelark_net",
+ "cubelark_rules",
+ "getrandom 0.3.4",
  "serde_json",
 ]
 

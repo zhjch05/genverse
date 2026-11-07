@@ -1,0 +1,16 @@
+[package]
+name = "cubelark_net"
+version = "0.1.0"
+edition = "2024"
+description = "Cubelark's wire protocol: JSON messages, one per line, over TCP."
+
+[dependencies]
+cubelark_rules = { path = "../rules" }
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+
+[lints.clippy]
+too_many_arguments = "allow"
+type_complexity = "allow"
+# Messages are short-lived; boxing the big ones buys nothing.
+large_enum_variant = "allow"

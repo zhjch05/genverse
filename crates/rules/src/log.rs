@@ -245,9 +245,11 @@ pub fn fnv1a(bytes: &[u8]) -> u64 {
     bytes.iter().fold(0xcbf2_9ce4_8422_2325, |h, b| (h ^ *b as u64).wrapping_mul(0x0000_0100_0000_01b3))
 }
 
-/// The world a log describes.
-#[derive(Default)]
+/// The world a log describes, as of some change.
+#[derive(Clone, Default)]
 pub struct Replay {
+    pub seed: u32,
+    pub admins: Vec<String>,
     pub builds: BTreeMap<u64, BuildState>,
     /// Voxel edits on top of the seed.
     pub edits: HashMap<IVec3, VoxelId>,
@@ -283,15 +285,31 @@ pub fn replay_land(log: &WorldLog) -> Replay {
 }
 
 fn walk(log: &WorldLog, voxels: bool) -> Replay {
-    let terrain = Terrain { seed: log.seed };
-    let rules = log.rules.clone();
-    let land = Land::new(log.admins.clone(), rules.spawn.clone(), rules.land);
-    let mut out = Replay { land, rules, ..Default::default() };
+    let mut out = Replay::new(log);
     for change in log.effective() {
+        if let Err(why) = out.apply(change, voxels) {
+            out.problems.push(format!("change {} by {}: {why}", change.id, change.by.player_name));
+        }
+    }
+    out
+}
+
+impl Replay {
+    /// The world before any change: the log's seed, admins and starting rules.
+    pub fn new(log: &WorldLog) -> Self {
+        let rules = log.rules.clone();
+        let land = Land::new(log.admins.clone(), rules.spawn.clone(), rules.land);
+        Self { seed: log.seed, admins: log.admins.clone(), land, rules, ..Default::default() }
+    }
+
+    /// Applies one change on top of the current state, or says why the rules refuse it
+    /// (leaving the state as it was). Returns the voxel edits it made, if `voxels`.
+    /// Undos ([`Action::Revert`], [`Action::Rollback`]) change which changes count, so
+    /// they need a full [`replay`]; here they do nothing.
+    pub fn apply(&mut self, change: &Change, voxels: bool) -> Result<Vec<(IVec3, VoxelId)>, String> {
         let by = &change.by;
-        let refused = |why: String| format!("change {} by {}: {why}", change.id, by.player_name);
         let parcels = |list: &[[i32; 2]]| list.iter().map(|p| IVec2::from_array(*p)).collect::<Vec<_>>();
-        let admin = log.is_admin(&by.player);
+        let admin = self.admins.contains(&by.player);
         // Rate limits count changes that add to the world, by their voxels.
         let cost = match &change.action {
             Action::PlaceBuild(b) | Action::UpdateBuild(b) => Some(build_usage(&b.spec).voxels),
@@ -299,106 +317,81 @@ fn walk(log: &WorldLog, voxels: bool) -> Replay {
             Action::RemoveBuild { .. } | Action::ClaimParcels { .. } => Some(0),
             _ => None,
         };
-        if let Some(cost) = cost.filter(|_| !admin)
-            && let Err(why) = out.rates.check(&out.rules.rates, &by.player, by.at, cost)
-        {
-            out.problems.push(refused(why));
-            continue;
+        if let Some(cost) = cost.filter(|_| !admin) {
+            self.rates.check(&self.rules.rates, &by.player, by.at, cost)?;
         }
-        let problems = out.problems.len();
+        let mut made = Vec::new();
         match &change.action {
             Action::PlaceBuild(b) | Action::UpdateBuild(b) => {
                 // Moving a build needs rights where it was and where it goes.
                 let mut touched = parcels_of(b);
-                touched.extend(out.builds.get(&b.build).map(parcels_of).unwrap_or_default());
-                let old = out.footprints.get(&b.build);
+                touched.extend(self.builds.get(&b.build).map(parcels_of).unwrap_or_default());
+                let old = self.footprints.get(&b.build);
                 let new = Footprint {
                     owner: old.map_or(by.player.clone(), |o| o.owner.clone()),
                     parcels: parcels_of(b),
                     usage: build_usage(&b.spec),
                 };
-                let allowed = out.land.authorize(&by.player, &touched).and_then(|claims| {
-                    out.budgets.check(&new, old, &out.rules.budgets)?;
-                    Ok(claims)
-                });
-                match allowed {
-                    Ok(claims) => {
-                        out.land.claim(&by.player, &by.player_name, &claims);
-                        if let Some(old) = out.footprints.remove(&b.build) {
-                            out.budgets.remove(&old);
-                        }
-                        out.budgets.add(&new);
-                        out.footprints.insert(b.build, new);
-                        out.builds.insert(b.build, b.clone());
-                    }
-                    Err(why) => out.problems.push(refused(why)),
+                let claims = self.land.authorize(&by.player, &touched)?;
+                self.budgets.check(&new, old, &self.rules.budgets)?;
+                self.land.claim(&by.player, &by.player_name, &claims);
+                if let Some(old) = self.footprints.remove(&b.build) {
+                    self.budgets.remove(&old);
                 }
+                self.budgets.add(&new);
+                self.footprints.insert(b.build, new);
+                self.builds.insert(b.build, b.clone());
             }
             Action::RemoveBuild { build } => {
-                let touched = out.builds.get(build).map(parcels_of).unwrap_or_default();
-                match out.land.authorize(&by.player, &touched) {
-                    Ok(_) => {
-                        out.builds.remove(build);
-                        if let Some(old) = out.footprints.remove(build) {
-                            out.budgets.remove(&old);
-                        }
-                    }
-                    Err(why) => out.problems.push(refused(why)),
+                let touched = self.builds.get(build).map(parcels_of).unwrap_or_default();
+                self.land.authorize(&by.player, &touched)?;
+                self.builds.remove(build);
+                if let Some(old) = self.footprints.remove(build) {
+                    self.budgets.remove(&old);
                 }
             }
             Action::Terrain { name, area, spec, changed } => {
                 let cost = terrain_footprint(&by.player, *changed);
-                let allowed = out.land.authorize(&by.player, &area_parcels(*area)).and_then(|claims| {
-                    out.budgets.check(&cost, None, &out.rules.budgets)?;
-                    Ok(claims)
-                });
-                let claims = match allowed {
-                    Ok(claims) => claims,
-                    Err(why) => {
-                        out.problems.push(refused(why));
-                        continue;
-                    }
-                };
-                out.budgets.add(&cost);
+                let claims = self.land.authorize(&by.player, &area_parcels(*area))?;
+                self.budgets.check(&cost, None, &self.rules.budgets)?;
                 if voxels {
-                    let columns = ground_columns(terrain, *area, &out.edits);
-                    match sculpt::compile(spec, *area, terrain, columns, &out.rules.terrain) {
-                        Ok(edit) => {
-                            let (_, edits) = out
-                                .land
-                                .authorize_terrain(&by.player, *area, edit.edits)
-                                .expect("authorized above");
-                            out.edits.extend(edits);
-                        }
-                        Err(errors) => out.problems.push(refused(format!("\"{name}\" {}", errors.join("; ")))),
-                    }
+                    let terrain = Terrain { seed: self.seed };
+                    let columns = ground_columns(terrain, *area, &self.edits);
+                    let edit = sculpt::compile(spec, *area, terrain, columns, &self.rules.terrain)
+                        .map_err(|errors| format!("\"{name}\" {}", errors.join("; ")))?;
+                    let (_, edits) =
+                        self.land.authorize_terrain(&by.player, *area, edit.edits).expect("authorized above");
+                    self.edits.extend(edits.iter().copied());
+                    made = edits;
                 }
-                out.land.claim(&by.player, &by.player_name, &claims);
+                self.budgets.add(&cost);
+                self.land.claim(&by.player, &by.player_name, &claims);
             }
-            Action::ClaimParcels { parcels: list } => match out.land.authorize(&by.player, &parcels(list)) {
-                Ok(claims) => out.land.claim(&by.player, &by.player_name, &claims),
-                Err(why) => out.problems.push(refused(why)),
-            },
-            Action::ReleaseParcels { parcels: list } => out.land.release(&by.player, &parcels(list)),
+            Action::ClaimParcels { parcels: list } => {
+                let claims = self.land.authorize(&by.player, &parcels(list))?;
+                self.land.claim(&by.player, &by.player_name, &claims);
+            }
+            Action::ReleaseParcels { parcels: list } => self.land.release(&by.player, &parcels(list)),
             Action::LegacyVoxels { edits } => {
                 if voxels {
-                    out.edits.extend(edits.iter().map(|[x, y, z, id]| (IVec3::new(*x, *y, *z), *id as VoxelId)));
+                    made = edits.iter().map(|[x, y, z, id]| (IVec3::new(*x, *y, *z), *id as VoxelId)).collect();
+                    self.edits.extend(made.iter().copied());
                 }
             }
             Action::SetRules { rules } if admin => {
-                out.land.mode = rules.land;
-                out.land.spawn = rules.spawn.clone();
-                out.rules = rules.clone();
+                self.land.mode = rules.land;
+                self.land.spawn = rules.spawn.clone();
+                self.rules = rules.clone();
             }
-            Action::SetRules { .. } => out.problems.push(refused("only admins change the rules".into())),
+            Action::SetRules { .. } => return Err("only admins change the rules".into()),
             Action::Revert { .. } | Action::Rollback { .. } => {}
         }
         // A change that went through counts toward its author's rate.
-        if let Some(cost) = cost.filter(|_| !admin && out.problems.len() == problems) {
-            out.rates.add(&by.player, by.at, cost);
+        if let Some(cost) = cost.filter(|_| !admin) {
+            self.rates.add(&by.player, by.at, cost);
         }
+        Ok(made)
     }
-    out
 }
 
 /// The columns a terrain change in `area` reads, generated from the seed with `edits`

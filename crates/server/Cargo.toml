@@ -1,0 +1,20 @@
+[package]
+name = "cubelark_server"
+version = "0.1.0"
+edition = "2024"
+description = "A headless Cubelark server: holds the world's change log, checks and orders every change, and shares it with everyone."
+
+[[bin]]
+name = "cubelark-server"
+path = "src/main.rs"
+
+[dependencies]
+cubelark_rules = { path = "../rules" }
+cubelark_net = { path = "../net" }
+serde_json = "1"
+getrandom = "0.3"
+
+[lints.clippy]
+too_many_arguments = "allow"
+type_complexity = "allow"
+large_enum_variant = "allow"

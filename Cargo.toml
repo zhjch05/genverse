@@ -1,5 +1,5 @@
 [workspace]
-members = ["crates/rules"]
+members = ["crates/rules", "crates/net", "crates/server"]
 
 [package]
 name = "cubelark"
@@ -55,6 +55,9 @@ opt-level = 1
 opt-level = 3
 
 [profile.dev.package.cubelark_rules]
+opt-level = 3
+
+[profile.dev.package.cubelark_server]
 opt-level = 3
 
 # Enable a large amount of optimization in the dev profile for dependencies.
