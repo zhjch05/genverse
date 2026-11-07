@@ -79,7 +79,8 @@ impl Plugin for AgentPlugin {
             .init_resource::<history::History>()
             .init_resource::<lan::Lan>()
             .init_gizmo_group::<AreaGizmos>()
-            .add_systems(Startup, (load_creations, configure_area_gizmos, start_tool_server, lan::start_listening))
+            .init_gizmo_group::<presence::RingGizmos>()
+            .add_systems(Startup, (load_creations, configure_area_gizmos, presence::configure_ring_gizmos, start_tool_server, lan::start_listening))
             .add_systems(
                 Update,
                 (

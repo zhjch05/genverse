@@ -487,7 +487,7 @@ pub fn draw_area(
 
     // Brighter than white on purpose: tonemapping would dull plain colors, and bloom
     // makes these glow.
-    let pulse = 3.0 + 1.0 * (time.elapsed_secs() * 3.0).sin();
+    let pulse = 3.0 + 0.4 * (time.elapsed_secs() * 2.0).sin();
     let color = Color::LinearRgba(LinearRgba::rgb(r * pulse, g * pulse, b * pulse));
     bold.linestrip(cache.border.iter().copied(), color);
     for base in &cache.posts {
@@ -613,6 +613,24 @@ fn highlight_mesh(world: &VoxelWorld, area: Area) -> Mesh {
         .with_inserted_indices(Indices::U32(indices))
 }
 
+/// The corners of the cells around an area's edge, every `stride` cells, going round
+/// once and back to the start. Each corner of the area is in it exactly once: a corner
+/// repeated or skipped would leave a zero-length or cut-off segment, and the outline's
+/// rounded joints flicker on those.
+pub fn perimeter(area: Area, stride: i32) -> Vec<IVec2> {
+    let (min, size) = (area.min(), area.size());
+    let corners = [min, min + IVec2::new(size.x, 0), min + size, min + IVec2::new(0, size.y)];
+    let mut points = Vec::new();
+    for i in 0..4 {
+        let (a, b) = (corners[i], corners[(i + 1) % 4]);
+        let steps = (b - a).abs().max_element();
+        // Up to, not including, the next corner; the next side starts there.
+        points.extend((0..steps).step_by(stride.max(1) as usize).map(|s| a + (b - a).signum() * s));
+    }
+    points.push(min);
+    points
+}
+
 fn outline(world: &VoxelWorld, area: Area) -> OutlineCache {
     let (min, size) = (area.min(), area.size());
     let mut column = vec![AIR; WORLD_HEIGHT as usize];
@@ -627,17 +645,13 @@ fn outline(world: &VoxelWorld, area: Area) -> OutlineCache {
         }
         top.map(|y| Vec3::new(c.x as f32 * VOXEL_SIZE, (y + 1) as f32 * VOXEL_SIZE + 0.08, c.y as f32 * VOXEL_SIZE))
     };
+    let stride = (2 * (size.x + size.y) / 300).max(1);
+    let border = perimeter(area, stride).into_iter().filter_map(&mut height).collect();
     let mut line = |a: IVec2, b: IVec2, stride: i32| -> Vec<Vec3> {
         let steps = (b - a).abs().max_element();
         (0..=steps).step_by(stride as usize).filter_map(|s| height(a + (b - a).signum() * s)).collect()
     };
 
-    let corners = [min, min + IVec2::new(size.x, 0), min + size, min + IVec2::new(0, size.y)];
-    let stride = (2 * (size.x + size.y) / 300).max(1);
-    let mut border: Vec<Vec3> = (0..4).flat_map(|i| line(corners[i], corners[(i + 1) % 4], stride)).collect();
-    if let Some(&first) = border.first() {
-        border.push(first);
-    }
     // A grid line every meter (every 2 m on big areas), sampled every half meter.
     let spacing = if size.max_element() > 64 { 8 } else { 4 };
     let mut grid = Vec::new();
@@ -647,6 +661,7 @@ fn outline(world: &VoxelWorld, area: Area) -> OutlineCache {
     for z in (spacing..size.y).step_by(spacing as usize) {
         grid.push(line(min + IVec2::new(0, z), min + IVec2::new(size.x, z), 2));
     }
+    let corners = [min, min + IVec2::new(size.x, 0), min + size, min + IVec2::new(0, size.y)];
     let posts = corners.iter().filter_map(|c| height(*c)).collect();
     OutlineCache { area: Some(area), age: 0, border, posts, grid }
 }
@@ -748,5 +763,23 @@ pub fn draw_parcels(
             Access::Free => continue,
         };
         bold.linestrip(points.iter().copied(), Color::LinearRgba(LinearRgba::rgb(r * 2.0, g * 2.0, b * 2.0)));
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn perimeter_has_each_corner_once() {
+        // Sides of 10 and 7 cells, sampled every 4: neither divides evenly.
+        let area = Area::from_corners(IVec2::new(0, 0), IVec2::new(9, 6));
+        let points = perimeter(area, 4);
+        assert_eq!(points.first(), points.last());
+        assert!(points.windows(2).all(|w| w[0] != w[1]), "no zero-length segments");
+        let (min, size) = (area.min(), area.size());
+        for corner in [min, min + IVec2::new(size.x, 0), min + size, min + IVec2::new(0, size.y)] {
+            assert_eq!(points[..points.len() - 1].iter().filter(|p| **p == corner).count(), 1, "{corner}");
+        }
     }
 }

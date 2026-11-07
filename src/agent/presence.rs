@@ -15,7 +15,7 @@ use cubelark_rules::{
 use super::{
     Chat, cursor_ray,
     creations::{Creation, Creations, DraftMarker},
-    landscape::{AreaGizmos, Landscape},
+    landscape::{AreaGizmos, Landscape, perimeter},
     pick,
 };
 use crate::{
@@ -147,19 +147,22 @@ fn ground_at(world: &VoxelWorld, column: IVec2) -> Option<f32> {
 
 /// An area's outline along the ground, every few voxels.
 fn area_outline(world: &VoxelWorld, area: Area) -> Vec<Vec3> {
-    let (min, size) = (area.min(), area.size());
-    let corners = [min, min + IVec2::new(size.x, 0), min + size, min + IVec2::new(0, size.y), min];
-    let mut points = Vec::new();
-    for edge in corners.windows(2) {
-        let (a, b) = (edge[0], edge[1]);
-        for s in (0..=(b - a).abs().max_element()).step_by(4) {
-            let c = a + (b - a).signum() * s;
-            if let Some(y) = ground_at(world, c) {
-                points.push(Vec3::new(c.x as f32, 0.0, c.y as f32) * VOXEL_SIZE + Vec3::Y * y);
-            }
-        }
-    }
-    points
+    perimeter(area, 4)
+        .into_iter()
+        .filter_map(|c| ground_at(world, c).map(|y| Vec3::new(c.x as f32, 0.0, c.y as f32) * VOXEL_SIZE + Vec3::Y * y))
+        .collect()
+}
+
+/// The ring under each other player: thinner than area outlines, so a small circle
+/// stays round instead of turning into a blob.
+#[derive(Default, Reflect, GizmoConfigGroup)]
+pub struct RingGizmos;
+
+pub fn configure_ring_gizmos(mut store: ResMut<GizmoConfigStore>) {
+    let (config, _) = store.config_mut::<RingGizmos>();
+    config.line.width = 5.0;
+    config.line.joints = GizmoLineJoint::Round(4);
+    config.depth_bias = -0.3;
 }
 
 /// Each peer's ring, selected area or build, and draft ghost, in their color.
@@ -169,15 +172,20 @@ pub fn draw_peers(
     world: Res<VoxelWorld>,
     creations: Res<Creations>,
     builds: Query<(&Transform, &Creation)>,
+    avatars: Query<&Transform, Without<Creation>>,
     mut gizmos: Gizmos<AreaGizmos>,
+    mut rings: Gizmos<RingGizmos>,
 ) {
     let pulse = 0.65 + 0.35 * (time.elapsed_secs() * 3.0).sin();
     for peer in peers.0.values() {
         let p = &peer.presence;
         // Brighter than white, like our own outlines: tonemapping dulls plain colors.
         let color = Color::LinearRgba(peer.color.to_linear() * 2.5);
-        let feet = Vec3::from_array(p.position) + Vec3::Y * 0.05;
-        gizmos.circle(Isometry3d::new(feet, Quat::from_rotation_x(std::f32::consts::FRAC_PI_2)), 0.45, color);
+        // Around the avatar as drawn, which glides between updates, not where the last
+        // update put the player.
+        let at = avatars.get(peer.avatar).map_or(Vec3::from_array(p.position), |t| t.translation);
+        let feet = Isometry3d::new(at + Vec3::Y * 0.06, Quat::from_rotation_x(std::f32::consts::FRAC_PI_2));
+        rings.circle(feet, 0.45, color).resolution(64);
         if let Some(area) = p.area {
             let faded = if p.previewing { color.with_alpha(pulse) } else { color };
             gizmos.linestrip(area_outline(&world, area), faded);
