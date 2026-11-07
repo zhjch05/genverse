@@ -16,6 +16,7 @@ use bevy_math::{IVec2, IVec3, UVec3, Vec3};
 use serde::{Deserialize, Serialize};
 
 use crate::{
+    budget::{Budgets, Footprint, Usage, build_usage},
     build::BuildSpec,
     land::{Land, Spawn, area_parcels, build_parcels},
     sculpt::{self, Area, Columns, TerrainSpec},
@@ -74,7 +75,14 @@ pub enum Action {
     /// Moved, turned, or revised: the build's whole new state.
     UpdateBuild(BuildState),
     RemoveBuild { build: u64 },
-    Terrain { name: String, area: Area, spec: TerrainSpec },
+    Terrain {
+        name: String,
+        area: Area,
+        spec: TerrainSpec,
+        /// Voxels it changed when it was made, for budgets without re-rasterizing.
+        #[serde(default)]
+        changed: usize,
+    },
     /// Claims free parcels (by parcel coordinates) for the author.
     ClaimParcels { parcels: Vec<[i32; 2]> },
     /// Gives up the author's parcels.
@@ -165,6 +173,9 @@ pub struct Replay {
     /// Voxel edits on top of the seed.
     pub edits: HashMap<IVec3, VoxelId>,
     pub land: Land,
+    pub budgets: Budgets,
+    /// What each placed build costs, and whom it's charged to.
+    pub footprints: HashMap<u64, Footprint>,
     /// Changes that no longer apply (refused by the land rules, or by tightened
     /// limits), with why.
     pub problems: Vec<String>,
@@ -174,7 +185,12 @@ pub fn parcels_of(build: &BuildState) -> Vec<IVec2> {
     build_parcels(Vec3::from_array(build.position), build.yaw, &build.spec.size)
 }
 
-/// Rebuilds everything: builds, land, and voxel edits.
+/// What a terrain change costs: its changed voxels, charged to its author.
+pub fn terrain_footprint(player: &str, changed: usize) -> Footprint {
+    Footprint { owner: player.into(), parcels: Vec::new(), usage: Usage { terrain: changed, ..Default::default() } }
+}
+
+/// Rebuilds everything: builds, land, budgets, and voxel edits.
 pub fn replay(log: &WorldLog) -> Replay {
     walk(log, true)
 }
@@ -196,9 +212,24 @@ fn walk(log: &WorldLog, voxels: bool) -> Replay {
                 // Moving a build needs rights where it was and where it goes.
                 let mut touched = parcels_of(b);
                 touched.extend(out.builds.get(&b.build).map(parcels_of).unwrap_or_default());
-                match out.land.authorize(&by.player, &touched) {
+                let old = out.footprints.get(&b.build);
+                let new = Footprint {
+                    owner: old.map_or(by.player.clone(), |o| o.owner.clone()),
+                    parcels: parcels_of(b),
+                    usage: build_usage(&b.spec),
+                };
+                let allowed = out.land.authorize(&by.player, &touched).and_then(|claims| {
+                    out.budgets.check(&new, old)?;
+                    Ok(claims)
+                });
+                match allowed {
                     Ok(claims) => {
                         out.land.claim(&by.player, &by.player_name, &claims);
+                        if let Some(old) = out.footprints.remove(&b.build) {
+                            out.budgets.remove(&old);
+                        }
+                        out.budgets.add(&new);
+                        out.footprints.insert(b.build, new);
                         out.builds.insert(b.build, b.clone());
                     }
                     Err(why) => out.problems.push(refused(why)),
@@ -209,18 +240,27 @@ fn walk(log: &WorldLog, voxels: bool) -> Replay {
                 match out.land.authorize(&by.player, &touched) {
                     Ok(_) => {
                         out.builds.remove(build);
+                        if let Some(old) = out.footprints.remove(build) {
+                            out.budgets.remove(&old);
+                        }
                     }
                     Err(why) => out.problems.push(refused(why)),
                 }
             }
-            Action::Terrain { name, area, spec } => {
-                let claims = match out.land.authorize(&by.player, &area_parcels(*area)) {
+            Action::Terrain { name, area, spec, changed } => {
+                let cost = terrain_footprint(&by.player, *changed);
+                let allowed = out.land.authorize(&by.player, &area_parcels(*area)).and_then(|claims| {
+                    out.budgets.check(&cost, None)?;
+                    Ok(claims)
+                });
+                let claims = match allowed {
                     Ok(claims) => claims,
                     Err(why) => {
                         out.problems.push(refused(why));
                         continue;
                     }
                 };
+                out.budgets.add(&cost);
                 if voxels {
                     let columns = ground_columns(terrain, *area, &out.edits);
                     match sculpt::compile(spec, *area, terrain, columns) {
@@ -301,6 +341,7 @@ mod tests {
             name: "Pond".into(),
             area: Area { min: [x, 0], size: [24, 24] },
             spec: TerrainSpec { name: "Pond".into(), ops: vec![op] },
+            changed: 0,
         }
     }
 

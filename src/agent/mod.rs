@@ -864,6 +864,11 @@ fn chat_panel(
                         ui.label(egui::RichText::new(format!("Draft: {}", draft.spec.name)).strong());
                         let s = draft.stats;
                         ui.label(format!("{}×{}×{} · {} voxels · {} faces", s.size.x, s.size.y, s.size.z, s.voxels, s.faces));
+                        if let Ok(transform) = transforms.get(draft.entity) {
+                            let yaw = transform.rotation.to_euler(EulerRot::YXZ).0;
+                            let parcels = cubelark_rules::land::build_parcels(transform.translation, yaw, &draft.spec.size);
+                            ui.label(egui::RichText::new(ledger.parcel_line(&parcels)).small().weak());
+                        }
                         if let Some(why) = &draft.denied {
                             ui.label(egui::RichText::new(format!("{} Not here: {why}", icon::WARNING)).color(egui::Color32::from_rgb(255, 150, 120)));
                         }
@@ -965,6 +970,7 @@ fn chat_panel(
                         let size = area.size_m();
                         ui.label(egui::RichText::new(format!("Area: {:.1} × {:.1} m", size.x, size.y)).strong());
                         ui.label(egui::RichText::new(land_summary(&ledger, area)).small());
+                        ui.label(egui::RichText::new(ledger.player_line()).small().weak());
                         ui.horizontal(|ui| {
                             if ui.button(format!("{} Select again", icon::SELECTION)).on_hover_text("G").clicked() {
                                 action = Some(Action::SelectArea);

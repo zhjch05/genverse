@@ -15,6 +15,7 @@ use std::collections::{BTreeMap, HashMap};
 
 use bevy::prelude::*;
 use cubelark_rules::{
+    budget::{Budgets, Footprint, Usage, limits as budget},
     land::Land,
     log::{Action, BuildState, Provenance, WorldLog, replay, replay_land},
 };
@@ -44,6 +45,10 @@ pub struct Ledger {
     pub builds: BTreeMap<u64, BuildState>,
     /// Who owns what, as of the latest change.
     pub land: Land,
+    /// What's used of each parcel's and player's budget.
+    pub budgets: Budgets,
+    /// Each placed build's share of the budgets.
+    pub footprints: HashMap<u64, Footprint>,
     /// Bumped on every recorded change, so the voxel cache knows to follow.
     pub version: u64,
 }
@@ -55,7 +60,10 @@ impl Ledger {
         let by = Provenance::new(&self.profile.id, &self.profile.name, agent, prompt, now());
         let id = self.log.push(by, action);
         self.version += 1;
-        self.land = replay_land(&self.log).land;
+        let state = replay_land(&self.log);
+        self.land = state.land;
+        self.budgets = state.budgets;
+        self.footprints = state.footprints;
         self.save();
         id
     }
@@ -69,6 +77,38 @@ impl Ledger {
     /// Undoes change `id` by appending a revert of it.
     pub fn revert(&mut self, change: u64) {
         self.record(None, None, Action::Revert { change });
+    }
+
+    /// The fullest of `parcels`, as "parcel budget: 2/12 builds · 18k/40k faces · …".
+    pub fn parcel_line(&self, parcels: &[IVec2]) -> String {
+        let fullest = parcels
+            .iter()
+            .map(|p| self.budgets.parcel(*p))
+            .max_by_key(|u| u.faces * 1000 / budget::PARCEL_FACES.max(1) + u.builds as usize * 1000 / budget::PARCEL_BUILDS as usize)
+            .unwrap_or_default();
+        format!(
+            "Parcel budget: {}/{} builds · {}/{} faces · {}/{} glow",
+            fullest.builds,
+            budget::PARCEL_BUILDS,
+            short(fullest.faces),
+            short(budget::PARCEL_FACES),
+            short(fullest.glow),
+            short(budget::PARCEL_GLOW)
+        )
+    }
+
+    /// The local player's totals.
+    pub fn player_line(&self) -> String {
+        let u: Usage = self.budgets.player(&self.profile.id);
+        format!(
+            "Your budget: {}/{} builds · {}/{} build voxels · {}/{} terrain voxels",
+            u.builds,
+            budget::PLAYER_BUILDS,
+            short(u.voxels),
+            short(budget::PLAYER_VOXELS),
+            short(u.terrain),
+            short(budget::PLAYER_TERRAIN)
+        )
     }
 
     /// Renames the local player; past changes keep the name they were made under.
@@ -117,6 +157,15 @@ fn now() -> u64 {
 #[cfg(target_arch = "wasm32")]
 fn now() -> u64 {
     0
+}
+
+/// 18400 → "18k", 1500000 → "1.5M".
+fn short(n: usize) -> String {
+    match n {
+        0..1000 => n.to_string(),
+        1000..1_000_000 => format!("{}k", n / 1000),
+        _ => format!("{:.1}M", n as f32 / 1e6),
+    }
 }
 
 fn ago(seconds: u64) -> String {
@@ -188,7 +237,15 @@ pub fn load(seed: u32) -> (Ledger, HashMap<IVec3, VoxelId>) {
         warn!("saved change no longer applies: {problem}");
     }
     let profile = guest().unwrap_or(profile);
-    let ledger = Ledger { log, profile, builds: replayed.builds, land: replayed.land, version: 1 };
+    let ledger = Ledger {
+        log,
+        profile,
+        builds: replayed.builds,
+        land: replayed.land,
+        budgets: replayed.budgets,
+        footprints: replayed.footprints,
+        version: 1,
+    };
     (ledger, edits)
 }
 

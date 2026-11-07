@@ -6,6 +6,7 @@
 //! same inputs get the same voxels, which is what lets a server trust specs instead of
 //! voxels and lets saves replay.
 
+pub mod budget;
 pub mod build;
 pub mod land;
 pub mod log;

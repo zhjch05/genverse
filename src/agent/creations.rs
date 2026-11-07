@@ -5,7 +5,10 @@ use std::f32::consts::{FRAC_PI_2, PI};
 
 use bevy::prelude::*;
 pub use cubelark_rules::log::BuildState as SavedCreation;
-use cubelark_rules::log::{Action, parcels_of};
+use cubelark_rules::{
+    budget::{Footprint, Usage},
+    log::{Action, parcels_of},
+};
 
 use super::spec::{BuildSpec, BuildStats, VOXEL_SIZE, compile};
 use crate::{
@@ -195,9 +198,20 @@ impl Creations {
     pub fn check_draft(&self, transform: &Transform, ledger: &Ledger) -> Option<String> {
         let draft = self.draft.as_ref()?;
         let yaw = transform.rotation.to_euler(EulerRot::YXZ).0;
-        let mut parcels = cubelark_rules::land::build_parcels(transform.translation, yaw, &draft.spec.size);
+        let here = cubelark_rules::land::build_parcels(transform.translation, yaw, &draft.spec.size);
+        let mut parcels = here.clone();
         parcels.extend(draft.replaces.as_ref().map(parcels_of).unwrap_or_default());
-        ledger.check(&parcels).err()
+        if let Err(why) = ledger.check(&parcels) {
+            return Some(why);
+        }
+        let old = draft.replaces.as_ref().and_then(|r| ledger.footprints.get(&r.build));
+        let s = draft.stats;
+        let new = Footprint {
+            owner: old.map_or(ledger.profile.id.clone(), |o| o.owner.clone()),
+            parcels: here,
+            usage: Usage { builds: 1, voxels: s.voxels, faces: s.faces, glow: s.glow, terrain: 0 },
+        };
+        ledger.budgets.check(&new, old).err()
     }
 
     /// Starts a new following draft that copies a placed build (Minecraft's pick block).

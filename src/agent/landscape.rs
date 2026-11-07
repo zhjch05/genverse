@@ -20,7 +20,7 @@ use bevy_egui::input::EguiWantsInput;
 
 use cubelark_rules::{
     land::{Access, PARCEL, area_parcels},
-    log::Action,
+    log::{Action, terrain_footprint},
 };
 use cubelark_rules::sculpt::{self, Area, Columns, SculptStats, TerrainEdit, TerrainSpec, level_of, limits, surface};
 
@@ -119,7 +119,7 @@ impl Landscape {
         let draft = self.draft.take()?;
         world.hold_saves = false;
         let name = draft.spec.name.clone();
-        let action = Action::Terrain { name: name.clone(), area: draft.area, spec: draft.spec };
+        let action = Action::Terrain { name: name.clone(), area: draft.area, spec: draft.spec, changed: draft.stats.changed };
         let id = ledger.record(Some(&draft.provider), Some(&draft.prompt), action);
         self.kept.push(Kept { id, name: name.clone(), before: draft.before });
         Some((id, name))
@@ -215,6 +215,10 @@ fn prepare(world: &VoxelWorld, ledger: &Ledger, spec: &TerrainSpec, area: Area) 
         ledger.land.authorize_terrain(&ledger.profile.id, area, edit.edits).map_err(PreviewError::Refused)?;
     edit.stats.changed = edits.len();
     edit.edits = edits;
+    ledger
+        .budgets
+        .check(&terrain_footprint(&ledger.profile.id, edit.stats.changed), None)
+        .map_err(PreviewError::Refused)?;
     Ok(edit)
 }
 
