@@ -5,14 +5,19 @@
 //! rollback a matter of replaying without some changes.
 //!
 //! Undo never deletes history: it appends a [`Action::Revert`] of the change it undoes.
+//!
+//! Replay also enforces the land rules ([`crate::land`]) as of each change, so a log
+//! can't place things where its author wasn't allowed to, and who owns which parcel
+//! falls out of the log too.
 
 use std::collections::{BTreeMap, HashMap, HashSet};
 
-use bevy_math::{IVec2, IVec3, UVec3};
+use bevy_math::{IVec2, IVec3, UVec3, Vec3};
 use serde::{Deserialize, Serialize};
 
 use crate::{
     build::BuildSpec,
+    land::{Land, Spawn, area_parcels, build_parcels},
     sculpt::{self, Area, Columns, TerrainSpec},
     terrain::{Terrain, WORLD_HEIGHT},
     voxel::VoxelId,
@@ -70,6 +75,10 @@ pub enum Action {
     UpdateBuild(BuildState),
     RemoveBuild { build: u64 },
     Terrain { name: String, area: Area, spec: TerrainSpec },
+    /// Claims free parcels (by parcel coordinates) for the author.
+    ClaimParcels { parcels: Vec<[i32; 2]> },
+    /// Gives up the author's parcels.
+    ReleaseParcels { parcels: Vec<[i32; 2]> },
     /// Undoes an earlier change.
     Revert { change: u64 },
     /// Voxel edits made before the log existed (hand edits), as `[x, y, z, block]`.
@@ -87,12 +96,17 @@ pub struct Change {
 pub struct WorldLog {
     pub seed: u32,
     pub rules_version: u32,
+    /// Players who aren't bound by parcels or the spawn protection.
+    #[serde(default)]
+    pub admins: Vec<String>,
+    #[serde(default)]
+    pub spawn: Spawn,
     pub changes: Vec<Change>,
 }
 
 impl WorldLog {
     pub fn new(seed: u32) -> Self {
-        Self { seed, rules_version: RULES_VERSION, changes: Vec::new() }
+        Self { seed, rules_version: RULES_VERSION, admins: Vec::new(), spawn: Spawn::default(), changes: Vec::new() }
     }
 
     /// Appends a change and returns its id.
@@ -150,30 +164,87 @@ pub struct Replay {
     pub builds: BTreeMap<u64, BuildState>,
     /// Voxel edits on top of the seed.
     pub edits: HashMap<IVec3, VoxelId>,
-    /// Changes that no longer apply (e.g. rejected by tightened rules), with why.
+    pub land: Land,
+    /// Changes that no longer apply (refused by the land rules, or by tightened
+    /// limits), with why.
     pub problems: Vec<String>,
 }
 
+pub fn parcels_of(build: &BuildState) -> Vec<IVec2> {
+    build_parcels(Vec3::from_array(build.position), build.yaw, &build.spec.size)
+}
+
+/// Rebuilds everything: builds, land, and voxel edits.
 pub fn replay(log: &WorldLog) -> Replay {
+    walk(log, true)
+}
+
+/// Builds and land only, skipping the voxel work: cheap enough to redo after every change.
+pub fn replay_land(log: &WorldLog) -> Replay {
+    walk(log, false)
+}
+
+fn walk(log: &WorldLog, voxels: bool) -> Replay {
     let terrain = Terrain { seed: log.seed };
-    let mut out = Replay::default();
+    let mut out = Replay { land: Land::new(log.admins.clone(), log.spawn.clone()), ..Default::default() };
     for change in log.effective() {
+        let by = &change.by;
+        let refused = |why: String| format!("change {} by {}: {why}", change.id, by.player_name);
+        let parcels = |list: &[[i32; 2]]| list.iter().map(|p| IVec2::from_array(*p)).collect::<Vec<_>>();
         match &change.action {
             Action::PlaceBuild(b) | Action::UpdateBuild(b) => {
-                out.builds.insert(b.build, b.clone());
-            }
-            Action::RemoveBuild { build } => {
-                out.builds.remove(build);
-            }
-            Action::Terrain { name, area, spec } => {
-                let columns = ground_columns(terrain, *area, &out.edits);
-                match sculpt::compile(spec, *area, terrain, columns) {
-                    Ok(edit) => out.edits.extend(edit.edits),
-                    Err(errors) => out.problems.push(format!("change {} \"{name}\": {}", change.id, errors.join("; "))),
+                // Moving a build needs rights where it was and where it goes.
+                let mut touched = parcels_of(b);
+                touched.extend(out.builds.get(&b.build).map(parcels_of).unwrap_or_default());
+                match out.land.authorize(&by.player, &touched) {
+                    Ok(claims) => {
+                        out.land.claim(&by.player, &by.player_name, &claims);
+                        out.builds.insert(b.build, b.clone());
+                    }
+                    Err(why) => out.problems.push(refused(why)),
                 }
             }
+            Action::RemoveBuild { build } => {
+                let touched = out.builds.get(build).map(parcels_of).unwrap_or_default();
+                match out.land.authorize(&by.player, &touched) {
+                    Ok(_) => {
+                        out.builds.remove(build);
+                    }
+                    Err(why) => out.problems.push(refused(why)),
+                }
+            }
+            Action::Terrain { name, area, spec } => {
+                let claims = match out.land.authorize(&by.player, &area_parcels(*area)) {
+                    Ok(claims) => claims,
+                    Err(why) => {
+                        out.problems.push(refused(why));
+                        continue;
+                    }
+                };
+                if voxels {
+                    let columns = ground_columns(terrain, *area, &out.edits);
+                    match sculpt::compile(spec, *area, terrain, columns) {
+                        Ok(edit) => {
+                            let (_, edits) = out
+                                .land
+                                .authorize_terrain(&by.player, *area, edit.edits)
+                                .expect("authorized above");
+                            out.edits.extend(edits);
+                        }
+                        Err(errors) => out.problems.push(refused(format!("\"{name}\" {}", errors.join("; ")))),
+                    }
+                }
+                out.land.claim(&by.player, &by.player_name, &claims);
+            }
+            Action::ClaimParcels { parcels: list } => match out.land.authorize(&by.player, &parcels(list)) {
+                Ok(claims) => out.land.claim(&by.player, &by.player_name, &claims),
+                Err(why) => out.problems.push(refused(why)),
+            },
+            Action::ReleaseParcels { parcels: list } => out.land.release(&by.player, &parcels(list)),
             Action::LegacyVoxels { edits } => {
-                out.edits.extend(edits.iter().map(|[x, y, z, id]| (IVec3::new(*x, *y, *z), *id as VoxelId)));
+                if voxels {
+                    out.edits.extend(edits.iter().map(|[x, y, z, id]| (IVec3::new(*x, *y, *z), *id as VoxelId)));
+                }
             }
             Action::Revert { .. } => {}
         }
@@ -253,6 +324,8 @@ mod tests {
     #[test]
     fn replay_is_deterministic_and_survives_json() {
         let mut log = WorldLog::new(1337);
+        // Admins aren't bound by land, which has its own test.
+        log.admins = vec!["a".into(), "b".into()];
         log.push(by("a"), pond(400));
         log.push(by("a"), lamp(1));
         log.push(by("b"), pond(410));
@@ -268,6 +341,7 @@ mod tests {
     #[test]
     fn revert_and_rollback() {
         let mut log = WorldLog::new(1337);
+        log.admins = vec!["a".into(), "b".into()];
         let placed = log.push(by("a"), lamp(1));
         log.push(by("b"), lamp(2));
         log.push(by("a"), Action::Revert { change: placed });
@@ -279,6 +353,38 @@ mod tests {
         // Rolling back a's revert brings its lamp back.
         let without_revert = log.without(|c| matches!(c.action, Action::Revert { .. }));
         assert_eq!(replay(&without_revert).builds.len(), 2);
+    }
+
+    #[test]
+    fn replay_enforces_land() {
+        let mut log = WorldLog::new(1337);
+        log.push(by("a"), lamp(1));
+        // Lamp 1 stands at the origin, in the spawn: only admins may, so it's refused...
+        assert_eq!(replay_land(&log).problems.len(), 1);
+        // ...until a is an admin.
+        log.admins.push("a".into());
+        let land = replay_land(&log);
+        assert!(land.problems.is_empty() && land.builds.len() == 1);
+
+        // b claims land by building on it; c can't build there, a (admin) can.
+        let mut away = lamp(2);
+        if let Action::PlaceBuild(b) = &mut away {
+            b.position = [100.0, 10.0, 100.0];
+        }
+        log.push(by("b"), away.clone());
+        let mut c = away.clone();
+        if let Action::PlaceBuild(b) = &mut c {
+            b.build = 3;
+        }
+        log.push(by("c"), c);
+        let land = replay_land(&log);
+        assert_eq!(land.builds.keys().copied().collect::<Vec<_>>(), vec![1, 2]);
+        assert!(land.problems[0].contains("belongs to b"), "{:?}", land.problems);
+        assert!(land.land.parcels.values().all(|p| p.owner == "b"));
+
+        // Rolling b back frees the land, and c's lamp stands after all.
+        let rolled = replay_land(&log.without(|ch| ch.by.player == "b"));
+        assert_eq!(rolled.builds.keys().copied().collect::<Vec<_>>(), vec![1, 3]);
     }
 
     #[test]

@@ -7,6 +7,7 @@
 //! voxels and lets saves replay.
 
 pub mod build;
+pub mod land;
 pub mod log;
 pub mod sculpt;
 pub mod terrain;

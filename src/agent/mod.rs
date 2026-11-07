@@ -33,11 +33,12 @@ use crate::{
     },
     world::{VoxelWorld, ledger::Ledger},
 };
+use cubelark_rules::{land::area_parcels, log::Action as LogAction};
 use creations::{
     Adjust, Creation, Creations, DraftMarker, Undone, load_creations, outline_creations, placement_for_hit,
 };
 use landscape::{
-    AreaGizmos, Landscape, configure_area_gizmos, describe_stats, draw_area, highlight_area, select_area,
+    AreaGizmos, Landscape, ParcelOverlay, PreviewError, draw_parcels, configure_area_gizmos, describe_stats, land_summary, draw_area, highlight_area, select_area,
 };
 use mcp::McpServer;
 use runner::{AgentEvent, AgentJob, Provider};
@@ -57,6 +58,7 @@ impl Plugin for AgentPlugin {
             .init_resource::<Creations>()
             .init_resource::<BuildSite>()
             .init_resource::<Landscape>()
+            .init_resource::<ParcelOverlay>()
             .init_gizmo_group::<AreaGizmos>()
             .add_systems(Startup, (load_creations, configure_area_gizmos, start_tool_server))
             .add_systems(
@@ -65,7 +67,7 @@ impl Plugin for AgentPlugin {
                     block_game_input,
                     (update_build_site, answer_tool_calls, poll_agent).chain(),
                     auto_prompt,
-                    (shortcuts, select_area, follow_cursor, check_clearance, click_in_world, outline_creations, draw_area, highlight_area)
+                    (shortcuts, select_area, follow_cursor, check_clearance, click_in_world, outline_creations, draw_area, highlight_area, draw_parcels)
                         .chain(),
                 ),
             )
@@ -181,13 +183,25 @@ fn area_context(
     creations: &Creations,
     landscape: &Landscape,
     world: &VoxelWorld,
+    ledger: &Ledger,
     player: Option<Vec3>,
     camera: Option<&GlobalTransform>,
 ) -> Option<String> {
     if creations.draft.is_some() || creations.selected.is_some() {
         return None;
     }
-    landscape.context(world, player, camera.map(|c| *c.forward()))
+    landscape.context(world, ledger, player, camera.map(|c| *c.forward()))
+}
+
+/// Why a message about the selected land can't go to the agent: the land rules don't
+/// let the player change it, so no answer would help.
+fn land_refusal(creations: &Creations, landscape: &Landscape, ledger: &Ledger) -> Option<String> {
+    if creations.draft.is_some() || creations.selected.is_some() {
+        return None;
+    }
+    let area = landscape.target()?;
+    let why = ledger.check(&area_parcels(area)).err()?;
+    Some(format!("⚠ Can't change this land: {why}. Select an area you can change (P shows parcels)."))
 }
 
 /// `CUBELARK_PROMPT="a red mailbox" cargo run` sends one message once the hero has
@@ -200,7 +214,9 @@ fn auto_prompt(
     mut chat: ResMut<Chat>,
     mut creations: ResMut<Creations>,
     mut landscape: ResMut<Landscape>,
+    mut overlay: ResMut<ParcelOverlay>,
     world: Res<VoxelWorld>,
+    ledger: Res<Ledger>,
     players: Query<(&Player, &Transform)>,
     cameras: Query<&GlobalTransform, With<Camera3d>>,
 ) {
@@ -211,6 +227,9 @@ fn auto_prompt(
         return;
     }
     *sent = true;
+    if std::env::var("CUBELARK_PARCELS").is_ok() {
+        overlay.visible = true;
+    }
     if let Some(size) = std::env::var("CUBELARK_AREA").ok().and_then(|s| s.parse::<f32>().ok()) {
         let forward = (hero.rotation * Vec3::NEG_Z).xz().normalize_or_zero();
         let center = hero.translation.xz() + forward * (size / 2.0 + 2.0);
@@ -227,9 +246,15 @@ fn auto_prompt(
             creations.selected = creations.placed.last().map(|(e, _)| *e);
         }
         chat.input = text;
-        let area = area_context(&creations, &landscape, &world, Some(hero.translation), cameras.single().ok());
+        if let Some(why) = land_refusal(&creations, &landscape, &ledger) {
+            chat.input.clear();
+            chat.say(Role::System, why);
+            return;
+        }
+        let area = area_context(&creations, &landscape, &world, &ledger, Some(hero.translation), cameras.single().ok());
         chat.send(&mut creations, &mut commands, tools.as_deref(), area);
     }
+
 }
 
 /// Serves the read-only world tools to agents. Without it, agents still work blind.
@@ -308,7 +333,7 @@ fn poll_agent(
         let provider = pending.provider.label().to_string();
         match landscape.target() {
             None => chat.say(Role::System, "The agent sent land changes, but no area is selected (G)."),
-            Some(area) => match landscape.preview(&mut world, terrain.clone(), pending.prompt.clone(), provider) {
+            Some(area) => match landscape.preview(&mut world, &ledger, terrain.clone(), pending.prompt.clone(), provider) {
                 Ok(stats) => {
                     info!("terrain preview {name:?}: {stats:?} from {}", serde_json::to_string(&terrain).unwrap_or_default());
                     chat.say(
@@ -323,14 +348,17 @@ fn poll_agent(
                         keep_terrain(&mut creations, &mut landscape, &mut world, &mut ledger, &mut chat);
                     }
                 }
-                Err(errors) if pending.repairs == 0 => {
+                Err(PreviewError::Refused(why)) => {
+                    chat.say(Role::System, format!("⚠ Can't change this land: {why}."));
+                }
+                Err(PreviewError::Invalid(errors)) if pending.repairs == 0 => {
                     warn!("terrain rejected, asking for a fix: {errors:?}");
                     chat.say(Role::System, format!("Land change broke {} rule(s); asking for a fix…", errors.len()));
                     let request = prompt::repair_terrain(&terrain, &errors);
                     chat.start(tools.as_deref(), pending.provider, pending.prompt.clone(), request, 1, false);
                     repairing = true;
                 }
-                Err(errors) => {
+                Err(PreviewError::Invalid(errors)) => {
                     warn!("terrain rejected again: {errors:?}");
                     chat.say(Role::System, format!("⚠ Land change rejected:\n• {}", errors.join("\n• ")));
                 }
@@ -399,6 +427,7 @@ fn shortcuts(
     mut landscape: ResMut<Landscape>,
     mut world: ResMut<VoxelWorld>,
     mut ledger: ResMut<Ledger>,
+    mut overlay: ResMut<ParcelOverlay>,
     mut transforms: Query<&mut Transform, With<DraftMarker>>,
 ) {
     if blocked.0 {
@@ -418,6 +447,12 @@ fn shortcuts(
     if keys.just_pressed(KeyCode::KeyT) {
         chat.open = true;
         chat.focus_input = true;
+        return;
+    }
+
+    // P: show who owns the land around you.
+    if keys.just_pressed(KeyCode::KeyP) {
+        overlay.visible = !overlay.visible;
         return;
     }
 
@@ -442,8 +477,8 @@ fn shortcuts(
         if keys.just_pressed(KeyCode::Enter) {
             let at = *transform;
             match creations.place_draft(&mut commands, &at, &mut ledger) {
-                Some(name) => chat.say(Role::System, format!("Placed \"{name}\".")),
-                None => chat.say(Role::System, "Can't place it on top of you; point somewhere else."),
+                Ok(name) => chat.say(Role::System, format!("Placed \"{name}\".")),
+                Err(why) => chat.say(Role::System, why),
             }
             return;
         }
@@ -488,8 +523,9 @@ fn shortcuts(
                 chat.say(Role::System, format!("Moving \"{name}\": point and click to place it."));
             }
         } else if keys.any_just_pressed([KeyCode::Delete, KeyCode::Backspace]) {
-            if let Some(name) = creations.delete_selected(&mut commands, &mut ledger) {
-                chat.say(Role::System, format!("Deleted \"{name}\". Ctrl/Cmd+Z brings it back."));
+            match creations.delete_selected(&mut commands, &mut ledger) {
+                Ok(name) => chat.say(Role::System, format!("Deleted \"{name}\". Ctrl/Cmd+Z brings it back.")),
+                Err(why) => chat.say(Role::System, why),
             }
         } else if keys.just_pressed(KeyCode::Escape) {
             creations.selected = None;
@@ -590,20 +626,27 @@ fn follow_cursor(
     }
 }
 
-/// Flags a draft that would trap the hero inside it.
+/// Flags a draft that would trap the hero inside it, or that the land rules don't
+/// allow where it stands.
 fn check_clearance(
     mut creations: ResMut<Creations>,
+    ledger: Res<Ledger>,
     players: Query<&Transform, With<Player>>,
     drafts: Query<(&VoxelModel, &Transform), With<DraftMarker>>,
 ) {
-    let Some(draft) = &mut creations.draft else {
+    let Some(draft) = &creations.draft else {
         return;
     };
     let (Ok(hero), Ok((model, transform))) = (players.single(), drafts.get(draft.entity)) else {
         return;
     };
     let (lo, hi) = player::bounds(hero.translation);
-    draft.blocked = overlaps_box(model, &GlobalTransform::from(*transform), lo, hi);
+    let blocked = overlaps_box(model, &GlobalTransform::from(*transform), lo, hi);
+    let denied = creations.check_draft(transform, &ledger);
+    if let Some(draft) = &mut creations.draft {
+        draft.blocked = blocked;
+        draft.denied = denied;
+    }
 }
 
 /// Mouse, in the world (not over the panel). A click is a press and release without
@@ -652,13 +695,11 @@ fn click_in_world(
             creations.discard_draft(&mut commands);
         } else if !draft.follow {
             // Pinned revisions are confirmed from the panel or with Enter.
-        } else if left && draft.blocked {
-            chat.say(Role::System, "Can't place it on top of you; point somewhere else.");
-        } else if left
-            && let Ok(transform) = drafts.get(draft.entity).copied()
-            && let Some(name) = creations.place_draft(&mut commands, &transform, &mut ledger)
-        {
-            chat.say(Role::System, format!("Placed \"{name}\"."));
+        } else if left && let Ok(transform) = drafts.get(draft.entity).copied() {
+            match creations.place_draft(&mut commands, &transform, &mut ledger) {
+                Ok(name) => chat.say(Role::System, format!("Placed \"{name}\".")),
+                Err(why) => chat.say(Role::System, why),
+            }
         }
         return;
     }
@@ -705,7 +746,7 @@ fn shortcut_hints(
         }
         None if chat.pending.is_some() => return Ok(()),
         None if landscape.area.is_some() => "T: describe what this land should become   G: select again   Esc: clear the area",
-        None => "T: describe a build   G: reshape the ground   Click a build: select   Middle-click a build: copy",
+        None => "T: describe a build   G: reshape the ground   P: parcels   Click a build: select   Middle-click a build: copy",
     };
     let ctx = contexts.ctx_mut()?;
     egui::Area::new("shortcut_hints".into())
@@ -749,6 +790,8 @@ enum Action {
     DiscardTerrain,
     SelectArea,
     ClearArea,
+    Claim,
+    Release,
 }
 
 fn chat_panel(
@@ -821,6 +864,9 @@ fn chat_panel(
                         ui.label(egui::RichText::new(format!("Draft: {}", draft.spec.name)).strong());
                         let s = draft.stats;
                         ui.label(format!("{}×{}×{} · {} voxels · {} faces", s.size.x, s.size.y, s.size.z, s.voxels, s.faces));
+                        if let Some(why) = &draft.denied {
+                            ui.label(egui::RichText::new(format!("{} Not here: {why}", icon::WARNING)).color(egui::Color32::from_rgb(255, 150, 120)));
+                        }
                         ui.horizontal(|ui| {
                             let tip = |r: egui::Response, t: &str| r.on_hover_text(t.to_string()).clicked();
                             if tip(ui.button(icon::ARROW_COUNTER_CLOCKWISE), "Turn left (Q)") {
@@ -836,10 +882,11 @@ fn chat_panel(
                                 action = Some(Action::Adjust(Adjust::Raise(-1.0)));
                             }
                             ui.separator();
+                            let why_not = if draft.blocked { Some("It would overlap you") } else { draft.denied.as_deref() };
                             let place = ui
-                                .add_enabled(!draft.blocked, egui::Button::new(format!("{} Place", icon::CHECK)))
+                                .add_enabled(why_not.is_none(), egui::Button::new(format!("{} Place", icon::CHECK)))
                                 .on_hover_text("Enter, or click in the world")
-                                .on_disabled_hover_text("It would overlap you");
+                                .on_disabled_hover_text(why_not.unwrap_or_default());
                             if place.clicked() {
                                 action = Some(Action::Place);
                             }
@@ -917,12 +964,25 @@ fn chat_panel(
                     ui.group(|ui| {
                         let size = area.size_m();
                         ui.label(egui::RichText::new(format!("Area: {:.1} × {:.1} m", size.x, size.y)).strong());
+                        ui.label(egui::RichText::new(land_summary(&ledger, area)).small());
                         ui.horizontal(|ui| {
                             if ui.button(format!("{} Select again", icon::SELECTION)).on_hover_text("G").clicked() {
                                 action = Some(Action::SelectArea);
                             }
                             if ui.button("Clear").on_hover_text("Esc").clicked() {
                                 action = Some(Action::ClearArea);
+                            }
+                        });
+                        ui.horizontal(|ui| {
+                            if ui
+                                .button(format!("{} Claim", icon::FLAG))
+                                .on_hover_text("Make the unclaimed parcels here yours, so only you can change them")
+                                .clicked()
+                            {
+                                action = Some(Action::Claim);
+                            }
+                            if ui.button("Release").on_hover_text("Give up your parcels here").clicked() {
+                                action = Some(Action::Release);
                             }
                         });
                         ui.label(egui::RichText::new("Describe what it should become: a pond, a path, a hill…").small().weak());
@@ -1001,9 +1061,13 @@ fn chat_panel(
 
     match action {
         Some(Action::Send) => {
-            let player = players.single().ok().map(|t| t.translation);
-            let area = area_context(&creations, &landscape, &world, player, cameras.single().ok());
-            chat.send(&mut creations, &mut commands, tools.as_deref(), area);
+            if let Some(why) = land_refusal(&creations, &landscape, &ledger) {
+                chat.say(Role::System, why);
+            } else {
+                let player = players.single().ok().map(|t| t.translation);
+                let area = area_context(&creations, &landscape, &world, &ledger, player, cameras.single().ok());
+                chat.send(&mut creations, &mut commands, tools.as_deref(), area);
+            }
         }
         Some(Action::KeepTerrain) => keep_terrain(&mut creations, &mut landscape, &mut world, &mut ledger, &mut chat),
         Some(Action::DiscardTerrain) => {
@@ -1012,6 +1076,38 @@ fn chat_panel(
         }
         Some(Action::SelectArea) => landscape.selecting = true,
         Some(Action::ClearArea) => landscape.area = None,
+        Some(Action::Claim) => {
+            if let Some(area) = landscape.area {
+                let message = match ledger.check(&area_parcels(area)) {
+                    Ok(claims) if claims.is_empty() => "Nothing here to claim.".to_string(),
+                    Ok(claims) => {
+                        let parcels = claims.iter().map(|p| p.to_array()).collect();
+                        ledger.record(None, None, LogAction::ClaimParcels { parcels });
+                        format!("Claimed {} parcel(s); only you (and admins) can change them now.", claims.len())
+                    }
+                    Err(why) => format!("Can't claim it: {why}."),
+                };
+                chat.say(Role::System, message);
+            }
+        }
+        Some(Action::Release) => {
+            if let Some(area) = landscape.area {
+                let id = ledger.profile.id.clone();
+                let mine: Vec<[i32; 2]> = area_parcels(area)
+                    .into_iter()
+                    .filter(|p| ledger.land.parcels.get(p).is_some_and(|parcel| parcel.owner == id))
+                    .map(|p| p.to_array())
+                    .collect();
+                let message = if mine.is_empty() {
+                    "You don't own any parcels here.".to_string()
+                } else {
+                    let n = mine.len();
+                    ledger.record(None, None, LogAction::ReleaseParcels { parcels: mine });
+                    format!("Released {n} parcel(s).")
+                };
+                chat.say(Role::System, message);
+            }
+        }
         Some(Action::Stop) => {
             if let Some(p) = &chat.pending
                 && let Ok(job) = p.job.lock()
@@ -1021,10 +1117,11 @@ fn chat_panel(
         }
         Some(Action::Place) => {
             let transform = creations.draft.as_ref().and_then(|d| transforms.get(d.entity).ok()).copied();
-            if let Some(transform) = transform
-                && let Some(name) = creations.place_draft(&mut commands, &transform, &mut ledger)
-            {
-                chat.say(Role::System, format!("Placed \"{name}\"."));
+            if let Some(transform) = transform {
+                match creations.place_draft(&mut commands, &transform, &mut ledger) {
+                    Ok(name) => chat.say(Role::System, format!("Placed \"{name}\".")),
+                    Err(why) => chat.say(Role::System, why),
+                }
             }
         }
         Some(Action::Discard) => creations.discard_draft(&mut commands),
@@ -1043,8 +1140,9 @@ fn chat_panel(
             }
         }
         Some(Action::Delete) => {
-            if let Some(name) = creations.delete_selected(&mut commands, &mut ledger) {
-                chat.say(Role::System, format!("Deleted \"{name}\"."));
+            match creations.delete_selected(&mut commands, &mut ledger) {
+                Ok(name) => chat.say(Role::System, format!("Deleted \"{name}\".")),
+                Err(why) => chat.say(Role::System, why),
             }
         }
         Some(Action::Deselect) => creations.selected = None,

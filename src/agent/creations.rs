@@ -5,7 +5,7 @@ use std::f32::consts::{FRAC_PI_2, PI};
 
 use bevy::prelude::*;
 pub use cubelark_rules::log::BuildState as SavedCreation;
-use cubelark_rules::log::Action;
+use cubelark_rules::log::{Action, parcels_of};
 
 use super::spec::{BuildSpec, BuildStats, VOXEL_SIZE, compile};
 use crate::{
@@ -25,6 +25,8 @@ pub struct Draft {
     pub lift: f32,
     /// Set while the draft overlaps the hero; it can't be placed there.
     pub blocked: bool,
+    /// Why the land rules don't allow it where it stands, if they don't.
+    pub denied: Option<String>,
     /// Following drafts stick to the cursor; pinned ones (revisions of a placed build)
     /// stay put until picked up.
     pub follow: bool,
@@ -128,7 +130,7 @@ impl Creations {
         let (spec, stats, prompt, provider) = draft;
         let entity = spawn(commands, model, &spec.name, at.0, at.1);
         commands.entity(entity).insert(DraftMarker);
-        self.draft = Some(Draft { entity, spec, stats, prompt, provider, replaces, lift, blocked: false, follow, by_agent: true });
+        self.draft = Some(Draft { entity, spec, stats, prompt, provider, replaces, lift, blocked: false, denied: None, follow, by_agent: true });
     }
 
     /// Drops the draft; if it was an edit, the original build comes back unchanged.
@@ -167,21 +169,35 @@ impl Creations {
             replaces: Some(saved),
             lift: 0.0,
             blocked: false,
+            denied: None,
             follow,
             by_agent: false,
         });
         Some(name)
     }
 
-    pub fn delete_selected(&mut self, commands: &mut Commands, ledger: &mut Ledger) -> Option<String> {
-        let entity = self.selected.take()?;
-        let index = self.placed.iter().position(|(e, _)| *e == entity)?;
+    /// Removes the selected build if the land rules allow it; returns its name, or why not.
+    pub fn delete_selected(&mut self, commands: &mut Commands, ledger: &mut Ledger) -> Result<String, String> {
+        let entity = self.selected.ok_or("nothing is selected")?;
+        let index = self.placed.iter().position(|(e, _)| *e == entity).ok_or("nothing is selected")?;
+        ledger.check(&parcels_of(&self.placed[index].1)).map_err(|why| format!("Can't delete it: {why}."))?;
+        self.selected = None;
         let (_, saved) = self.placed.remove(index);
         commands.entity(entity).despawn();
         let name = saved.name.clone();
         let change = ledger.record(None, None, Action::RemoveBuild { build: saved.build });
         self.history.push(Change::Deleted { before: saved, change });
-        Some(name)
+        Ok(name)
+    }
+
+    /// Whether the land rules allow the draft at `transform` (a moved or revised build
+    /// also needs rights where it stood).
+    pub fn check_draft(&self, transform: &Transform, ledger: &Ledger) -> Option<String> {
+        let draft = self.draft.as_ref()?;
+        let yaw = transform.rotation.to_euler(EulerRot::YXZ).0;
+        let mut parcels = cubelark_rules::land::build_parcels(transform.translation, yaw, &draft.spec.size);
+        parcels.extend(draft.replaces.as_ref().map(parcels_of).unwrap_or_default());
+        ledger.check(&parcels).err()
     }
 
     /// Starts a new following draft that copies a placed build (Minecraft's pick block).
@@ -204,6 +220,7 @@ impl Creations {
             replaces: None,
             lift: 0.0,
             blocked: false,
+            denied: None,
             follow: true,
             by_agent: false,
         });
@@ -225,12 +242,17 @@ impl Creations {
         self.placed.iter().find(|(e, _)| *e == entity).map(|(_, c)| c)
     }
 
-    /// Makes the draft permanent where it stands (`transform` is the draft's).
-    pub fn place_draft(&mut self, commands: &mut Commands, transform: &Transform, ledger: &mut Ledger) -> Option<String> {
-        if self.draft.as_ref()?.blocked {
-            return None;
+    /// Makes the draft permanent where it stands (`transform` is the draft's). Returns
+    /// its name, or why it can't be placed there.
+    pub fn place_draft(&mut self, commands: &mut Commands, transform: &Transform, ledger: &mut Ledger) -> Result<String, String> {
+        let draft = self.draft.as_ref().ok_or("there's no draft")?;
+        if draft.blocked {
+            return Err("Can't place it on top of you; point somewhere else.".into());
         }
-        let draft = self.draft.take()?;
+        if let Some(why) = self.check_draft(transform, ledger) {
+            return Err(format!("Can't place it here: {why}."));
+        }
+        let draft = self.draft.take().expect("checked above");
         commands.entity(draft.entity).remove::<DraftMarker>().insert(SolidModel);
         let known = self.placed.iter().map(|(_, c)| c.build).chain(ledger.builds.keys().copied());
         self.next_id = self.next_id.max(known.max().map_or(1, |b| b + 1));
@@ -265,7 +287,7 @@ impl Creations {
         self.placed.push((draft.entity, saved));
         // Stay selected so a follow-up chat message ("make it blue") applies to it.
         self.selected = Some(draft.entity);
-        Some(name)
+        Ok(name)
     }
 
     /// Reverts the latest change; returns a message describing what happened.
@@ -338,7 +360,7 @@ pub fn outline_creations(
     query: Query<(Entity, &Transform, &Creation, Has<DraftMarker>)>,
 ) {
     let pulse = 0.6 + 0.4 * (time.elapsed_secs() * 3.0).sin();
-    let blocked = creations.draft.as_ref().is_some_and(|d| d.blocked);
+    let blocked = creations.draft.as_ref().is_some_and(|d| d.blocked || d.denied.is_some());
     for (entity, transform, creation, is_draft) in &query {
         let color = if is_draft && blocked {
             Color::srgba(1.0, 0.3, 0.25, pulse)

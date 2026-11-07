@@ -4,7 +4,9 @@
 //! On desktop the log is `saves/world.json`. Replaying it is the truth;
 //! `saves/world_edits.json` is a cache of the replayed voxels, used when its hash
 //! matches the log. Saves from before the log are migrated once (the old files are
-//! kept as `.bak`). The local player is `saves/profile.json`.
+//! kept as `.bak`). The local player is `saves/profile.json`; the world's first player
+//! is its admin. `CUBELARK_AS=Name` plays as a different (non-admin) player for this
+//! run, to try the land rules from someone else's side.
 //!
 //! The web build has no saves and no builder yet, so nothing records there.
 #![cfg_attr(target_arch = "wasm32", allow(dead_code))]
@@ -12,7 +14,10 @@
 use std::collections::{BTreeMap, HashMap};
 
 use bevy::prelude::*;
-use cubelark_rules::log::{Action, BuildState, Provenance, WorldLog, replay};
+use cubelark_rules::{
+    land::Land,
+    log::{Action, BuildState, Provenance, WorldLog, replay, replay_land},
+};
 use serde::{Deserialize, Serialize};
 
 use crate::voxel::VoxelId;
@@ -37,6 +42,8 @@ pub struct Ledger {
     pub profile: Profile,
     /// Placed builds as of loading, for the builder to spawn.
     pub builds: BTreeMap<u64, BuildState>,
+    /// Who owns what, as of the latest change.
+    pub land: Land,
     /// Bumped on every recorded change, so the voxel cache knows to follow.
     pub version: u64,
 }
@@ -48,8 +55,15 @@ impl Ledger {
         let by = Provenance::new(&self.profile.id, &self.profile.name, agent, prompt, now());
         let id = self.log.push(by, action);
         self.version += 1;
+        self.land = replay_land(&self.log).land;
         self.save();
         id
+    }
+
+    /// Whether the local player may change `parcels`; returns the free ones the change
+    /// would claim, or why not.
+    pub fn check(&self, parcels: &[IVec2]) -> Result<Vec<IVec2>, String> {
+        self.land.authorize(&self.profile.id, parcels)
     }
 
     /// Undoes change `id` by appending a revert of it.
@@ -64,8 +78,11 @@ impl Ledger {
             return;
         }
         self.profile.name = name.chars().take(32).collect();
+        // A guest (CUBELARK_AS) is only for this run.
         #[cfg(not(target_arch = "wasm32"))]
-        write_json(PROFILE_PATH, &self.profile);
+        if !self.profile.id.starts_with("guest:") {
+            write_json(PROFILE_PATH, &self.profile);
+        }
     }
 
     /// Who first placed build `build`, and who changed it last (if anyone did since).
@@ -150,15 +167,40 @@ fn read_json<T: serde::de::DeserializeOwned>(path: &str) -> Option<T> {
 /// it describes.
 pub fn load(seed: u32) -> (Ledger, HashMap<IVec3, VoxelId>) {
     let profile = load_profile();
-    let (log, cached) = load_log(seed);
-    let replayed = replay(&log);
+    let (mut log, cached) = load_log(seed);
+    // The world's first player runs it.
+    if log.admins.is_empty() {
+        log.admins.push(profile.id.clone());
+        #[cfg(not(target_arch = "wasm32"))]
+        write_json(LOG_PATH, &log);
+    }
+    // Builds and land always come from the log (cheap); voxels from the cache when it
+    // matches, otherwise from a full replay.
+    let (replayed, edits) = match cached {
+        Some(edits) => (replay_land(&log), edits),
+        None => {
+            let mut full = replay(&log);
+            let edits = std::mem::take(&mut full.edits);
+            (full, edits)
+        }
+    };
     for problem in &replayed.problems {
         warn!("saved change no longer applies: {problem}");
     }
-    // Builds always come from the replay (cheap); voxels from the cache when it's current.
-    let edits = cached.unwrap_or(replayed.edits);
-    let ledger = Ledger { log, profile, builds: replayed.builds, version: 1 };
+    let profile = guest().unwrap_or(profile);
+    let ledger = Ledger { log, profile, builds: replayed.builds, land: replayed.land, version: 1 };
     (ledger, edits)
+}
+
+/// `CUBELARK_AS=Name`: a separate player for this run (not saved, never an admin).
+fn guest() -> Option<Profile> {
+    #[cfg(target_arch = "wasm32")]
+    return None;
+    #[cfg(not(target_arch = "wasm32"))]
+    std::env::var("CUBELARK_AS").ok().filter(|n| !n.trim().is_empty()).map(|name| {
+        info!("playing as {name}");
+        Profile { id: format!("guest:{}", name.trim().to_lowercase()), name: name.trim().into() }
+    })
 }
 
 #[cfg(target_arch = "wasm32")]
