@@ -21,6 +21,7 @@ mod prefs;
 mod presence;
 mod prompt;
 mod runner;
+mod settings;
 mod theme;
 use cubelark_rules::build as spec;
 mod tools;
@@ -32,12 +33,14 @@ use std::{
 
 use bevy::{camera::SubCameraView, prelude::*, window::PrimaryWindow};
 use bevy_egui::{
-    EguiContexts, EguiGlobalSettings, EguiPlugin, EguiPrimaryContextPass, egui, input::EguiWantsInput,
+    EguiContexts, EguiGlobalSettings, EguiPlugin, EguiPrimaryContextPass, PrimaryEguiContext, egui,
+    input::EguiWantsInput,
 };
 use egui_phosphor::regular as icon;
 
 use crate::{
     player::{self, InputBlocked, Player, PointerOverUi},
+    graphics::{self, ScreenCamera},
     voxel::{
         VoxelModel,
         query::{Hit, overlaps_box, raycast},
@@ -70,7 +73,13 @@ impl Plugin for AgentPlugin {
     fn build(&self, app: &mut App) {
         app.add_plugins(EguiPlugin::default())
             // Clicks, drags, and keys over the panel must not reach the game (it's off by default).
-            .insert_resource(EguiGlobalSettings { enable_absorb_bevy_input_system: true, ..default() })
+            // The interface draws on the screen camera, which stays on the window when the
+            // world is drawn at a lower render scale.
+            .insert_resource(EguiGlobalSettings {
+                enable_absorb_bevy_input_system: true,
+                auto_create_primary_context: false,
+                ..default()
+            })
             .init_resource::<Chat>()
             .init_resource::<Creations>()
             .init_resource::<BuildSite>()
@@ -79,9 +88,11 @@ impl Plugin for AgentPlugin {
             .init_resource::<presence::Peers>()
             .init_resource::<history::History>()
             .init_resource::<fps::Fps>()
+            .init_resource::<settings::SettingsWindow>()
             .init_resource::<lan::Lan>()
             .init_gizmo_group::<AreaGizmos>()
             .init_gizmo_group::<presence::RingGizmos>()
+            .add_systems(Startup, (attach_interface.after(graphics::spawn_screen), settings::load_settings))
             .add_systems(Startup, (load_creations, configure_area_gizmos, presence::configure_ring_gizmos, start_tool_server, lan::start_listening))
             .add_systems(
                 Update,
@@ -96,7 +107,7 @@ impl Plugin for AgentPlugin {
                 ),
             )
             .add_systems(EguiPrimaryContextPass, (install_icon_font, chat_panel, shortcut_hints).chain())
-            .add_systems(EguiPrimaryContextPass, (presence::name_tags, presence::hover_credit, history::history_window, fps::fps_overlay));
+            .add_systems(EguiPrimaryContextPass, (presence::name_tags, presence::hover_credit, history::history_window, fps::fps_overlay, settings::settings_window));
     }
 }
 
@@ -976,6 +987,12 @@ fn mouse_key(key: &str) -> String {
     format!("{icon} {name}")
 }
 
+fn attach_interface(mut commands: Commands, screens: Query<Entity, With<ScreenCamera>>) {
+    for screen in &screens {
+        commands.entity(screen).insert(PrimaryEguiContext);
+    }
+}
+
 /// Adds the Phosphor icon font as a fallback, so icons render inside any label, and
 /// applies the builder's look.
 fn install_icon_font(mut contexts: EguiContexts, mut done: Local<bool>) -> Result {
@@ -1339,7 +1356,7 @@ fn chat_panel(
     mut landscape: ResMut<Landscape>,
     mut world: ResMut<VoxelWorld>,
     mut ledger: ResMut<Ledger>,
-    mut history: ResMut<history::History>,
+    (mut history, mut settings): (ResMut<history::History>, ResMut<settings::SettingsWindow>),
     mut lan: ResMut<lan::Lan>,
     time: Res<Time>,
     players: Query<&Transform, With<Player>>,
@@ -1385,6 +1402,9 @@ fn chat_panel(
                             let (sun, tip) = if ui.visuals().dark_mode { (icon::SUN, "Light theme") } else { (icon::MOON, "Dark theme") };
                             if theme::icon_button(ui, sun, tip) {
                                 theme::toggle(ui.ctx());
+                            }
+                            if theme::icon_button(ui, icon::GAUGE, "Settings: display and graphics") {
+                                settings.open = !settings.open;
                             }
                             if theme::icon_button(ui, icon::CLOCK_COUNTER_CLOCKWISE, "History (H)") {
                                 action = Some(Action::History);

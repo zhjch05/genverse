@@ -1,17 +1,15 @@
 //! Presentation: physical sky, sun with cascaded shadows, distance fog that hides
-//! chunk streaming, and the post-processing stack on the follow camera.
+//! chunk streaming, and the post-processing stack on the follow camera (which effects
+//! run is up to [`crate::graphics`]).
 
 use std::f32::consts::PI;
 
 use bevy::{
-    anti_alias::taa::TemporalAntiAliasing,
     camera::Exposure,
     light::{
-        Atmosphere, AtmosphereEnvironmentMapLight, CascadeShadowConfigBuilder,
-        ShadowFilteringMethod, atmosphere::ScatteringMedium, light_consts::lux,
+        Atmosphere, AtmosphereEnvironmentMapLight, atmosphere::ScatteringMedium, light_consts::lux,
     },
-    pbr::{AtmosphereSettings, DistanceFog, FogFalloff, ScreenSpaceAmbientOcclusion},
-    post_process::bloom::Bloom,
+    pbr::{AtmosphereSettings, DistanceFog, FogFalloff},
     prelude::*,
     render::view::{
         Msaa, Tonemapping,
@@ -65,27 +63,17 @@ fn setup(mut commands: Commands, mut media: ResMut<Assets<ScatteringMedium>>) {
         DirectionalLight {
             illuminance: lux::RAW_SUNLIGHT,
             shadow_maps_enabled: true,
-            contact_shadows_enabled: true,
             ..default()
         },
         Transform::from_rotation(Quat::from_euler(EulerRot::YXZ, PI * 0.35, -0.75, 0.0)),
-        CascadeShadowConfigBuilder {
-            num_cascades: 4,
-            first_cascade_far_bound: 8.0,
-            maximum_distance: 70.0,
-            ..default()
-        }
-        .build(),
     ));
 
     // Fade the terrain out just before the streaming edge.
     let view = (VIEW_RADIUS * CHUNK) as f32 * VOXEL_SIZE;
-    let mut camera = commands.spawn((
+    commands.spawn((
         Name::new("Camera"),
         Camera3d::default(),
         Msaa::Off,
-        TemporalAntiAliasing::default(),
-        ShadowFilteringMethod::Temporal,
         AtmosphereSettings::default(),
         AtmosphereEnvironmentMapLight::default(),
         DistanceFog {
@@ -99,13 +87,8 @@ fn setup(mut commands: Commands, mut media: ResMut<Assets<ScatteringMedium>>) {
         },
         Exposure { ev100: 13.5 },
         Tonemapping::TonyMcMapface,
-        Bloom::NATURAL,
         FollowCamera::default(),
     ));
-    // SSAO isn't supported on WebGPU yet; baked voxel AO still applies there.
-    if cfg!(not(target_arch = "wasm32")) {
-        camera.insert(ScreenSpaceAmbientOcclusion::default());
-    }
 
     // On desktop the builder draws these, with what applies right now.
     #[cfg(target_arch = "wasm32")]

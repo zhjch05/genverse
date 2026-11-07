@@ -1,5 +1,6 @@
 #[cfg(not(target_arch = "wasm32"))]
 mod agent;
+mod graphics;
 mod player;
 mod scene;
 mod voxel;
@@ -23,6 +24,7 @@ fn main() -> AppExit {
             world::WorldPlugin,
             player::PlayerPlugin,
             scene::ScenePlugin,
+            graphics::GraphicsPlugin,
         ));
     // Local agents (Claude Code, Codex CLI) only exist on desktop.
     #[cfg(not(target_arch = "wasm32"))]

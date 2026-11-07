@@ -269,6 +269,7 @@ impl VoxelWorld {
 
     /// Whether every chunk in the column containing `pos` is loaded.
     /// How many chunks are loaded, and how many are still being built.
+    #[cfg_attr(target_arch = "wasm32", allow(dead_code))]
     pub fn chunk_counts(&self) -> (usize, usize) {
         (self.loaded.len(), self.pending.len())
     }

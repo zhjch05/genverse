@@ -1,15 +1,17 @@
 //! The frame rate overlay (F3): frames per second, how long frames take, a graph of
 //! the last few seconds, and what the world is doing (chunks loaded and building,
-//! entities, where you are). The choice is kept in saves/settings.json.
+//! entities, where you are), the graphics settings, and where the mouse and keys go
+//! (the game, or the interface and why). The choice is kept in saves/settings.json.
 
 use std::collections::VecDeque;
 
-use bevy::prelude::*;
-use bevy_egui::{EguiContexts, egui};
+use bevy::{prelude::*, window::PrimaryWindow};
+use bevy_egui::{EguiContexts, egui, input::EguiWantsInput};
 
 use super::{prefs, theme};
 use crate::{
-    player::{InputBlocked, Player},
+    player::{InputBlocked, Player, PointerOverUi},
+    graphics::Graphics,
     world::VoxelWorld,
 };
 
@@ -90,9 +92,16 @@ pub fn track_frames(keys: Res<ButtonInput<KeyCode>>, blocked: Res<InputBlocked>,
 pub fn fps_overlay(
     mut contexts: EguiContexts,
     fps: Res<Fps>,
+    graphics: Res<Graphics>,
     world: Res<VoxelWorld>,
     entities: Query<Entity>,
     player: Query<&Transform, With<Player>>,
+    (egui_input, over_ui, buttons, windows): (
+        Res<EguiWantsInput>,
+        Res<PointerOverUi>,
+        Res<ButtonInput<MouseButton>>,
+        Query<&Window, With<PrimaryWindow>>,
+    ),
 ) -> Result {
     if !fps.open {
         return Ok(());
@@ -140,12 +149,43 @@ pub fn fps_overlay(
                     row(ui, "1% low", format!("{:.0} fps", s.low), tone(1000.0 / s.low.max(1.0)));
                     row(ui, "worst", format!("{:.1} ms", s.worst_ms), tone(s.worst_ms));
                     graph(ui, &fps.frames, tone);
+                    let preset = graphics.preset().map_or("Custom", |q| q.label());
+                    row(ui, "graphics", format!("{preset} · {:.0}%", graphics.render_scale * 100.0), p.text);
                     row(ui, "chunks", format!("{loaded} (+{building})"), p.text);
                     row(ui, "entities", entities.iter().len().to_string(), p.text);
                     if let Ok(t) = player.single() {
                         let at = t.translation;
                         row(ui, "at", format!("{:.0} {:.0} {:.0}", at.x, at.y, at.z), p.text);
                     }
+                    let cursor = windows.single().ok().and_then(|w| w.cursor_position());
+                    row(ui, "cursor", cursor.map_or("outside".into(), |c| format!("{:.0} {:.0}", c.x, c.y)), p.text);
+                    // Who gets the mouse and the keys: the game, or the interface (and why).
+                    let mouse = if egui_input.is_popup_open() {
+                        "UI · menu open"
+                    } else if egui_input.is_using_pointer() {
+                        "UI · dragging"
+                    } else if egui_input.is_pointer_over_area() || egui_input.wants_pointer_input() {
+                        "UI · over it"
+                    } else if over_ui.0 {
+                        "UI · panel"
+                    } else {
+                        "game"
+                    };
+                    row(ui, "mouse", mouse.into(), if mouse == "game" { p.text } else { p.warn });
+                    let held: Vec<_> = [(MouseButton::Left, "left"), (MouseButton::Right, "right"), (MouseButton::Middle, "middle")]
+                        .into_iter()
+                        .filter(|(b, _)| buttons.pressed(*b))
+                        .map(|(_, name)| name)
+                        .collect();
+                    row(ui, "held", if held.is_empty() { "–".into() } else { held.join(" ") }, p.text);
+                    let keys = if egui_input.wants_keyboard_input() {
+                        "UI · typing"
+                    } else if egui_input.is_popup_open() {
+                        "UI · menu open"
+                    } else {
+                        "game"
+                    };
+                    row(ui, "keys", keys.into(), if keys == "game" { p.text } else { p.warn });
                 });
         });
     Ok(())
