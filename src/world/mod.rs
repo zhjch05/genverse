@@ -4,11 +4,10 @@
 //! pool, then spawned as mesh entities. Each loaded chunk keeps its voxels (with a
 //! one-voxel border copied from its neighbors) for collision queries.
 //!
-//! Player edits are stored as a sparse layer on top of the seed ([`VoxelWorld::set`]).
+//! Terrain changes are stored as a sparse layer on top of the seed ([`VoxelWorld::set`]).
 //! They're applied whenever a chunk is (re)built, so the world stays "seed + edits":
 //! cheap to save, and exactly what a server would replicate.
 
-pub mod edit;
 pub mod sculpt;
 pub mod terrain;
 
@@ -43,8 +42,7 @@ pub struct WorldPlugin;
 impl Plugin for WorldPlugin {
     fn build(&self, app: &mut App) {
         app.add_systems(PreStartup, setup_world)
-            .add_systems(Update, (stream_chunks, finish_chunks, save_edits).chain())
-            .add_plugins(edit::BlockEditPlugin);
+            .add_systems(Update, (stream_chunks, finish_chunks, save_edits).chain());
     }
 }
 
@@ -111,10 +109,6 @@ impl VoxelWorld {
         (pos / VOXEL_SIZE).floor().as_ivec3()
     }
 
-    pub fn palette(&self) -> &Palette {
-        &self.palette
-    }
-
     /// The voxel at world voxel coordinate `p`, or `None` if its chunk isn't loaded.
     pub fn get(&self, p: IVec3) -> Option<VoxelId> {
         if p.y >= WORLD_HEIGHT {
@@ -152,6 +146,7 @@ impl VoxelWorld {
     /// Changes one voxel. Loaded chunks (and neighbors whose border holds it) update
     /// immediately for collision and remesh in the background. Returns false outside
     /// the editable range (the bottom layer is bedrock).
+    #[cfg_attr(target_arch = "wasm32", allow(dead_code))]
     pub fn set(&mut self, p: IVec3, id: VoxelId) -> bool {
         self.write(p, Some(id), id)
     }
@@ -216,6 +211,7 @@ impl VoxelWorld {
 
     /// The first solid terrain voxel hit by `ray` within `max` meters. Stops at
     /// unloaded chunks.
+    #[cfg_attr(target_arch = "wasm32", allow(dead_code))]
     pub fn raycast(&self, ray: Ray3d, max: f32) -> Option<Hit> {
         let origin = ray.origin / VOXEL_SIZE;
         let dir = *ray.direction / VOXEL_SIZE;

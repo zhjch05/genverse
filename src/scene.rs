@@ -109,9 +109,9 @@ fn setup(mut commands: Commands, mut media: ResMut<Assets<ScatteringMedium>>) {
 
     commands.spawn((
         Text::new(if cfg!(target_arch = "wasm32") {
-            "WASD: move   Shift: run   Space: jump   Drag: look   Scroll: zoom   B: blocks"
+            "WASD: move   Shift: run   Space: jump   Drag: look   Scroll: zoom"
         } else {
-            "WASD: move   Shift: run   Space: jump   Drag: look   Scroll: zoom   B: blocks   Tab: builder"
+            "WASD: move   Shift: run   Space: jump   Drag: look   Scroll: zoom   Tab: builder"
         }),
         TextFont { font_size: FontSize::Px(14.0), ..default() },
         TextColor(Color::srgba(1.0, 1.0, 1.0, 0.75)),

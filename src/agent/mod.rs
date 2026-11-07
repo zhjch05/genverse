@@ -31,7 +31,7 @@ use crate::{
         VoxelModel,
         query::{Hit, overlaps_box, raycast},
     },
-    world::{VoxelWorld, edit::BlockMode},
+    world::VoxelWorld,
 };
 use creations::{
     Adjust, Creation, Creations, DraftMarker, Undone, load_creations, outline_creations, placement_for_hit,
@@ -389,20 +389,12 @@ fn shortcuts(
     blocked: Res<InputBlocked>,
     mut chat: ResMut<Chat>,
     mut creations: ResMut<Creations>,
-    mut block_mode: ResMut<BlockMode>,
     mut landscape: ResMut<Landscape>,
     mut world: ResMut<VoxelWorld>,
     mut transforms: Query<&mut Transform, With<DraftMarker>>,
 ) {
     if blocked.0 {
         return;
-    }
-    // Drafts, previews, area selection, and block editing all own the mouse; drafts win.
-    if (creations.draft.is_some() || landscape.draft.is_some()) && block_mode.active {
-        block_mode.active = false;
-    }
-    if block_mode.active {
-        landscape.selecting = false;
     }
     let command = keys.any_pressed([KeyCode::ControlLeft, KeyCode::ControlRight, KeyCode::SuperLeft, KeyCode::SuperRight]);
     if command && keys.just_pressed(KeyCode::KeyZ) {
@@ -425,7 +417,6 @@ fn shortcuts(
     if keys.just_pressed(KeyCode::KeyG) && creations.draft.is_none() && landscape.draft.is_none() && chat.pending.is_none() {
         landscape.selecting = !landscape.selecting;
         if landscape.selecting {
-            block_mode.active = false;
             creations.selected = None;
         }
         return;
@@ -483,10 +474,6 @@ fn shortcuts(
         return;
     }
 
-    // In block mode the keys belong to the hotbar.
-    if block_mode.active {
-        return;
-    }
     if creations.selected.is_some() {
         if keys.just_pressed(KeyCode::KeyM) {
             if let Some(name) = creations.edit_selected(&mut commands, true) {
@@ -622,12 +609,11 @@ fn click_in_world(
     drafts: Query<&Transform, With<DraftMarker>>,
     mut creations: ResMut<Creations>,
     mut chat: ResMut<Chat>,
-    block_mode: Res<BlockMode>,
     landscape: Res<Landscape>,
     mut pressed_at: Local<[Option<Vec2>; 3]>,
     mut last_select: Local<Option<(Entity, f32)>>,
 ) {
-    if block_mode.active || landscape.selecting {
+    if landscape.selecting {
         *pressed_at = default();
         return;
     }
@@ -689,13 +675,8 @@ fn shortcut_hints(
     mut contexts: EguiContexts,
     chat: Res<Chat>,
     creations: Res<Creations>,
-    block_mode: Res<BlockMode>,
     landscape: Res<Landscape>,
 ) -> Result {
-    // The block hotbar shows its own hints.
-    if block_mode.active {
-        return Ok(());
-    }
     let hint = match &creations.draft {
         Some(d) if d.follow => "Click: place   Q/E: turn   R/F: raise / lower   Esc or right-click: cancel   T: ask for changes",
         Some(_) => "Enter: keep the change   M: move it   T: ask for more   Esc: cancel",
@@ -708,7 +689,7 @@ fn shortcut_hints(
         }
         None if chat.pending.is_some() => return Ok(()),
         None if landscape.area.is_some() => "T: describe what this land should become   G: select again   Esc: clear the area",
-        None => "T: describe a build   G: reshape the ground   Click a build: select   Middle-click a build: copy   B: blocks",
+        None => "T: describe a build   G: reshape the ground   Click a build: select   Middle-click a build: copy",
     };
     let ctx = contexts.ctx_mut()?;
     egui::Area::new("shortcut_hints".into())
