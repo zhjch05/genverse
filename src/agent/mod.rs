@@ -821,6 +821,7 @@ fn shortcut_hints(
         None => "T: describe a build   G: reshape the ground   P: land   H: history   Click a build: select   Middle-click a build: copy",
     };
     let ctx = contexts.ctx_mut()?;
+    let p = theme::palette(ctx);
     let screen = ctx.viewport_rect();
     let covered = chat.covered * screen.width();
     egui::Area::new("shortcut_hints".into())
@@ -828,8 +829,8 @@ fn shortcut_hints(
         .interactable(false)
         .show(ctx, |ui| {
             egui::Frame::new()
-                .fill(theme::FOOTER.gamma_multiply(0.92))
-                .corner_radius(8)
+                .fill(p.overlay)
+                .corner_radius(theme::ROUND)
                 .inner_margin(egui::Margin::symmetric(10, 6))
                 .show(ui, |ui| {
                     ui.set_max_width(screen.width() - covered - 48.0);
@@ -842,10 +843,10 @@ fn shortcut_hints(
                             match part.split_once(": ") {
                                 Some((keys, what)) => {
                                     theme::key(ui, keys);
-                                    ui.label(egui::RichText::new(what).size(12.5).color(theme::TEXT));
+                                    ui.label(egui::RichText::new(what).size(12.5).color(p.text));
                                 }
                                 None => {
-                                    ui.label(egui::RichText::new(part).size(12.5).color(theme::TEXT));
+                                    ui.label(egui::RichText::new(part).size(12.5).color(p.text));
                                 }
                             }
                         }
@@ -890,15 +891,13 @@ fn center_view(
     }
 }
 
-/// The name, avatar color and name color a message is shown with.
-fn sender(role: &Role, me: &str) -> (String, egui::Color32, egui::Color32) {
+/// The name a message is shown with, and the color of its avatar and name.
+fn sender(role: &Role, me: &str, p: &theme::Palette) -> (String, egui::Color32) {
     match role {
-        Role::Player => (me.to_string(), theme::BLURPLE, egui::Color32::from_rgb(201, 205, 251)),
-        Role::Agent(name) if name.starts_with("Claude") => {
-            (name.to_string(), egui::Color32::from_rgb(217, 119, 87), egui::Color32::from_rgb(240, 160, 130))
-        }
-        Role::Agent(name) => (name.to_string(), egui::Color32::from_rgb(16, 163, 127), egui::Color32::from_rgb(90, 210, 170)),
-        Role::System => (String::new(), theme::FAINT, theme::MUTED),
+        Role::Player => (me.to_string(), p.me),
+        Role::Agent(name) if name.starts_with("Claude") => (name.to_string(), p.claude),
+        Role::Agent(name) => (name.to_string(), p.codex),
+        Role::System => (String::new(), p.faint),
     }
 }
 
@@ -916,6 +915,7 @@ fn ago(at: Instant, short: bool) -> String {
 /// The conversation in Discord's layout: an avatar and name line start each run of
 /// messages from one sender, and a row lights up under the pointer.
 fn show_messages(ui: &mut egui::Ui, messages: &[Message], me: &str) {
+    let p = theme::palette(ui.ctx());
     let mut previous: Option<&Message> = None;
     for m in messages {
         let first = !previous.is_some_and(|p| p.role == m.role && m.role != Role::System && m.at.duration_since(p.at) < GROUP);
@@ -923,14 +923,14 @@ fn show_messages(ui: &mut egui::Ui, messages: &[Message], me: &str) {
             ui.add_space(12.0);
         }
         previous = Some(m);
-        let (name, face, color) = sender(&m.role, me);
+        let (name, color) = sender(&m.role, me, p);
         let background = ui.painter().add(egui::Shape::Noop);
         let row = ui.horizontal_top(|ui| {
             ui.add_space(12.0);
             if m.role == Role::System {
-                ui.add_sized([36.0, 18.0], egui::Label::new(egui::RichText::new(icon::INFO).size(15.0).color(theme::FAINT)));
+                ui.add_sized([36.0, 18.0], egui::Label::new(egui::RichText::new(icon::INFO).size(15.0).color(p.faint)));
             } else if first {
-                theme::avatar(ui, &name, face, 36.0);
+                theme::avatar(ui, &name, color, 36.0);
             } else {
                 ui.allocate_exact_size(egui::vec2(36.0, 1.0), egui::Sense::hover());
             }
@@ -939,27 +939,27 @@ fn show_messages(ui: &mut egui::Ui, messages: &[Message], me: &str) {
                 ui.set_max_width(ui.available_width() - 12.0);
                 ui.spacing_mut().item_spacing.y = 2.0;
                 if m.role == Role::System {
-                    ui.label(egui::RichText::new(&m.text).size(13.0).color(theme::MUTED));
+                    ui.label(egui::RichText::new(&m.text).size(13.0).color(p.muted));
                     return;
                 }
                 if first {
                     ui.horizontal(|ui| {
                         ui.label(egui::RichText::new(&name).strong().color(color));
                         if matches!(m.role, Role::Agent(_)) {
-                            theme::tag(ui, "AGENT", theme::BLURPLE);
+                            theme::tag(ui, "AGENT", p.primary, p.on_primary);
                         }
-                        ui.label(egui::RichText::new(ago(m.at, false)).size(11.0).color(theme::FAINT));
+                        ui.label(egui::RichText::new(ago(m.at, false)).size(11.0).color(p.faint));
                     });
                 }
-                ui.label(egui::RichText::new(&m.text).color(theme::TEXT));
+                ui.label(egui::RichText::new(&m.text).color(p.text));
             });
         });
         let rect = egui::Rect::from_x_y_ranges(ui.max_rect().x_range(), row.response.rect.y_range().expand(2.0));
         if ui.rect_contains_pointer(rect) {
-            ui.painter().set(background, egui::Shape::rect_filled(rect, 0.0, theme::HOVER));
+            ui.painter().set(background, egui::Shape::rect_filled(rect, 0.0, p.hover));
             if !first && m.role != Role::System {
                 let at = egui::pos2(rect.left() + 30.0, rect.top() + 11.0);
-                ui.painter().text(at, egui::Align2::CENTER_CENTER, ago(m.at, true), egui::FontId::proportional(10.0), theme::FAINT);
+                ui.painter().text(at, egui::Align2::CENTER_CENTER, ago(m.at, true), egui::FontId::proportional(10.0), p.faint);
             }
         }
     }
@@ -967,18 +967,19 @@ fn show_messages(ui: &mut egui::Ui, messages: &[Message], me: &str) {
 
 /// Playing with others: worlds on your network, joining by address, or hosting this one.
 fn network_section(ui: &mut egui::Ui, chat: &mut Chat, ledger: &Ledger, lan: &lan::Lan, action: &mut Option<Action>) {
+    let p = theme::palette(ui.ctx());
     theme::section(ui, "Play together");
     let Some(online) = &ledger.online else {
         ui.horizontal(|ui| {
             let label = if lan.play_until.is_some() { "Looking…" } else { "Play together" };
             if ui
-                .add_enabled(lan.play_until.is_none(), theme::button(format!("{} {label}", icon::USERS_THREE), theme::BLURPLE))
+                .add_enabled(lan.play_until.is_none(), theme::Block::new(format!("{} {label}", icon::USERS_THREE), theme::Tone::Primary))
                 .on_hover_text("Join a world on your network, or open this one if there's none")
                 .clicked()
             {
                 *action = Some(Action::PlayTogether);
             }
-            if ui.button("Host").on_hover_text("Open this world to others on port 7878").clicked() {
+            if ui.add(theme::Block::new("Host", theme::Tone::Plain)).on_hover_text("Open this world to others on port 7878").clicked() {
                 *action = Some(Action::Host);
             }
         });
@@ -988,12 +989,12 @@ fn network_section(ui: &mut egui::Ui, chat: &mut Chat, ledger: &Ledger, lan: &la
         for world in &lan.worlds {
             ui.horizontal(|ui| {
                 let b = &world.beacon;
-                ui.label(egui::RichText::new(icon::GLOBE).color(theme::MUTED));
+                ui.label(egui::RichText::new(icon::GLOBE).color(p.muted));
                 ui.label(egui::RichText::new(&b.world).strong());
                 theme::note(ui, format!("{} playing", b.players));
                 ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
                     let join = ui
-                        .add_enabled(b.compatible(), theme::button("Join", theme::GREEN))
+                        .add_enabled(b.compatible(), theme::Block::new("Join", theme::Tone::Primary))
                         .on_disabled_hover_text("Made with another version of the game");
                     if join.clicked() {
                         *action = Some(Action::JoinLan(world.address()));
@@ -1009,7 +1010,7 @@ fn network_section(ui: &mut egui::Ui, chat: &mut Chat, ledger: &Ledger, lan: &la
             );
             let enter = field.lost_focus() && ui.input(|i| i.key_pressed(egui::Key::Enter));
             let filled = !chat.server_addr.trim().is_empty();
-            if (ui.add_enabled(filled, egui::Button::new("Join")).on_hover_text("Play on that server").clicked() || enter) && filled {
+            if (ui.add_enabled(filled, theme::Block::new("Join", theme::Tone::Plain)).on_hover_text("Play on that server").clicked() || enter) && filled {
                 *action = Some(Action::Join);
             }
         });
@@ -1024,7 +1025,7 @@ fn network_section(ui: &mut egui::Ui, chat: &mut Chat, ledger: &Ledger, lan: &la
         theme::note(ui, status);
         if ledger.hosting.is_none() {
             ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                if ui.add(theme::button("Leave", theme::RED)).on_hover_text("Back to your local world").clicked() {
+                if ui.add(theme::Block::new("Leave", theme::Tone::Danger)).on_hover_text("Back to your local world").clicked() {
                     *action = Some(Action::Leave);
                 }
             });
@@ -1078,6 +1079,7 @@ fn chat_panel(
         chat.open = !chat.open;
     }
     let ctx = contexts.ctx_mut()?;
+    let p = theme::palette(ctx);
     let mut action = None;
     let mut hide = false;
     // egui 0.36 panels attach to a Ui; this one covers the whole window behind other layers.
@@ -1095,19 +1097,23 @@ fn chat_panel(
         .size_range(300.0..=560.0)
         .resizable(true)
         .drag_to_open(false)
-        .frame(egui::Frame::new().fill(theme::CHAT))
+        .frame(egui::Frame::new().fill(p.panel))
         .show_collapsible(&mut viewport, &mut open, |ui| {
             let chat = &mut *chat;
             egui::Panel::top("builder_header")
-                .frame(egui::Frame::new().fill(theme::CHAT).inner_margin(egui::Margin::symmetric(12, 8)))
+                .frame(egui::Frame::new().fill(p.panel).inner_margin(egui::Margin::symmetric(12, 8)))
                 .show(ui, |ui| {
                     ui.horizontal(|ui| {
-                        ui.label(egui::RichText::new(icon::HASH).size(20.0).color(theme::FAINT));
-                        ui.label(egui::RichText::new("builder").size(16.0).strong().color(egui::Color32::WHITE))
+                        ui.label(egui::RichText::new(icon::HASH).size(20.0).color(p.faint));
+                        ui.label(egui::RichText::new("builder").size(16.0).strong().color(p.strong))
                             .on_hover_text("Describe something; an agent builds it in front of you");
                         ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
                             if theme::icon_button(ui, icon::SIDEBAR_SIMPLE, "Hide (Tab)") {
                                 hide = true;
+                            }
+                            let (sun, tip) = if ui.visuals().dark_mode { (icon::SUN, "Light theme") } else { (icon::MOON, "Dark theme") };
+                            if theme::icon_button(ui, sun, tip) {
+                                theme::toggle(ui.ctx());
                             }
                             if theme::icon_button(ui, icon::CLOCK_COUNTER_CLOCKWISE, "History (H)") {
                                 action = Some(Action::History);
@@ -1130,7 +1136,7 @@ fn chat_panel(
             // Bottom-up: the footer with your name, then the composer and whatever is in
             // hand; messages fill what's left.
             egui::Panel::bottom("builder_footer")
-                .frame(egui::Frame::new().fill(theme::FOOTER).inner_margin(egui::Margin::symmetric(10, 8)))
+                .frame(egui::Frame::new().fill(p.footer).inner_margin(egui::Margin::symmetric(10, 8)))
                 .show_separator_line(false)
                 .show(ui, |ui| {
                     if chat.network {
@@ -1138,12 +1144,13 @@ fn chat_panel(
                         ui.add_space(6.0);
                     }
                     ui.horizontal(|ui| {
-                        let face = theme::avatar(ui, &me, theme::BLURPLE, 32.0);
-                        // A status dot on the avatar, green while playing with others.
-                        let dot = face.rect.right_bottom() - egui::vec2(4.0, 4.0);
-                        ui.painter().circle_filled(dot, 6.0, theme::FOOTER);
+                        let face = theme::avatar(ui, &me, p.me, 32.0);
+                        // A status pip on the avatar, grass-green while playing with others.
+                        let dot = face.rect.right_bottom() - egui::vec2(3.0, 3.0);
+                        ui.painter().rect_filled(egui::Rect::from_center_size(dot, egui::vec2(11.0, 11.0)), 2, p.footer);
                         let online = ledger.online.as_ref().is_some_and(|o| o.closed.is_none());
-                        ui.painter().circle_filled(dot, 4.0, if online { theme::ONLINE } else { theme::FAINT });
+                        let pip = if online { p.online } else { p.faint };
+                        ui.painter().rect_filled(egui::Rect::from_center_size(dot, egui::vec2(7.0, 7.0)), 1, pip);
                         ui.vertical(|ui| {
                             ui.spacing_mut().item_spacing.y = 0.0;
                             let name = chat.name.get_or_insert_with(|| ledger.profile.name.clone());
@@ -1153,7 +1160,7 @@ fn chat_panel(
                                         .frame(egui::Frame::NONE)
                                         .margin(egui::Margin::ZERO)
                                         .font(egui::FontId::proportional(14.0))
-                                        .text_color(egui::Color32::WHITE)
+                                        .text_color(p.strong)
                                         .desired_width(150.0)
                                         .hint_text("your name"),
                                 )
@@ -1168,11 +1175,11 @@ fn chat_panel(
                                 (Some(_), Some((addr, _))) => format!("Hosting on port {}", addr.port()),
                                 (Some(online), None) => format!("Online at {}", online.addr),
                             };
-                            ui.label(egui::RichText::new(status).size(11.5).color(theme::MUTED));
+                            ui.label(egui::RichText::new(status).size(11.5).color(p.muted));
                         });
                         ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
                             let tip = if chat.network { "Hide Play together" } else { "Play together" };
-                            let color = if chat.network { egui::Color32::WHITE } else { theme::MUTED };
+                            let color = if chat.network { p.strong } else { p.muted };
                             let button = ui
                                 .add(egui::Button::new(egui::RichText::new(icon::USERS_THREE).size(18.0).color(color)).frame(false))
                                 .on_hover_text(tip);
@@ -1182,7 +1189,7 @@ fn chat_panel(
                             // Worlds found on the network, as an unread-style badge.
                             if !lan.worlds.is_empty() && ledger.online.is_none() {
                                 let at = button.rect.right_top() + egui::vec2(-2.0, 3.0);
-                                ui.painter().circle_filled(at, 7.0, theme::RED);
+                                ui.painter().rect_filled(egui::Rect::from_center_size(at, egui::vec2(14.0, 14.0)), 2, p.danger);
                                 ui.painter().text(
                                     at,
                                     egui::Align2::CENTER_CENTER,
@@ -1196,11 +1203,11 @@ fn chat_panel(
                 });
 
             egui::Panel::bottom("builder_input")
-                .frame(egui::Frame::new().fill(theme::CHAT).inner_margin(egui::Margin { left: 12, right: 12, top: 4, bottom: 6 }))
+                .frame(egui::Frame::new().fill(p.panel).inner_margin(egui::Margin { left: 12, right: 12, top: 4, bottom: 6 }))
                 .show_separator_line(false)
                 .show(ui, |ui| {
                     if let Some(draft) = &creations.draft {
-                        let accent = if draft.denied.is_some() || draft.blocked { theme::WARN } else { theme::BLURPLE };
+                        let accent = if draft.denied.is_some() || draft.blocked { p.warn } else { p.primary };
                         theme::card(ui, accent, |ui| {
                             theme::card_title(ui, icon::CUBE, &format!("Draft · {}", draft.spec.name));
                             let s = draft.stats;
@@ -1211,25 +1218,25 @@ fn chat_panel(
                                 theme::note(ui, ledger.parcel_line(&parcels));
                             }
                             if let Some(why) = &draft.denied {
-                                ui.label(egui::RichText::new(format!("{} Not here: {why}", icon::WARNING)).color(theme::WARN));
+                                ui.label(egui::RichText::new(format!("{} Not here: {why}", icon::WARNING)).color(p.warn));
                             }
                             ui.add_space(2.0);
                             ui.horizontal(|ui| {
                                 let why_not = if draft.blocked { Some("It would overlap you") } else { draft.denied.as_deref() };
                                 let place = ui
-                                    .add_enabled(why_not.is_none(), theme::button(format!("{} Place", icon::CHECK), theme::BLURPLE))
+                                    .add_enabled(why_not.is_none(), theme::Block::new(format!("{} Place", icon::CHECK), theme::Tone::Primary))
                                     .on_hover_text("Enter, or click in the world")
                                     .on_disabled_hover_text(why_not.unwrap_or_default());
                                 if place.clicked() {
                                     action = Some(Action::Place);
                                 }
                                 let discard = if draft.replaces.is_some() { "Cancel edit" } else { "Discard" };
-                                if ui.button(format!("{} {discard}", icon::X)).on_hover_text("Esc or right-click").clicked() {
+                                if ui.add(theme::Block::new(format!("{} {discard}", icon::X), theme::Tone::Plain)).on_hover_text("Esc or right-click").clicked() {
                                     action = Some(Action::Discard);
                                 }
                                 if !draft.follow
                                     && ui
-                                        .button(format!("{} Move", icon::ARROWS_OUT_CARDINAL))
+                                        .add(theme::Block::new(format!("{} Move", icon::ARROWS_OUT_CARDINAL), theme::Tone::Plain))
                                         .on_hover_text("M: pick it up and place it somewhere else")
                                         .clicked()
                                 {
@@ -1238,16 +1245,16 @@ fn chat_panel(
                             });
                             ui.horizontal(|ui| {
                                 let tip = |r: egui::Response, t: &str| r.on_hover_text(t.to_string()).clicked();
-                                if tip(ui.button(icon::ARROW_COUNTER_CLOCKWISE), "Turn left (Q)") {
+                                if tip(ui.add(theme::Block::new(icon::ARROW_COUNTER_CLOCKWISE, theme::Tone::Plain)), "Turn left (Q)") {
                                     action = Some(Action::Adjust(Adjust::Turn(1.0)));
                                 }
-                                if tip(ui.button(icon::ARROW_CLOCKWISE), "Turn right (E)") {
+                                if tip(ui.add(theme::Block::new(icon::ARROW_CLOCKWISE, theme::Tone::Plain)), "Turn right (E)") {
                                     action = Some(Action::Adjust(Adjust::Turn(-1.0)));
                                 }
-                                if tip(ui.button(icon::ARROW_LINE_UP), "Raise (R)") {
+                                if tip(ui.add(theme::Block::new(icon::ARROW_LINE_UP, theme::Tone::Plain)), "Raise (R)") {
                                     action = Some(Action::Adjust(Adjust::Raise(1.0)));
                                 }
-                                if tip(ui.button(icon::ARROW_LINE_DOWN), "Lower (F)") {
+                                if tip(ui.add(theme::Block::new(icon::ARROW_LINE_DOWN, theme::Tone::Plain)), "Lower (F)") {
                                     action = Some(Action::Adjust(Adjust::Raise(-1.0)));
                                 }
                                 if !draft.follow {
@@ -1265,9 +1272,9 @@ fn chat_panel(
                         });
                         ui.add_space(6.0);
                     } else if let Some(selected) = creations.selected() {
-                        theme::card(ui, egui::Color32::from_rgb(0, 168, 252), |ui| {
+                        theme::card(ui, p.select, |ui| {
                             theme::card_title(ui, icon::CUBE, &selected.name);
-                            ui.label(egui::RichText::new(format!("\"{}\"", selected.prompt)).italics().size(12.5).color(theme::MUTED));
+                            ui.label(egui::RichText::new(format!("\"{}\"", selected.prompt)).italics().size(12.5).color(p.muted));
                             if let Some((made, changed)) = ledger.credits(selected.build) {
                                 let mut credit = format!("Made by {}", ledger.describe(made));
                                 if let Some(changed) = changed {
@@ -1278,20 +1285,20 @@ fn chat_panel(
                             ui.add_space(2.0);
                             ui.horizontal(|ui| {
                                 if ui
-                                    .button(format!("{} Move", icon::ARROWS_OUT_CARDINAL))
+                                    .add(theme::Block::new(format!("{} Move", icon::ARROWS_OUT_CARDINAL), theme::Tone::Plain))
                                     .on_hover_text("M or double-click: pick it up and place it somewhere else")
                                     .clicked()
                                 {
                                     action = Some(Action::Move);
                                 }
                                 if ui
-                                    .add(theme::button(format!("{} Delete", icon::TRASH), theme::RED))
+                                    .add(theme::Block::new(format!("{} Delete", icon::TRASH), theme::Tone::Danger))
                                     .on_hover_text("Delete or Backspace")
                                     .clicked()
                                 {
                                     action = Some(Action::Delete);
                                 }
-                                if ui.button("Deselect").on_hover_text("Esc or right-click").clicked() {
+                                if ui.add(theme::Block::new("Deselect", theme::Tone::Plain)).on_hover_text("Esc or right-click").clicked() {
                                     action = Some(Action::Deselect);
                                 }
                             });
@@ -1300,15 +1307,15 @@ fn chat_panel(
                         ui.add_space(6.0);
                     }
                     if let Some(draft) = &landscape.draft {
-                        theme::card(ui, theme::ONLINE, |ui| {
+                        theme::card(ui, p.online, |ui| {
                             theme::card_title(ui, icon::MOUNTAINS, &format!("Land preview · {}", draft.spec.name));
                             theme::note(ui, describe_stats(draft.area, &draft.stats));
                             ui.add_space(2.0);
                             ui.horizontal(|ui| {
-                                if ui.add(theme::button(format!("{} Keep", icon::CHECK), theme::GREEN)).on_hover_text("Enter").clicked() {
+                                if ui.add(theme::Block::new(format!("{} Keep", icon::CHECK), theme::Tone::Primary)).on_hover_text("Enter").clicked() {
                                     action = Some(Action::KeepTerrain);
                                 }
-                                if ui.button(format!("{} Put back", icon::X)).on_hover_text("Esc").clicked() {
+                                if ui.add(theme::Block::new(format!("{} Put back", icon::X), theme::Tone::Plain)).on_hover_text("Esc").clicked() {
                                     action = Some(Action::DiscardTerrain);
                                 }
                             });
@@ -1316,28 +1323,28 @@ fn chat_panel(
                         });
                         ui.add_space(6.0);
                     } else if let Some(area) = landscape.area.filter(|_| creations.draft.is_none() && creations.selected.is_none()) {
-                        theme::card(ui, theme::ONLINE, |ui| {
+                        theme::card(ui, p.online, |ui| {
                             let size = area.size_m();
                             theme::card_title(ui, icon::SELECTION, &format!("Area · {:.1} × {:.1} m", size.x, size.y));
                             ui.label(egui::RichText::new(land_summary(&ledger, area)).size(12.5));
                             theme::note(ui, ledger.player_line());
                             ui.add_space(2.0);
                             ui.horizontal(|ui| {
-                                if ui.button(format!("{} Select again", icon::SELECTION)).on_hover_text("G").clicked() {
+                                if ui.add(theme::Block::new(format!("{} Select again", icon::SELECTION), theme::Tone::Plain)).on_hover_text("G").clicked() {
                                     action = Some(Action::SelectArea);
                                 }
-                                if ui.button("Clear").on_hover_text("Esc").clicked() {
+                                if ui.add(theme::Block::new("Clear", theme::Tone::Plain)).on_hover_text("Esc").clicked() {
                                     action = Some(Action::ClearArea);
                                 }
                                 if ledger.land.mode == LandMode::Parcels {
                                     if ui
-                                        .add(theme::button(format!("{} Claim", icon::FLAG), theme::BLURPLE))
+                                        .add(theme::Block::new(format!("{} Claim", icon::FLAG), theme::Tone::Primary))
                                         .on_hover_text("Make the unclaimed parcels here yours, so only you can change them")
                                         .clicked()
                                     {
                                         action = Some(Action::Claim);
                                     }
-                                    if ui.button("Release").on_hover_text("Give up your parcels here").clicked() {
+                                    if ui.add(theme::Block::new("Release", theme::Tone::Plain)).on_hover_text("Give up your parcels here").clicked() {
                                         action = Some(Action::Release);
                                     }
                                 }
@@ -1346,7 +1353,7 @@ fn chat_panel(
                         });
                         ui.add_space(6.0);
                     } else if landscape.selecting {
-                        theme::card(ui, theme::ONLINE, |ui| {
+                        theme::card(ui, p.online, |ui| {
                             theme::card_title(ui, icon::SELECTION, "Select an area");
                             theme::note(ui, "Drag across the ground; a click selects 6 m");
                         });
@@ -1354,8 +1361,8 @@ fn chat_panel(
                     }
 
                     // The composer: one rounded box, like Discord's message bar.
-                    let hint = if let Some(p) = &chat.pending {
-                        format!("{} is working…", p.provider.label())
+                    let hint = if let Some(job) = &chat.pending {
+                        format!("{} is working…", job.provider.label())
                     } else if creations.selected.is_some() {
                         "Change it…  (T)".to_string()
                     } else if landscape.target().is_some() && creations.draft.is_none() {
@@ -1365,8 +1372,9 @@ fn chat_panel(
                     };
                     let idle = chat.pending.is_none();
                     egui::Frame::new()
-                        .fill(theme::INPUT)
-                        .corner_radius(8)
+                        .fill(p.input)
+                        .stroke(egui::Stroke::new(1.0, p.line))
+                        .corner_radius(theme::ROUND)
                         .inner_margin(egui::Margin { left: 12, right: 6, top: 7, bottom: 7 })
                         .show(ui, |ui| {
                             ui.horizontal(|ui| {
@@ -1375,7 +1383,7 @@ fn chat_panel(
                                     egui::TextEdit::singleline(&mut chat.input)
                                         .frame(egui::Frame::NONE)
                                         .margin(egui::Margin::ZERO)
-                                        .hint_text(egui::RichText::new(hint).color(theme::FAINT))
+                                        .hint_text(egui::RichText::new(hint).color(p.faint))
                                         .desired_width(ui.available_width() - 30.0),
                                 );
                                 if std::mem::take(&mut chat.focus_input) {
@@ -1383,7 +1391,7 @@ fn chat_panel(
                                 }
                                 let enter = input.lost_focus() && ui.input(|i| i.key_pressed(egui::Key::Enter));
                                 let ready = idle && !chat.input.trim().is_empty();
-                                let color = if ready { egui::Color32::from_rgb(130, 142, 255) } else { theme::FAINT };
+                                let color = if ready { p.primary } else { p.faint };
                                 let send = ui
                                     .add_enabled(ready, egui::Button::new(egui::RichText::new(icon::PAPER_PLANE_RIGHT).size(18.0).color(color)).frame(false))
                                     .on_hover_text("Send (Enter)");
@@ -1397,17 +1405,17 @@ fn chat_panel(
                     // Under the composer: who's working (like "is typing…"), or the tally.
                     ui.horizontal(|ui| {
                         ui.set_min_height(22.0);
-                        if let Some(p) = &chat.pending {
-                            ui.add(egui::Spinner::new().size(12.0).color(theme::MUTED));
-                            ui.label(egui::RichText::new(p.provider.label()).size(12.0).strong().color(theme::TEXT));
-                            ui.label(egui::RichText::new("is working…").size(12.0).color(theme::MUTED));
-                            if ui.small_button(format!("{} Stop", icon::STOP)).clicked() {
+                        if let Some(job) = &chat.pending {
+                            ui.add(egui::Spinner::new().size(12.0).color(p.muted));
+                            ui.label(egui::RichText::new(job.provider.label()).size(12.0).strong().color(p.text));
+                            ui.label(egui::RichText::new("is working…").size(12.0).color(p.muted));
+                            if ui.add(theme::Block::new(format!("{} Stop", icon::STOP), theme::Tone::Plain)).clicked() {
                                 action = Some(Action::Stop);
                             }
                         } else {
                             let placed = creations.placed.len();
                             let builds = if placed == 1 { "build" } else { "builds" };
-                            ui.label(egui::RichText::new(format!("{placed} {builds} placed · / for commands")).size(11.5).color(theme::FAINT));
+                            ui.label(egui::RichText::new(format!("{placed} {builds} placed · / for commands")).size(11.5).color(p.faint));
                         }
                         ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
                             let undo = ui
@@ -1433,7 +1441,7 @@ fn chat_panel(
                 });
         });
     // How much of the window the panel covers, mid-slide included, so the view recenters.
-    chat.covered = panel.map_or(0.0, |p| p.response.rect.intersect(screen).width() / screen.width().max(1.0));
+    chat.covered = panel.map_or(0.0, |panel| panel.response.rect.intersect(screen).width() / screen.width().max(1.0));
     chat.open = open && !hide;
 
     // While hidden, a button in the corner brings the panel back.
@@ -1443,9 +1451,9 @@ fn chat_panel(
             .show(ctx, |ui| {
                 let busy = chat.pending.is_some();
                 let label = if busy { format!("{} Working…", icon::CHATS_CIRCLE) } else { icon::CHATS_CIRCLE.to_string() };
-                let button = egui::Button::new(egui::RichText::new(label).size(18.0).color(egui::Color32::WHITE))
-                    .fill(theme::FOOTER.gamma_multiply(0.92))
-                    .corner_radius(8)
+                let button = egui::Button::new(egui::RichText::new(label).size(18.0).color(p.strong))
+                    .fill(p.overlay)
+                    .corner_radius(theme::ROUND)
                     .min_size(egui::vec2(38.0, 38.0));
                 if ui.add(button).on_hover_text("Builder (Tab)").clicked() {
                     chat.open = true;
