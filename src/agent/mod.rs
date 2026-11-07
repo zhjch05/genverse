@@ -56,10 +56,10 @@ impl Plugin for AgentPlugin {
                     block_game_input,
                     (update_build_site, answer_tool_calls, poll_agent).chain(),
                     auto_prompt,
-                    (draft_keys, follow_cursor, check_clearance, click_in_world, outline_creations).chain(),
+                    (shortcuts, follow_cursor, check_clearance, click_in_world, outline_creations).chain(),
                 ),
             )
-            .add_systems(EguiPrimaryContextPass, (install_icon_font, chat_panel).chain());
+            .add_systems(EguiPrimaryContextPass, (install_icon_font, chat_panel, shortcut_hints).chain());
     }
 }
 
@@ -95,6 +95,8 @@ struct Chat {
     messages: Vec<Message>,
     status: String,
     pending: Option<Pending>,
+    /// Set by the T/Enter shortcuts; the panel focuses the input on its next frame.
+    focus_input: bool,
 }
 
 impl Default for Chat {
@@ -112,6 +114,7 @@ impl Default for Chat {
             }],
             status: String::new(),
             pending: None,
+            focus_input: false,
         }
     }
 }
@@ -302,36 +305,90 @@ fn poll_agent(
     }
 }
 
-/// Q/E turn the draft, R/F raise and lower it, Esc cancels it.
-fn draft_keys(
+/// Keyboard shortcuts. They depend on context (a draft, a selection, or neither) and
+/// are ignored while typing in the chat.
+fn shortcuts(
     mut commands: Commands,
     keys: Res<ButtonInput<KeyCode>>,
     blocked: Res<InputBlocked>,
+    mut chat: ResMut<Chat>,
     mut creations: ResMut<Creations>,
     mut transforms: Query<&mut Transform, With<DraftMarker>>,
 ) {
-    let Some(entity) = creations.draft.as_ref().map(|d| d.entity) else {
-        return;
-    };
     if blocked.0 {
         return;
     }
-    if keys.just_pressed(KeyCode::Escape) {
-        creations.discard_draft(&mut commands);
+    let command = keys.any_pressed([KeyCode::ControlLeft, KeyCode::ControlRight, KeyCode::SuperLeft, KeyCode::SuperRight]);
+    if command && keys.just_pressed(KeyCode::KeyZ) {
+        if let Some(message) = creations.undo(&mut commands) {
+            chat.say(Role::System, message);
+        }
         return;
     }
-    let Ok(mut transform) = transforms.get_mut(entity) else {
+    if command {
         return;
-    };
-    for (key, how) in [
-        (KeyCode::KeyQ, Adjust::Turn(1.0)),
-        (KeyCode::KeyE, Adjust::Turn(-1.0)),
-        (KeyCode::KeyR, Adjust::Raise(1.0)),
-        (KeyCode::KeyF, Adjust::Raise(-1.0)),
-    ] {
-        if keys.just_pressed(key) {
-            creations.adjust_draft(&mut transform, how);
+    }
+    // T opens the chat to talk to the agent, like Minecraft's chat key.
+    if keys.just_pressed(KeyCode::KeyT) {
+        chat.open = true;
+        chat.focus_input = true;
+        return;
+    }
+
+    if let Some(draft) = &creations.draft {
+        let (entity, follow) = (draft.entity, draft.follow);
+        if keys.just_pressed(KeyCode::Escape) {
+            creations.discard_draft(&mut commands);
+            return;
         }
+        let Ok(mut transform) = transforms.get_mut(entity) else {
+            return;
+        };
+        if keys.just_pressed(KeyCode::Enter) {
+            let at = *transform;
+            match creations.place_draft(&mut commands, &at) {
+                Some(name) => chat.say(Role::System, format!("Placed \"{name}\".")),
+                None => chat.say(Role::System, "Can't place it on top of you; point somewhere else."),
+            }
+            return;
+        }
+        if keys.just_pressed(KeyCode::KeyM) && !follow {
+            if let Some(draft) = &mut creations.draft {
+                draft.follow = true;
+            }
+            return;
+        }
+        for (key, how) in [
+            (KeyCode::KeyQ, Adjust::Turn(1.0)),
+            (KeyCode::KeyE, Adjust::Turn(-1.0)),
+            (KeyCode::KeyR, Adjust::Raise(1.0)),
+            (KeyCode::KeyF, Adjust::Raise(-1.0)),
+        ] {
+            if keys.just_pressed(key) {
+                creations.adjust_draft(&mut transform, how);
+            }
+        }
+        return;
+    }
+
+    if creations.selected.is_some() {
+        if keys.just_pressed(KeyCode::KeyM) {
+            if let Some(name) = creations.edit_selected(&mut commands, true) {
+                chat.say(Role::System, format!("Moving \"{name}\": point and click to place it."));
+            }
+        } else if keys.any_just_pressed([KeyCode::Delete, KeyCode::Backspace]) {
+            if let Some(name) = creations.delete_selected(&mut commands) {
+                chat.say(Role::System, format!("Deleted \"{name}\". Ctrl/Cmd+Z brings it back."));
+            }
+        } else if keys.just_pressed(KeyCode::Escape) {
+            creations.selected = None;
+        } else if keys.just_pressed(KeyCode::Enter) {
+            chat.open = true;
+            chat.focus_input = true;
+        }
+    } else if keys.just_pressed(KeyCode::Enter) {
+        chat.open = true;
+        chat.focus_input = true;
     }
 }
 
@@ -409,10 +466,15 @@ fn check_clearance(
     draft.blocked = overlaps_box(model, &GlobalTransform::from(*transform), lo, hi);
 }
 
-/// A click (press and release without dragging the camera): with a draft, left places
-/// it and right cancels it; otherwise left selects the build under the cursor.
+/// Mouse, in the world (not over the panel). A click is a press and release without
+/// dragging the camera.
+/// - With a following draft: left places it, right cancels it.
+/// - With a pinned revision: right cancels it (it's kept from the panel or with Enter).
+/// - Otherwise: left selects the build under the cursor, double-click picks it up to
+///   move it, middle copies it into a new draft, right clears the selection.
 fn click_in_world(
     mut commands: Commands,
+    time: Res<Time>,
     buttons: Res<ButtonInput<MouseButton>>,
     windows: Query<&Window, With<PrimaryWindow>>,
     cameras: Query<(&Camera, &GlobalTransform), With<Camera3d>>,
@@ -422,13 +484,14 @@ fn click_in_world(
     drafts: Query<&Transform, With<DraftMarker>>,
     mut creations: ResMut<Creations>,
     mut chat: ResMut<Chat>,
-    mut pressed_at: Local<[Option<Vec2>; 2]>,
+    mut pressed_at: Local<[Option<Vec2>; 3]>,
+    mut last_select: Local<Option<(Entity, f32)>>,
 ) {
     let Some((cursor, ray)) = cursor_ray(&windows, &cameras, &egui) else {
         return;
     };
-    let mut clicked = [false; 2];
-    for (i, button) in [MouseButton::Left, MouseButton::Right].into_iter().enumerate() {
+    let mut clicked = [false; 3];
+    for (i, button) in [MouseButton::Left, MouseButton::Right, MouseButton::Middle].into_iter().enumerate() {
         if buttons.just_pressed(button) {
             pressed_at[i] = Some(cursor);
         }
@@ -436,13 +499,13 @@ fn click_in_world(
             clicked[i] = pressed_at[i].take().is_some_and(|start| start.distance(cursor) <= 5.0);
         }
     }
-    let [left, right] = clicked;
+    let [left, right, middle] = clicked;
 
     if let Some(draft) = &creations.draft {
         if right {
             creations.discard_draft(&mut commands);
         } else if !draft.follow {
-            // Pinned revisions are confirmed from the panel, not by clicking the world.
+            // Pinned revisions are confirmed from the panel or with Enter.
         } else if left && draft.blocked {
             chat.say(Role::System, "Can't place it on top of you; point somewhere else.");
         } else if left
@@ -453,9 +516,55 @@ fn click_in_world(
         }
         return;
     }
-    if left {
-        creations.selected = pick(ray, &world, &builds).and_then(|(_, entity)| entity);
+    if right {
+        creations.selected = None;
     }
+    let target = || pick(ray, &world, &builds).and_then(|(_, entity)| entity);
+    if middle && let Some(entity) = target() {
+        let at = builds.get(entity).map(|(_, _, t)| t.compute_transform()).unwrap_or_default();
+        if let Some(name) = creations.copy_as_draft(&mut commands, entity, &at) {
+            chat.say(Role::System, format!("Copied \"{name}\": point and click to place the copy."));
+        }
+        return;
+    }
+    if left {
+        let hit = target();
+        let now = time.elapsed_secs();
+        let double = hit.is_some() && last_select.is_some_and(|(e, t)| Some(e) == hit && now - t < 0.4);
+        creations.selected = hit;
+        *last_select = hit.map(|e| (e, now));
+        if double && let Some(name) = creations.edit_selected(&mut commands, true) {
+            *last_select = None;
+            chat.say(Role::System, format!("Moving \"{name}\": point and click to place it."));
+        }
+    }
+}
+
+/// A one-line reminder of the shortcuts that apply right now, at the bottom of the view.
+fn shortcut_hints(mut contexts: EguiContexts, chat: Res<Chat>, creations: Res<Creations>) -> Result {
+    let hint = match &creations.draft {
+        Some(d) if d.follow => "Click: place   Q/E: turn   R/F: raise / lower   Esc or right-click: cancel   T: ask for changes",
+        Some(_) => "Enter: keep the change   M: move it   T: ask for more   Esc: cancel",
+        None if creations.selected.is_some() => {
+            "T: change it   M or double-click: move   Delete: remove   Middle-click: copy   Esc: deselect   Ctrl/Cmd+Z: undo"
+        }
+        None if chat.pending.is_some() => return Ok(()),
+        None => "T: describe a build   Click a build: select   Middle-click a build: copy",
+    };
+    let ctx = contexts.ctx_mut()?;
+    egui::Area::new("shortcut_hints".into())
+        .anchor(egui::Align2::CENTER_BOTTOM, egui::vec2(-170.0, -36.0))
+        .interactable(false)
+        .show(ctx, |ui| {
+            egui::Frame::new()
+                .fill(egui::Color32::from_black_alpha(140))
+                .corner_radius(6.0)
+                .inner_margin(egui::Margin::symmetric(10, 5))
+                .show(ui, |ui| {
+                    ui.label(egui::RichText::new(hint).color(egui::Color32::from_gray(230)).size(13.0));
+                });
+        });
+    Ok(())
 }
 
 /// Adds the Phosphor icon font as a fallback, so icons render inside any label.
@@ -555,12 +664,13 @@ fn chat_panel(
                             ui.separator();
                             let place = ui
                                 .add_enabled(!draft.blocked, egui::Button::new(format!("{} Place", icon::CHECK)))
+                                .on_hover_text("Enter, or click in the world")
                                 .on_disabled_hover_text("It would overlap you");
                             if place.clicked() {
                                 action = Some(Action::Place);
                             }
                             let discard = if draft.replaces.is_some() { "Cancel edit" } else { "Discard" };
-                            if ui.button(format!("{} {discard}", icon::X)).clicked() {
+                            if ui.button(format!("{} {discard}", icon::X)).on_hover_text("Esc or right-click").clicked() {
                                 action = Some(Action::Discard);
                             }
                         });
@@ -568,7 +678,7 @@ fn chat_panel(
                             ui.horizontal(|ui| {
                                 if ui
                                     .button(format!("{} Move", icon::ARROWS_OUT_CARDINAL))
-                                    .on_hover_text("Pick it up and place it somewhere else")
+                                    .on_hover_text("M: pick it up and place it somewhere else")
                                     .clicked()
                                 {
                                     action = Some(Action::Move);
@@ -591,19 +701,19 @@ fn chat_panel(
                         ui.horizontal(|ui| {
                             if ui
                                 .button(format!("{} Move", icon::ARROWS_OUT_CARDINAL))
-                                .on_hover_text("Pick it up and place it somewhere else")
+                                .on_hover_text("M or double-click: pick it up and place it somewhere else")
                                 .clicked()
                             {
                                 action = Some(Action::Move);
                             }
-                            if ui.button(format!("{} Delete", icon::TRASH)).clicked() {
+                            if ui.button(format!("{} Delete", icon::TRASH)).on_hover_text("Delete or Backspace").clicked() {
                                 action = Some(Action::Delete);
                             }
-                            if ui.button("Deselect").clicked() {
+                            if ui.button("Deselect").on_hover_text("Esc or right-click").clicked() {
                                 action = Some(Action::Deselect);
                             }
                         });
-                        ui.label(egui::RichText::new("Type below to change it").small().weak());
+                        ui.label(egui::RichText::new("T: describe a change · middle-click copies it").small().weak());
                     });
                 }
                 if chat.pending.is_some() {
@@ -620,9 +730,12 @@ fn chat_panel(
                     let input = ui.add_enabled(
                         chat.pending.is_none(),
                         egui::TextEdit::singleline(&mut chat.input)
-                            .hint_text("Build me…")
+                            .hint_text(if creations.selected.is_some() { "Change it…  (T)" } else { "Build me…  (T)" })
                             .desired_width(ui.available_width() - 36.0),
                     );
+                    if std::mem::take(&mut chat.focus_input) {
+                        input.request_focus();
+                    }
                     let enter = input.lost_focus() && ui.input(|i| i.key_pressed(egui::Key::Enter));
                     if (ui.add_enabled(chat.pending.is_none(), egui::Button::new(icon::PAPER_PLANE_RIGHT)).clicked() || enter)
                         && !chat.input.trim().is_empty()
@@ -633,7 +746,10 @@ fn chat_panel(
                 });
                 ui.horizontal(|ui| {
                     ui.label(egui::RichText::new(format!("{} placed", creations.placed.len())).small().weak());
-                    if ui.add_enabled(!creations.placed.is_empty(), egui::Button::new("Undo last").small()).clicked() {
+                    let undo = ui
+                        .add_enabled(creations.can_undo(), egui::Button::new(format!("{} Undo", icon::ARROW_U_UP_LEFT)).small())
+                        .on_hover_text("Ctrl/Cmd+Z");
+                    if undo.clicked() {
                         action = Some(Action::Undo);
                     }
                 });
@@ -698,8 +814,8 @@ fn chat_panel(
         }
         Some(Action::Deselect) => creations.selected = None,
         Some(Action::Undo) => {
-            if let Some(name) = creations.undo(&mut commands) {
-                chat.say(Role::System, format!("Removed \"{name}\"."));
+            if let Some(message) = creations.undo(&mut commands) {
+                chat.say(Role::System, message);
             }
         }
         None => {}

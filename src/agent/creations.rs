@@ -49,7 +49,17 @@ pub struct Creations {
     pub placed: Vec<(Entity, SavedCreation)>,
     pub draft: Option<Draft>,
     pub selected: Option<Entity>,
+    /// Changes this session, newest last, for Undo.
+    history: Vec<Change>,
     next_id: u64,
+}
+
+/// One undoable change to the placed builds.
+enum Change {
+    Placed(u64),
+    Deleted(SavedCreation),
+    /// A build was moved or revised; holds how it was before.
+    Replaced(SavedCreation),
 }
 
 /// Marks a creation entity; drafts also carry [`DraftMarker`].
@@ -170,8 +180,39 @@ impl Creations {
         let index = self.placed.iter().position(|(e, _)| *e == entity)?;
         let (_, saved) = self.placed.remove(index);
         commands.entity(entity).despawn();
+        let name = saved.name.clone();
+        self.history.push(Change::Deleted(saved));
         self.save();
+        Some(name)
+    }
+
+    /// Starts a new following draft that copies a placed build (Minecraft's pick block).
+    pub fn copy_as_draft(&mut self, commands: &mut Commands, entity: Entity, at: &Transform) -> Option<String> {
+        if self.draft.is_some() {
+            return None;
+        }
+        let saved = self.placed.iter().find(|(e, _)| *e == entity).map(|(_, c)| c.clone())?;
+        let build = compile(&saved.spec).ok()?;
+        let yaw = at.rotation.to_euler(EulerRot::YXZ).0;
+        let draft = spawn(commands, &build.model, &saved.name, at.translation, yaw);
+        commands.entity(draft).insert(DraftMarker);
+        self.selected = None;
+        self.draft = Some(Draft {
+            entity: draft,
+            spec: saved.spec,
+            stats: build.stats,
+            prompt: saved.prompt,
+            provider: saved.provider,
+            replaces: None,
+            lift: 0.0,
+            blocked: false,
+            follow: true,
+        });
         Some(saved.name)
+    }
+
+    pub fn can_undo(&self) -> bool {
+        self.draft.is_none() && !self.history.is_empty()
     }
 
     pub fn selected(&self) -> Option<&SavedCreation> {
@@ -202,6 +243,10 @@ impl Creations {
             spec: draft.spec,
         };
         let name = saved.name.clone();
+        self.history.push(match draft.replaces {
+            Some(before) => Change::Replaced(before),
+            None => Change::Placed(id),
+        });
         self.placed.push((draft.entity, saved));
         // Stay selected so a follow-up chat message ("make it blue") applies to it.
         self.selected = Some(draft.entity);
@@ -209,14 +254,48 @@ impl Creations {
         Some(name)
     }
 
+    /// Reverts the latest change; returns a message describing what happened.
     pub fn undo(&mut self, commands: &mut Commands) -> Option<String> {
-        let (entity, saved) = self.placed.pop()?;
+        if self.draft.is_some() {
+            return None;
+        }
+        let change = self.history.pop()?;
+        let message = match change {
+            Change::Placed(id) => {
+                let (_, saved) = self.take_placed(commands, id)?;
+                format!("Removed \"{}\".", saved.name)
+            }
+            Change::Deleted(saved) => {
+                let name = saved.name.clone();
+                self.restore(commands, saved)?;
+                format!("Brought back \"{name}\".")
+            }
+            Change::Replaced(before) => {
+                self.take_placed(commands, before.id)?;
+                let name = before.name.clone();
+                self.restore(commands, before)?;
+                format!("Put \"{name}\" back how it was.")
+            }
+        };
+        self.save();
+        Some(message)
+    }
+
+    fn take_placed(&mut self, commands: &mut Commands, id: u64) -> Option<(Entity, SavedCreation)> {
+        let index = self.placed.iter().position(|(_, c)| c.id == id)?;
+        let (entity, saved) = self.placed.remove(index);
         if self.selected == Some(entity) {
             self.selected = None;
         }
         commands.entity(entity).despawn();
-        self.save();
-        Some(saved.name)
+        Some((entity, saved))
+    }
+
+    fn restore(&mut self, commands: &mut Commands, saved: SavedCreation) -> Option<Entity> {
+        let build = compile(&saved.spec).ok()?;
+        let entity = spawn_placed(commands, &build.model, &saved);
+        self.placed.push((entity, saved));
+        Some(entity)
     }
 
     fn save(&self) {

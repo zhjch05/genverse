@@ -31,8 +31,16 @@ can bump into and stand on them) and saved to `saves/creations.json`.
   `R`/`F` to raise and lower. A red outline means it would overlap you.
 - Click a placed build to select it (cyan outline); a build you just placed stays selected.
   While one is selected, chat messages revise *that* build in place (Place keeps the
-  change, Cancel edit restores it). **Move** picks it up to re-place it, **Delete** removes
-  it, and Undo removes the last placed build.
+  change, Cancel edit restores it). A hint bar at the bottom shows the shortcuts that apply:
+
+  | Context | Shortcuts |
+  | --- | --- |
+  | Anywhere | `T`/`Enter` talk to the agent · click a build to select · middle-click to copy it · `Ctrl/Cmd+Z` undo |
+  | Selected build | `M` or double-click move · `Delete`/`Backspace` delete · `T` change it · `Esc`/right-click deselect |
+  | Draft following the cursor | click place · `Q`/`E` turn · `R`/`F` raise/lower · `Esc`/right-click cancel |
+  | Pinned revision | `Enter` keep · `M` pick it up · `T` ask for more · `Esc` cancel |
+
+  Undo steps back through placing, deleting, moving, and revising builds.
 
 - Needs `claude` and/or `codex` on your `PATH`, already logged in.
 - The agents get no other tools: no shell, no file edits, no other MCP servers, and no user config
