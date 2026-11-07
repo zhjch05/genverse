@@ -284,6 +284,99 @@ pub fn replay_land(log: &WorldLog) -> Replay {
     walk(log, false)
 }
 
+/// The world's voxels as of some change, so replay (on a server restart, or a player
+/// joining) only redoes the changes after it. It's only valid while the changes up to
+/// it that count stay the same: undoing an older change makes it stale.
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+pub struct Snapshot {
+    /// The last change it includes.
+    pub upto: u64,
+    /// Which changes up to `upto` were in effect when it was taken.
+    pub basis: u64,
+    /// Every voxel edit, as `[x, y, z, block]`, sorted.
+    pub edits: Vec<[i32; 4]>,
+}
+
+/// Edge length, in voxels, of the chunks fingerprints cover (the game's mesh chunks).
+pub const PRINT_CHUNK: i32 = 32;
+
+pub fn chunk_of(p: IVec3) -> IVec3 {
+    p.div_euclid(IVec3::splat(PRINT_CHUNK))
+}
+
+/// The edits inside each of `chunks`, as `[x, y, z, block]`, sorted.
+pub fn chunk_edits(edits: &HashMap<IVec3, VoxelId>, chunks: &[IVec3]) -> HashMap<IVec3, Vec<[i32; 4]>> {
+    let mut out: HashMap<IVec3, Vec<[i32; 4]>> = chunks.iter().map(|c| (*c, Vec::new())).collect();
+    for (p, id) in edits {
+        if let Some(list) = out.get_mut(&chunk_of(*p)) {
+            list.push([p.x, p.y, p.z, *id as i32]);
+        }
+    }
+    for list in out.values_mut() {
+        list.sort_unstable();
+    }
+    out
+}
+
+/// A fingerprint of each of `chunks`' edits: two worlds whose fingerprints match have
+/// the same voxels there.
+pub fn chunk_prints(edits: &HashMap<IVec3, VoxelId>, chunks: &[IVec3]) -> Vec<([i32; 3], u64)> {
+    let mut prints: Vec<([i32; 3], u64)> = chunk_edits(edits, chunks)
+        .into_iter()
+        .map(|(c, list)| {
+            let bytes: Vec<u8> = list.iter().flatten().flat_map(|v| v.to_le_bytes()).collect();
+            (c.to_array(), fnv1a(&bytes))
+        })
+        .collect();
+    prints.sort_unstable();
+    prints
+}
+
+/// A fingerprint of which changes up to `upto` count.
+fn basis(log: &WorldLog, upto: u64) -> u64 {
+    let ids: Vec<String> = log.effective().filter(|c| c.id <= upto).map(|c| c.id.to_string()).collect();
+    fnv1a(ids.join(",").as_bytes())
+}
+
+impl Snapshot {
+    /// The world `state` (replayed with voxels) as of the log's last change.
+    pub fn take(log: &WorldLog, state: &Replay) -> Self {
+        let upto = log.changes.last().map_or(0, |c| c.id);
+        let mut edits: Vec<[i32; 4]> = state.edits.iter().map(|(p, id)| [p.x, p.y, p.z, *id as i32]).collect();
+        edits.sort_unstable();
+        Self { upto, basis: basis(log, upto), edits }
+    }
+
+    /// Whether the changes it stands for still count as they did.
+    pub fn fits(&self, log: &WorldLog) -> bool {
+        basis(log, self.upto) == self.basis
+    }
+}
+
+/// Like [`replay`], but starting from `snapshot`'s voxels when it still fits the log:
+/// only the changes after it are rasterized again.
+pub fn replay_from(log: &WorldLog, snapshot: Option<&Snapshot>) -> Replay {
+    let Some(snapshot) = snapshot.filter(|s| s.fits(log)) else {
+        return replay(log);
+    };
+    let mut out = Replay::new(log);
+    let mut loaded = false;
+    for change in log.effective() {
+        let after = change.id > snapshot.upto;
+        if after && !loaded {
+            out.edits = snapshot.edits.iter().map(|[x, y, z, id]| (IVec3::new(*x, *y, *z), *id as VoxelId)).collect();
+            loaded = true;
+        }
+        if let Err(why) = out.apply(change, after) {
+            out.problems.push(format!("change {} by {}: {why}", change.id, change.by.player_name));
+        }
+    }
+    if !loaded {
+        out.edits = snapshot.edits.iter().map(|[x, y, z, id]| (IVec3::new(*x, *y, *z), *id as VoxelId)).collect();
+    }
+    out
+}
+
 fn walk(log: &WorldLog, voxels: bool) -> Replay {
     let mut out = Replay::new(log);
     for change in log.effective() {
@@ -500,6 +593,25 @@ mod tests {
         assert!(!tampered.changes[0].verified());
         log.push(by("b"), lamp(2));
         assert!(!log.changes[1].verified());
+    }
+
+    #[test]
+    fn snapshots_skip_work_but_not_correctness() {
+        let mut log = WorldLog::new(1337);
+        log.admins = vec!["a".into()];
+        log.push(by("a"), pond(400));
+        log.push(by("a"), lamp(1));
+        let snap = Snapshot::take(&log, &replay(&log));
+        log.push(by("a"), pond(430));
+        let full = replay(&log);
+        let fast = replay_from(&log, Some(&snap));
+        assert_eq!(full.edits, fast.edits);
+        assert_eq!(full.builds, fast.builds);
+
+        // Undoing a change the snapshot includes makes it stale; replay still agrees.
+        log.push(by("a"), Action::Revert { change: 1 });
+        assert!(!snap.fits(&log));
+        assert_eq!(replay(&log).edits, replay_from(&log, Some(&snap)).edits);
     }
 
     #[test]

@@ -21,13 +21,13 @@ use std::{
 };
 
 use cubelark_rules::{
-    log::{Action, Change, Provenance, RULES_VERSION, WorldLog},
+    log::{Action, Change, Provenance, RULES_VERSION, Snapshot, WorldLog},
     sculpt::Area,
 };
 use serde::{Deserialize, Serialize};
 
 /// Bumped when the protocol changes incompatibly.
-pub const VERSION: u32 = 3;
+pub const VERSION: u32 = 4;
 pub const DEFAULT_PORT: u16 = 7878;
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
@@ -42,6 +42,8 @@ pub enum ToServer {
     Propose { request: u64, by: Provenance, action: Action, sig: String },
     /// Where the player is and what they're doing, for others to see. Not kept.
     Presence(Presence),
+    /// The edits in these chunks, because ours disagree with the server's fingerprints.
+    FetchChunks { chunks: Vec<[i32; 3]> },
 }
 
 /// What others see of a player, live: like Figma's cursors and selections. Sent when it
@@ -68,11 +70,14 @@ pub struct Presence {
 pub enum ToClient {
     /// Sent on connect; the client signs `nonce` to prove who it is.
     Challenge { version: u32, rules: u32, nonce: String },
-    /// The world so far.
-    Welcome { log: WorldLog },
+    /// The world so far, with a snapshot of its voxels to replay from when there is one.
+    Welcome { log: WorldLog, snapshot: Option<Snapshot> },
     /// A change the server accepted, for everyone. `request` is set only for the player
-    /// who proposed it.
-    Committed { change: Change, request: Option<u64> },
+    /// who proposed it. `prints` fingerprints the chunks it changed, as the server has
+    /// them, so players can check theirs.
+    Committed { change: Change, request: Option<u64>, prints: Vec<([i32; 3], u64)> },
+    /// The edits in the chunks a player asked for, as `[x, y, z, block]`.
+    Chunks { chunks: Vec<([i32; 3], Vec<[i32; 4]>)> },
     /// Why the server refused a player's proposal.
     Rejected { request: u64, why: String },
     /// The server is closing this connection.

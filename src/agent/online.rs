@@ -6,12 +6,17 @@
 //!   server's version of it (compiled against the ground as the server had it).
 //!   Undos (reverts, rollbacks) rebuild the world from the log.
 //! - **Rejected:** what we showed is taken back, with the server's reason.
+//! - **Fingerprints:** each land change comes with the server's fingerprints of the
+//!   chunks it touched; chunks that disagree with ours are fetched and replaced.
 //! - **Dropped:** we reconnect with growing pauses; the welcome that follows tells which
 //!   of our changes in flight made it, and the rest are taken back.
 
 use bevy::prelude::*;
-use cubelark_net::{ClientEvent, ToClient};
-use cubelark_rules::log::{Action, Change, replay};
+use cubelark_net::{ClientEvent, ToClient, ToServer};
+use cubelark_rules::{
+    IVec3,
+    log::{Action, Change, chunk_of, chunk_prints, replay, replay_from},
+};
 
 use super::{Chat, Role, creations::Creations, landscape::Landscape, presence::Peers};
 use crate::world::{VoxelWorld, ledger::Ledger};
@@ -143,7 +148,10 @@ pub fn sync_online(
                 peers.seen(&mut commands, &assets, player, name, presence);
             }
             ClientEvent::Message(ToClient::Gone { player }) => peers.gone(&mut commands, &player),
-            ClientEvent::Message(ToClient::Welcome { log }) => {
+            ClientEvent::Message(ToClient::Chunks { chunks }) => {
+                heal(&mut ledger, &mut world, chunks);
+            }
+            ClientEvent::Message(ToClient::Welcome { log, snapshot }) => {
                 peers.clear(&mut commands);
                 if log.seed != world.terrain.seed {
                     chat.say(Role::System, "⚠ This server's world has a different seed; can't join it.");
@@ -173,7 +181,7 @@ pub fn sync_online(
                         chat.say(Role::System, format!("⚠ {lost} change(s) didn't reach the server before the connection dropped."));
                     }
                 }
-                let full = replay(&ledger.log);
+                let full = replay_from(&ledger.log, snapshot.as_ref());
                 world.replace_edits(full.edits.iter().map(|(p, id)| (*p, *id)));
                 creations.resync(&mut commands, &full.builds);
                 landscape.forget_history();
@@ -187,8 +195,9 @@ pub fn sync_online(
                     online.state = Some(full);
                 }
             }
-            ClientEvent::Message(ToClient::Committed { change, request }) => {
+            ClientEvent::Message(ToClient::Committed { change, request, prints }) => {
                 committed(&mut commands, &mut ledger, &mut world, &mut creations, &mut landscape, &mut chat, change, request);
+                check_prints(&ledger, prints);
             }
             ClientEvent::Message(ToClient::Rejected { request, why }) => {
                 if let Some(online) = &mut ledger.online {
@@ -242,7 +251,14 @@ fn committed(
                 (Action::PlaceBuild(b) | Action::UpdateBuild(b), None) => creations.upsert(commands, b),
                 (Action::RemoveBuild { build }, None) => creations.remove(commands, *build),
                 (_, None) => {
-                    for (p, id) in &edits {
+                    // `CUBELARK_DESYNC=1` drops some of others' land edits, to watch
+                    // fingerprints catch it and the chunks heal.
+                    let drift = std::env::var("CUBELARK_DESYNC").is_ok();
+                    for (i, (p, id)) in edits.iter().enumerate() {
+                        if drift && i % 7 == 0 {
+                            state.edits.remove(p);
+                            continue;
+                        }
                         world.set(*p, *id);
                     }
                 }
@@ -264,4 +280,34 @@ fn committed(
     }
     ledger.adopt(state);
     ledger.online = Some(online);
+}
+
+/// Compares the server's fingerprints of the chunks a change touched with ours, and
+/// asks for the chunks that differ.
+fn check_prints(ledger: &Ledger, prints: Vec<([i32; 3], u64)>) {
+    let Some(online) = &ledger.online else { return };
+    let Some(state) = &online.state else { return };
+    if prints.is_empty() {
+        return;
+    }
+    let chunks: Vec<IVec3> = prints.iter().map(|(c, _)| IVec3::from_array(*c)).collect();
+    let ours = chunk_prints(&state.edits, &chunks);
+    let differ: Vec<[i32; 3]> =
+        prints.iter().filter(|print| !ours.contains(print)).map(|(c, _)| *c).collect();
+    if !differ.is_empty() {
+        warn!("{} chunk(s) differ from the server's; fetching them", differ.len());
+        online.client.send(ToServer::FetchChunks { chunks: differ });
+    }
+}
+
+/// Replaces our edits in `chunks` with the server's, and regenerates those chunks.
+fn heal(ledger: &mut Ledger, world: &mut VoxelWorld, chunks: Vec<([i32; 3], Vec<[i32; 4]>)>) {
+    let Some(state) = ledger.online.as_mut().and_then(|o| o.state.as_mut()) else { return };
+    for (chunk, edits) in &chunks {
+        let chunk = IVec3::from_array(*chunk);
+        state.edits.retain(|p, _| chunk_of(*p) != chunk);
+        state.edits.extend(edits.iter().map(|[x, y, z, id]| (IVec3::new(*x, *y, *z), *id as u8)));
+    }
+    world.replace_edits(state.edits.iter().map(|(p, id)| (*p, *id)));
+    info!("healed {} chunk(s) from the server", chunks.len());
 }

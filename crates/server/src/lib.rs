@@ -7,6 +7,11 @@
 //! No rendering and no game engine: just the rules crate, threads, and TCP. One thread
 //! owns the world and handles events in order; each connection has a reader and a
 //! writer thread.
+//!
+//! Every [`SNAPSHOT_EVERY`] changes the server saves a snapshot of the world's voxels
+//! (`snapshot.json`), so restarting and joining only replay the changes after it. With
+//! each land change it sends fingerprints of the chunks it touched; a player whose
+//! chunks disagree fetches the server's.
 
 use std::{
     collections::HashMap,
@@ -21,7 +26,10 @@ use std::{
 use cubelark_net::{Presence, ToClient, ToServer, VERSION, hello_bytes, read_messages, write_message};
 use cubelark_rules::{
     identity::verify,
-    log::{Action, Change, RULES_VERSION, Replay, WorldLog, replay, signing_bytes},
+    log::{
+        Action, Change, RULES_VERSION, Replay, Snapshot, WorldLog, chunk_edits, chunk_of, chunk_prints, replay, replay_from,
+        signing_bytes,
+    },
 };
 
 pub struct ServerConfig {
@@ -37,6 +45,9 @@ pub struct ServerConfig {
 pub struct Running {
     pub addr: SocketAddr,
 }
+
+/// Changes between snapshots.
+pub const SNAPSHOT_EVERY: usize = 50;
 
 /// How far a change's timestamp may be from the server's clock, in seconds.
 const CLOCK_SLACK: u64 = 600;
@@ -60,6 +71,7 @@ struct World {
     path: PathBuf,
     log: WorldLog,
     state: Replay,
+    snapshot: Option<Snapshot>,
     conns: HashMap<u64, Conn>,
 }
 
@@ -70,17 +82,26 @@ pub fn start(config: ServerConfig) -> io::Result<Running> {
         Ok(text) => serde_json::from_str(&text).map_err(io::Error::other)?,
         Err(_) => WorldLog::new(config.seed),
     };
-    let state = replay(&log);
+    let snapshot: Option<Snapshot> = std::fs::read_to_string(config.data_dir.join("snapshot.json"))
+        .ok()
+        .and_then(|text| serde_json::from_str(&text).ok())
+        .filter(|s: &Snapshot| s.fits(&log));
+    let state = replay_from(&log, snapshot.as_ref());
     for problem in &state.problems {
         eprintln!("saved change no longer applies: {problem}");
     }
-    println!("world: {} changes, {} builds", log.changes.len(), state.builds.len());
+    println!(
+        "world: {} changes, {} builds{}",
+        log.changes.len(),
+        state.builds.len(),
+        snapshot.as_ref().map_or(String::new(), |s| format!(" (replayed from the snapshot at change {})", s.upto))
+    );
 
     let listener = TcpListener::bind(("0.0.0.0", config.port))?;
     let addr = listener.local_addr()?;
     let (events_tx, events) = mpsc::channel();
     thread::Builder::new().name("accept".into()).spawn(move || accept(listener, events_tx))?;
-    let world = World { path, log, state, conns: HashMap::new() };
+    let world = World { path, log, state, snapshot, conns: HashMap::new() };
     thread::Builder::new().name("world".into()).spawn(move || run(world, events))?;
     Ok(Running { addr })
 }
@@ -174,7 +195,8 @@ impl World {
                 if let Some(c) = self.conns.get_mut(&conn) {
                     c.player = Some((player, name));
                 }
-                let _ = out.send(ToClient::Welcome { log: self.log.clone() });
+                let snapshot = self.snapshot.clone().filter(|s| s.fits(&self.log));
+                let _ = out.send(ToClient::Welcome { log: self.log.clone(), snapshot });
                 // Who's here already.
                 for (other, c) in &self.conns {
                     if let (true, Some((player, name)), Some(presence)) = (*other != conn, &c.player, &c.presence) {
@@ -189,8 +211,13 @@ impl World {
                 c.presence = Some(presence.clone());
                 self.tell_others(conn, ToClient::Presence { player, name, presence });
             }
+            ToServer::FetchChunks { chunks } => {
+                let chunks: Vec<_> = chunks.into_iter().take(256).map(cubelark_rules::IVec3::from_array).collect();
+                let edits = chunk_edits(&self.state.edits, &chunks);
+                let _ = out.send(ToClient::Chunks { chunks: edits.into_iter().map(|(c, e)| (c.to_array(), e)).collect() });
+            }
             ToServer::Propose { request, by, action, sig } => match self.commit(player, by, action, sig) {
-                Ok(change) => self.broadcast(change, conn, request),
+                Ok((change, prints)) => self.broadcast(change, prints, conn, request),
                 Err(why) => {
                     let _ = out.send(ToClient::Rejected { request, why });
                 }
@@ -205,7 +232,7 @@ impl World {
         by: cubelark_rules::log::Provenance,
         action: Action,
         sig: String,
-    ) -> Result<Change, String> {
+    ) -> Result<(Change, Vec<([i32; 3], u64)>), String> {
         let player = player.ok_or("say hello first")?;
         if by.player != player {
             return Err("you can only make changes as yourself".into());
@@ -220,6 +247,7 @@ impl World {
         let by = cubelark_rules::log::Provenance { prompt: None, ..by };
         let id = self.log.changes.last().map_or(1, |c| c.id + 1);
         let change = Change { id, by, action, sig: Some(sig) };
+        let mut made = Vec::new();
         match &change.action {
             Action::Revert { change: target } => {
                 if !self.log.may_revert(&player, *target) {
@@ -231,7 +259,7 @@ impl World {
             }
             Action::Rollback { .. } if !self.log.is_admin(&player) => return Err("only admins roll back".into()),
             _ => {
-                self.state.apply(&change, true)?;
+                made = self.state.apply(&change, true)?;
             }
         }
         self.log.changes.push(change.clone());
@@ -239,9 +267,27 @@ impl World {
         if matches!(change.action, Action::Revert { .. } | Action::Rollback { .. }) {
             self.state = replay(&self.log);
         }
+        let mut chunks: Vec<_> = made.iter().map(|(p, _)| chunk_of(*p)).collect();
+        chunks.sort_unstable_by_key(|c| c.to_array());
+        chunks.dedup();
+        let prints = chunk_prints(&self.state.edits, &chunks);
         self.save();
+        if self.log.changes.len().is_multiple_of(SNAPSHOT_EVERY) {
+            self.take_snapshot();
+        }
         println!("{} {}", change.by.player_name, change.action.describe());
-        Ok(change)
+        Ok((change, prints))
+    }
+
+    fn take_snapshot(&mut self) {
+        let snapshot = Snapshot::take(&self.log, &self.state);
+        let path = self.path.with_file_name("snapshot.json");
+        let result = serde_json::to_string(&snapshot).map_err(io::Error::other).and_then(|t| std::fs::write(&path, t));
+        if let Err(e) = result {
+            eprintln!("couldn't save {}: {e}", path.display());
+        }
+        println!("snapshot at change {}", snapshot.upto);
+        self.snapshot = Some(snapshot);
     }
 
     /// Sends `message` to every logged-in player but the one on `from`.
@@ -253,11 +299,11 @@ impl World {
         }
     }
 
-    fn broadcast(&self, change: Change, from: u64, request: u64) {
+    fn broadcast(&self, change: Change, prints: Vec<([i32; 3], u64)>, from: u64, request: u64) {
         for (conn, c) in &self.conns {
             if c.player.is_some() {
                 let request = (*conn == from).then_some(request);
-                let _ = c.out.send(ToClient::Committed { change: change.clone(), request });
+                let _ = c.out.send(ToClient::Committed { change: change.clone(), request, prints: prints.clone() });
             }
         }
     }

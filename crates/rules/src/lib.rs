@@ -16,3 +16,5 @@ pub mod sculpt;
 pub mod settings;
 pub mod terrain;
 pub mod voxel;
+
+pub use bevy_math::IVec3;

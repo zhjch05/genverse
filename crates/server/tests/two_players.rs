@@ -64,6 +64,20 @@ fn lamp(build: u64, x: f32, z: f32) -> Action {
     })
 }
 
+fn pond() -> Action {
+    let op = serde_json::json!({
+        "kind": "water", "area": {"shape": "ellipse", "x": 1.0, "z": 1.0, "w": 4.0, "d": 4.0}, "points": null,
+        "amount_m": null, "level_m": null, "depth_m": 1.0, "width_m": null, "edge_m": 1.0, "material": null,
+        "item": null, "density": null
+    });
+    Action::Terrain {
+        name: "Pond".into(),
+        area: cubelark_rules::sculpt::Area { min: [400, 400], size: [24, 24] },
+        spec: serde_json::from_value(serde_json::json!({ "name": "Pond", "ops": [op] })).unwrap(),
+        changed: 500,
+    }
+}
+
 #[test]
 fn two_players_share_one_ordered_world() {
     let dir = std::env::temp_dir().join(format!("cubelark-server-test-{}", std::process::id()));
@@ -78,7 +92,7 @@ fn two_players_share_one_ordered_world() {
     // Ada builds: both hear it, only Ada with her request number.
     ada.propose(7, lamp(1, 100.0, 100.0));
     let id = match ada.next() {
-        ToClient::Committed { change, request: Some(7) } => change.id,
+        ToClient::Committed { change, request: Some(7), .. } => change.id,
         other => panic!("{other:?}"),
     };
     assert!(matches!(bo.next(), ToClient::Committed { request: None, .. }));
@@ -101,6 +115,27 @@ fn two_players_share_one_ordered_world() {
     assert!(matches!(ada.next(), ToClient::Committed { request: Some(8), .. }));
     assert!(matches!(bo.next(), ToClient::Committed { .. }));
 
+    // A land change comes with fingerprints of the chunks it touched; fetching those
+    // chunks gives edits that match them.
+    ada.propose(9, pond());
+    let prints = match ada.next() {
+        ToClient::Committed { request: Some(9), prints, .. } => prints,
+        other => panic!("{other:?}"),
+    };
+    assert!(!prints.is_empty());
+    assert!(matches!(bo.next(), ToClient::Committed { prints: p, .. } if p == prints));
+    bo.client.send(ToServer::FetchChunks { chunks: prints.iter().map(|(c, _)| *c).collect() });
+    let fetched = match bo.next() {
+        ToClient::Chunks { chunks } => chunks,
+        other => panic!("{other:?}"),
+    };
+    let edits: std::collections::HashMap<_, _> = fetched
+        .iter()
+        .flat_map(|(_, e)| e.iter().map(|[x, y, z, id]| (cubelark_rules::IVec3::new(*x, *y, *z), *id as u8)))
+        .collect();
+    let chunks: Vec<_> = prints.iter().map(|(c, _)| cubelark_rules::IVec3::from_array(*c)).collect();
+    assert_eq!(cubelark_rules::log::chunk_prints(&edits, &chunks), prints);
+
     // Presence goes to others, never to the sender, and isn't kept.
     let here = cubelark_net::Presence { position: [1.0, 2.0, 3.0], status: Some("designing".into()), ..Default::default() };
     ada.client.send(ToServer::Presence(here.clone()));
@@ -121,7 +156,7 @@ fn two_players_share_one_ordered_world() {
     drop(dee);
     let saved: cubelark_rules::log::WorldLog =
         serde_json::from_str(&std::fs::read_to_string(dir.join("world.json")).unwrap()).unwrap();
-    assert_eq!(saved.changes.len(), 2);
+    assert_eq!(saved.changes.len(), 3);
     assert!(saved.changes.iter().all(|c| c.verified()));
     assert!(saved.changes.iter().all(|c| c.by.prompt.is_none()));
     let _ = std::fs::remove_dir_all(&dir);
