@@ -3,6 +3,7 @@
 //! - `/history [n]`: the latest changes, with ids, who made them, and how.
 //! - `/revert <id>`: undo one of your own changes (anyone's, for admins).
 //! - `/rules`: the world's rules.
+//! - `/verify`: checks every change is signed by the player it names.
 //! - Admins: `/rollback <player>` undoes everything a player did; `/restore <id>` puts
 //!   the world back how it was right after change `id`; `/land open|parcels`;
 //!   `/rate <changes per minute> [voxels per 10 minutes]` or `/rate off`.
@@ -26,7 +27,7 @@ pub struct Context<'a, 'w, 's> {
     pub landscape: &'a mut Landscape,
 }
 
-const HELP: &str = "Commands: /history [n] · /revert <id> · /rules · admins: /rollback <player> · \
+const HELP: &str = "Commands: /history [n] · /revert <id> · /rules · /verify · admins: /rollback <player> · \
 /restore <id> · /land open|parcels · /rate <changes/min> [voxels/10 min] | off";
 
 /// Runs `/command args` and returns the reply for the chat.
@@ -39,6 +40,15 @@ pub fn run(text: &str, cx: &mut Context) -> String {
     match name.as_str() {
         "history" => history(cx.ledger, args.first().and_then(|n| n.parse().ok()).unwrap_or(12)),
         "rules" => rules(cx.ledger),
+        "verify" => {
+            let changes = &cx.ledger.log.changes;
+            let bad: Vec<String> = changes.iter().filter(|c| !c.verified()).map(|c| c.id.to_string()).collect();
+            if bad.is_empty() {
+                format!("All {} changes are signed by the players they name.", changes.len())
+            } else {
+                format!("{} of {} changes aren't signed by their authors: {}", bad.len(), changes.len(), bad.join(", "))
+            }
+        }
         "revert" | "rollback" | "restore" if busy => "Keep or discard your draft first.".into(),
         "revert" => {
             let Some(id) = args.first().and_then(|n| n.parse::<u64>().ok()) else {

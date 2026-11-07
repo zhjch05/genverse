@@ -41,32 +41,50 @@ The edits are a sparse layer on top of the world seed (`src/world/mod.rs`): chun
 whenever they generate, and changed chunks (plus neighbors sharing the border) remesh in the
 background. Agents' `get_build_site` sees the reshaped terrain too.
 
-## The world as a log, and who may change what
+## An open world, kept as a log
+
+Cubelark is heading for shared, open worlds: anyone can build and reshape land with their own
+agent, nothing is lost, and every change says who made it. (Multiplayer itself comes next;
+everything below already works in single player.)
 
 The world is the seed plus an ordered log of changes (`saves/world.json`): builds placed,
-moved, revised and removed, terrain changes, and parcel claims. Each change records who made
-it (your player in `saves/profile.json`, editable in the panel), which agent did if one did,
-the request, and when. A selected build shows "made by you with Claude Code, 2 h ago".
+moved, revised and removed, terrain changes, rule changes, and undos. Each change records who
+made it, which agent did if one did, a hash of the request, and when. A selected build shows
+"made by you with Claude Code, 2 h ago".
 
+- **Players are keys.** `saves/profile.json` holds your name and an ed25519 secret key; your
+  player id is the public key, and every change is signed with it, so any server can check who
+  made a change without accounts. `/verify` checks every signature. Keep that file private.
 - **Replay is the truth.** Loading replays the log; terrain changes compile against the ground
   the earlier changes left, so the same log always gives the same voxels.
   `saves/world_edits.json` is only a cache of that, used while its hash matches the log.
-- **Undo never deletes history:** it appends a revert. Rollback (one player, a time range) is
-  replaying without those changes (`WorldLog::without`).
-- **Parcels:** land is split into 8 × 8 m parcels. A change must be allowed on every parcel it
-  touches, and claims the unclaimed ones for its author. Others' parcels and the spawn (24 m
-  around the start) are off limits; terrain edits reaching into a neighbor's parcel are cut off
-  there. The world's first player is its admin and isn't bound by any of this. `P` outlines the
-  parcels around you; a selected area shows who owns it, with **Claim** and **Release**.
-- **Budgets:** per parcel 12 builds, 40k visible build faces, 150k build voxels and 4k glowing
-  voxels; per player 60 builds, 1.5M build voxels and 2M voxels of terrain changes. The panel
-  shows what's left; anything over is refused with which budget it breaks.
-- Ownership and budgets aren't saved anywhere: they're derived from the log, and replay
-  enforces them as of each change, so a log can't hold anything its authors weren't allowed
-  to do.
-- Saves from before the log are migrated once (old files kept as `.bak`).
-- Try it from someone else's side: `CUBELARK_AS=Bo cargo run` plays as a non-admin guest for one
-  run; `CUBELARK_PARCELS=1` starts with the parcel overlay on.
+- **Undo never deletes history:** it appends a revert, and you can only undo your own changes.
+  Admins (the world's first player) can roll back a player, or restore the world to an earlier
+  change; those are undoable too. When the log changes in a way a simple undo can't express,
+  the game rebuilds from it, regenerating only what differs.
+- **Each world sets its own rules** (`cubelark_rules::settings`), kept in the log so replay
+  always applies the rules of the time: land mode, spawn, limits on one build or land change,
+  budgets, and rate limits.
+  - **Land:** open by default, so anyone changes anything outside the protected spawn (24 m
+    around the start). A world can switch to **parcels** (`/land parcels`): 8 × 8 m plots that
+    changes claim for their author, which only owners change. `P` shows the land around you.
+  - **Budgets:** per parcel 12 builds, 40k visible build faces, 150k build voxels and 4k glowing
+    voxels; per player 60 builds, 1.5M build voxels and 2M voxels of terrain changes.
+  - **Rate limits:** off unless a world sets them (`/rate 10 200000`: 10 changes a minute, 200k
+    voxels per 10 minutes). Admins are exempt.
+- Ownership, budgets and rates aren't saved anywhere: they're derived from the log, and replay
+  enforces them as of each change, so a log can't hold anything its authors weren't allowed to do.
+- Saves from before the log, and profiles from before keys, are upgraded once (old files kept as
+  `.bak`).
+
+Chat commands, until the history panel exists: `/history [n]`, `/revert <id>`, `/rules`,
+`/verify`, and for admins `/rollback <player>`, `/restore <id>`, `/land open|parcels`,
+`/rate <changes per minute> [voxels per 10 minutes]` or `/rate off`. Try them from someone else's
+side with `CUBELARK_AS=Bo cargo run`, a non-admin guest for one run; script them with
+`CUBELARK_PROMPT="/rate 5; /history"`.
+
+The web build is on hold while multiplayer is built (it may return as watch-only). It still
+compiles but isn't tested.
 
 Web builds use WebGPU, which the physical sky needs, so they need a WebGPU browser (recent
 Chrome, Edge, Safari or Firefox). On the web, SSAO and model hot reload are off, and chunks
@@ -119,13 +137,13 @@ can bump into and stand on them) and recorded in the world's change log.
 
 | Piece | Where | Role |
 | --- | --- | --- |
-| World rules | `crates/rules/` (`cubelark_rules`) | Everything that decides what the world is, with no rendering, so a server can share it: voxel models, the terrain generator (`terrain.rs`), terrain changes (`sculpt.rs`), build specs (`build.rs`), the change log and replay (`log.rs`), parcels (`land.rs`), budgets (`budget.rs`) |
+| World rules | `crates/rules/` (`cubelark_rules`) | Everything that decides what the world is, with no rendering, so a server can share it: voxel models, the terrain generator (`terrain.rs`), terrain changes (`sculpt.rs`), build specs (`build.rs`), the change log and replay (`log.rs`), world rules (`settings.rs`), land (`land.rs`), budgets (`budget.rs`), rate limits (`rate.rs`), player keys (`identity.rs`) |
 | World streaming | `src/world/mod.rs` | Generates and meshes 32³ chunks around each `ChunkLoader` on the async pool; answers voxel queries for collision |
 | Change log | `src/world/ledger.rs` | Loads, migrates, records and saves the log; the player profile; live land and budgets |
 | Hero | `src/player.rs` | Builds the character from model parts, kinematic movement with voxel collision and step-up, walk animation, follow camera |
 | Voxel rendering | `src/voxel/` | Materials, mesher with baked AO, `.vox.ron` asset loader, picking |
 | Scene | `src/scene.rs` | Sky, sun, fog, post-processing |
-| Builder | `src/agent/` | egui chat, CLI runner, drafts and placed builds, area selection, land previews and the parcel overlay (`landscape.rs`) (desktop only) |
+| Builder | `src/agent/` | egui chat, CLI runner, drafts and placed builds, area selection, land previews and the land overlay (`landscape.rs`), chat commands (`commands.rs`) (desktop only) |
 
 ## Voxel models (`assets/**/*.vox.ron`)
 

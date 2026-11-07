@@ -8,6 +8,7 @@
 
 pub mod budget;
 pub mod build;
+pub mod identity;
 pub mod land;
 pub mod log;
 pub mod rate;

@@ -4,9 +4,10 @@
 //! On desktop the log is `saves/world.json`. Replaying it is the truth;
 //! `saves/world_edits.json` is a cache of the replayed voxels, used when its hash
 //! matches the log. Saves from before the log are migrated once (the old files are
-//! kept as `.bak`). The local player is `saves/profile.json`; the world's first player
-//! is its admin. `CUBELARK_AS=Name` plays as a different (non-admin) player for this
-//! run, to try the land rules from someone else's side.
+//! kept as `.bak`). The local player is `saves/profile.json`: a name and a secret key
+//! whose public half is the player's id, and every change is signed with it. The
+//! world's first player is its admin. `CUBELARK_AS=Name` plays as a different
+//! (non-admin) player for this run, to try the rules from someone else's side.
 //!
 //! The web build has no saves and no builder yet, so nothing records there.
 #![cfg_attr(target_arch = "wasm32", allow(dead_code))]
@@ -16,10 +17,11 @@ use std::collections::{BTreeMap, HashMap};
 use bevy::prelude::*;
 use cubelark_rules::{
     budget::{Budgets, Footprint, Usage},
+    identity::Keypair,
     land::Land,
     rate::Rates,
     settings::WorldRules,
-    log::{Action, BuildState, Provenance, WorldLog, replay, replay_land},
+    log::{Action, BuildState, Provenance, WorldLog, replay, replay_land, signing_bytes},
 };
 use serde::{Deserialize, Serialize};
 
@@ -35,14 +37,22 @@ const PROFILE_PATH: &str = "saves/profile.json";
 /// The local player.
 #[derive(Clone, Serialize, Deserialize)]
 pub struct Profile {
+    /// The public key, in hex.
     pub id: String,
     pub name: String,
+    /// The secret key, in hex. Profiles from before keys have none and get one.
+    #[serde(default)]
+    pub secret: Option<String>,
+    /// A `CUBELARK_AS` guest, never saved.
+    #[serde(skip)]
+    pub guest: bool,
 }
 
 #[derive(Resource)]
 pub struct Ledger {
     pub log: WorldLog,
     pub profile: Profile,
+    key: Keypair,
     /// Placed builds as of loading, for the builder to spawn.
     pub builds: BTreeMap<u64, BuildState>,
     /// Who owns what, as of the latest change.
@@ -64,7 +74,7 @@ impl Ledger {
     /// saves the log. Returns the change's id.
     pub fn record(&mut self, agent: Option<&str>, prompt: Option<&str>, action: Action) -> u64 {
         let by = Provenance::new(&self.profile.id, &self.profile.name, agent, prompt, now());
-        let id = self.log.push(by, action);
+        let id = self.log.push_signed(by, action, &self.key);
         self.version += 1;
         let state = replay_land(&self.log);
         self.land = state.land;
@@ -137,7 +147,7 @@ impl Ledger {
         self.profile.name = name.chars().take(32).collect();
         // A guest (CUBELARK_AS) is only for this run.
         #[cfg(not(target_arch = "wasm32"))]
-        if !self.profile.id.starts_with("guest:") {
+        if !self.profile.guest {
             write_json(PROFILE_PATH, &self.profile);
         }
     }
@@ -232,11 +242,30 @@ fn read_json<T: serde::de::DeserializeOwned>(path: &str) -> Option<T> {
 /// Loads the log (or migrates old saves into one) and returns it with the voxel edits
 /// it describes.
 pub fn load(seed: u32) -> (Ledger, HashMap<IVec3, VoxelId>) {
-    let profile = load_profile();
+    let (profile, key, old_id) = load_profile();
     let (mut log, cached) = load_log(seed);
     // The world's first player runs it.
-    if log.admins.is_empty() {
+    let mut changed = log.admins.is_empty();
+    if changed {
         log.admins.push(profile.id.clone());
+    }
+    // Upgrading to keys: the old id becomes the key everywhere, and the player's own
+    // unsigned changes get signed.
+    if let Some(old) = &old_id {
+        for admin in log.admins.iter_mut().filter(|a| *a == old) {
+            *admin = profile.id.clone();
+        }
+    }
+    for change in &mut log.changes {
+        if old_id.as_ref() == Some(&change.by.player) {
+            change.by.player = profile.id.clone();
+        }
+        if change.by.player == profile.id && change.sig.is_none() {
+            change.sig = Some(key.sign(&signing_bytes(&change.by, &change.action)));
+            changed = true;
+        }
+    }
+    if changed {
         #[cfg(not(target_arch = "wasm32"))]
         write_json(LOG_PATH, &log);
     }
@@ -253,10 +282,11 @@ pub fn load(seed: u32) -> (Ledger, HashMap<IVec3, VoxelId>) {
     for problem in &replayed.problems {
         warn!("saved change no longer applies: {problem}");
     }
-    let profile = guest().unwrap_or(profile);
+    let (profile, key) = guest().unwrap_or((profile, key));
     let ledger = Ledger {
         log,
         profile,
+        key,
         builds: replayed.builds,
         land: replayed.land,
         rules: replayed.rules,
@@ -268,34 +298,49 @@ pub fn load(seed: u32) -> (Ledger, HashMap<IVec3, VoxelId>) {
     (ledger, edits)
 }
 
-/// `CUBELARK_AS=Name`: a separate player for this run (not saved, never an admin).
-fn guest() -> Option<Profile> {
+/// `CUBELARK_AS=Name`: a separate player for this run (not saved, never an admin). Its
+/// key comes from the name, so the same guest is the same player every run.
+fn guest() -> Option<(Profile, Keypair)> {
     #[cfg(target_arch = "wasm32")]
     return None;
     #[cfg(not(target_arch = "wasm32"))]
     std::env::var("CUBELARK_AS").ok().filter(|n| !n.trim().is_empty()).map(|name| {
         info!("playing as {name}");
-        Profile { id: format!("guest:{}", name.trim().to_lowercase()), name: name.trim().into() }
+        let tag = format!("cubelark guest {}", name.trim().to_lowercase());
+        let mut seed = [0; 32];
+        for (i, chunk) in seed.chunks_mut(8).enumerate() {
+            chunk.copy_from_slice(&cubelark_rules::log::fnv1a(format!("{tag} {i}").as_bytes()).to_le_bytes());
+        }
+        let key = Keypair::from_seed(seed);
+        let profile = Profile { id: key.player_id(), name: name.trim().into(), secret: None, guest: true };
+        (profile, key)
     })
 }
 
+/// The web build has no saves; its player is the same every time.
 #[cfg(target_arch = "wasm32")]
-fn load_profile() -> Profile {
-    Profile { id: "web".into(), name: "Player".into() }
+fn load_profile() -> (Profile, Keypair, Option<String>) {
+    let key = Keypair::from_seed([1; 32]);
+    (Profile { id: key.player_id(), name: "Player".into(), secret: None, guest: false }, key, None)
 }
 
+/// The local player and their key, creating them on first run. The third value is the
+/// id a profile from before keys had, so the log can be moved over to the key.
 #[cfg(not(target_arch = "wasm32"))]
-fn load_profile() -> Profile {
-    if let Some(profile) = read_json(PROFILE_PATH) {
-        return profile;
+fn load_profile() -> (Profile, Keypair, Option<String>) {
+    let saved: Option<Profile> = read_json(PROFILE_PATH);
+    if let Some(p) = &saved
+        && let Some(key) = p.secret.as_deref().and_then(Keypair::from_secret_hex)
+    {
+        return (Profile { id: key.player_id(), ..p.clone() }, key, None);
     }
-    use std::hash::{BuildHasher, Hasher};
-    let id = (0..2)
-        .map(|_| format!("{:016x}", std::collections::hash_map::RandomState::new().build_hasher().finish()))
-        .collect();
-    let profile = Profile { id, name: "Player".into() };
+    let mut seed = [0; 32];
+    getrandom::fill(&mut seed).expect("the OS provides randomness");
+    let key = Keypair::from_seed(seed);
+    let name = saved.as_ref().map_or("Player".into(), |p| p.name.clone());
+    let profile = Profile { id: key.player_id(), name, secret: Some(key.secret_hex()), guest: false };
     write_json(PROFILE_PATH, &profile);
-    profile
+    (profile, key, saved.map(|p| p.id))
 }
 
 /// The log, and the cached voxels if they match it.
@@ -346,7 +391,7 @@ fn migrate(seed: u32, voxels: Option<SavedEdits>) -> WorldLog {
     }
 
     let mut log = WorldLog::new(seed);
-    let profile = load_profile();
+    let (profile, _, _) = load_profile();
     let by = |agent: Option<&str>, prompt: Option<&str>| Provenance::new(&profile.id, &profile.name, agent, prompt, now());
     if let Some(voxels) = voxels.filter(|v| !v.edits.is_empty()) {
         log.push(by(None, None), Action::LegacyVoxels { edits: voxels.edits });

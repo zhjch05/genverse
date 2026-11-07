@@ -21,6 +21,7 @@ use serde::{Deserialize, Serialize};
 use crate::{
     budget::{Budgets, Footprint, Usage, build_usage},
     build::BuildSpec,
+    identity::{Keypair, verify},
     land::{Land, area_parcels, build_parcels},
     rate::Rates,
     sculpt::{self, Area, Columns, TerrainSpec},
@@ -125,6 +126,23 @@ pub struct Change {
     pub id: u64,
     pub by: Provenance,
     pub action: Action,
+    /// The author's signature over [`signing_bytes`], when `by.player` is a key.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub sig: Option<String>,
+}
+
+/// What a change's author signs: who, how, when, and what, but not the request text
+/// (which stays on their machine) or the id (which the server assigns).
+pub fn signing_bytes(by: &Provenance, action: &Action) -> Vec<u8> {
+    let by = Provenance { prompt: None, ..by.clone() };
+    serde_json::to_vec(&(by, action)).unwrap_or_default()
+}
+
+impl Change {
+    /// Whether the change carries a valid signature by its author.
+    pub fn verified(&self) -> bool {
+        self.sig.as_deref().is_some_and(|sig| verify(&self.by.player, &signing_bytes(&self.by, &self.action), sig))
+    }
 }
 
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
@@ -149,7 +167,15 @@ impl WorldLog {
     /// Appends a change and returns its id.
     pub fn push(&mut self, by: Provenance, action: Action) -> u64 {
         let id = self.changes.last().map_or(1, |c| c.id + 1);
-        self.changes.push(Change { id, by, action });
+        self.changes.push(Change { id, by, action, sig: None });
+        id
+    }
+
+    /// Appends a change signed with `key` (whose player id should be `by.player`).
+    pub fn push_signed(&mut self, by: Provenance, action: Action, key: &Keypair) -> u64 {
+        let sig = key.sign(&signing_bytes(&by, &action));
+        let id = self.push(by, action);
+        self.changes.last_mut().expect("just pushed").sig = Some(sig);
         id
     }
 
@@ -460,6 +486,24 @@ mod tests {
         let second = replay(&reloaded);
         assert_eq!(first.edits, second.edits);
         assert_eq!(first.builds, second.builds);
+    }
+
+    #[test]
+    fn signed_changes_verify_and_tampering_shows() {
+        let key = Keypair::from_seed([3; 32]);
+        let mut log = WorldLog::new(1337);
+        let me = Provenance::new(&key.player_id(), "Ada", Some("Claude Code"), Some("a lamp"), 5);
+        log.push_signed(me, lamp(1), &key);
+        let reloaded: WorldLog = serde_json::from_str(&serde_json::to_string(&log).unwrap()).unwrap();
+        assert!(reloaded.changes[0].verified());
+        // The request text isn't signed (it stays local), but everything else is.
+        let mut tampered = reloaded.clone();
+        tampered.changes[0].by.prompt = None;
+        assert!(tampered.changes[0].verified());
+        tampered.changes[0].by.agent = None;
+        assert!(!tampered.changes[0].verified());
+        log.push(by("b"), lamp(2));
+        assert!(!log.changes[1].verified());
     }
 
     #[test]
