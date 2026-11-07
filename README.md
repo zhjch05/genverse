@@ -44,8 +44,8 @@ background. Agents' `get_build_site` sees the reshaped terrain too.
 ## An open world, kept as a log
 
 Cubelark is heading for shared, open worlds: anyone can build and reshape land with their own
-agent, nothing is lost, and every change says who made it. (Multiplayer itself comes next;
-everything below already works in single player.)
+agent, nothing is lost, and every change says who made it. Everything below works the same in
+single player and on a server.
 
 The world is the seed plus an ordered log of changes (`saves/world.json`): builds placed,
 moved, revised and removed, terrain changes, rule changes, and undos. Each change records who
@@ -82,6 +82,29 @@ Chat commands, until the history panel exists: `/history [n]`, `/revert <id>`, `
 `/rate <changes per minute> [voxels per 10 minutes]` or `/rate off`. Try them from someone else's
 side with `CUBELARK_AS=Bo cargo run`, a non-admin guest for one run; script them with
 `CUBELARK_PROMPT="/rate 5; /history"`.
+
+## Playing together
+
+```sh
+cargo run -p cubelark_server                    # a world on port 7878, kept in server-data/
+CUBELARK_SERVER=127.0.0.1 cargo run             # join it (host or host:port)
+```
+
+The server holds the world's change log and is the only one who orders changes, like Figma's
+multiplayer: players propose changes, it checks each against the world's rules (signature,
+land, limits, budgets, rate limits), appends the ones it accepts, and sends them to everyone;
+later changes win. A land change is compiled against the ground as it is when it arrives, so
+if someone changed the ground under your preview, you get the server's version and a note.
+Refused changes are taken back on your screen with the server's reason. The first player to
+join a new world is its admin.
+
+- Agents run on each player's own machine; the server only accepts finished, signed specs and
+  never sees the request text (only its hash).
+- The server is plain Rust with no game engine (`crates/server`); the protocol is JSON, one
+  message per line, over TCP (`crates/net`). Login is a signed challenge.
+- Online, your local world and saves aren't touched.
+- Not yet: seeing other players (milestone 3), history browsing beyond `/history`, chunk
+  checks, and snapshots for long-lived worlds (milestone 4).
 
 The web build is on hold while multiplayer is built (it may return as watch-only). It still
 compiles but isn't tested.
@@ -140,10 +163,12 @@ can bump into and stand on them) and recorded in the world's change log.
 | World rules | `crates/rules/` (`cubelark_rules`) | Everything that decides what the world is, with no rendering, so a server can share it: voxel models, the terrain generator (`terrain.rs`), terrain changes (`sculpt.rs`), build specs (`build.rs`), the change log and replay (`log.rs`), world rules (`settings.rs`), land (`land.rs`), budgets (`budget.rs`), rate limits (`rate.rs`), player keys (`identity.rs`) |
 | World streaming | `src/world/mod.rs` | Generates and meshes 32³ chunks around each `ChunkLoader` on the async pool; answers voxel queries for collision |
 | Change log | `src/world/ledger.rs` | Loads, migrates, records and saves the log; the player profile; live land and budgets |
+| Protocol | `crates/net` | Client/server messages and the game's background connection |
+| Server | `crates/server` | Headless server: holds the log, checks, orders and shares changes |
 | Hero | `src/player.rs` | Builds the character from model parts, kinematic movement with voxel collision and step-up, walk animation, follow camera |
 | Voxel rendering | `src/voxel/` | Materials, mesher with baked AO, `.vox.ron` asset loader, picking |
 | Scene | `src/scene.rs` | Sky, sun, fog, post-processing |
-| Builder | `src/agent/` | egui chat, CLI runner, drafts and placed builds, area selection, land previews and the land overlay (`landscape.rs`), chat commands (`commands.rs`) (desktop only) |
+| Builder | `src/agent/` | egui chat, CLI runner, drafts and placed builds, area selection, land previews and the land overlay (`landscape.rs`), chat commands (`commands.rs`), applying what the server sends (`online.rs`) (desktop only) |
 
 ## Voxel models (`assets/**/*.vox.ron`)
 

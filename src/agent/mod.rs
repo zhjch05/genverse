@@ -13,6 +13,7 @@ mod commands;
 mod creations;
 mod landscape;
 mod mcp;
+mod online;
 mod prompt;
 mod runner;
 use cubelark_rules::build as spec;
@@ -70,7 +71,7 @@ impl Plugin for AgentPlugin {
                 Update,
                 (
                     block_game_input,
-                    (update_build_site, answer_tool_calls, poll_agent).chain(),
+                    (online::sync_online, update_build_site, answer_tool_calls, poll_agent).chain(),
                     auto_prompt,
                     (shortcuts, select_area, follow_cursor, check_clearance, click_in_world, outline_creations, draw_area, highlight_area, draw_parcels)
                         .chain(),

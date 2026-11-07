@@ -9,10 +9,16 @@
 //! world's first player is its admin. `CUBELARK_AS=Name` plays as a different
 //! (non-admin) player for this run, to try the rules from someone else's side.
 //!
+//! Online (`CUBELARK_SERVER=host:port`), the server's log is the world: changes are
+//! signed and proposed to it instead of recorded here, and what it commits (anyone's)
+//! comes back to be applied. Local saves aren't touched while online.
+//!
 //! The web build has no saves and no builder yet, so nothing records there.
 #![cfg_attr(target_arch = "wasm32", allow(dead_code))]
 
 use std::collections::{BTreeMap, HashMap};
+#[cfg(not(target_arch = "wasm32"))]
+use std::collections::HashSet;
 
 use bevy::prelude::*;
 use cubelark_rules::{
@@ -21,7 +27,7 @@ use cubelark_rules::{
     land::Land,
     rate::Rates,
     settings::WorldRules,
-    log::{Action, BuildState, Provenance, WorldLog, replay, replay_land, signing_bytes},
+    log::{Action, BuildState, Provenance, Replay, WorldLog, replay, replay_land, signing_bytes},
 };
 use serde::{Deserialize, Serialize};
 
@@ -67,23 +73,82 @@ pub struct Ledger {
     pub footprints: HashMap<u64, Footprint>,
     /// Bumped on every recorded change, so the voxel cache knows to follow.
     pub version: u64,
+    /// The server this world lives on, when playing online.
+    #[cfg(not(target_arch = "wasm32"))]
+    pub online: Option<Online>,
 }
+
+/// A connection to a server and what's in flight on it.
+#[cfg(not(target_arch = "wasm32"))]
+pub struct Online {
+    pub addr: String,
+    pub client: cubelark_net::Client,
+    /// The world as the server has committed it (voxels included, so remote changes
+    /// apply one at a time). None until the server welcomes us.
+    pub state: Option<Replay>,
+    next_request: u64,
+    /// Our proposals the server hasn't answered yet.
+    pub pending: HashSet<u64>,
+    /// Our proposals the server committed: request → change id.
+    pub committed: HashMap<u64, u64>,
+    /// Why the connection ended, once it has.
+    pub closed: Option<String>,
+}
+
+/// Online, changes are known by request number until the server commits them; these
+/// start high so they never look like change ids.
+#[cfg(not(target_arch = "wasm32"))]
+const FIRST_REQUEST: u64 = 1 << 40;
 
 impl Ledger {
     /// Appends a change made by the local player (through `agent`, if one did it) and
-    /// saves the log. Returns the change's id.
+    /// saves the log. Returns the change's id. Online, the change is proposed to the
+    /// server instead, and the returned reference is its request number until the
+    /// server commits it ([`Self::resolve`]).
     pub fn record(&mut self, agent: Option<&str>, prompt: Option<&str>, action: Action) -> u64 {
         let by = Provenance::new(&self.profile.id, &self.profile.name, agent, prompt, now());
-        let id = self.log.push_signed(by, action, &self.key);
-        self.version += 1;
-        let state = replay_land(&self.log);
-        self.land = state.land;
-        self.rules = state.rules;
-        self.rates = state.rates;
-        self.budgets = state.budgets;
-        self.footprints = state.footprints;
+        #[cfg(not(target_arch = "wasm32"))]
+        if let Some(online) = &mut self.online {
+            let sig = self.key.sign(&signing_bytes(&by, &action));
+            let request = online.next_request;
+            online.next_request += 1;
+            online.pending.insert(request);
+            online.client.send(cubelark_net::ToServer::Propose { request, by, action, sig });
+            return request;
+        }
+        self.log.push_signed(by, action, &self.key);
+        let id = self.log.changes.last().map_or(0, |c| c.id);
+        self.adopt(&replay_land(&self.log));
         self.save();
         id
+    }
+
+    /// Takes on who-owns-what, rules, rates and budgets from a replayed world.
+    pub fn adopt(&mut self, state: &Replay) {
+        self.land = state.land.clone();
+        self.rules = state.rules.clone();
+        self.rates = state.rates.clone();
+        self.budgets = state.budgets.clone();
+        self.footprints = state.footprints.clone();
+        self.builds = state.builds.clone();
+        self.version += 1;
+    }
+
+    /// The change id a reference from [`Self::record`] stands for: itself offline,
+    /// and online once the server has committed it.
+    pub fn resolve(&self, reference: u64) -> Option<u64> {
+        #[cfg(not(target_arch = "wasm32"))]
+        if let Some(online) = &self.online {
+            return if reference >= FIRST_REQUEST { online.committed.get(&reference).copied() } else { Some(reference) };
+        }
+        Some(reference)
+    }
+
+    pub fn is_online(&self) -> bool {
+        #[cfg(not(target_arch = "wasm32"))]
+        return self.online.is_some();
+        #[cfg(target_arch = "wasm32")]
+        false
     }
 
     /// Whether the server's rate limits let the local player make a change of `cost`
@@ -101,9 +166,15 @@ impl Ledger {
         self.land.authorize(&self.profile.id, parcels)
     }
 
-    /// Undoes change `id` by appending a revert of it.
-    pub fn revert(&mut self, change: u64) {
-        self.record(None, None, Action::Revert { change });
+    /// Undoes the change `reference` stands for by appending (or, online, proposing) a
+    /// revert of it.
+    pub fn revert(&mut self, reference: u64) {
+        match self.resolve(reference) {
+            Some(change) => {
+                self.record(None, None, Action::Revert { change });
+            }
+            None => warn!("can't undo a change the server hasn't confirmed yet"),
+        }
     }
 
     /// The fullest of `parcels`, as "parcel budget: 2/12 builds · 18k/40k faces · …".
@@ -171,7 +242,9 @@ impl Ledger {
 
     fn save(&self) {
         #[cfg(not(target_arch = "wasm32"))]
-        write_json(LOG_PATH, &self.log);
+        if self.online.is_none() {
+            write_json(LOG_PATH, &self.log);
+        }
     }
 }
 
@@ -243,6 +316,8 @@ fn read_json<T: serde::de::DeserializeOwned>(path: &str) -> Option<T> {
 /// it describes.
 pub fn load(seed: u32) -> (Ledger, HashMap<IVec3, VoxelId>) {
     let (profile, key, old_id) = load_profile();
+    // The local world is upgraded along with the profile even when playing online, so
+    // it never names a player id the profile no longer has.
     let (mut log, cached) = load_log(seed);
     // The world's first player runs it.
     let mut changed = log.admins.is_empty();
@@ -269,6 +344,14 @@ pub fn load(seed: u32) -> (Ledger, HashMap<IVec3, VoxelId>) {
         #[cfg(not(target_arch = "wasm32"))]
         write_json(LOG_PATH, &log);
     }
+    #[cfg(not(target_arch = "wasm32"))]
+    if let Some(online) = connect(&profile, &key) {
+        // The server sends the world once we've logged in; until then, just the seed.
+        let (profile, key) = guest().unwrap_or((profile, key));
+        let mut ledger = empty(WorldLog::new(seed), profile, key);
+        ledger.online = Some(online);
+        return (ledger, HashMap::new());
+    }
     // Builds and land always come from the log (cheap); voxels from the cache when it
     // matches, otherwise from a full replay.
     let (replayed, edits) = match cached {
@@ -283,19 +366,54 @@ pub fn load(seed: u32) -> (Ledger, HashMap<IVec3, VoxelId>) {
         warn!("saved change no longer applies: {problem}");
     }
     let (profile, key) = guest().unwrap_or((profile, key));
-    let ledger = Ledger {
+    let mut ledger = empty(log, profile, key);
+    ledger.adopt(&replayed);
+    (ledger, edits)
+}
+
+fn empty(log: WorldLog, profile: Profile, key: Keypair) -> Ledger {
+    Ledger {
         log,
         profile,
         key,
-        builds: replayed.builds,
-        land: replayed.land,
-        rules: replayed.rules,
-        rates: replayed.rates,
-        budgets: replayed.budgets,
-        footprints: replayed.footprints,
-        version: 1,
-    };
-    (ledger, edits)
+        builds: default(),
+        land: default(),
+        rules: default(),
+        rates: default(),
+        budgets: default(),
+        footprints: default(),
+        version: 0,
+        #[cfg(not(target_arch = "wasm32"))]
+        online: None,
+    }
+}
+
+/// `CUBELARK_SERVER=host:port`: joins that server instead of the local world. If it
+/// can't be reached, the local world loads instead.
+#[cfg(not(target_arch = "wasm32"))]
+fn connect(profile: &Profile, key: &Keypair) -> Option<Online> {
+    let addr = std::env::var("CUBELARK_SERVER").ok().filter(|a| !a.trim().is_empty())?;
+    let (profile, key) = guest().unwrap_or((profile.clone(), key.clone()));
+    let addr = if addr.contains(':') { addr } else { format!("{addr}:{}", cubelark_net::DEFAULT_PORT) };
+    let signer = key.clone();
+    match cubelark_net::Client::connect(&addr, profile.id.clone(), profile.name.clone(), move |m| signer.sign(m)) {
+        Ok(client) => {
+            info!("joining {addr} as {}", profile.name);
+            Some(Online {
+                addr,
+                client,
+                state: None,
+                next_request: FIRST_REQUEST,
+                pending: HashSet::new(),
+                committed: HashMap::new(),
+                closed: None,
+            })
+        }
+        Err(e) => {
+            error!("{e}; playing the local world instead");
+            None
+        }
+    }
 }
 
 /// `CUBELARK_AS=Name`: a separate player for this run (not saved, never an admin). Its

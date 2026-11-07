@@ -133,6 +133,30 @@ impl Landscape {
         }
     }
 
+    /// Online, the server committed our land change `reference` as `edits`, compiled
+    /// against the ground as the server had it. Swaps the preview voxels shown for the
+    /// server's; returns whether they differed (someone changed the ground meanwhile).
+    pub fn settle(&mut self, world: &mut VoxelWorld, reference: u64, edits: &[(IVec3, VoxelId)]) -> bool {
+        let Some(kept) = self.kept.iter_mut().find(|k| k.id == reference) else {
+            apply(world, edits);
+            return false;
+        };
+        let same = kept.before.len() == edits.len() && edits.iter().all(|(p, id)| world.get(*p) == Some(*id));
+        if !same {
+            revert(world, &kept.before);
+            kept.before = apply(world, edits);
+        }
+        !same
+    }
+
+    /// Online, the server refused our land change `reference`: the ground goes back.
+    pub fn refused(&mut self, world: &mut VoxelWorld, reference: u64) {
+        if let Some(index) = self.kept.iter().position(|k| k.id == reference) {
+            let kept = self.kept.remove(index);
+            revert(world, &kept.before);
+        }
+    }
+
     /// Forgets the voxel snapshots kept for undo (after the world was rebuilt from the
     /// log, they no longer describe it).
     pub fn forget_history(&mut self) {

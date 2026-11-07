@@ -322,6 +322,9 @@ impl Replay {
         }
         let mut made = Vec::new();
         match &change.action {
+            Action::PlaceBuild(b) if self.builds.contains_key(&b.build) => {
+                return Err(format!("build id {} is taken", b.build));
+            }
             Action::PlaceBuild(b) | Action::UpdateBuild(b) => {
                 // Moving a build needs rights where it was and where it goes.
                 let mut touched = parcels_of(b);

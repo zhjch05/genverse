@@ -59,6 +59,18 @@ enum Change {
     Terrain { change: u64 },
 }
 
+impl Change {
+    /// The change-log reference (online: the request) this undo entry belongs to.
+    fn reference(&self) -> u64 {
+        match self {
+            Change::Placed { change, .. }
+            | Change::Deleted { change, .. }
+            | Change::Replaced { change, .. }
+            | Change::Terrain { change } => *change,
+        }
+    }
+}
+
 /// What [`Creations::undo`] did, or left for the caller to do.
 pub enum Undone {
     Message(String),
@@ -247,7 +259,11 @@ impl Creations {
 
     /// Makes the placed builds match `builds` (the change log's), after the log changed
     /// in a way local undo can't express. Undo history no longer applies after that.
-    pub fn resync(&mut self, commands: &mut Commands, builds: &std::collections::BTreeMap<u64, SavedCreation>) {
+    pub fn resync(
+        &mut self,
+        commands: &mut Commands,
+        builds: &std::collections::BTreeMap<u64, SavedCreation>,
+    ) {
         let stale: Vec<u64> =
             self.placed.iter().filter(|(_, c)| builds.get(&c.build) != Some(c)).map(|(_, c)| c.build).collect();
         for build in stale {
@@ -259,6 +275,43 @@ impl Creations {
             }
         }
         self.history.clear();
+    }
+
+    /// Shows a build someone else placed or changed (online).
+    pub fn upsert(&mut self, commands: &mut Commands, build: &SavedCreation) {
+        if self.draft.as_ref().and_then(|d| d.replaces.as_ref()).is_some_and(|r| r.build == build.build) {
+            // Being edited here; whichever is placed last wins.
+            return;
+        }
+        self.take_placed(commands, build.build);
+        self.restore(commands, build.clone());
+    }
+
+    /// Removes a build someone else removed (online).
+    pub fn remove(&mut self, commands: &mut Commands, build: u64) {
+        self.take_placed(commands, build);
+    }
+
+    /// Takes back a change of ours the server refused (by its reference): what was
+    /// shown goes back to how it was, and it leaves the undo history. Terrain changes
+    /// are the landscape's to take back.
+    pub fn retract(&mut self, commands: &mut Commands, reference: u64) {
+        let Some(index) = self.history.iter().position(|c| c.reference() == reference) else {
+            return;
+        };
+        match self.history.remove(index) {
+            Change::Placed { build, .. } => {
+                self.take_placed(commands, build);
+            }
+            Change::Deleted { before, .. } => {
+                self.restore(commands, before);
+            }
+            Change::Replaced { before, .. } => {
+                self.take_placed(commands, before.build);
+                self.restore(commands, before);
+            }
+            Change::Terrain { .. } => {}
+        }
     }
 
     /// Records a kept terrain change (its change-log id), so Undo reverts changes in
@@ -290,8 +343,15 @@ impl Creations {
         commands.entity(draft.entity).remove::<DraftMarker>().insert(SolidModel);
         let known = self.placed.iter().map(|(_, c)| c.build).chain(ledger.builds.keys().copied());
         self.next_id = self.next_id.max(known.max().map_or(1, |b| b + 1));
-        // An edit keeps its original id.
+        // An edit keeps its original id. Online, others pick ids at the same time, so a
+        // new build takes a random one instead of the next.
         let build = draft.replaces.as_ref().map(|r| r.build).unwrap_or_else(|| {
+            if ledger.is_online() {
+                let mut bytes = [0u8; 8];
+                let _ = getrandom::fill(&mut bytes);
+                // Kept below 2^53 so it survives JSON readers that use doubles.
+                return u64::from_le_bytes(bytes) >> 11;
+            }
             self.next_id += 1;
             self.next_id - 1
         });

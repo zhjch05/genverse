@@ -300,7 +300,8 @@ fn save_edits(
     mut last: Local<(f32, u64)>,
 ) {
     let now = time.elapsed_secs();
-    if !(world.unsaved || ledger.version != last.1) || world.hold_saves || now - last.0 < 2.0 {
+    // Online, the world lives on the server; the local cache belongs to the local world.
+    if ledger.is_online() || !(world.unsaved || ledger.version != last.1) || world.hold_saves || now - last.0 < 2.0 {
         return;
     }
     *last = (now, ledger.version);

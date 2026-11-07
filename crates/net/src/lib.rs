@@ -12,8 +12,12 @@
 use std::{
     io::{BufRead, BufReader, Write},
     net::TcpStream,
-    sync::mpsc::{self, Receiver, Sender},
+    sync::{
+        Mutex,
+        mpsc::{self, Receiver, RecvTimeoutError, Sender},
+    },
     thread,
+    time::Duration,
 };
 
 use cubelark_rules::log::{Action, Change, Provenance, WorldLog};
@@ -79,7 +83,7 @@ pub enum ClientEvent {
 /// A connection to a server, run on background threads. Messages in and out go
 /// through channels, so the game polls it once a frame.
 pub struct Client {
-    pub events: Receiver<ClientEvent>,
+    events: Mutex<Receiver<ClientEvent>>,
     outgoing: Sender<ToServer>,
 }
 
@@ -140,10 +144,20 @@ impl Client {
                 }
             })
             .map_err(|e| e.to_string())?;
-        Ok(Self { events, outgoing })
+        Ok(Self { events: Mutex::new(events), outgoing })
     }
 
     pub fn send(&self, message: ToServer) {
         let _ = self.outgoing.send(message);
+    }
+
+    /// Everything that arrived since the last poll.
+    pub fn poll(&self) -> Vec<ClientEvent> {
+        self.events.lock().map(|rx| rx.try_iter().collect()).unwrap_or_default()
+    }
+
+    /// Waits up to `timeout` for the next event.
+    pub fn recv_timeout(&self, timeout: Duration) -> Result<ClientEvent, RecvTimeoutError> {
+        self.events.lock().map_err(|_| RecvTimeoutError::Disconnected)?.recv_timeout(timeout)
     }
 }
