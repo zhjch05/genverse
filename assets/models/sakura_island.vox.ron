@@ -1,0 +1,217 @@
+// Floating sakura island: a cherry tree, a pond spilling into a waterfall,
+// a glowing stone lantern, and a pair of drifting rock islets.
+//
+// Coordinates are in voxels with +Y up. Ops apply in order; later ops overwrite
+// earlier ones (use `mask` to only touch certain materials). Save this file while
+// the app runs to rebuild the model live.
+(
+    voxel_size: 0.0625, // 16 voxels per meter
+    size: (192, 176, 192),
+    pivot: (96, 80, 96),
+
+    surfaces: [
+        (name: "matte", roughness: 0.9, reflectance: 0.3),
+        (name: "foliage", roughness: 0.7, reflectance: 0.35),
+        (name: "stone", roughness: 0.8, reflectance: 0.4),
+        (name: "water", roughness: 0.04, reflectance: 0.6, alpha: 0.72),
+        (name: "glow", roughness: 0.5, emissive: ("#ffc074", 12000.0)),
+    ],
+
+    palette: [
+        (name: "grass_light", color: "#b4cf6e", surface: "matte", variation: 0.05),
+        (name: "grass", color: "#93b75a", surface: "matte", variation: 0.05),
+        (name: "grass_dark", color: "#729a49", surface: "matte", variation: 0.05),
+        (name: "moss", color: "#6e8f45", surface: "matte", variation: 0.06),
+        (name: "soil", color: "#8c6244", surface: "matte", variation: 0.06),
+        (name: "soil_dark", color: "#6c4a34", surface: "matte", variation: 0.06),
+        (name: "rock_light", color: "#b3a99a", surface: "stone", variation: 0.05),
+        (name: "rock", color: "#8f877a", surface: "stone", variation: 0.05),
+        (name: "rock_dark", color: "#6d665d", surface: "stone", variation: 0.05),
+        (name: "bark", color: "#5e4237", surface: "matte", variation: 0.08),
+        (name: "bark_dark", color: "#443029", surface: "matte", variation: 0.08),
+        (name: "blossom_light", color: "#ffdbe7", surface: "foliage", variation: 0.04),
+        (name: "blossom", color: "#f6afcb", surface: "foliage", variation: 0.04),
+        (name: "blossom_deep", color: "#e58aaf", surface: "foliage", variation: 0.04),
+        (name: "petal", color: "#fcc7d9", surface: "foliage", variation: 0.05),
+        (name: "flower_white", color: "#f6f2e7", surface: "foliage"),
+        (name: "flower_yellow", color: "#f4d05c", surface: "foliage"),
+        (name: "lantern_stone", color: "#bdb5a8", surface: "stone", variation: 0.04),
+        (name: "lantern_glow", color: "#ffe0a8", surface: "glow"),
+        (name: "water", color: "#62b6cc", surface: "water", variation: 0.02),
+    ],
+
+    ops: [
+        // ---- Main island -------------------------------------------------
+        Island(
+            center: (96, 96),
+            top_y: 80,
+            radius: 70,
+            depth: 64,
+            hills: 4,
+            layers: [
+                (Noise(mats: ["grass_light", "grass", "grass_dark"], scale: 9), 2),
+                (Noise(mats: ["soil", "soil_dark"], scale: 5), 5),
+            ],
+            core: Noise(mats: ["rock_light", "rock", "rock_dark", "rock"], scale: 6, seed: 3),
+            seed: 7,
+        ),
+
+        // ---- Drifting islets -----------------------------------------------
+        Shape(
+            geom: Ellipsoid(center: (24, 62, 40), radii: (10, 6, 9)),
+            fill: Noise(mats: ["rock_light", "rock", "rock_dark"], scale: 4),
+            noise: (scale: 5, amplitude: 0.3, seed: 11),
+        ),
+        Shape(
+            geom: Ellipsoid(center: (24, 67, 40), radii: (9, 2, 8)),
+            fill: Noise(mats: ["grass", "moss"], scale: 4),
+            noise: (scale: 4, amplitude: 0.25, seed: 12),
+        ),
+        Shape(
+            geom: Ellipsoid(center: (170, 102, 150), radii: (7, 4, 7)),
+            fill: Noise(mats: ["rock_light", "rock", "rock_dark"], scale: 4),
+            noise: (scale: 4, amplitude: 0.3, seed: 13),
+        ),
+
+        // ---- Boulders --------------------------------------------------------
+        Shape(
+            geom: Ellipsoid(center: (52, 80, 70), radii: (8, 6, 7)),
+            fill: Noise(mats: ["rock_light", "rock", "moss"], scale: 4),
+            noise: (scale: 4, amplitude: 0.25, seed: 21),
+        ),
+        Shape(
+            geom: Ellipsoid(center: (62, 79, 62), radii: (5, 4, 4)),
+            fill: Noise(mats: ["rock_light", "rock"], scale: 4),
+            noise: (scale: 3, amplitude: 0.25, seed: 22),
+        ),
+        Shape(
+            geom: Ellipsoid(center: (118, 80, 140), radii: (6, 5, 6)),
+            fill: Noise(mats: ["rock_light", "rock", "moss"], scale: 4),
+            noise: (scale: 4, amplitude: 0.25, seed: 23),
+        ),
+
+        // ---- Pond and waterfall --------------------------------------------
+        // Carve a bowl and a channel to the eastern rim, then flood them.
+        Shape(
+            geom: Ellipsoid(center: (136, 86, 92), radii: (17, 11, 14)),
+            fill: Solid("air"),
+            noise: (scale: 6, amplitude: 0.12, seed: 31),
+        ),
+        Shape(geom: Box(min: (146, 77, 88), max: (180, 96, 97)), fill: Solid("air")),
+        Shape(
+            geom: Box(min: (110, 74, 70), max: (192, 79, 114)),
+            fill: Solid("water"),
+            mask: ["air"],
+        ),
+        // Drop water that ended up hanging past the rim, then pour it over the edge.
+        Settle(mats: ["water"], region: ((110, 60, 70), (192, 80, 114))),
+        Spill(mat: "water", region: ((150, 74, 86), (192, 79, 100)), length: 60, thickness: 2),
+        // Mossy pebbles around the shore.
+        Scatter(
+            on: ["grass", "grass_dark", "grass_light", "soil", "soil_dark"],
+            fill: Noise(mats: ["rock_light", "moss"], scale: 2),
+            chance: 0.3,
+            mode: Replace,
+            region: ((114, 70, 72), (160, 90, 112)),
+            seed: 32,
+        ),
+
+        // ---- Cherry tree -----------------------------------------------------
+        Shape(geom: Capsule(a: (78, 70, 100), b: (82, 104, 102), radius_a: 7, radius_b: 4.5),
+              fill: Noise(mats: ["bark", "bark_dark"], scale: 3)),
+        Shape(geom: Capsule(a: (82, 102, 102), b: (64, 122, 92), radius_a: 3.8, radius_b: 2),
+              fill: Noise(mats: ["bark", "bark_dark"], scale: 3)),
+        Shape(geom: Capsule(a: (82, 102, 102), b: (104, 124, 110), radius_a: 3.8, radius_b: 2),
+              fill: Noise(mats: ["bark", "bark_dark"], scale: 3)),
+        Shape(geom: Capsule(a: (82, 104, 102), b: (84, 132, 104), radius_a: 3.5, radius_b: 1.6),
+              fill: Noise(mats: ["bark", "bark_dark"], scale: 3)),
+        Shape(geom: Capsule(a: (78, 112, 98), b: (74, 124, 118), radius_a: 2.6, radius_b: 1.5),
+              fill: Noise(mats: ["bark", "bark_dark"], scale: 3)),
+        // Exposed roots.
+        Shape(geom: Capsule(a: (78, 78, 100), b: (64, 79, 106), radius_a: 3, radius_b: 1.2),
+              fill: Solid("bark_dark")),
+        Shape(geom: Capsule(a: (80, 78, 98), b: (88, 79, 86), radius_a: 3, radius_b: 1.2),
+              fill: Solid("bark_dark")),
+        // Canopy: overlapping noisy clouds of blossoms.
+        Shape(
+            geom: Ellipsoid(center: (62, 126, 90), radii: (19, 12, 17)),
+            fill: Noise(mats: ["blossom_deep", "blossom", "blossom_light"], scale: 5),
+            noise: (scale: 5, amplitude: 0.32, seed: 41),
+        ),
+        Shape(
+            geom: Ellipsoid(center: (106, 128, 110), radii: (21, 13, 18)),
+            fill: Noise(mats: ["blossom_deep", "blossom", "blossom_light"], scale: 5, seed: 1),
+            noise: (scale: 5, amplitude: 0.32, seed: 42),
+        ),
+        Shape(
+            geom: Ellipsoid(center: (84, 138, 102), radii: (24, 14, 22)),
+            fill: Noise(mats: ["blossom_deep", "blossom", "blossom_light", "blossom_light"], scale: 5, seed: 2),
+            noise: (scale: 6, amplitude: 0.3, seed: 43),
+        ),
+        Shape(
+            geom: Ellipsoid(center: (74, 126, 120), radii: (15, 10, 13)),
+            fill: Noise(mats: ["blossom_deep", "blossom", "blossom_light"], scale: 5, seed: 3),
+            noise: (scale: 4, amplitude: 0.32, seed: 44),
+        ),
+        // Blossoms catch light on top.
+        Scatter(
+            on: ["blossom", "blossom_deep"],
+            fill: Solid("blossom_light"),
+            chance: 0.55,
+            mode: Replace,
+            region: ((30, 110, 60), (140, 160, 150)),
+            seed: 45,
+        ),
+
+        // ---- Stone lantern (tōrō) -------------------------------------------
+        Shape(geom: Cylinder(base: (52, 72, 124), radius: 4.5, height: 11), fill: Solid("lantern_stone")),
+        Shape(geom: Cylinder(base: (52, 83, 124), radius: 2.2, height: 12),
+              fill: Noise(mats: ["lantern_stone", "rock_light"], scale: 3)),
+        Shape(geom: Box(min: (46, 95, 118), max: (59, 97, 131)), fill: Solid("lantern_stone")),
+        Shape(geom: Box(min: (48, 97, 120), max: (57, 104, 129)), fill: Solid("lantern_glow")),
+        Shape(geom: Box(min: (48, 97, 120), max: (50, 104, 122)), fill: Solid("lantern_stone")),
+        Shape(geom: Box(min: (55, 97, 120), max: (57, 104, 122)), fill: Solid("lantern_stone")),
+        Shape(geom: Box(min: (48, 97, 127), max: (50, 104, 129)), fill: Solid("lantern_stone")),
+        Shape(geom: Box(min: (55, 97, 127), max: (57, 104, 129)), fill: Solid("lantern_stone")),
+        Shape(geom: Cylinder(base: (52.5, 104, 124.5), radius: 9, height: 2), fill: Solid("lantern_stone")),
+        Shape(geom: Cylinder(base: (52.5, 106, 124.5), radius: 6, height: 2), fill: Solid("lantern_stone")),
+        Shape(geom: Cylinder(base: (52.5, 108, 124.5), radius: 3, height: 2), fill: Solid("lantern_stone")),
+        Shape(geom: Ellipsoid(center: (52.5, 111, 124.5), radii: (2, 2, 2)), fill: Solid("lantern_stone")),
+        // Stepping stones from the lantern towards the pond.
+        Shape(geom: Cylinder(base: (66, 78, 128), radius: 3.5, height: 4), fill: Solid("rock_light"), mask: ["grass", "grass_dark", "grass_light", "soil", "air"]),
+        Shape(geom: Cylinder(base: (79, 78, 132), radius: 3.2, height: 4), fill: Solid("rock_light"), mask: ["grass", "grass_dark", "grass_light", "soil", "air"]),
+        Shape(geom: Cylinder(base: (93, 78, 130), radius: 3.5, height: 4), fill: Solid("rock_light"), mask: ["grass", "grass_dark", "grass_light", "soil", "air"]),
+        Shape(geom: Cylinder(base: (106, 78, 124), radius: 3.2, height: 4), fill: Solid("rock_light"), mask: ["grass", "grass_dark", "grass_light", "soil", "air"]),
+
+        // ---- Ground cover ----------------------------------------------------
+        Scatter(
+            on: ["grass", "grass_dark", "grass_light", "moss"],
+            fill: Noise(mats: ["grass_light", "grass", "moss"], scale: 3),
+            chance: 0.04,
+            mode: Above,
+            height: (1, 2),
+            seed: 51,
+        ),
+        Scatter(
+            on: ["grass", "grass_dark", "grass_light"],
+            fill: Noise(mats: ["flower_white", "flower_yellow"], scale: 8),
+            chance: 0.012,
+            mode: Above,
+            height: (1, 1),
+            seed: 52,
+        ),
+        // Fallen petals under the canopy.
+        Scatter(
+            on: ["grass", "grass_dark", "grass_light", "moss", "rock_light", "soil", "bark_dark"],
+            fill: Solid("petal"),
+            chance: 0.22,
+            mode: Replace,
+            region: ((44, 70, 72), (124, 90, 132)),
+            seed: 53,
+        ),
+    ],
+
+    lights: [
+        (position: (52.5, 100.5, 124.5), color: "#ffb760", intensity: 400000, range: 6.0),
+    ],
+)
