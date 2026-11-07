@@ -4,8 +4,7 @@
 //! The agent answers with a [`TerrainSpec`] (a few operations, never voxels) and
 //! [`sculpt::compile`] turns it into voxel edits against the current ground. A preview
 //! is applied to the world for real and put back voxel by voxel if it's discarded.
-//! Kept changes are logged as specs in `saves/terrain_changes.json`; the voxels
-//! themselves are saved with the world's edits.
+//! Kept changes go into the world's change log as their spec, never voxels.
 
 use std::fmt::Write;
 
@@ -18,8 +17,8 @@ use bevy::{
     window::PrimaryWindow,
 };
 use bevy_egui::input::EguiWantsInput;
-use serde::{Deserialize, Serialize};
 
+use cubelark_rules::log::Action;
 use cubelark_rules::sculpt::{self, Area, Columns, SculptStats, TerrainEdit, TerrainSpec, level_of, limits, surface};
 
 use super::{Chat, cursor_ray};
@@ -28,24 +27,13 @@ use crate::{
     voxel::{AIR, VoxelId},
     world::{
         VoxelWorld,
+        ledger::Ledger,
         terrain::{VOXEL_SIZE, WORLD_HEIGHT, block},
     },
 };
 
-const LOG_PATH: &str = "saves/terrain_changes.json";
 /// A click without a drag selects a square this wide, in meters.
 const CLICK_AREA_M: f32 = 6.0;
-
-/// A kept terrain change, as saved: what was asked and the operations, not voxels.
-#[derive(Clone, Serialize, Deserialize)]
-pub struct SavedTerrainChange {
-    pub id: u64,
-    pub name: String,
-    pub prompt: String,
-    pub provider: String,
-    pub area: Area,
-    pub spec: TerrainSpec,
-}
 
 /// How a voxel was before a change touched it.
 struct Before {
@@ -78,7 +66,6 @@ pub struct Landscape {
     pub draft: Option<TerrainDraft>,
     /// Kept changes this session, for Undo.
     kept: Vec<Kept>,
-    log: Vec<SavedTerrainChange>,
 }
 
 impl Landscape {
@@ -122,22 +109,15 @@ impl Landscape {
         }
     }
 
-    /// Keeps the preview. Returns its id (for the shared undo history) and name.
-    pub fn keep(&mut self, world: &mut VoxelWorld) -> Option<(u64, String)> {
+    /// Keeps the preview, recording it in the change log. Returns its change id (for
+    /// the shared undo history) and name.
+    pub fn keep(&mut self, world: &mut VoxelWorld, ledger: &mut Ledger) -> Option<(u64, String)> {
         let draft = self.draft.take()?;
         world.hold_saves = false;
-        let id = self.log.iter().map(|c| c.id + 1).max().unwrap_or(1);
         let name = draft.spec.name.clone();
+        let action = Action::Terrain { name: name.clone(), area: draft.area, spec: draft.spec };
+        let id = ledger.record(Some(&draft.provider), Some(&draft.prompt), action);
         self.kept.push(Kept { id, name: name.clone(), before: draft.before });
-        self.log.push(SavedTerrainChange {
-            id,
-            name: name.clone(),
-            prompt: draft.prompt,
-            provider: draft.provider,
-            area: draft.area,
-            spec: draft.spec,
-        });
-        self.save();
         Some((id, name))
     }
 
@@ -148,22 +128,13 @@ impl Landscape {
         }
     }
 
-    /// Puts the ground back how it was before kept change `id`.
-    pub fn undo(&mut self, world: &mut VoxelWorld, id: u64) -> Option<String> {
+    /// Puts the ground back how it was before kept change `id`, and records the revert.
+    pub fn undo(&mut self, world: &mut VoxelWorld, ledger: &mut Ledger, id: u64) -> Option<String> {
         let index = self.kept.iter().position(|k| k.id == id)?;
         let kept = self.kept.remove(index);
         revert(world, &kept.before);
-        self.log.retain(|c| c.id != id);
-        self.save();
+        ledger.revert(id);
         Some(format!("Put the ground back how it was before \"{}\".", kept.name))
-    }
-
-    fn save(&self) {
-        let result = std::fs::create_dir_all("saves")
-            .and_then(|_| std::fs::write(LOG_PATH, serde_json::to_string_pretty(&self.log).unwrap_or_default()));
-        if let Err(e) = result {
-            error!("couldn't save {LOG_PATH}: {e}");
-        }
     }
 
     /// What the agent is told about the area: size, frame, a coarse height map, where
@@ -314,16 +285,6 @@ fn surface_code(id: VoxelId) -> char {
         id if block::SAND.contains(&id) => 's',
         block::SNOW => 'n',
         _ => '?',
-    }
-}
-
-pub fn load_terrain_log(mut landscape: ResMut<Landscape>) {
-    let Ok(text) = std::fs::read_to_string(LOG_PATH) else {
-        return;
-    };
-    match serde_json::from_str(&text) {
-        Ok(log) => landscape.log = log,
-        Err(e) => error!("couldn't read {LOG_PATH}: {e}"),
     }
 }
 

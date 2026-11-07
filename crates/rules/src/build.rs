@@ -33,14 +33,14 @@ pub mod limits {
     pub const MAX_GLASS_VOXELS: usize = 20_000;
 }
 
-#[derive(Clone, Debug, Serialize, Deserialize)]
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 pub struct AgentAnswer {
     pub reply: String,
     pub build: Option<BuildSpec>,
     pub terrain: Option<TerrainSpec>,
 }
 
-#[derive(Clone, Debug, Serialize, Deserialize)]
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 pub struct BuildSpec {
     pub name: String,
     pub size: Vec<i64>,
@@ -48,14 +48,14 @@ pub struct BuildSpec {
     pub shapes: Vec<ShapeSpec>,
 }
 
-#[derive(Clone, Debug, Serialize, Deserialize)]
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 pub struct ColorSpec {
     pub name: String,
     pub hex: String,
     pub material: String,
 }
 
-#[derive(Clone, Debug, Serialize, Deserialize)]
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 pub struct ShapeSpec {
     pub kind: String,
     pub color: String,

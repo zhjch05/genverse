@@ -31,14 +31,13 @@ use crate::{
         VoxelModel,
         query::{Hit, overlaps_box, raycast},
     },
-    world::VoxelWorld,
+    world::{VoxelWorld, ledger::Ledger},
 };
 use creations::{
     Adjust, Creation, Creations, DraftMarker, Undone, load_creations, outline_creations, placement_for_hit,
 };
 use landscape::{
-    AreaGizmos, Landscape, configure_area_gizmos, describe_stats, draw_area, highlight_area, load_terrain_log,
-    select_area,
+    AreaGizmos, Landscape, configure_area_gizmos, describe_stats, draw_area, highlight_area, select_area,
 };
 use mcp::McpServer;
 use runner::{AgentEvent, AgentJob, Provider};
@@ -59,7 +58,7 @@ impl Plugin for AgentPlugin {
             .init_resource::<BuildSite>()
             .init_resource::<Landscape>()
             .init_gizmo_group::<AreaGizmos>()
-            .add_systems(Startup, (load_creations, load_terrain_log, configure_area_gizmos, start_tool_server))
+            .add_systems(Startup, (load_creations, configure_area_gizmos, start_tool_server))
             .add_systems(
                 Update,
                 (
@@ -252,6 +251,7 @@ fn poll_agent(
     mut creations: ResMut<Creations>,
     mut landscape: ResMut<Landscape>,
     mut world: ResMut<VoxelWorld>,
+    mut ledger: ResMut<Ledger>,
     site: Res<BuildSite>,
     tools: Option<Res<McpServer>>,
     drafts: Query<&Transform, With<DraftMarker>>,
@@ -315,6 +315,10 @@ fn poll_agent(
                             describe_stats(area, &stats)
                         ),
                     );
+                    // `CUBELARK_KEEP=1` keeps a scripted preview, as if Enter was pressed.
+                    if std::env::var("CUBELARK_KEEP").is_ok() {
+                        keep_terrain(&mut creations, &mut landscape, &mut world, &mut ledger, &mut chat);
+                    }
                 }
                 Err(errors) if pending.repairs == 0 => {
                     warn!("terrain rejected, asking for a fix: {errors:?}");
@@ -391,6 +395,7 @@ fn shortcuts(
     mut creations: ResMut<Creations>,
     mut landscape: ResMut<Landscape>,
     mut world: ResMut<VoxelWorld>,
+    mut ledger: ResMut<Ledger>,
     mut transforms: Query<&mut Transform, With<DraftMarker>>,
 ) {
     if blocked.0 {
@@ -399,7 +404,7 @@ fn shortcuts(
     let command = keys.any_pressed([KeyCode::ControlLeft, KeyCode::ControlRight, KeyCode::SuperLeft, KeyCode::SuperRight]);
     if command && keys.just_pressed(KeyCode::KeyZ) {
         if landscape.draft.is_none() {
-            undo(&mut commands, &mut creations, &mut landscape, &mut world, &mut chat);
+            undo(&mut commands, &mut creations, &mut landscape, &mut world, &mut ledger, &mut chat);
         }
         return;
     }
@@ -433,7 +438,7 @@ fn shortcuts(
         };
         if keys.just_pressed(KeyCode::Enter) {
             let at = *transform;
-            match creations.place_draft(&mut commands, &at) {
+            match creations.place_draft(&mut commands, &at, &mut ledger) {
                 Some(name) => chat.say(Role::System, format!("Placed \"{name}\".")),
                 None => chat.say(Role::System, "Can't place it on top of you; point somewhere else."),
             }
@@ -460,7 +465,7 @@ fn shortcuts(
 
     if landscape.draft.is_some() {
         if keys.just_pressed(KeyCode::Enter) {
-            keep_terrain(&mut creations, &mut landscape, &mut world, &mut chat);
+            keep_terrain(&mut creations, &mut landscape, &mut world, &mut ledger, &mut chat);
         } else if keys.just_pressed(KeyCode::Escape) {
             landscape.discard(&mut world);
             chat.say(Role::System, "Put the ground back.");
@@ -480,7 +485,7 @@ fn shortcuts(
                 chat.say(Role::System, format!("Moving \"{name}\": point and click to place it."));
             }
         } else if keys.any_just_pressed([KeyCode::Delete, KeyCode::Backspace]) {
-            if let Some(name) = creations.delete_selected(&mut commands) {
+            if let Some(name) = creations.delete_selected(&mut commands, &mut ledger) {
                 chat.say(Role::System, format!("Deleted \"{name}\". Ctrl/Cmd+Z brings it back."));
             }
         } else if keys.just_pressed(KeyCode::Escape) {
@@ -498,11 +503,18 @@ fn shortcuts(
 }
 
 /// Undoes the latest build or terrain change, whichever came last.
-fn undo(commands: &mut Commands, creations: &mut Creations, landscape: &mut Landscape, world: &mut VoxelWorld, chat: &mut Chat) {
-    match creations.undo(commands) {
+fn undo(
+    commands: &mut Commands,
+    creations: &mut Creations,
+    landscape: &mut Landscape,
+    world: &mut VoxelWorld,
+    ledger: &mut Ledger,
+    chat: &mut Chat,
+) {
+    match creations.undo(commands, ledger) {
         Some(Undone::Message(message)) => chat.say(Role::System, message),
         Some(Undone::Terrain(id)) => {
-            if let Some(message) = landscape.undo(world, id) {
+            if let Some(message) = landscape.undo(world, ledger, id) {
                 chat.say(Role::System, message);
             }
         }
@@ -510,8 +522,8 @@ fn undo(commands: &mut Commands, creations: &mut Creations, landscape: &mut Land
     }
 }
 
-fn keep_terrain(creations: &mut Creations, landscape: &mut Landscape, world: &mut VoxelWorld, chat: &mut Chat) {
-    if let Some((id, name)) = landscape.keep(world) {
+fn keep_terrain(creations: &mut Creations, landscape: &mut Landscape, world: &mut VoxelWorld, ledger: &mut Ledger, chat: &mut Chat) {
+    if let Some((id, name)) = landscape.keep(world, ledger) {
         creations.record_terrain(id);
         chat.say(Role::System, format!("Kept \"{name}\". Ctrl/Cmd+Z undoes it; the area stays selected for more changes."));
     }
@@ -610,6 +622,7 @@ fn click_in_world(
     mut creations: ResMut<Creations>,
     mut chat: ResMut<Chat>,
     landscape: Res<Landscape>,
+    mut ledger: ResMut<Ledger>,
     mut pressed_at: Local<[Option<Vec2>; 3]>,
     mut last_select: Local<Option<(Entity, f32)>>,
 ) {
@@ -640,7 +653,7 @@ fn click_in_world(
             chat.say(Role::System, "Can't place it on top of you; point somewhere else.");
         } else if left
             && let Ok(transform) = drafts.get(draft.entity).copied()
-            && let Some(name) = creations.place_draft(&mut commands, &transform)
+            && let Some(name) = creations.place_draft(&mut commands, &transform, &mut ledger)
         {
             chat.say(Role::System, format!("Placed \"{name}\"."));
         }
@@ -746,6 +759,7 @@ fn chat_panel(
     mut transforms: Query<&mut Transform, Without<Player>>,
     mut landscape: ResMut<Landscape>,
     mut world: ResMut<VoxelWorld>,
+    mut ledger: ResMut<Ledger>,
     players: Query<&Transform, With<Player>>,
     cameras: Query<&GlobalTransform, With<Camera3d>>,
 ) -> Result {
@@ -972,7 +986,7 @@ fn chat_panel(
             let area = area_context(&creations, &landscape, &world, player, cameras.single().ok());
             chat.send(&mut creations, &mut commands, tools.as_deref(), area);
         }
-        Some(Action::KeepTerrain) => keep_terrain(&mut creations, &mut landscape, &mut world, &mut chat),
+        Some(Action::KeepTerrain) => keep_terrain(&mut creations, &mut landscape, &mut world, &mut ledger, &mut chat),
         Some(Action::DiscardTerrain) => {
             landscape.discard(&mut world);
             chat.say(Role::System, "Put the ground back.");
@@ -989,7 +1003,7 @@ fn chat_panel(
         Some(Action::Place) => {
             let transform = creations.draft.as_ref().and_then(|d| transforms.get(d.entity).ok()).copied();
             if let Some(transform) = transform
-                && let Some(name) = creations.place_draft(&mut commands, &transform)
+                && let Some(name) = creations.place_draft(&mut commands, &transform, &mut ledger)
             {
                 chat.say(Role::System, format!("Placed \"{name}\"."));
             }
@@ -1010,12 +1024,12 @@ fn chat_panel(
             }
         }
         Some(Action::Delete) => {
-            if let Some(name) = creations.delete_selected(&mut commands) {
+            if let Some(name) = creations.delete_selected(&mut commands, &mut ledger) {
                 chat.say(Role::System, format!("Deleted \"{name}\"."));
             }
         }
         Some(Action::Deselect) => creations.selected = None,
-        Some(Action::Undo) => undo(&mut commands, &mut creations, &mut landscape, &mut world, &mut chat),
+        Some(Action::Undo) => undo(&mut commands, &mut creations, &mut landscape, &mut world, &mut ledger, &mut chat),
         None => {}
     }
     Ok(())

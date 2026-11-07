@@ -101,14 +101,14 @@ pub fn surface(column: &[VoxelId]) -> (i32, i32, VoxelId) {
     (ground as i32, water as i32, column[ground])
 }
 
-#[derive(Clone, Debug, Serialize, Deserialize)]
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 pub struct TerrainSpec {
     pub name: String,
     pub ops: Vec<TerrainOp>,
 }
 
 /// One operation. Every field is present (strict structured output); unused ones are null.
-#[derive(Clone, Debug, Serialize, Deserialize)]
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 pub struct TerrainOp {
     pub kind: String,
     /// Where it applies; null means the whole selected area.
@@ -131,7 +131,7 @@ pub struct TerrainOp {
     pub density: Option<f64>,
 }
 
-#[derive(Clone, Debug, Serialize, Deserialize)]
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 pub struct OpArea {
     /// "rect" or "ellipse" (inscribed in the rect).
     pub shape: String,
@@ -169,11 +169,16 @@ pub struct Columns {
 }
 
 impl Columns {
+    /// The world columns [`read`](Self::read) asks for: `area` plus a margin, as
+    /// `(min, size)`.
+    pub fn bounds(area: Area) -> (IVec2, IVec2) {
+        (area.min() - MARGIN, area.size() + 2 * MARGIN)
+    }
+
     /// Reads the columns under `area`. `read(x, z, out)` fills one world column
     /// (`y = 0..WORLD_HEIGHT`) and returns false if it isn't loaded.
     pub fn read(area: Area, mut read: impl FnMut(i32, i32, &mut [VoxelId]) -> bool) -> Option<Self> {
-        let min = area.min() - MARGIN;
-        let size = area.size() + 2 * MARGIN;
+        let (min, size) = Self::bounds(area);
         let n = (size.x * size.y) as usize;
         let mut vox = vec![AIR; n * H];
         for i in 0..n {
