@@ -58,56 +58,19 @@ pub fn run(text: &str, cx: &mut Context) -> String {
             None => "Usage: /join <host[:port]>".into(),
         },
         "leave" => super::online::leave(cx.commands, cx.ledger, cx.world, cx.creations, cx.landscape),
-        "revert" => {
-            let Some(id) = args.first().and_then(|n| n.parse::<u64>().ok()) else {
-                return "Usage: /revert <change id> (see /history)".into();
-            };
-            if !cx.ledger.log.changes.iter().any(|c| c.id == id) {
-                return format!("There's no change {id}.");
-            }
-            if !cx.ledger.log.may_revert(&cx.ledger.profile.id, id) {
-                return "You can only undo your own changes.".into();
-            }
-            if cx.ledger.log.undone().contains(&id) {
-                return format!("Change {id} is already undone.");
-            }
-            cx.ledger.revert(id);
-            rebuild(cx);
-            format!("Undid change {id}.")
-        }
+        "revert" => match args.first().and_then(|n| n.parse::<u64>().ok()) {
+            Some(id) => revert(cx, id),
+            None => "Usage: /revert <change id> (see /history)".into(),
+        },
         "rollback" | "restore" | "land" | "rate" if !admin => "Only admins can do that.".into(),
-        "rollback" => {
-            let Some(who) = args.first().map(|w| w.to_lowercase()) else {
-                return "Usage: /rollback <player name>".into();
-            };
-            let changes: Vec<u64> = cx
-                .ledger
-                .log
-                .effective()
-                .filter(|c| c.by.player_name.to_lowercase() == who || c.by.player.starts_with(&who))
-                .map(|c| c.id)
-                .collect();
-            if changes.is_empty() {
-                return format!("{who} has no changes in effect.");
-            }
-            let n = changes.len();
-            cx.ledger.record(None, None, Action::Rollback { changes, note: format!("rollback of {who}") });
-            rebuild(cx);
-            format!("Rolled back {n} change(s) by {who}.")
-        }
-        "restore" => {
-            let Some(id) = args.first().and_then(|n| n.parse::<u64>().ok()) else {
-                return "Usage: /restore <change id>: the world goes back to how it was right after it".into();
-            };
-            let changes: Vec<u64> = cx.ledger.log.effective().filter(|c| c.id > id).map(|c| c.id).collect();
-            if changes.is_empty() {
-                return format!("Nothing has changed since change {id}.");
-            }
-            let n = changes.len();
-            cx.ledger.record(None, None, Action::Rollback { changes, note: format!("restore to change {id}") });
-            rebuild(cx);
-            format!("Restored the world to change {id} ({n} later change(s) undone; /revert the rollback to bring them back).")
-        }
+        "rollback" => match args.first() {
+            Some(who) => rollback(cx, who),
+            None => "Usage: /rollback <player name>".into(),
+        },
+        "restore" => match args.first().and_then(|n| n.parse::<u64>().ok()) {
+            Some(id) => restore(cx, id),
+            None => "Usage: /restore <change id>: the world goes back to how it was right after it".into(),
+        },
         "land" => {
             let land = match args.first().copied() {
                 Some("open") => LandMode::Open,
@@ -136,6 +99,60 @@ pub fn run(text: &str, cx: &mut Context) -> String {
         }
         _ => HELP.into(),
     }
+}
+
+/// Undoes change `id`: your own, or anyone's for admins.
+pub fn revert(cx: &mut Context, id: u64) -> String {
+    if !cx.ledger.log.changes.iter().any(|c| c.id == id) {
+        return format!("There's no change {id}.");
+    }
+    if !cx.ledger.log.may_revert(&cx.ledger.profile.id, id) {
+        return "You can only undo your own changes.".into();
+    }
+    if cx.ledger.log.undone().contains(&id) {
+        return format!("Change {id} is already undone.");
+    }
+    cx.ledger.revert(id);
+    rebuild(cx);
+    format!("Undid change {id}.")
+}
+
+/// Admins: undoes every change in effect by the player `who` (a name, or an id or its
+/// start).
+pub fn rollback(cx: &mut Context, who: &str) -> String {
+    if !cx.ledger.land.is_admin(&cx.ledger.profile.id) {
+        return "Only admins can do that.".into();
+    }
+    let who = who.to_lowercase();
+    let changes: Vec<u64> = cx
+        .ledger
+        .log
+        .effective()
+        .filter(|c| c.by.player_name.to_lowercase() == who || c.by.player.starts_with(&who))
+        .map(|c| c.id)
+        .collect();
+    if changes.is_empty() {
+        return format!("{who} has no changes in effect.");
+    }
+    let n = changes.len();
+    cx.ledger.record(None, None, Action::Rollback { changes, note: format!("rollback of {who}") });
+    rebuild(cx);
+    format!("Rolled back {n} change(s) by {who}.")
+}
+
+/// Admins: puts the world back how it was right after change `id`.
+pub fn restore(cx: &mut Context, id: u64) -> String {
+    if !cx.ledger.land.is_admin(&cx.ledger.profile.id) {
+        return "Only admins can do that.".into();
+    }
+    let changes: Vec<u64> = cx.ledger.log.effective().filter(|c| c.id > id).map(|c| c.id).collect();
+    if changes.is_empty() {
+        return format!("Nothing has changed since change {id}.");
+    }
+    let n = changes.len();
+    cx.ledger.record(None, None, Action::Rollback { changes, note: format!("restore to change {id}") });
+    rebuild(cx);
+    format!("Restored the world to change {id} ({n} later change(s) undone; undo the rollback to bring them back).")
 }
 
 /// Makes the world (voxels and builds) match the change log again.

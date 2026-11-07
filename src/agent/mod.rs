@@ -11,6 +11,7 @@
 
 mod commands;
 mod creations;
+mod history;
 mod landscape;
 mod mcp;
 mod online;
@@ -67,6 +68,7 @@ impl Plugin for AgentPlugin {
             .init_resource::<Landscape>()
             .init_resource::<ParcelOverlay>()
             .init_resource::<presence::Peers>()
+            .init_resource::<history::History>()
             .init_gizmo_group::<AreaGizmos>()
             .add_systems(Startup, (load_creations, configure_area_gizmos, start_tool_server))
             .add_systems(
@@ -74,14 +76,14 @@ impl Plugin for AgentPlugin {
                 (
                     block_game_input,
                     (online::sync_online, update_build_site, answer_tool_calls, poll_agent).chain(),
-                    (presence::send_presence, presence::move_avatars, presence::draw_peers),
+                    (presence::send_presence, presence::move_avatars, presence::draw_peers, history::toggle_history),
                     auto_prompt,
                     (shortcuts, select_area, follow_cursor, check_clearance, click_in_world, outline_creations, draw_area, highlight_area, draw_parcels)
                         .chain(),
                 ),
             )
             .add_systems(EguiPrimaryContextPass, (install_icon_font, chat_panel, shortcut_hints).chain())
-            .add_systems(EguiPrimaryContextPass, (presence::name_tags, presence::hover_credit));
+            .add_systems(EguiPrimaryContextPass, (presence::name_tags, presence::hover_credit, history::history_window));
     }
 }
 
@@ -790,7 +792,7 @@ fn shortcut_hints(
         }
         None if chat.pending.is_some() => return Ok(()),
         None if landscape.area.is_some() => "T: describe what this land should become   G: select again   Esc: clear the area",
-        None => "T: describe a build   G: reshape the ground   P: land   Click a build: select   Middle-click a build: copy",
+        None => "T: describe a build   G: reshape the ground   P: land   H: history   Click a build: select   Middle-click a build: copy",
     };
     let ctx = contexts.ctx_mut()?;
     egui::Area::new("shortcut_hints".into())
@@ -839,6 +841,7 @@ enum Action {
     Join,
     Host,
     Leave,
+    History,
 }
 
 fn chat_panel(
@@ -853,6 +856,7 @@ fn chat_panel(
     mut landscape: ResMut<Landscape>,
     mut world: ResMut<VoxelWorld>,
     mut ledger: ResMut<Ledger>,
+    mut history: ResMut<history::History>,
     players: Query<&Transform, With<Player>>,
     cameras: Query<&GlobalTransform, With<Camera3d>>,
 ) -> Result {
@@ -900,6 +904,9 @@ fn chat_panel(
                     *name = ledger.profile.name.clone();
                 }
                 ui.label(egui::RichText::new("· Tab hides this panel").small().weak());
+                if ui.small_button(icon::CLOCK_COUNTER_CLOCKWISE).on_hover_text("History (H)").clicked() {
+                    action = Some(Action::History);
+                }
             });
             ui.horizontal(|ui| match &ledger.online {
                 None => {
@@ -1170,6 +1177,7 @@ fn chat_panel(
         }
         Some(Action::SelectArea) => landscape.selecting = true,
         Some(Action::ClearArea) => landscape.area = None,
+        Some(Action::History) => history.open = !history.open,
         Some(Action::Join | Action::Host | Action::Leave) if creations.draft.is_some() || landscape.draft.is_some() => {
             chat.say(Role::System, "Keep or discard your draft first.");
         }

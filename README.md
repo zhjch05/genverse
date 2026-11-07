@@ -77,7 +77,11 @@ made it, which agent did if one did, a hash of the request, and when. A selected
 - Saves from before the log, and profiles from before keys, are upgraded once (old files kept as
   `.bak`).
 
-Chat commands, until the history panel exists: `/history [n]`, `/revert <id>`, `/rules`,
+**History** (`H`, or the clock button in the panel): every change, newest first, with who
+made it, which agent, and when; filter by player. Undo your own changes from there; admins can
+also **Restore to here** (undo everything after a change) and **Roll back** a player.
+
+Chat commands do the same and more: `/history [n]`, `/revert <id>`, `/rules`,
 `/verify`, `/host`, `/join <host[:port]>`, `/leave`, and for admins `/rollback <player>`, `/restore <id>`, `/land open|parcels`,
 `/rate <changes per minute> [voxels per 10 minutes]` or `/rate off`. Try them from someone else's
 side with `CUBELARK_AS=Bo cargo run`, a non-admin guest for one run; script them with
@@ -127,8 +131,11 @@ join a new world is its admin.
   and "Claude Code is designing…" while their agent works. Presence is sent when it changes
   (at most ten times a second) and never stored.
 - Rest the cursor on a build or on reshaped ground to see who changed it last (offline too).
-- Not yet: history browsing beyond `/history`, chunk checks, snapshots for long-lived worlds
-  (milestone 4), and encryption (TLS).
+- **Safety nets:** every 50 changes the server saves a snapshot of the world's voxels, so
+  restarts and joins only replay what came after. Each land change carries fingerprints of the
+  chunks it touched; if your chunks disagree (floating point can differ across machines), the
+  game fetches the server's and regenerates just those.
+- Not yet: encryption (TLS).
 
 The web build is on hold while multiplayer is built (it may return as watch-only). It still
 compiles but isn't tested.
@@ -192,7 +199,7 @@ can bump into and stand on them) and recorded in the world's change log.
 | Hero | `src/player.rs` | Builds the character from model parts, kinematic movement with voxel collision and step-up, walk animation, follow camera |
 | Voxel rendering | `src/voxel/` | Materials, mesher with baked AO, `.vox.ron` asset loader, picking |
 | Scene | `src/scene.rs` | Sky, sun, fog, post-processing |
-| Builder | `src/agent/` | egui chat, CLI runner, drafts and placed builds, area selection, land previews and the land overlay (`landscape.rs`), chat commands (`commands.rs`), applying what the server sends (`online.rs`), other players (`presence.rs`) (desktop only) |
+| Builder | `src/agent/` | egui chat, CLI runner, drafts and placed builds, area selection, land previews and the land overlay (`landscape.rs`), chat commands (`commands.rs`), applying what the server sends (`online.rs`), other players (`presence.rs`), the history panel (`history.rs`) (desktop only) |
 
 ## Voxel models (`assets/**/*.vox.ron`)
 
