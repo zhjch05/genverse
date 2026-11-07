@@ -11,11 +11,9 @@ use bevy::{
     prelude::*,
 };
 
-use super::{
-    grid::{AIR, VoxelGrid, VoxelId},
-    noise::hash01,
-    palette::Palette,
-};
+use cubelark_rules::voxel::faces::face_visible;
+
+use super::{AIR, Palette, VoxelGrid, VoxelId, noise::hash01};
 
 /// Edge length of a mesh chunk, in voxels.
 pub const CHUNK_SIZE: i32 = 32;
@@ -65,18 +63,6 @@ impl MeshBuilder {
             .with_inserted_attribute(Mesh::ATTRIBUTE_COLOR, self.colors)
             .with_inserted_indices(Indices::U32(self.indices))
     }
-}
-
-fn face_visible(palette: &Palette, id: VoxelId, neighbor: VoxelId) -> bool {
-    if neighbor == AIR {
-        return true;
-    }
-    if palette.is_opaque(neighbor) {
-        return false;
-    }
-    // Neighbor is transparent: opaque voxels show through it, and different
-    // transparent kinds still need a boundary face.
-    palette.is_opaque(id) || neighbor != id
 }
 
 /// Number of unoccluded neighbors (0..=3) around one face corner.

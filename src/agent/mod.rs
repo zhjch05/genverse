@@ -14,7 +14,7 @@ mod landscape;
 mod mcp;
 mod prompt;
 mod runner;
-mod spec;
+use cubelark_rules::build as spec;
 mod tools;
 
 use std::sync::Mutex;
@@ -214,7 +214,7 @@ fn auto_prompt(
         let center = hero.translation.xz() + forward * (size / 2.0 + 2.0);
         let half = Vec2::splat(size / 2.0);
         let cell = |p: Vec2| (p / crate::world::terrain::VOXEL_SIZE).floor().as_ivec2();
-        landscape.area = Some(crate::world::sculpt::Area::from_corners(cell(center - half), cell(center + half) - 1));
+        landscape.area = Some(cubelark_rules::sculpt::Area::from_corners(cell(center - half), cell(center + half) - 1));
     }
     if let Ok(text) = std::env::var("CUBELARK_PROMPT") {
         if let Ok(provider) = std::env::var("CUBELARK_AGENT") {

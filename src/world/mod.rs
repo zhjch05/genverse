@@ -8,8 +8,7 @@
 //! They're applied whenever a chunk is (re)built, so the world stays "seed + edits":
 //! cheap to save, and exactly what a server would replicate.
 
-pub mod sculpt;
-pub mod terrain;
+pub use cubelark_rules::terrain;
 
 use std::sync::Arc;
 
@@ -22,6 +21,7 @@ use bevy::{
 use serde::{Deserialize, Serialize};
 
 use crate::voxel::{
+    SurfaceMaterial,
     AIR, Palette, VoxelGrid, VoxelId,
     mesher::mesh_region,
     query::{Hit, march},

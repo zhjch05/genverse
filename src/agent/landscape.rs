@@ -20,13 +20,14 @@ use bevy::{
 use bevy_egui::input::EguiWantsInput;
 use serde::{Deserialize, Serialize};
 
+use cubelark_rules::sculpt::{self, Area, Columns, SculptStats, TerrainEdit, TerrainSpec, level_of, limits, surface};
+
 use super::{Chat, cursor_ray};
 use crate::{
     player::OrbitLock,
     voxel::{AIR, VoxelId},
     world::{
         VoxelWorld,
-        sculpt::{self, Area, Columns, SculptStats, TerrainEdit, TerrainSpec, level_of, limits, surface},
         terrain::{VOXEL_SIZE, WORLD_HEIGHT, block},
     },
 };

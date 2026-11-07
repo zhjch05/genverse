@@ -8,12 +8,11 @@
 //! Frames: an [`Area`] is a rectangle of world voxel columns. Operations use meters in
 //! the area's frame: x and z run from its min corner (world +X and +Z). Levels are
 //! meters relative to sea level (the sea surface is 0).
-#![cfg_attr(target_arch = "wasm32", allow(dead_code))]
 
-use bevy::prelude::*;
+use bevy_math::prelude::*;
 use serde::{Deserialize, Serialize};
 
-use super::terrain::{SEA_LEVEL, Terrain, VOXEL_SIZE, WORLD_HEIGHT, block, is_ground, pick};
+use crate::terrain::{SEA_LEVEL, Terrain, VOXEL_SIZE, WORLD_HEIGHT, block, is_ground, pick};
 use crate::voxel::{
     AIR, VoxelGrid, VoxelId,
     noise::{hash01, value},
@@ -316,7 +315,7 @@ impl Columns {
             return;
         }
         const NEIGHBORS: [IVec3; 6] = [IVec3::X, IVec3::NEG_X, IVec3::Y, IVec3::NEG_Y, IVec3::Z, IVec3::NEG_Z];
-        let mut seen = bevy::platform::collections::HashSet::new();
+        let mut seen = std::collections::HashSet::new();
         let mut stack = seeds;
         let mut trunk = Vec::new();
         while let Some(p) = stack.pop() {

@@ -8,7 +8,7 @@ use serde::{Deserialize, Serialize};
 
 use super::spec::{BuildSpec, BuildStats, VOXEL_SIZE, compile};
 use crate::{
-    voxel::{DepthBias, VoxelModel, VoxelModelAsset},
+    voxel::{DepthBias, VoxelModel, ModelData},
     world::{SolidModel, VoxelWorld, terrain::is_solid},
 };
 
@@ -80,13 +80,13 @@ pub struct Creation {
 pub struct DraftMarker;
 
 /// Spawns a placed (solid) creation.
-fn spawn_placed(commands: &mut Commands, model: &VoxelModelAsset, saved: &SavedCreation) -> Entity {
+fn spawn_placed(commands: &mut Commands, model: &ModelData, saved: &SavedCreation) -> Entity {
     let entity = spawn(commands, model, &saved.name, saved.position.into(), saved.yaw);
     commands.entity(entity).insert(SolidModel);
     entity
 }
 
-fn spawn(commands: &mut Commands, model: &VoxelModelAsset, name: &str, position: Vec3, yaw: f32) -> Entity {
+fn spawn(commands: &mut Commands, model: &ModelData, name: &str, position: Vec3, yaw: f32) -> Entity {
     let size = model.grid.size().as_vec3() * VOXEL_SIZE;
     commands
         .spawn((
@@ -128,7 +128,7 @@ impl Creations {
     pub fn set_draft(
         &mut self,
         commands: &mut Commands,
-        model: &VoxelModelAsset,
+        model: &ModelData,
         draft: (BuildSpec, BuildStats, String, String),
         at: (Vec3, f32),
     ) {
