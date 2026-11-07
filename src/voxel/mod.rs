@@ -15,11 +15,12 @@ use std::sync::Arc;
 
 use bevy::{
     light::NotShadowCaster,
-    pbr::{ExtendedMaterial, MaterialExtension},
+    mesh::MeshVertexBufferLayoutRef,
+    pbr::{ExtendedMaterial, MaterialExtension, MaterialExtensionKey, MaterialExtensionPipeline},
     platform::collections::HashSet,
     prelude::*,
-    render::render_resource::AsBindGroup,
-    shader::ShaderRef,
+    render::render_resource::{AsBindGroup, RenderPipelineDescriptor, SpecializedMeshPipelineError},
+    shader::{ShaderDefVal, ShaderRef},
 };
 
 pub use asset::VoxelModelAsset;
@@ -31,6 +32,9 @@ pub type VoxelMaterial = ExtendedMaterial<StandardMaterial, Bevel>;
 /// Softly rounded outside edges, drawn by bending normals in `voxel_bevel.wesl`; the
 /// mesher marks which edges of each face turn away from it. The world's rules set the
 /// width ([`cubewish_rules::settings::Look`]); it starts sharp.
+///
+/// It also draws the mesher's packed vertices: `voxel_vertex.wesl` unpacks them in
+/// every pass, into the fields Bevy's shaders expect from a full vertex layout.
 #[derive(Asset, AsBindGroup, Reflect, Debug, Clone, Default)]
 pub struct Bevel {
     /// x: the fillet width, as a share of a voxel; the rest is padding for WebGL2.
@@ -49,8 +53,43 @@ impl Bevel {
 }
 
 impl MaterialExtension for Bevel {
+    fn vertex_shader() -> ShaderRef {
+        "shaders/voxel_vertex.wesl".into()
+    }
+
+    fn prepass_vertex_shader() -> ShaderRef {
+        "shaders/voxel_vertex.wesl".into()
+    }
+
+    fn deferred_vertex_shader() -> ShaderRef {
+        "shaders/voxel_vertex.wesl".into()
+    }
+
     fn fragment_shader() -> ShaderRef {
         "shaders/voxel_bevel.wesl".into()
+    }
+
+    fn specialize(
+        _pipeline: &MaterialExtensionPipeline,
+        descriptor: &mut RenderPipelineDescriptor,
+        layout: &MeshVertexBufferLayoutRef,
+        _key: MaterialExtensionKey<Self>,
+    ) -> Result<(), SpecializedMeshPipelineError> {
+        descriptor.vertex.buffers = vec![layout.0.get_layout(&[mesher::ATTRIBUTE_VOXEL.at_shader_location(0)])?];
+        // Bevy picks these from the mesh's attributes, which it can't see inside the
+        // packed words; they switch on the vertex outputs the shaders read. The same
+        // ones a full layout gets: the prepass wants normals only when it writes them.
+        let has = |name: &'static str| descriptor.vertex.shader_defs.contains(&name.into());
+        let mut defs: Vec<ShaderDefVal> =
+            ["VERTEX_UVS", "VERTEX_UVS_A", "VERTEX_UVS_B", "VERTEX_COLORS"].map(Into::into).into();
+        if !has("PREPASS_PIPELINE") || has("NORMAL_PREPASS_OR_DEFERRED_PREPASS") {
+            defs.extend(["VERTEX_NORMALS", "VERTEX_TANGENTS"].map(Into::into));
+        }
+        descriptor.vertex.shader_defs.extend(defs.iter().cloned());
+        if let Some(fragment) = &mut descriptor.fragment {
+            fragment.shader_defs.extend(defs);
+        }
+        Ok(())
     }
 }
 
@@ -209,7 +248,7 @@ fn rebuild_models(
             })
             .collect();
         let offset = -model.pivot * model.voxel_size;
-        let chunks = mesher::mesh_grid(&model.grid, &model.palette, model.voxel_size);
+        let chunks = mesher::mesh_grid(&model.grid, &model.palette);
         let chunk_count = chunks.len();
 
         let mut spawned = Vec::with_capacity(chunk_count + model.lights.len());
@@ -220,7 +259,8 @@ fn rebuild_models(
                 VoxelChunk,
                 Mesh3d(meshes.add(chunk.mesh)),
                 MeshMaterial3d(surface_materials[chunk.surface].clone()),
-                Transform::from_translation(offset + chunk.origin.as_vec3() * model.voxel_size),
+                Transform::from_translation(offset + chunk.origin.as_vec3() * model.voxel_size)
+                    .with_scale(Vec3::splat(model.voxel_size)),
                 ChildOf(entity),
             ));
             if surface.is_transparent() {

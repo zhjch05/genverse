@@ -434,13 +434,7 @@ fn build_chunk(
     for (p, id) in edits {
         voxels.set(*p - padded_min, *id);
     }
-    let meshes = mesh_region(
-        |p| voxels.get(p - padded_min),
-        palette,
-        VOXEL_SIZE,
-        origin,
-        origin + IVec3::splat(CHUNK),
-    );
+    let meshes = mesh_region(|p| voxels.get(p - padded_min), palette, origin, origin + IVec3::splat(CHUNK));
     BuiltChunk { voxels, meshes }
 }
 
@@ -486,7 +480,7 @@ fn finish_chunks(
                     WorldChunk,
                     Mesh3d(meshes.add(mesh)),
                     MeshMaterial3d(world.materials[surface].clone()),
-                    Transform::from_translation(translation),
+                    Transform::from_translation(translation).with_scale(Vec3::splat(VOXEL_SIZE)),
                 ));
                 if world.palette.surfaces[surface].is_transparent() {
                     e.insert(NotShadowCaster);
