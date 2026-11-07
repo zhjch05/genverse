@@ -27,7 +27,7 @@ use crate::{
         VoxelModel,
         query::{Hit, overlaps_box, raycast},
     },
-    world::VoxelWorld,
+    world::{VoxelWorld, edit::BlockMode},
 };
 use creations::{
     Adjust, Creation, Creations, DraftMarker, load_creations, outline_creations, placement_for_hit,
@@ -313,10 +313,15 @@ fn shortcuts(
     blocked: Res<InputBlocked>,
     mut chat: ResMut<Chat>,
     mut creations: ResMut<Creations>,
+    mut block_mode: ResMut<BlockMode>,
     mut transforms: Query<&mut Transform, With<DraftMarker>>,
 ) {
     if blocked.0 {
         return;
+    }
+    // A draft and block editing both own the mouse; the draft wins.
+    if creations.draft.is_some() && block_mode.active {
+        block_mode.active = false;
     }
     let command = keys.any_pressed([KeyCode::ControlLeft, KeyCode::ControlRight, KeyCode::SuperLeft, KeyCode::SuperRight]);
     if command && keys.just_pressed(KeyCode::KeyZ) {
@@ -371,6 +376,10 @@ fn shortcuts(
         return;
     }
 
+    // In block mode the keys belong to the hotbar.
+    if block_mode.active {
+        return;
+    }
     if creations.selected.is_some() {
         if keys.just_pressed(KeyCode::KeyM) {
             if let Some(name) = creations.edit_selected(&mut commands, true) {
@@ -484,9 +493,14 @@ fn click_in_world(
     drafts: Query<&Transform, With<DraftMarker>>,
     mut creations: ResMut<Creations>,
     mut chat: ResMut<Chat>,
+    block_mode: Res<BlockMode>,
     mut pressed_at: Local<[Option<Vec2>; 3]>,
     mut last_select: Local<Option<(Entity, f32)>>,
 ) {
+    if block_mode.active {
+        *pressed_at = default();
+        return;
+    }
     let Some((cursor, ray)) = cursor_ray(&windows, &cameras, &egui) else {
         return;
     };
@@ -541,7 +555,16 @@ fn click_in_world(
 }
 
 /// A one-line reminder of the shortcuts that apply right now, at the bottom of the view.
-fn shortcut_hints(mut contexts: EguiContexts, chat: Res<Chat>, creations: Res<Creations>) -> Result {
+fn shortcut_hints(
+    mut contexts: EguiContexts,
+    chat: Res<Chat>,
+    creations: Res<Creations>,
+    block_mode: Res<BlockMode>,
+) -> Result {
+    // The block hotbar shows its own hints.
+    if block_mode.active {
+        return Ok(());
+    }
     let hint = match &creations.draft {
         Some(d) if d.follow => "Click: place   Q/E: turn   R/F: raise / lower   Esc or right-click: cancel   T: ask for changes",
         Some(_) => "Enter: keep the change   M: move it   T: ask for more   Esc: cancel",
@@ -549,7 +572,7 @@ fn shortcut_hints(mut contexts: EguiContexts, chat: Res<Chat>, creations: Res<Cr
             "T: change it   M or double-click: move   Delete: remove   Middle-click: copy   Esc: deselect   Ctrl/Cmd+Z: undo"
         }
         None if chat.pending.is_some() => return Ok(()),
-        None => "T: describe a build   Click a build: select   Middle-click a build: copy",
+        None => "T: describe a build   Click a build: select   Middle-click a build: copy   B: edit blocks",
     };
     let ctx = contexts.ctx_mut()?;
     egui::Area::new("shortcut_hints".into())

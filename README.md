@@ -14,6 +14,20 @@ bevy run web --open # in the browser (WebGPU)
 
 Controls: `WASD`/arrows move, `Shift` runs, `Space` jumps, drag to look, scroll to zoom.
 
+## Block editing
+
+Press `B` (or a number key) for block mode, Minecraft-style. Clicks are press-and-release
+without dragging the camera: left-click breaks the block under the cursor, right-click places
+the selected block against the face you point at, middle-click picks that block into the
+hotbar. `1`-`9` choose grass, dirt, stone, sand, wood, leaves, snow, water or flowers, `X`
+switches the brush between 25 cm and 50 cm, `B`/`Esc` leaves block mode. You can reach about
+6 m, can't place a block inside yourself, and the bottom layer is bedrock.
+
+Edits are a sparse layer on top of the world seed (`src/world/mod.rs`): chunks apply them
+whenever they generate, and edited chunks (plus neighbors sharing the border) remesh in the
+background. On desktop they're saved to `saves/world_edits.json`; on the web they last for the
+session. Agents' `get_build_site` sees edited terrain too.
+
 Web builds use WebGPU, which the physical sky needs, so they need a WebGPU browser (recent
 Chrome, Edge, Safari or Firefox). On the web, SSAO and model hot reload are off, and chunks
 generate on a single thread, so the world fills in more slowly; `bevy run --release web`
