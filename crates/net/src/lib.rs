@@ -65,6 +65,14 @@ pub struct Presence {
     pub selected: Option<u64>,
     /// E.g. "Claude Code is designing…".
     pub status: Option<String>,
+    /// The name they go by now, which can change while they play; empty means the one
+    /// they joined with.
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    pub name: String,
+    /// The marker color they picked, as an index into the game's set; none means the one
+    /// their id gives them.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub color: Option<u8>,
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize)]

@@ -60,6 +60,7 @@ pub fn history_window(
     mut creations: ResMut<Creations>,
     mut landscape: ResMut<Landscape>,
     mut chat: ResMut<Chat>,
+    peers: Res<super::presence::Peers>,
 ) -> Result {
     if !history.open {
         return Ok(());
@@ -103,7 +104,7 @@ pub fn history_window(
                 let changes = ledger.log.changes.iter().rev().filter(|c| history.filter.as_ref().is_none_or(|f| *f == c.by.player));
                 for c in changes.take(PAGE) {
                     let gone = undone.contains(&c.id);
-                    let [r, g, b, _] = color_of(&c.by.player).to_srgba().to_u8_array();
+                    let [r, g, b, _] = color_of(&c.by.player, &peers, &me, chat.marker(&me)).to_srgba().to_u8_array();
                     ui.horizontal_wrapped(|ui| {
                         ui.label(egui::RichText::new(format!("{}", c.id)).monospace().weak());
                         let who = if c.by.player == me { "you".to_string() } else { c.by.player_name.clone() };

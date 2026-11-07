@@ -136,8 +136,15 @@ fn two_players_share_one_ordered_world() {
     let chunks: Vec<_> = prints.iter().map(|(c, _)| cubelark_rules::IVec3::from_array(*c)).collect();
     assert_eq!(cubelark_rules::log::chunk_prints(&edits, &chunks), prints);
 
-    // Presence goes to others, never to the sender, and isn't kept.
-    let here = cubelark_net::Presence { position: [1.0, 2.0, 3.0], status: Some("designing".into()), ..Default::default() };
+    // Presence goes to others, never to the sender, and isn't kept. It carries a rename
+    // and a marker color made after joining.
+    let here = cubelark_net::Presence {
+        position: [1.0, 2.0, 3.0],
+        status: Some("designing".into()),
+        name: "Ada L.".into(),
+        color: Some(3),
+        ..Default::default()
+    };
     ada.client.send(ToServer::Presence(here.clone()));
     match bo.next() {
         ToClient::Presence { name, presence, .. } => assert_eq!((name.as_str(), presence), ("Ada", here)),

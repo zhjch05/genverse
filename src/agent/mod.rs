@@ -133,8 +133,13 @@ struct Chat {
     pending: Option<Pending>,
     /// Set by the T/Enter shortcuts; the panel focuses the input on its next frame.
     focus_input: bool,
-    /// The player's name as being edited in the panel (loaded from the profile).
+    /// The name being typed in the profile editor, while it's open.
     name: Option<String>,
+    /// The profile editor just opened; its name field takes the keyboard.
+    focus_name: bool,
+    /// The marker color picked (an index into [`presence::MARKERS`]); none for the one
+    /// the player's id gives them.
+    marker: Option<u8>,
     /// The server address being typed, to join.
     server_addr: String,
     /// Play together was asked for (by `/play`); the LAN system picks it up.
@@ -166,6 +171,8 @@ impl Default for Chat {
             pending: None,
             focus_input: false,
             name: None,
+            focus_name: false,
+            marker: prefs::get("marker").and_then(|v| v.as_u64()).map(|m| m as u8 % presence::MARKERS.len() as u8),
             server_addr: String::new(),
             play_together: false,
             network: false,
@@ -176,6 +183,11 @@ impl Default for Chat {
 }
 
 impl Chat {
+    /// The marker color this player shows others.
+    fn marker(&self, me: &str) -> u8 {
+        self.marker.unwrap_or_else(|| presence::default_marker(me))
+    }
+
     fn say(&mut self, role: Role, text: impl Into<String>) {
         self.messages.push(Message { role, text: text.into(), at: Instant::now() });
     }
@@ -981,9 +993,9 @@ fn center_view(
 }
 
 /// The name a message is shown with, and the color of its avatar and name.
-fn sender(role: &Role, me: &str, p: &theme::Palette) -> (String, egui::Color32) {
+fn sender(role: &Role, me: &str, mine: egui::Color32, p: &theme::Palette) -> (String, egui::Color32) {
     match role {
-        Role::Player => (me.to_string(), p.me),
+        Role::Player => (me.to_string(), mine),
         Role::Agent(name) if name.starts_with("Claude") => (name.to_string(), p.claude),
         Role::Agent(name) => (name.to_string(), p.codex),
         Role::System => (String::new(), p.faint),
@@ -1003,7 +1015,7 @@ fn ago(at: Instant, short: bool) -> String {
 
 /// The conversation in Discord's layout: an avatar and name line start each run of
 /// messages from one sender, and a row lights up under the pointer.
-fn show_messages(ui: &mut egui::Ui, messages: &[Message], me: &str) {
+fn show_messages(ui: &mut egui::Ui, messages: &[Message], me: &str, mine: egui::Color32) {
     let p = theme::palette(ui.ctx());
     let mut previous: Option<&Message> = None;
     for m in messages {
@@ -1012,7 +1024,7 @@ fn show_messages(ui: &mut egui::Ui, messages: &[Message], me: &str) {
             ui.add_space(12.0);
         }
         previous = Some(m);
-        let (name, color) = sender(&m.role, me, p);
+        let (name, color) = sender(&m.role, me, mine, p);
         let background = ui.painter().add(egui::Shape::Noop);
         let row = ui.horizontal_top(|ui| {
             ui.add_space(12.0);
@@ -1033,7 +1045,9 @@ fn show_messages(ui: &mut egui::Ui, messages: &[Message], me: &str) {
                 }
                 if first {
                     ui.horizontal(|ui| {
-                        ui.label(egui::RichText::new(&name).strong().color(color));
+                        // Light markers would vanish on parchment; names go darker there.
+                        let readable = if ui.visuals().dark_mode { color } else { theme::shade(color, 0.62) };
+                        ui.label(egui::RichText::new(&name).strong().color(readable));
                         if matches!(m.role, Role::Agent(_)) {
                             theme::tag(ui, "AGENT", p.primary, p.on_primary);
                         }
@@ -1051,6 +1065,45 @@ fn show_messages(ui: &mut egui::Ui, messages: &[Message], me: &str) {
                 ui.painter().text(at, egui::Align2::CENTER_CENTER, ago(m.at, true), egui::FontId::proportional(10.0), p.faint);
             }
         }
+    }
+}
+
+/// Your name and marker color, as others see them. The color applies as you pick it;
+/// the name when you save it. Both reach other players while you're online.
+fn profile_section(ui: &mut egui::Ui, chat: &mut Chat, ledger: &mut Ledger) {
+    theme::section(ui, "Your name");
+    let mut save = false;
+    if let Some(name) = &mut chat.name {
+        let field = ui.add(egui::TextEdit::singleline(name).desired_width(f32::INFINITY).char_limit(32).hint_text("your name"));
+        if std::mem::take(&mut chat.focus_name) {
+            field.request_focus();
+        }
+        save = field.lost_focus() && ui.input(|i| i.key_pressed(egui::Key::Enter));
+    }
+    ui.add_space(4.0);
+    theme::section(ui, "Your color");
+    let current = chat.marker(&ledger.profile.id);
+    ui.horizontal_wrapped(|ui| {
+        ui.spacing_mut().item_spacing = egui::vec2(6.0, 6.0);
+        for (i, (label, _)) in presence::MARKERS.iter().enumerate() {
+            let color = theme::color(presence::marker_color(i as u8));
+            if theme::swatch(ui, color, i as u8 == current).on_hover_text(*label).clicked() {
+                chat.marker = Some(i as u8);
+                prefs::set("marker", i as u64);
+            }
+        }
+    });
+    theme::note(ui, "Your ring, outlines and name tag in multiplayer");
+    ui.add_space(2.0);
+    ui.horizontal(|ui| {
+        let typed = chat.name.as_deref().is_some_and(|n| !n.trim().is_empty());
+        save |= ui.add_enabled(typed, theme::Block::new(format!("{} Save", icon::CHECK), theme::Tone::Primary)).on_hover_text("Enter").clicked();
+        if ui.add(theme::Block::new("Cancel", theme::Tone::Plain)).clicked() {
+            chat.name = None;
+        }
+    });
+    if save && let Some(name) = chat.name.take() {
+        ledger.rename(&name);
     }
 }
 
@@ -1179,6 +1232,7 @@ fn chat_panel(
         egui::UiBuilder::new().layer_id(egui::LayerId::background()).max_rect(screen),
     );
     let me = ledger.profile.name.clone();
+    let mine = theme::color(presence::marker_color(chat.marker(&ledger.profile.id)));
     let mut open = chat.open;
 
     let panel = egui::Panel::right("builder")
@@ -1228,12 +1282,17 @@ fn chat_panel(
                 .frame(egui::Frame::new().fill(p.footer).inner_margin(egui::Margin::symmetric(10, 8)))
                 .show_separator_line(false)
                 .show(ui, |ui| {
-                    if chat.network {
+                    if chat.name.is_some() {
+                        profile_section(ui, chat, &mut ledger);
+                        ui.add_space(6.0);
+                    } else if chat.network {
                         network_section(ui, chat, &ledger, &lan, &mut action);
                         ui.add_space(6.0);
                     }
                     ui.horizontal(|ui| {
-                        let face = theme::avatar(ui, &me, p.me, 32.0);
+                        let face = theme::avatar(ui, &me, mine, 32.0)
+                            .interact(egui::Sense::click())
+                            .on_hover_text("Edit your name and color");
                         // A status pip on the avatar, grass-green while playing with others.
                         let dot = face.rect.right_bottom() - egui::vec2(3.0, 3.0);
                         ui.painter().rect_filled(egui::Rect::from_center_size(dot, egui::vec2(11.0, 11.0)), 2, p.footer);
@@ -1242,22 +1301,7 @@ fn chat_panel(
                         ui.painter().rect_filled(egui::Rect::from_center_size(dot, egui::vec2(7.0, 7.0)), 1, pip);
                         ui.vertical(|ui| {
                             ui.spacing_mut().item_spacing.y = 0.0;
-                            let name = chat.name.get_or_insert_with(|| ledger.profile.name.clone());
-                            let field = ui
-                                .add(
-                                    egui::TextEdit::singleline(name)
-                                        .frame(egui::Frame::NONE)
-                                        .margin(egui::Margin::ZERO)
-                                        .font(egui::FontId::proportional(14.0))
-                                        .text_color(p.strong)
-                                        .desired_width(150.0)
-                                        .hint_text("your name"),
-                                )
-                                .on_hover_text("Your name; click to change it");
-                            if field.lost_focus() {
-                                ledger.rename(name);
-                                *name = ledger.profile.name.clone();
-                            }
+                            ui.label(egui::RichText::new(&me).size(14.0).strong().color(p.strong));
                             let status = match (&ledger.online, &ledger.hosting) {
                                 (None, _) => "Local world".to_string(),
                                 (Some(online), _) if online.closed.is_some() => "Reconnecting…".to_string(),
@@ -1266,14 +1310,16 @@ fn chat_panel(
                             };
                             ui.label(egui::RichText::new(status).size(11.5).color(p.muted));
                         });
+                        let mut edit = face.clicked();
                         ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
                             let tip = if chat.network { "Hide Play together" } else { "Play together" };
-                            let color = if chat.network { p.strong } else { p.muted };
+                            let color = if chat.network && chat.name.is_none() { p.strong } else { p.muted };
                             let button = ui
                                 .add(egui::Button::new(egui::RichText::new(icon::USERS_THREE).size(18.0).color(color)).frame(false))
                                 .on_hover_text(tip);
                             if button.clicked() {
-                                chat.network = !chat.network;
+                                chat.network = chat.name.is_some() || !chat.network;
+                                chat.name = None;
                             }
                             // Worlds found on the network, as an unread-style badge.
                             if !lan.worlds.is_empty() && ledger.online.is_none() {
@@ -1287,7 +1333,20 @@ fn chat_panel(
                                     egui::Color32::WHITE,
                                 );
                             }
+                            let color = if chat.name.is_some() { p.strong } else { p.muted };
+                            edit |= ui
+                                .add(egui::Button::new(egui::RichText::new(icon::PENCIL_SIMPLE).size(18.0).color(color)).frame(false))
+                                .on_hover_text("Edit your name and color")
+                                .clicked();
                         });
+                        // Opens the editor, or closes it without saving the name.
+                        if edit {
+                            chat.name = match chat.name {
+                                Some(_) => None,
+                                None => Some(ledger.profile.name.clone()),
+                            };
+                            chat.focus_name = chat.name.is_some();
+                        }
                     });
                 });
 
@@ -1525,7 +1584,7 @@ fn chat_panel(
                 .stick_to_bottom(true)
                 .show(ui, |ui| {
                     ui.add_space(8.0);
-                    show_messages(ui, &chat.messages, &me);
+                    show_messages(ui, &chat.messages, &me, mine);
                     ui.add_space(12.0);
                 });
         });

@@ -37,7 +37,6 @@ pub struct Palette {
     /// Sand: a draft that can't go here.
     pub warn: Color32,
     pub online: Color32,
-    pub me: Color32,
     pub claude: Color32,
     pub codex: Color32,
 }
@@ -60,7 +59,6 @@ pub const DARK: Palette = Palette {
     select: Color32::from_rgb(98, 184, 232),
     warn: Color32::from_rgb(242, 193, 78),
     online: Color32::from_rgb(124, 193, 68),
-    me: Color32::from_rgb(78, 160, 214),
     claude: Color32::from_rgb(214, 118, 82),
     codex: Color32::from_rgb(52, 172, 146),
 };
@@ -83,7 +81,6 @@ pub const LIGHT: Palette = Palette {
     select: Color32::from_rgb(52, 140, 200),
     warn: Color32::from_rgb(196, 132, 28),
     online: Color32::from_rgb(84, 150, 46),
-    me: Color32::from_rgb(52, 132, 192),
     claude: Color32::from_rgb(196, 98, 62),
     codex: Color32::from_rgb(30, 146, 120),
 };
@@ -228,6 +225,28 @@ fn light(color: Color32, by: f32) -> Color32 {
     let [r, g, b, a] = color.to_array();
     let lift = |c: u8| (c as f32 + (255.0 - c as f32) * by) as u8;
     Color32::from_rgba_premultiplied(lift(r), lift(g), lift(b), a)
+}
+
+/// A bevy color as egui draws it.
+pub fn color(color: bevy::color::Color) -> Color32 {
+    use bevy::color::ColorToPacked;
+    let [r, g, b, a] = color.to_srgba().to_u8_array();
+    Color32::from_rgba_unmultiplied(r, g, b, a)
+}
+
+/// A color to pick: a little block, ringed when it's the one picked.
+pub fn swatch(ui: &mut egui::Ui, color: Color32, picked: bool) -> egui::Response {
+    let p = palette(ui.ctx());
+    let (rect, response) = ui.allocate_exact_size(egui::vec2(24.0, 24.0), egui::Sense::click());
+    let block = if response.hovered() { rect } else { rect.shrink(1.0) };
+    let painter = ui.painter();
+    painter.rect_filled(block, ROUND, shade(color, 0.72));
+    let face = egui::Rect::from_min_max(block.min, egui::pos2(block.right(), block.bottom() - 3.0));
+    painter.rect_filled(face, ROUND, color);
+    if picked {
+        painter.rect_stroke(rect.expand(2.5), ROUND + 2, Stroke::new(2.0, p.strong), egui::StrokeKind::Middle);
+    }
+    response
 }
 
 /// A frameless icon button, like the ones in Discord's headers.

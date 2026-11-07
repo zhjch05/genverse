@@ -44,8 +44,12 @@ pub struct Peers(pub HashMap<String, Peer>);
 
 impl Peers {
     pub fn seen(&mut self, commands: &mut Commands, assets: &AssetServer, player: String, name: String, presence: Presence) {
+        // What they call themselves now, over the name they joined with.
+        let name = if presence.name.trim().is_empty() { name } else { presence.name.trim().chars().take(32).collect() };
+        let color = marker_color(presence.color.unwrap_or_else(|| default_marker(&player)));
         if let Some(peer) = self.0.get_mut(&player) {
             peer.name = name;
+            peer.color = color;
             peer.presence = presence;
             return;
         }
@@ -57,7 +61,6 @@ impl Peers {
                 Transform::from_translation(position).with_rotation(Quat::from_rotation_y(presence.yaw)),
             ))
             .id();
-        let color = color_of(&player);
         self.0.insert(player, Peer { name, presence, color, avatar });
     }
 
@@ -74,9 +77,37 @@ impl Peers {
     }
 }
 
-/// Each player's own color, from their id.
-pub fn color_of(player: &str) -> Color {
-    Color::hsl((fnv1a(player.as_bytes()) % 360) as f32, 0.8, 0.62)
+/// The colors players mark themselves with: their ring, outlines and name tag. Taken
+/// from the world's own materials, light enough for a name tag's dark text.
+pub const MARKERS: [(&str, [u8; 3]); 10] = [
+    ("Grass", [124, 193, 68]),
+    ("Sky", [98, 184, 232]),
+    ("Sunflower", [242, 193, 78]),
+    ("Pumpkin", [240, 140, 60]),
+    ("Berry", [226, 93, 93]),
+    ("Blossom", [242, 143, 176]),
+    ("Amethyst", [169, 139, 224]),
+    ("Lagoon", [63, 193, 165]),
+    ("Clay", [201, 139, 94]),
+    ("Snow", [237, 232, 220]),
+];
+
+pub fn marker_color(marker: u8) -> Color {
+    let [r, g, b] = MARKERS[marker as usize % MARKERS.len()].1;
+    Color::srgb_u8(r, g, b)
+}
+
+/// The marker a player has until they pick one, from their id.
+pub fn default_marker(player: &str) -> u8 {
+    (fnv1a(player.as_bytes()) % MARKERS.len() as u64) as u8
+}
+
+/// A player's color, as everyone here sees it: what they picked, if we know.
+pub fn color_of(player: &str, peers: &Peers, me: &str, mine: u8) -> Color {
+    if player == me {
+        return marker_color(mine);
+    }
+    peers.0.get(player).map_or_else(|| marker_color(default_marker(player)), |p| p.color)
 }
 
 /// Sends our presence when it changes (at most ten times a second).
@@ -113,6 +144,8 @@ pub fn send_presence(
         draft,
         selected,
         status: chat.pending.as_ref().map(|p| format!("{} is designing…", p.provider.label())),
+        name: ledger.profile.name.clone(),
+        color: Some(chat.marker(&ledger.profile.id)),
     };
     if last.1.as_ref() != Some(&presence) {
         online.client.send(ToServer::Presence(presence.clone()));
