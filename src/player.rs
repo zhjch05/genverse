@@ -69,6 +69,8 @@ pub struct Player {
     stride: f32,
     /// Smoothed horizontal speed, drives the animation amplitude.
     pace: f32,
+    /// How far the model sits above (+) or below (-) the body after a step snaps it, eased to zero.
+    lag: f32,
     spawned: bool,
 }
 
@@ -142,6 +144,7 @@ fn spawn_player(mut commands: Commands, asset_server: Res<AssetServer>, world: R
                 facing: PI,
                 stride: 0.0,
                 pace: 0.0,
+                lag: 0.0,
                 spawned: false,
             },
             ChunkLoader,
@@ -340,7 +343,10 @@ fn move_player(
                     .map(|h| Vec3::Y * (h + 1e-3))
                     .find(|up| !obstacles.collides(pos + *up) && !obstacles.collides(next + *up));
                 match lift {
-                    Some(up) if was_grounded || player.grounded => pos = next + up,
+                    Some(up) if was_grounded || player.grounded => {
+                        pos = next + up;
+                        player.lag -= up.y;
+                    }
                     _ => {
                         if axis == Vec3::X {
                             player.velocity.x = 0.0;
@@ -354,6 +360,26 @@ fn move_player(
         if !player.grounded {
             player.grounded = obstacles.collides(pos - Vec3::Y * 0.02);
         }
+        // Walk down small ledges too, rather than falling (and flipping to the jump pose) for a
+        // few frames: settle onto ground within a step below by bisecting for the contact.
+        if !player.grounded && was_grounded && player.velocity.y <= 0.0
+            && obstacles.collides(pos - Vec3::Y * (STEP_HEIGHT + 0.02))
+        {
+            let (mut free, mut hit) = (0.0, STEP_HEIGHT + 0.02);
+            for _ in 0..12 {
+                let mid = (free + hit) * 0.5;
+                if obstacles.collides(pos - Vec3::Y * mid) {
+                    hit = mid;
+                } else {
+                    free = mid;
+                }
+            }
+            pos.y -= free;
+            player.lag += free;
+            player.velocity.y = 0.0;
+            player.grounded = true;
+        }
+        player.lag = player.lag.clamp(-STEP_HEIGHT, STEP_HEIGHT) * (-14.0 * dt).exp();
         transform.translation = pos;
         transform.rotation = Quat::from_rotation_y(player.facing);
 
@@ -367,11 +393,15 @@ fn move_player(
 fn animate_hero(
     time: Res<Time>,
     players: Query<&Player>,
-    mut limbs: Query<(&Limb, &mut Transform)>,
+    mut heroes: Query<&mut Transform, (With<Hero>, Without<Limb>)>,
+    mut limbs: Query<(&Limb, &mut Transform), Without<Hero>>,
 ) {
     let Ok(player) = players.single() else {
         return;
     };
+    for mut transform in &mut heroes {
+        transform.translation.y = player.lag;
+    }
     let walk = (player.pace / RUN_SPEED).clamp(0.0, 1.0);
     let swing = player.stride.sin() * (0.25 + 0.6 * walk) * (walk * 4.0).min(1.0);
     let breathe = (time.elapsed_secs() * 2.2).sin();
@@ -406,10 +436,10 @@ fn follow_camera(
     over_ui: Res<PointerOverUi>,
     lock: Res<OrbitLock>,
     world: Res<VoxelWorld>,
-    players: Query<&Transform, (With<Player>, Without<FollowCamera>)>,
+    players: Query<(&Transform, &Player), Without<FollowCamera>>,
     mut cameras: Query<(&mut FollowCamera, &mut Transform)>,
 ) {
-    let Ok(player) = players.single() else {
+    let Ok((player, hero)) = players.single() else {
         return;
     };
     let dt = time.delta_secs();
@@ -428,7 +458,8 @@ fn follow_camera(
         };
         cam.distance = (cam.distance * (1.0 - lines * 0.08)).clamp(2.0, 25.0);
 
-        let goal = player.translation + Vec3::Y * 1.1;
+        // Track the eased model, not the body, so steps don't jolt the view.
+        let goal = player.translation + Vec3::Y * (1.1 + hero.lag);
         if cam.target == Vec3::ZERO {
             cam.target = goal;
         }
