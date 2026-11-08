@@ -12,6 +12,8 @@
 //!
 //! The cost is per pixel: on an M1 Max at Retina resolution, everything on (Ultra) ran
 //! about 20 fps, the Low preset about twice that, and Ultra at half the pixels about 60.
+//! So with auto render scale on ([`AutoScale`]), the render scale is a ceiling: the
+//! world is drawn at fewer pixels while frames run slow, whatever the machine or scene.
 
 use bevy::{
     anti_alias::{fxaa::Fxaa, taa::TemporalAntiAliasing},
@@ -39,10 +41,11 @@ pub struct GraphicsPlugin;
 impl Plugin for GraphicsPlugin {
     fn build(&self, app: &mut App) {
         app.init_resource::<Graphics>()
+            .init_resource::<AutoScale>()
             .add_systems(Startup, spawn_screen)
             // Before the cameras work out their sizes, so the world camera sees a resized
             // picture in the same frame.
-            .add_systems(PostUpdate, (apply_graphics, fit_render_target).chain().before(CameraUpdateSystems));
+            .add_systems(PostUpdate, (apply_graphics, adjust_scale, fit_render_target).chain().before(CameraUpdateSystems));
     }
 }
 
@@ -104,13 +107,17 @@ pub struct Graphics {
     pub shadows: Level,
     pub contact_shadows: bool,
     pub bloom: bool,
-    /// The share of the window's pixels the world is drawn at, 0.5 to 1.
+    /// The share of the window's pixels the world is drawn at, 0.5 to 1; with
+    /// `auto_scale`, the most it's drawn at.
     pub render_scale: f32,
+    /// Lowers the render scale while frames run slow, and raises it back when they
+    /// have room ([`AutoScale`]).
+    pub auto_scale: bool,
 }
 
 impl Default for Graphics {
     fn default() -> Self {
-        Quality::Medium.settings(1.0)
+        Quality::Medium.settings(1.0, true)
     }
 }
 
@@ -148,14 +155,14 @@ impl Quality {
         Self::ALL.into_iter().find(|q| q.label().eq_ignore_ascii_case(key))
     }
 
-    pub fn settings(self, render_scale: f32) -> Graphics {
+    pub fn settings(self, render_scale: f32, auto_scale: bool) -> Graphics {
         let (antialias, ambient_occlusion, shadows, contact_shadows, bloom) = match self {
             Quality::Low => (Antialias::Fxaa, Level::Off, Level::Low, false, false),
             Quality::Medium => (Antialias::Taa, Level::Off, Level::Medium, false, true),
             Quality::High => (Antialias::Taa, Level::Low, Level::High, false, true),
             Quality::Ultra => (Antialias::Taa, Level::High, Level::Ultra, true, true),
         };
-        Graphics { antialias, ambient_occlusion, shadows, contact_shadows, bloom, render_scale }
+        Graphics { antialias, ambient_occlusion, shadows, contact_shadows, bloom, render_scale, auto_scale }
     }
 }
 
@@ -163,7 +170,7 @@ impl Quality {
 impl Graphics {
     /// The preset these settings match, if any ("Custom" otherwise).
     pub fn preset(&self) -> Option<Quality> {
-        Quality::ALL.into_iter().find(|q| q.settings(self.render_scale) == *self)
+        Quality::ALL.into_iter().find(|q| q.settings(self.render_scale, self.auto_scale) == *self)
     }
 
     fn ssao(&self) -> Option<ScreenSpaceAmbientOcclusionQualityLevel> {
@@ -189,6 +196,111 @@ impl Graphics {
 
     fn scale(&self) -> f32 {
         self.render_scale.clamp(0.25, 1.0)
+    }
+}
+
+/// Frames slower than this most of the time (under about 54 fps) call for fewer pixels.
+const SLOW_MS: f32 = 18.5;
+/// Frames faster than this have room for the next step up.
+const FAST_MS: f32 = 12.0;
+/// Seconds of frames each decision looks at.
+const WINDOW: f32 = 2.0;
+/// Seconds before trying a step up when frames can't show their room, as under vsync,
+/// where they take the screen's refresh however fast they could be. Each try that
+/// turns out too slow doubles the wait, up to the most.
+const PROBE_FIRST: f32 = 10.0;
+const PROBE_MOST: f32 = 120.0;
+/// Seconds a try has to hold before it counts: frames that are only just fast enough
+/// often slow down a few seconds later.
+const PROBE_HOLD: f32 = 10.0;
+
+/// The render scale the world is drawn at with auto render scale on: one of
+/// [`RENDER_SCALES`], at most the player's. It moves a step at a time and rarely,
+/// judged on most of a window's frames rather than one hitch, because each change
+/// reallocates the picture and restarts TAA's history.
+#[derive(Resource)]
+pub struct AutoScale {
+    pub scale: f32,
+    /// While set (the loading screen), frames don't count: they're slow for other reasons.
+    pub paused: bool,
+    /// The frame times in the current window, in milliseconds.
+    frames: Vec<f32>,
+    window: f32,
+    /// Seconds since the scale last changed.
+    since_change: f32,
+    probe_wait: f32,
+    /// Whether the last step up is a try that hasn't held yet; a slow window before it
+    /// does takes it back and doubles the wait.
+    probing: bool,
+}
+
+impl Default for AutoScale {
+    fn default() -> Self {
+        Self { scale: 1.0, paused: false, frames: Vec::new(), window: 0.0, since_change: 0.0, probe_wait: PROBE_FIRST, probing: false }
+    }
+}
+
+impl AutoScale {
+    /// Starts over at `ceiling`.
+    fn reset(&mut self, ceiling: f32) {
+        *self = Self { paused: self.paused, ..default() };
+        self.scale = ceiling;
+    }
+
+    /// Counts one frame of `dt` seconds; at the end of a window, maybe steps the scale.
+    /// Returns whether it changed.
+    fn frame(&mut self, dt: f32, ceiling: f32) -> bool {
+        if self.paused || dt <= 0.0 {
+            self.frames.clear();
+            self.window = 0.0;
+            return false;
+        }
+        self.frames.push(dt * 1000.0);
+        self.window += dt;
+        self.since_change += dt;
+        if self.window < WINDOW {
+            return false;
+        }
+        let mut frames = std::mem::take(&mut self.frames);
+        self.window = 0.0;
+        frames.sort_by(f32::total_cmp);
+        let most = frames[frames.len() * 9 / 10];
+
+        let mut steps: Vec<f32> = RENDER_SCALES.into_iter().filter(|s| *s < ceiling - 0.001).collect();
+        steps.push(ceiling);
+        let at = steps.iter().position(|s| (*s - self.scale).abs() < 0.001).unwrap_or(steps.len() - 1);
+        let next = if most > SLOW_MS && at > 0 {
+            if self.probing {
+                self.probe_wait = (self.probe_wait * 2.0).min(PROBE_MOST);
+            }
+            self.probing = false;
+            at - 1
+        } else if at + 1 < steps.len() && (most < FAST_MS || self.since_change >= self.probe_wait) {
+            self.probing = most >= FAST_MS;
+            at + 1
+        } else {
+            if self.probing && self.since_change >= PROBE_HOLD {
+                self.probing = false;
+                self.probe_wait = PROBE_FIRST;
+            }
+            return false;
+        };
+        self.scale = steps[next];
+        self.since_change = 0.0;
+        true
+    }
+}
+
+fn adjust_scale(time: Res<Time<Real>>, graphics: Res<Graphics>, mut auto: ResMut<AutoScale>) {
+    let ceiling = graphics.scale();
+    if graphics.is_changed() || !graphics.auto_scale {
+        if auto.scale != ceiling || graphics.is_changed() {
+            auto.reset(ceiling);
+        }
+        return;
+    }
+    if auto.frame(time.delta_secs(), ceiling) {
+        info!("render scale now {:.0}%", auto.scale * 100.0);
     }
 }
 
@@ -303,7 +415,7 @@ fn apply_graphics(
 /// Keeps the picture the world camera draws into sized for the window and the render
 /// scale: resized in place, so the screen never waits on a new one.
 fn fit_render_target(
-    graphics: Res<Graphics>,
+    auto: Res<AutoScale>,
     mut images: ResMut<Assets<Image>>,
     windows: Query<&Window, With<PrimaryWindow>>,
     mut materials: ResMut<Assets<ColorMaterial>>,
@@ -319,7 +431,8 @@ fn fit_render_target(
     if physical.x == 0 || physical.y == 0 {
         return;
     }
-    let scale = graphics.scale();
+    // The player's scale, or less with auto render scale on.
+    let scale = auto.scale;
     let size = (physical.as_vec2() * scale).round().as_uvec2().max(UVec2::ONE);
     // The picture's logical size matches the window's, so rays from the cursor line up.
     let scale_factor = window.scale_factor() * size.x as f32 / physical.x as f32;
@@ -357,5 +470,66 @@ fn fit_render_target(
     let size = window.size().extend(1.0);
     if transform.scale != size {
         transform.scale = size;
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// Runs `windows` whole windows of frames taking `ms` each; returns the scale after.
+    fn run(auto: &mut AutoScale, windows: usize, ms: f32) -> f32 {
+        let mut done = 0;
+        while done < windows {
+            auto.frame(ms / 1000.0, 1.0);
+            // The window starts over when it's judged.
+            done += (auto.window == 0.0) as usize;
+        }
+        auto.scale
+    }
+
+    #[test]
+    fn steps_down_while_slow_and_up_with_room() {
+        let mut auto = AutoScale::default();
+        assert_eq!(run(&mut auto, 1, 25.0), 0.85);
+        assert_eq!(run(&mut auto, 1, 25.0), 0.75);
+        // One hitch in a window of smooth frames changes nothing.
+        auto.frame(0.2, 1.0);
+        assert_eq!(run(&mut auto, 1, 15.0), 0.75);
+        assert_eq!(run(&mut auto, 1, 8.0), 0.85);
+        assert_eq!(run(&mut auto, 1, 8.0), 1.0);
+    }
+
+    #[test]
+    fn tries_a_step_up_under_vsync_and_backs_off() {
+        let mut auto = AutoScale::default();
+        assert_eq!(run(&mut auto, 1, 25.0), 0.85);
+        // Capped at the refresh: no room shows, so it tries a step after a while...
+        assert_eq!(run(&mut auto, 4, 16.7), 0.85);
+        assert_eq!(run(&mut auto, 1, 16.7), 1.0);
+        // ...which is too slow, so it steps back and waits twice as long next time.
+        assert_eq!(run(&mut auto, 1, 25.0), 0.85);
+        assert_eq!(auto.probe_wait, PROBE_FIRST * 2.0);
+        assert_eq!(run(&mut auto, 9, 16.7), 0.85);
+        assert_eq!(run(&mut auto, 1, 16.7), 1.0);
+        // A try that holds a little but not long enough still counts as too slow.
+        assert_eq!(run(&mut auto, 2, 16.7), 1.0);
+        assert_eq!(run(&mut auto, 1, 25.0), 0.85);
+        assert_eq!(auto.probe_wait, PROBE_FIRST * 4.0);
+    }
+
+    #[test]
+    fn stays_under_the_players_scale_and_ignores_paused_frames() {
+        let mut auto = AutoScale::default();
+        auto.reset(0.75);
+        for _ in 0..1000 {
+            auto.frame(0.008, 0.75);
+        }
+        assert_eq!(auto.scale, 0.75);
+        auto.paused = true;
+        for _ in 0..1000 {
+            auto.frame(0.05, 0.75);
+        }
+        assert_eq!(auto.scale, 0.75);
     }
 }

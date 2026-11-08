@@ -100,7 +100,7 @@ pub fn load_settings(
         *graphics = saved;
     }
     if let Some(q) = std::env::var("CUBEWISH_QUALITY").ok().and_then(|k| Quality::from_key(&k)) {
-        *graphics = q.settings(graphics.render_scale);
+        *graphics = q.settings(graphics.render_scale, graphics.auto_scale);
     }
     let display: Display = prefs::get("display").and_then(|v| serde_json::from_value(v).ok()).unwrap_or_default();
     settings.display = display;
@@ -228,6 +228,12 @@ pub fn settings_window(
                 }
                 ui.end_row();
 
+                ui.label("Auto render scale").on_hover_text(
+                    "Draws at fewer pixels while frames run slow (under about 55 fps), and back up to the render scale when there's room",
+                );
+                toggle(ui, "auto_scale", &mut g.auto_scale);
+                ui.end_row();
+
                 ui.label("VSync").on_hover_text("Waits for the screen's refresh: no tearing, at most its rate");
                 toggle(ui, "vsync", &mut display.vsync);
                 ui.end_row();
@@ -243,7 +249,7 @@ pub fn settings_window(
                 if pick(ui, "preset", &mut preset, &choices, shown)
                     && let Some(q) = preset
                 {
-                    g = q.settings(g.render_scale);
+                    g = q.settings(g.render_scale, g.auto_scale);
                 }
                 ui.end_row();
 

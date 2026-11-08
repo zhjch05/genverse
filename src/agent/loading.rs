@@ -8,7 +8,7 @@ use bevy::prelude::*;
 use bevy_egui::{EguiContexts, egui};
 
 use super::theme;
-use crate::{player::Player, voxel::Meshing, world::VoxelWorld};
+use crate::{graphics::AutoScale, player::Player, voxel::Meshing, world::VoxelWorld};
 
 /// How long the screen takes to fade out, in seconds.
 const FADE: f32 = 0.4;
@@ -42,10 +42,13 @@ pub fn track_loading(
     player: Query<(&Player, &Transform)>,
     meshing: Query<(), With<Meshing>>,
     mut loading: ResMut<Loading>,
+    mut auto: ResMut<AutoScale>,
 ) {
     if loading.is_done() {
         return;
     }
+    // Loading frames are slow for reasons fewer pixels wouldn't fix.
+    auto.paused = true;
     let Ok((player, transform)) = player.single() else {
         return;
     };
@@ -60,6 +63,7 @@ pub fn track_loading(
     loading.steady = if time.delta_secs() * 1000.0 <= STEADY_MS { loading.steady + 1 } else { 0 };
     if loading.steady >= STEADY_FRAMES || now - since >= SETTLE_LIMIT {
         loading.ready_at = Some(now);
+        auto.paused = false;
     }
 }
 

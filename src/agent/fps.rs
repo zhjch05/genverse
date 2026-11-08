@@ -11,7 +11,7 @@ use bevy_egui::{EguiContexts, egui, input::EguiWantsInput};
 use super::{loading::Loading, prefs, theme};
 use crate::{
     player::{InputBlocked, Player, PointerOverUi},
-    graphics::Graphics,
+    graphics::{AutoScale, Graphics},
     world::VoxelWorld,
 };
 
@@ -100,6 +100,7 @@ pub fn fps_overlay(
     mut contexts: EguiContexts,
     fps: Res<Fps>,
     graphics: Res<Graphics>,
+    auto: Res<AutoScale>,
     world: Res<VoxelWorld>,
     entities: Query<Entity>,
     player: Query<&Transform, With<Player>>,
@@ -157,7 +158,8 @@ pub fn fps_overlay(
                     row(ui, "worst", format!("{:.1} ms", s.worst_ms), tone(s.worst_ms));
                     graph(ui, &fps.frames, tone);
                     let preset = graphics.preset().map_or("Custom", |q| q.label());
-                    row(ui, "graphics", format!("{preset} · {:.0}%", graphics.render_scale * 100.0), p.text);
+                    let auto_note = if graphics.auto_scale { " auto" } else { "" };
+                    row(ui, "graphics", format!("{preset} · {:.0}%{auto_note}", auto.scale * 100.0), p.text);
                     row(ui, "chunks", format!("{loaded} (+{building})"), p.text);
                     row(ui, "entities", entities.iter().len().to_string(), p.text);
                     if let Ok(t) = player.single() {
