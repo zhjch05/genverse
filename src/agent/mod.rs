@@ -16,6 +16,7 @@ mod creations;
 mod fps;
 mod game;
 mod history;
+mod hud;
 mod lan;
 mod landscape;
 mod loading;
@@ -113,7 +114,7 @@ impl Plugin for AgentPlugin {
                     (online::sync_online, lan::update_lan, update_build_site, answer_tool_calls, poll_agent).chain(),
                     (presence::send_presence, presence::move_avatars, presence::draw_peers, history::toggle_history, (loading::track_loading, fps::track_frames).chain()),
                     auto_prompt,
-                    (game::script_play.after(auto_prompt), game::run_timers, game::play_zones, game::sync_pieces, game::use_pieces, worlds::use_portals)
+                    (game::script_play.after(auto_prompt), game::run_timers, game::play_zones, game::sync_pieces, game::use_pieces, worlds::use_portals, hud::draw_game_world)
                         .chain(),
                     worlds::toggle_worlds,
                     (game::place_held, shortcuts, select_area, follow_cursor, check_clearance, click_in_world, outline_creations, draw_area, highlight_area, draw_parcels)
@@ -125,7 +126,7 @@ impl Plugin for AgentPlugin {
                 EguiPrimaryContextPass,
                 (presence::name_tags, presence::hover_credit, history::history_window, fps::fps_overlay, settings::settings_window, worlds::portal_prompt),
             )
-            .add_systems(EguiPrimaryContextPass, worlds::worlds_window)
+            .add_systems(EguiPrimaryContextPass, (worlds::worlds_window, hud::game_hud))
             // Trips are taken last, once everything else this frame is done with the world.
             .add_systems(PostUpdate, worlds::travel);
     }

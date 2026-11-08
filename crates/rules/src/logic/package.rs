@@ -56,6 +56,9 @@ pub enum Permission {
     Write { namespace: String },
     /// Create entities, and remove its own, inside where it's installed.
     Spawn,
+    /// Place its voxel models as builds and reshape land, inside where it's installed,
+    /// charged to the installer's budget and land.
+    Build,
 }
 
 impl Permission {

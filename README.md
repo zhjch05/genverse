@@ -157,7 +157,12 @@ builds one linked to that world; walk up to it and press E. Portals lead to a wo
 (`sokoban`, works for everyone in it), another of your games (`game/world`), or a server
 (`host:port`). What you carry goes with you between a game's worlds. Game rules belong to the
 game: install a game once and turn it on in the worlds that play it (the Rules tab); a new
-version reaches every world that runs it. Chat: `/worlds`, `/world`, `/newworld`, `/games`, `/game`, `/newgame`,
+version reaches every world that runs it.
+
+Games give players **stats** (HP, gold) shown on a **HUD**, open **panels** (dialogue, menus,
+shops: a shop can be pure data), and change the world itself: a script can place its models as
+real builds and reshape land, within the budget of whoever installed it. How to test all of it:
+`docs/testing-games.md`. Chat: `/worlds`, `/world`, `/newworld`, `/games`, `/game`, `/newgame`,
 `/savegame`, `/loadgame`, `/portal`. Design: `docs/worlds.md`.
 
 ## Playing together

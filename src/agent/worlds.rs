@@ -176,9 +176,11 @@ pub fn travel(
             // Within a game, what the player carries goes with them.
             let me = ledger.profile.id.clone();
             let carried = ledger.logic.state.carried(&me);
-            let carry = !ledger.is_online() && game == game_name() && !carried.is_empty() && ledger.land.is_admin(&me);
+            let stats = ledger.logic.state.carried_stats(&me);
+            let carry = !ledger.is_online() && game == game_name() && !(carried.is_empty() && stats.is_empty()) && ledger.land.is_admin(&me);
             if carry {
-                ledger.record(None, None, Action::Depart { player: me.clone(), to: name.clone(), items: carried.clone() });
+                let depart = Action::Depart { player: me.clone(), to: name.clone(), items: carried.clone(), stats: stats.clone() };
+                ledger.record(None, None, depart);
             }
             let left_world = world_name();
             // The world left behind loads fast next time.
@@ -190,7 +192,7 @@ pub fn travel(
             let (fresh, edits) = ledger::load_local(SEED);
             *ledger = fresh;
             if carry {
-                ledger.record(None, None, Action::Arrive { player: me, from: left_world, items: carried });
+                ledger.record(None, None, Action::Arrive { player: me, from: left_world, items: carried, stats });
             }
             world.reset(&mut commands, ledger.log.terrain(), edits);
             creations.resync(&mut commands, &ledger.builds);

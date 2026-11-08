@@ -312,6 +312,14 @@ impl VoxelWorld {
         self.edits.values().flat_map(|chunk| chunk.iter().map(|(p, id)| [p.x, p.y, p.z, *id as i32])).collect()
     }
 
+    /// The edits in the columns of `area`, as replay keeps them: for working out land
+    /// changes against the ground as it is here.
+    pub fn edits_in_area(&self, area: cubewish_rules::sculpt::Area) -> std::collections::HashMap<IVec3, VoxelId> {
+        let min = IVec3::new(area.min[0], 0, area.min[1]);
+        let max = IVec3::new(area.min[0] + area.size[0], WORLD_HEIGHT, area.min[1] + area.size[1]);
+        self.edits_in(min, max).into_iter().collect()
+    }
+
     /// Edits inside the padded grid of chunk `c`.
     fn edits_for(&self, c: IVec3) -> Vec<(IVec3, VoxelId)> {
         self.edits_in(c * CHUNK - IVec3::ONE, c * CHUNK + IVec3::splat(CHUNK + 1))

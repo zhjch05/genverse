@@ -124,7 +124,8 @@ pub fn definitions(rules: &WorldRules) -> Value {
                 pieces afterwards. Steps: \"place <fixture>\" (puts it down; each 32 m apart), a key (\"enter\", \
                 \"north\", \"south\", \"east\", \"west\", \"action\", \"reset\", \"leave\"; sent to the zone \
                 the tester's pawn or last placement is in), \"interact\" (the nearest labeled piece), or \"wait \
-                <seconds>\" (time passes and timers go off; every step takes a second). Use it to \
+                <seconds>\" (time passes and timers go off; every step takes a second), \"choose <choice id>\" \
+                (a pick in the open panel) or \"close\". Use it to \
                 play your game through, including winning, and fix what fails.",
             "inputSchema": {
                 "type": "object",

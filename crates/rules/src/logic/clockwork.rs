@@ -163,40 +163,49 @@ impl Clockwork {
         self.since = self.since.max(now);
     }
 
-    /// Fires every package's due timers up to `now` and applies what they did to
-    /// `logic`, one change per package, numbered from `first_change`: the caller records
-    /// them in order as [`crate::log::Action::Timers`] by the world.
-    #[allow(clippy::too_many_arguments)]
-    pub fn run(&mut self, logic: &mut Logic, first_change: u64, now: u64, world_seed: u32, rules: &LogicRules, players: &[[f32; 3]]) -> Run {
+    /// Fires every package's due timers up to `now`, one package at a time, and has
+    /// `host` record and apply what each one's did (as an
+    /// [`crate::log::Action::Timers`] by the world), so the next sees it.
+    pub fn run(&mut self, host: &mut dyn TimerHost, now: u64, world_seed: u32, rules: &LogicRules, players: &[[f32; 3]]) -> Run {
         let mut out = Run::default();
         if now <= self.since && self.held.is_empty() {
             return out;
         }
-        for package in self.due(logic, now, players) {
-            let change = first_change + out.changes.len() as u64;
-            let fired = self.fire(logic, &package, change, now, world_seed, rules, players);
+        for package in self.due(host.logic(), now, players) {
+            let change = host.next_change();
+            let fired = self.fire(host.logic(), &package, change, now, world_seed, rules, players);
             out.errors.extend(fired.errors.iter().cloned());
             if !fired.worth_recording() {
                 continue;
             }
-            match logic.apply_timers(change, &package, now, &fired.effects, rules) {
-                Ok(_) => {
+            match host.record(&package, now, fired.effects) {
+                Ok(()) => {
                     out.notes.extend(fired.notes);
-                    out.changes.push((change, package, fired.effects));
+                    out.changes += 1;
                 }
-                Err(why) => out.errors.push(why),
+                Err(why) => out.errors.push(format!("{package}: {why}")),
             }
         }
-        self.finish(logic, now, players);
+        self.finish(host.logic(), now, players);
         out
     }
+}
+
+/// What keeps a world while its timers run: a server, the game offline, a trial.
+pub trait TimerHost {
+    fn logic(&self) -> &Logic;
+    /// The id the next change will get.
+    fn next_change(&self) -> u64;
+    /// Records what `package`'s timers did by `now`, by the world, and applies it as
+    /// replay would (its builds and land changes too), or says why it can't.
+    fn record(&mut self, package: &str, now: u64, effects: Vec<Effect>) -> Result<(), String>;
 }
 
 /// What a [`Clockwork::run`] did.
 #[derive(Debug, Default)]
 pub struct Run {
-    /// Change id, package, and the effects to record.
-    pub changes: Vec<(u64, String, Vec<Effect>)>,
+    /// How many changes it recorded.
+    pub changes: usize,
     /// Messages for players: who, and what.
     pub notes: Vec<(String, String)>,
     pub errors: Vec<String>,

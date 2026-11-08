@@ -17,6 +17,8 @@
 //!                               -- "east", "west", "action", "reset", "enter", "leave"
 //! function on_timer(ev) end     -- timer ev.name went off, with ev.data; ev.missed
 //!                               -- more times went by unrun (nobody was here)
+//! function on_choose(ev) end    -- ev.player picked ev.choice in the panel ev.panel
+//!                               -- (its id) that the package showed them
 //! ```
 //!
 //! `ev` also has `player` (nil for timers), `pos` (`{x, y, z}` in meters), `day` and
@@ -38,6 +40,21 @@
 //!
 //! `near` (an entity id, optional) puts the timer to sleep while no player is within
 //! 64 m of that entity; it catches up (`ev.missed`) when someone comes back.
+//!
+//! Players, and the world's voxels:
+//!
+//! ```lua
+//! stat(player, name) -> value or nil        stat_max(player, name) -> max or nil
+//! set_stat(player, name, value, max)         -- kept between 0 and max; max optional
+//! add_stat(player, name, delta) -> new value
+//! hud(player, id, widget)   -- player "*" is everyone; widget nil takes it off:
+//!   {kind = "bar", label = "HP", stat = "hp", color = "#d84a4a"}
+//!   {kind = "counter", label = "Gold", stat = "gold"}   {kind = "text", text = "..."}
+//!   {kind = "items", label = "Coins", item = "coin"}    -- how many they carry
+//! show(player, {id, title, text, choices = {{id, label, detail}}, entity})   close(player)
+//! build(model, pos, turn) -> build id     unbuild(id)
+//! terrain({x, z, w, d}, {name, ops})      -- meters; ops as for land changes
+//! ```
 //!
 //! Timers are how a game moves on its own (crops, countdowns, NPC turns). Nothing runs
 //! between them, so a quiet game costs nothing; each timer that does something becomes
@@ -258,6 +275,93 @@ mod vm {
                 "notify",
                 scope.create_function(|_, (player, text): (String, String)| apply(Effect::Notify { player, text }).map(|_| ()))?,
             )?;
+            globals.set(
+                "stat",
+                scope.create_function(|_, (player, name): (String, String)| Ok(world.borrow().stat(&player, &full(&name)).map(|s| s.value)))?,
+            )?;
+            globals.set(
+                "stat_max",
+                scope.create_function(|_, (player, name): (String, String)| {
+                    Ok(world.borrow().stat(&player, &full(&name)).and_then(|s| s.max))
+                })?,
+            )?;
+            globals.set(
+                "set_stat",
+                scope.create_function(|_, (player, name, value, max): (String, String, f64, Option<f64>)| {
+                    apply(Effect::SetStat { player, stat: full(&name), value, max }).map(|_| ())
+                })?,
+            )?;
+            globals.set(
+                "add_stat",
+                scope.create_function(|_, (player, name, delta): (String, String, f64)| {
+                    let stat = full(&name);
+                    let now = world.borrow().stat(&player, &stat).map_or(0.0, |s| s.value);
+                    apply(Effect::SetStat { player: player.clone(), stat: stat.clone(), value: now + delta, max: None })?;
+                    Ok(world.borrow().stat(&player, &stat).map_or(0.0, |s| s.value))
+                })?,
+            )?;
+            globals.set(
+                "hud",
+                scope.create_function(|lua, (player, id, widget): (String, String, Value)| {
+                    let widget: Option<crate::logic::Widget> = match widget {
+                        Value::Nil => None,
+                        w => {
+                            let mut w: serde_json::Value = lua.from_value(w)?;
+                            for key in ["stat", "item"] {
+                                if let Some(name) = w[key].as_str() {
+                                    w[key] = full(name).into();
+                                }
+                            }
+                            Some(serde_json::from_value(w).map_err(|e| fail(format!("hud: {e}")))?)
+                        }
+                    };
+                    apply(Effect::Hud { player, id, widget }).map(|_| ())
+                })?,
+            )?;
+            globals.set(
+                "show",
+                scope.create_function(|lua, (player, panel): (String, Value)| {
+                    let mut panel: serde_json::Value = lua.from_value(panel)?;
+                    // Entities are ids as text in scripts.
+                    if let Some(id) = panel["entity"].as_str() {
+                        let id = parse_id(id)?;
+                        panel["entity"] = serde_json::to_value(id).unwrap_or_default();
+                    }
+                    if panel["choices"].as_object().is_some_and(|o| o.is_empty()) {
+                        panel["choices"] = serde_json::json!([]);
+                    }
+                    let panel: crate::logic::PanelSpec = serde_json::from_value(panel).map_err(|e| fail(format!("show: {e}")))?;
+                    apply(Effect::Show { player, panel: Some(panel) }).map(|_| ())
+                })?,
+            )?;
+            globals.set(
+                "close",
+                scope.create_function(|_, player: String| apply(Effect::Show { player, panel: None }).map(|_| ()))?,
+            )?;
+            globals.set(
+                "build",
+                scope.create_function(|_, (model, pos, turn): (String, Table, Option<u8>)| {
+                    apply(Effect::Build { model, position: pos_of(&pos)?, turn: turn.unwrap_or(0) })?;
+                    Ok(world.borrow().last_build.map(|id| id.to_string()))
+                })?,
+            )?;
+            globals.set(
+                "unbuild",
+                scope.create_function(|_, id: String| {
+                    let build = id.parse().map_err(|_| fail(format!("\"{id}\" isn't a build id")))?;
+                    apply(Effect::Unbuild { build }).map(|_| ())
+                })?,
+            )?;
+            globals.set(
+                "terrain",
+                scope.create_function(|lua, (area, spec): (Table, Value)| {
+                    let cell = |m: f64| (m / crate::terrain::VOXEL_SIZE as f64).floor() as i32;
+                    let (x, z, w, d): (f64, f64, f64, f64) = (area.get("x")?, area.get("z")?, area.get("w")?, area.get("d")?);
+                    let area = crate::sculpt::Area { min: [cell(x), cell(z)], size: [cell(w).max(1), cell(d).max(1)] };
+                    let spec: crate::sculpt::TerrainSpec = lua.from_value(spec)?;
+                    apply(Effect::Terrain { area, spec }).map(|_| ())
+                })?,
+            )?;
             let schedule = |lua: &Lua, (seconds, name, data, near, every): (f64, String, Value, Option<String>, bool)| -> mlua::Result<()> {
                 if !seconds.is_finite() || seconds < MIN_WAIT as f64 || seconds > 1e9 {
                     return Err(fail(format!("a timer waits at least {MIN_WAIT} second")));
@@ -327,6 +431,17 @@ mod vm {
                     ev.set("key", key.as_str())?;
                     "on_key"
                 }
+                Trigger::Intent(Intent::Choose { choice }) => {
+                    let panel = world.borrow().panel(event.player).map(|p| (p.spec.id.clone(), p.spec.entity));
+                    if let Some((id, entity)) = panel {
+                        ev.set("panel", id)?;
+                        if let Some(entity) = entity {
+                            ev.set("entity", id_text(entity))?;
+                        }
+                    }
+                    ev.set("choice", choice.clone())?;
+                    "on_choose"
+                }
             };
             if let Trigger::Intent(Intent::Interact { entity } | Intent::UseItem { target: entity, .. } | Intent::Key { entity, .. }) = event.trigger
                 && let Some(p) = at(entity)
@@ -369,7 +484,7 @@ mod tests {
         let time = WorldTime { day: 0, year: 0, season: 0, day_of_season: 0, time_of_day: 0.0 };
         let event = Event { change: 9, player: "p", trigger: Trigger::Intent(&intent), time, at: 100, seed: 1 };
         let models = package.models.keys().cloned().collect();
-        let grants = Grants { package: "game".into(), write: Vec::new(), spawn: true, scope: Scope::World, max_entities: 100, models, drawn: true };
+        let grants = Grants { package: "game".into(), write: Vec::new(), spawn: true, scope: Scope::World, max_entities: 100, models, drawn: true, build: true };
         let mut batch = state.batch(9, "p", 256);
         run(package, &event, &mut batch, &grants)?;
         let done = batch.finish();

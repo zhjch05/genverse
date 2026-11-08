@@ -12,6 +12,19 @@
 //!   their movement keys to its package (as [`super::Intent::Key`]) instead of walking.
 //! - `pawn`: a player id. That player's hero stands where this entity is, so a game
 //!   moves its players by moving their pawns.
+//! - `shop`: one of its package's shop definitions (`"general"`): E on it opens the shop,
+//!   and buying there needs no script.
+//!
+//! Players have state of their own too, also kept by package: **stats** (`game:hp`,
+//! numbers kept between 0 and a maximum when they have one), **HUD widgets** pinned to
+//! their screen (a bar for a stat, a counter, a line of text), and an open **panel**
+//! (dialogue, a menu, a shop: a title, text, and choices, answered through
+//! [`super::Intent::Choose`]).
+//!
+//! Games change voxels through the world's own operations ([`Effect::Build`],
+//! [`Effect::Unbuild`], [`Effect::Terrain`]): the batch checks and collects them, and the
+//! world applies them under its land rules and the installer's budget
+//! ([`crate::log::Replay`]).
 //!
 //! Packages never write here directly. Each change goes through a [`Batch`], which checks
 //! it against what the package may do; the batch lands whole, or not at all.
@@ -22,6 +35,7 @@ use serde::{Deserialize, Serialize};
 use serde_json::Value;
 
 use super::{Scope, package::split_name};
+use crate::sculpt::{Area, TerrainSpec};
 
 /// The most one component's value may weigh, as JSON.
 pub const MAX_COMPONENT_BYTES: usize = 4096;
@@ -88,7 +102,90 @@ pub enum Effect {
     },
     /// Stops one of the package's timers, if it has it.
     Cancel { name: String },
+    /// Sets one of a player's stats, kept between 0 and its maximum (`max` sets that; none
+    /// keeps the one it has).
+    SetStat {
+        player: String,
+        stat: String,
+        value: f64,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        max: Option<f64>,
+    },
+    /// Pins a widget to a player's screen (`"*"`: everyone's), or takes it off (`None`).
+    Hud { player: String, id: String, widget: Option<Widget> },
+    /// Opens a panel for a player (dialogue, a menu, a shop), or closes theirs (`None`).
+    Show { player: String, panel: Option<PanelSpec> },
+    /// Places one of the package's voxel models as a build: solid, like any build.
+    Build { model: String, position: [f32; 3], #[serde(default)] turn: u8 },
+    /// Removes a build the package placed.
+    Unbuild { build: u64 },
+    /// Reshapes land with the world's terrain operations.
+    Terrain { area: Area, spec: TerrainSpec },
 }
+
+/// A number a player has (hit points, gold, hunger).
+#[derive(Clone, Copy, Debug, PartialEq, Serialize, Deserialize)]
+pub struct Stat {
+    pub value: f64,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub max: Option<f64>,
+}
+
+/// Something pinned to a player's screen.
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+#[serde(tag = "kind", rename_all = "snake_case")]
+pub enum Widget {
+    /// A bar filled to the stat's share of its maximum.
+    Bar {
+        label: String,
+        stat: String,
+        #[serde(default)]
+        color: Option<String>,
+    },
+    /// A label and the stat's value.
+    Counter { label: String, stat: String },
+    /// A label and how many of an item the player carries (coins, keys).
+    Items { label: String, item: String },
+    Text { text: String },
+}
+
+/// A panel as a package asks for it.
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+pub struct PanelSpec {
+    /// The package's name for it, given back with the choice made.
+    pub id: String,
+    pub title: String,
+    #[serde(default)]
+    pub text: String,
+    #[serde(default)]
+    pub choices: Vec<Choice>,
+    /// What it's about (the shopkeeper): where it's open.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub entity: Option<EntityId>,
+}
+
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+pub struct Choice {
+    pub id: String,
+    pub label: String,
+    /// A note beside it ("5 gold").
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    pub detail: String,
+}
+
+/// An open panel: what the package asked for, and whose it is.
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+pub struct Panel {
+    pub package: String,
+    #[serde(flatten)]
+    pub spec: PanelSpec,
+}
+
+/// The most choices a panel may offer, and widgets one player may have.
+pub const MAX_CHOICES: usize = 12;
+pub const MAX_WIDGETS: usize = 16;
+/// Builds a package places get ids from here up, so they never meet players' own.
+pub const SCRIPT_BUILDS: u64 = 1 << 52;
 
 /// A package's wakeup: see [`Effect::Schedule`].
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
@@ -141,7 +238,7 @@ impl Timer {
 }
 
 /// Components the engine itself reads.
-pub const RESERVED: [&str; 4] = ["look", "label", "zone", "pawn"];
+pub const RESERVED: [&str; 5] = ["look", "label", "zone", "pawn", "shop"];
 
 /// Checks an engine component's value, phrased for the agent that wrote it.
 fn check_reserved(name: &str, value: &Value, grants: &Grants) -> Result<(), String> {
@@ -158,6 +255,7 @@ fn check_reserved(name: &str, value: &Value, grants: &Grants) -> Result<(), Stri
         "label" => value.as_str().is_some_and(|l| l.chars().count() <= 60),
         "zone" => sizes("size", 2, 128.0),
         "pawn" => value.as_str().is_some_and(|p| !p.is_empty() && p.len() <= 128),
+        "shop" => value.as_str().is_some_and(|s| !s.is_empty() && s.len() <= 64),
         _ => true,
     };
     if ok {
@@ -170,6 +268,7 @@ fn check_reserved(name: &str, value: &Value, grants: &Grants) -> Result<(), Stri
             ),
             "label" => "\"label\" is text of up to 60 characters".into(),
             "zone" => "\"zone\" is {\"size\": [w, d]} (meters, 0-128)".into(),
+            "shop" => "\"shop\" is the name of one of the package's shops".into(),
             _ => "\"pawn\" is a player id".into(),
         })
     }
@@ -189,6 +288,8 @@ pub struct Grants {
     /// shows those). True for scripted packages; the simple farming kinds draw
     /// themselves.
     pub drawn: bool,
+    /// It may place builds and reshape land ([`super::Permission::Build`]).
+    pub build: bool,
 }
 
 impl Grants {
@@ -202,6 +303,12 @@ impl Grants {
         } else {
             Err(format!("{} may not change \"{name}\", which belongs to {ns}", self.package))
         }
+    }
+
+    /// Whether it may read the stat or component `name`: its own, or one it may write or
+    /// read.
+    fn readable(&self, name: &str) -> Result<(), String> {
+        self.writable(name)
     }
 
     fn inside(&self, position: [f32; 3]) -> Result<(), String> {
@@ -223,6 +330,14 @@ pub struct GameState {
     items: BTreeMap<String, BTreeMap<String, u32>>,
     /// Packages' timers, by package and name.
     timers: BTreeMap<(String, String), Timer>,
+    /// Players' stats, by player and stat.
+    stats: BTreeMap<String, BTreeMap<String, Stat>>,
+    /// Widgets on players' screens, by player (`"*"`: everyone) and `package:id`.
+    hud: BTreeMap<String, BTreeMap<String, Widget>>,
+    /// The panel each player has open.
+    panels: BTreeMap<String, Panel>,
+    /// Builds packages placed, and which package.
+    builds: BTreeMap<u64, String>,
 }
 
 /// [`GameState`] as saved in snapshots: JSON maps need string keys.
@@ -233,6 +348,14 @@ struct SavedState {
     items: BTreeMap<String, BTreeMap<String, u32>>,
     #[serde(default)]
     timers: Vec<(String, String, Timer)>,
+    #[serde(default)]
+    stats: BTreeMap<String, BTreeMap<String, Stat>>,
+    #[serde(default)]
+    hud: BTreeMap<String, BTreeMap<String, Widget>>,
+    #[serde(default)]
+    panels: BTreeMap<String, Panel>,
+    #[serde(default)]
+    builds: Vec<(u64, String)>,
 }
 
 impl From<GameState> for SavedState {
@@ -241,6 +364,10 @@ impl From<GameState> for SavedState {
             entities: state.entities.into_iter().collect(),
             items: state.items,
             timers: state.timers.into_iter().map(|((p, n), t)| (p, n, t)).collect(),
+            stats: state.stats,
+            hud: state.hud,
+            panels: state.panels,
+            builds: state.builds.into_iter().collect(),
         }
     }
 }
@@ -256,6 +383,10 @@ impl From<SavedState> for GameState {
             counts,
             items: saved.items,
             timers: saved.timers.into_iter().map(|(p, n, t)| ((p, n), t)).collect(),
+            stats: saved.stats,
+            hud: saved.hud,
+            panels: saved.panels,
+            builds: saved.builds.into_iter().collect(),
         }
     }
 }
@@ -291,6 +422,36 @@ impl GameState {
         self.items.get(player).into_iter().flatten().map(|(item, n)| (item.as_str(), *n))
     }
 
+    /// One of `player`'s stats.
+    pub fn stat(&self, player: &str, stat: &str) -> Option<Stat> {
+        self.stats.get(player).and_then(|s| s.get(stat)).copied()
+    }
+
+    /// All of `player`'s stats.
+    pub fn stats(&self, player: &str) -> impl Iterator<Item = (&str, Stat)> {
+        self.stats.get(player).into_iter().flatten().map(|(n, s)| (n.as_str(), *s))
+    }
+
+    /// The widgets on `player`'s screen: everyone's, then their own.
+    pub fn hud(&self, player: &str) -> impl Iterator<Item = (&str, &Widget)> {
+        ["*", player].into_iter().flat_map(|p| self.hud.get(p).into_iter().flatten()).map(|(id, w)| (id.as_str(), w))
+    }
+
+    /// The panel `player` has open.
+    pub fn panel(&self, player: &str) -> Option<&Panel> {
+        self.panels.get(player)
+    }
+
+    /// The package that placed build `id`, if a package did.
+    pub fn build_owner(&self, id: u64) -> Option<&str> {
+        self.builds.get(&id).map(String::as_str)
+    }
+
+    /// Forgets a build (removed by its package, or by a player).
+    pub fn forget_build(&mut self, id: u64) {
+        self.builds.remove(&id);
+    }
+
     /// Everything `player` carries, to take to another world.
     pub fn carried(&self, player: &str) -> Vec<(String, u32)> {
         self.inventory(player).map(|(item, n)| (item.to_string(), n)).collect()
@@ -316,6 +477,30 @@ impl GameState {
             self.items.remove(player);
         }
         Ok(())
+    }
+
+    /// `player`'s stats, which go with them to another world.
+    pub fn carried_stats(&self, player: &str) -> Vec<(String, Stat)> {
+        self.stats(player).map(|(n, s)| (n.to_string(), s)).collect()
+    }
+
+    /// Moves stats with a player: away (`None`) or in.
+    pub fn carry_stats(&mut self, player: &str, stats: Option<&[(String, Stat)]>) {
+        match stats {
+            None => {
+                self.stats.remove(player);
+                self.panels.remove(player);
+            }
+            Some(stats) => {
+                let own = self.stats.entry(player.to_string()).or_default();
+                for (name, stat) in stats {
+                    own.insert(name.clone(), *stat);
+                }
+                if own.is_empty() {
+                    self.stats.remove(player);
+                }
+            }
+        }
     }
 
     /// Gives `player` what they carried here from another world.
@@ -356,6 +541,12 @@ impl GameState {
             notes: Vec::new(),
             timers: BTreeMap::new(),
             effects: Vec::new(),
+            stats: BTreeMap::new(),
+            hud: BTreeMap::new(),
+            panels: BTreeMap::new(),
+            builds: BTreeMap::new(),
+            built: 0,
+            last_build: None,
         }
     }
 
@@ -388,6 +579,31 @@ impl GameState {
                 None => self.timers.remove(&key),
             };
         }
+        for ((player, name), stat) in done.stats {
+            self.stats.entry(player).or_default().insert(name, stat);
+        }
+        for ((player, id), widget) in done.hud {
+            let screen = self.hud.entry(player.clone()).or_default();
+            match widget {
+                Some(w) => screen.insert(id, w),
+                None => screen.remove(&id),
+            };
+            if screen.is_empty() {
+                self.hud.remove(&player);
+            }
+        }
+        for (player, panel) in done.panels {
+            match panel {
+                Some(p) => self.panels.insert(player, p),
+                None => self.panels.remove(&player),
+            };
+        }
+        for (id, owner) in done.builds {
+            match owner {
+                Some(package) => self.builds.insert(id, package),
+                None => self.builds.remove(&id),
+            };
+        }
     }
 }
 
@@ -411,6 +627,15 @@ pub struct Batch<'a> {
     timers: BTreeMap<(String, String), Option<Timer>>,
     /// Every effect staged, in order: what a timer's firing records in the log.
     pub effects: Vec<Effect>,
+    stats: BTreeMap<(String, String), Stat>,
+    hud: BTreeMap<(String, String), Option<Widget>>,
+    panels: BTreeMap<String, Option<Panel>>,
+    /// Builds placed (`Some(package)`) and removed (`None`).
+    builds: BTreeMap<u64, Option<String>>,
+    /// Builds placed so far, for their ids.
+    built: u64,
+    /// The id of the build the last [`Effect::Build`] placed.
+    pub last_build: Option<u64>,
 }
 
 /// A point in a batch to go back to, if what follows fails ([`Batch::rollback`]).
@@ -423,6 +648,11 @@ pub struct Mark {
     notes: usize,
     timers: BTreeMap<(String, String), Option<Timer>>,
     effects: usize,
+    stats: BTreeMap<(String, String), Stat>,
+    hud: BTreeMap<(String, String), Option<Widget>>,
+    panels: BTreeMap<String, Option<Panel>>,
+    builds: BTreeMap<u64, Option<String>>,
+    built: u64,
 }
 
 /// What a batch changes, to [`GameState::commit`].
@@ -431,8 +661,16 @@ pub struct Done {
     counts: BTreeMap<String, i32>,
     items: BTreeMap<(String, String), u32>,
     timers: BTreeMap<(String, String), Option<Timer>>,
+    stats: BTreeMap<(String, String), Stat>,
+    hud: BTreeMap<(String, String), Option<Widget>>,
+    panels: BTreeMap<String, Option<Panel>>,
+    builds: BTreeMap<u64, Option<String>>,
     /// Messages for players: who, and what.
     pub notes: Vec<(String, String)>,
+    /// What it does to the world's voxels, in order ([`Effect::Build`],
+    /// [`Effect::Unbuild`], [`Effect::Terrain`]), with each build's id: for the world to
+    /// apply.
+    pub world: Vec<(Effect, Option<u64>)>,
 }
 
 impl Batch<'_> {
@@ -468,6 +706,11 @@ impl Batch<'_> {
             notes: self.notes.len(),
             timers: self.timers.clone(),
             effects: self.effects.len(),
+            stats: self.stats.clone(),
+            hud: self.hud.clone(),
+            panels: self.panels.clone(),
+            builds: self.builds.clone(),
+            built: self.built,
         }
     }
 
@@ -481,6 +724,32 @@ impl Batch<'_> {
         self.notes.truncate(mark.notes);
         self.timers = mark.timers;
         self.effects.truncate(mark.effects);
+        self.stats = mark.stats;
+        self.hud = mark.hud;
+        self.panels = mark.panels;
+        self.builds = mark.builds;
+        self.built = mark.built;
+    }
+
+    /// One of a player's stats, as staged.
+    pub fn stat(&self, player: &str, stat: &str) -> Option<Stat> {
+        self.stats.get(&(player.to_string(), stat.to_string())).copied().or_else(|| self.base.stat(player, stat))
+    }
+
+    /// The panel a player has open, as staged.
+    pub fn panel(&self, player: &str) -> Option<&Panel> {
+        match self.panels.get(player) {
+            Some(p) => p.as_ref(),
+            None => self.base.panel(player),
+        }
+    }
+
+    /// The package that placed build `id`, as staged.
+    fn build_owner(&self, id: u64) -> Option<&str> {
+        match self.builds.get(&id) {
+            Some(owner) => owner.as_deref(),
+            None => self.base.build_owner(id),
+        }
     }
 
     /// `package`'s timer `name` as staged.
@@ -628,6 +897,103 @@ impl Batch<'_> {
                 self.timers.insert((grants.package.clone(), name.clone()), None);
                 Ok(None)
             }
+            Effect::SetStat { player, stat, value, max } => {
+                grants.writable(stat)?;
+                let max = max.or_else(|| self.stat(player, stat).and_then(|s| s.max));
+                if !value.is_finite() || max.is_some_and(|m| !m.is_finite() || m <= 0.0) || value.abs() > 1e12 {
+                    return Err(format!("\"{stat}\" needs a finite value (and a maximum above 0)"));
+                }
+                let value = value.max(0.0).min(max.unwrap_or(f64::MAX));
+                self.stats.insert((player.clone(), stat.clone()), Stat { value, max });
+                Ok(None)
+            }
+            Effect::Hud { player, id, widget } => {
+                if id.is_empty() || id.len() > 40 {
+                    return Err("a widget's id is 1 to 40 characters".into());
+                }
+                if let Some(w) = widget {
+                    let text = match w {
+                        Widget::Bar { label, stat, .. } | Widget::Counter { label, stat } | Widget::Items { label, item: stat } => {
+                            grants.readable(stat)?;
+                            label
+                        }
+                        Widget::Text { text } => text,
+                    };
+                    if text.chars().count() > 120 {
+                        return Err("a widget's text is at most 120 characters".into());
+                    }
+                    let mine = self.base.hud.get(player).map_or(0, |h| h.len());
+                    if mine >= MAX_WIDGETS {
+                        return Err(format!("a screen holds at most {MAX_WIDGETS} widgets"));
+                    }
+                }
+                let key = format!("{}:{id}", grants.package);
+                self.hud.insert((player.clone(), key), widget.clone());
+                Ok(None)
+            }
+            Effect::Show { player, panel } => {
+                let panel = match panel {
+                    Some(spec) => {
+                        if spec.title.chars().count() > 60 || spec.text.chars().count() > 1200 {
+                            return Err("a panel's title is at most 60 characters, its text 1200".into());
+                        }
+                        if spec.choices.len() > MAX_CHOICES {
+                            return Err(format!("a panel offers at most {MAX_CHOICES} choices"));
+                        }
+                        if spec.choices.iter().any(|c| c.id.is_empty() || c.label.chars().count() > 60 || c.detail.chars().count() > 40) {
+                            return Err("each choice has an id, a label of up to 60 characters, and a detail of up to 40".into());
+                        }
+                        Some(Panel { package: grants.package.clone(), spec: spec.clone() })
+                    }
+                    None => {
+                        if self.panel(player).is_some_and(|p| p.package != grants.package) {
+                            return Err("that panel is another package's".into());
+                        }
+                        None
+                    }
+                };
+                self.panels.insert(player.clone(), panel);
+                Ok(None)
+            }
+            Effect::Build { model, position, turn } => {
+                if !grants.build {
+                    return Err(format!("{} may not place builds (it needs the build permission)", grants.package));
+                }
+                if !grants.models.iter().any(|m| m == model) || *turn > 3 {
+                    return Err(format!("build places one of the package's models ({}), turned 0-3", grants.models.join(", ")));
+                }
+                if !position.iter().all(|v| v.is_finite()) {
+                    return Err("that isn't a place".into());
+                }
+                grants.inside(*position)?;
+                let id = SCRIPT_BUILDS + self.change * 4096 + self.built;
+                self.built += 1;
+                self.builds.insert(id, Some(grants.package.clone()));
+                self.last_build = Some(id);
+                Ok(None)
+            }
+            Effect::Unbuild { build } => {
+                if self.build_owner(*build) != Some(grants.package.as_str()) {
+                    return Err(format!("{} may only remove builds it placed", grants.package));
+                }
+                self.builds.insert(*build, None);
+                Ok(None)
+            }
+            Effect::Terrain { area, .. } => {
+                if !grants.build {
+                    return Err(format!("{} may not reshape land (it needs the build permission)", grants.package));
+                }
+                let corner = |x: i32, z: i32| [x as f32 * crate::terrain::VOXEL_SIZE, 0.0, z as f32 * crate::terrain::VOXEL_SIZE];
+                let [x, z] = area.min;
+                let [w, d] = area.size;
+                if w <= 0 || d <= 0 {
+                    return Err("an area has a size".into());
+                }
+                for p in [corner(x, z), corner(x + w - 1, z), corner(x, z + d - 1), corner(x + w - 1, z + d - 1)] {
+                    grants.inside(p)?;
+                }
+                Ok(None)
+            }
         }
     }
 
@@ -638,7 +1004,33 @@ impl Batch<'_> {
     }
 
     pub fn finish(self) -> Done {
-        Done { touched: self.touched, counts: self.counts, items: self.items, timers: self.timers, notes: self.notes }
+        // The world's part, with the ids builds were given, in order.
+        let mut built = 0;
+        let change = self.change;
+        let world = self
+            .effects
+            .iter()
+            .filter(|e| matches!(e, Effect::Build { .. } | Effect::Unbuild { .. } | Effect::Terrain { .. }))
+            .map(|e| {
+                let id = matches!(e, Effect::Build { .. }).then(|| {
+                    built += 1;
+                    SCRIPT_BUILDS + change * 4096 + built - 1
+                });
+                (e.clone(), id)
+            })
+            .collect();
+        Done {
+            touched: self.touched,
+            counts: self.counts,
+            items: self.items,
+            timers: self.timers,
+            stats: self.stats,
+            hud: self.hud,
+            panels: self.panels,
+            builds: self.builds,
+            notes: self.notes,
+            world,
+        }
     }
 }
 
@@ -665,7 +1057,7 @@ mod tests {
     use super::*;
 
     fn grants(package: &str, scope: Scope) -> Grants {
-        Grants { package: package.into(), write: Vec::new(), spawn: true, scope, max_entities: 2, models: vec!["crate".into()], drawn: false }
+        Grants { package: package.into(), write: Vec::new(), spawn: true, scope, max_entities: 2, models: vec!["crate".into()], drawn: false, build: false }
     }
 
     fn spawn(x: f32) -> Effect {

@@ -89,6 +89,10 @@ pub fn play(package: &Package, steps: &[String]) -> String {
                 Some(entity) => Ok(Intent::Key { entity, key: step.into() }),
                 None => Err("no zone there to send keys to".to_string()),
             }
+        } else if let Some(choice) = step.strip_prefix("choose ") {
+            Ok(Intent::Choose { choice: Some(choice.trim().to_string()) })
+        } else if step == "close" {
+            Ok(Intent::Choose { choice: None })
         } else if step == "interact" {
             let near = here.and_then(|at| {
                 logic
@@ -100,7 +104,10 @@ pub fn play(package: &Package, steps: &[String]) -> String {
             });
             near.map(|entity| Intent::Interact { entity }).ok_or("nothing labeled to interact with".into())
         } else {
-            Err(format!("unknown step \"{step}\" (use \"place <item>\", a key: {}, or \"interact\")", KEYS.join(", ")))
+            Err(format!(
+                "unknown step \"{step}\" (use \"place <item>\", a key: {}, \"interact\", \"choose <choice id>\", \"close\" or \"wait <seconds>\")",
+                KEYS.join(", ")
+            ))
         };
         let result = intent.and_then(|intent| logic.act(change, TESTER, now, 7, &rules, &intent));
         let _ = match result {
@@ -108,14 +115,64 @@ pub fn play(package: &Package, steps: &[String]) -> String {
             Ok(o) => {
                 let said: Vec<_> = o.notes.iter().map(|(_, text)| format!("\"{text}\"")).collect();
                 let said = if said.is_empty() { String::new() } else { format!("; said {}", said.join(", ")) };
-                writeln!(out, "{}. {step}: ok, {} change(s){said}", i + 1, o.effects)
+                let world: Vec<String> = o
+                    .world
+                    .iter()
+                    .map(|w| match w {
+                        super::WorldChange::Build { model, .. } => format!("built {model}"),
+                        super::WorldChange::Unbuild { id } => format!("removed build {id}"),
+                        super::WorldChange::Terrain { area, .. } => format!("reshaped {}x{} columns", area.size[0], area.size[1]),
+                    })
+                    .collect();
+                let world = if world.is_empty() { String::new() } else { format!("; {}", world.join(", ")) };
+                writeln!(out, "{}. {step}: ok, {} change(s){said}{world}", i + 1, o.effects)
             }
             Err(why) => writeln!(out, "{}. {step}: REFUSED: {why}", i + 1),
         };
     }
+    // What the tester has: stats, items, what's on their screen, and an open panel.
+    let stats: Vec<String> = logic
+        .state
+        .stats(TESTER)
+        .map(|(n, s)| format!("{n} = {}{}", s.value, s.max.map_or(String::new(), |m| format!("/{m}"))))
+        .collect();
+    let items: Vec<String> = logic.state.inventory(TESTER).map(|(n, c)| format!("{n} ×{c}")).collect();
+    let _ = writeln!(out, "\nThe tester: stats [{}], items [{}].", stats.join(", "), items.join(", "));
+    for (id, widget) in logic.state.hud(TESTER) {
+        let _ = writeln!(out, "  HUD {id}: {}", serde_json::to_string(widget).unwrap_or_default());
+    }
+    if let Some(panel) = logic.state.panel(TESTER) {
+        let choices: Vec<String> = panel.spec.choices.iter().map(|c| format!("{} ({})", c.id, c.label)).collect();
+        let _ = writeln!(out, "  Panel open: \"{}\" ({}): {} Choices: {}", panel.spec.title, panel.spec.id, panel.spec.text, choices.join(", "));
+    }
     let origin = pawn_of(&logic.state, TESTER).and(spot).or(spot).unwrap_or([0.0, ground, 0.0]);
     describe(&mut out, &logic.state, origin, ground);
     out
+}
+
+/// The trial's world, for timers: what they do lands at once (builds and land changes
+/// are only noted; a trial has no voxels).
+struct Trial<'a> {
+    logic: &'a mut Logic,
+    change: u64,
+    effects: usize,
+}
+
+impl super::TimerHost for Trial<'_> {
+    fn logic(&self) -> &Logic {
+        self.logic
+    }
+
+    fn next_change(&self) -> u64 {
+        self.change + 1
+    }
+
+    fn record(&mut self, package: &str, now: u64, effects: Vec<super::Effect>) -> Result<(), String> {
+        self.change += 1;
+        self.effects += effects.len();
+        let rules = LogicRules::default();
+        self.logic.apply_timers(self.change, package, now, &effects, &rules).map(|_| ())
+    }
 }
 
 /// Runs timers up to `target`, at each time one goes off (the tester is everywhere, so
@@ -129,10 +186,12 @@ fn wait(logic: &mut Logic, clock: &mut Clockwork, change: &mut u64, now: &mut u6
             errors.push("stopped after 2000 rounds of timers".to_string());
             break;
         }
-        let run = clock.run(logic, *change + 1, at, 7, rules, &everywhere(logic));
-        *change += run.changes.len() as u64;
-        fired += run.changes.len();
-        effects += run.changes.iter().map(|(_, _, e)| e.len()).sum::<usize>();
+        let players = everywhere(logic);
+        let mut host = Trial { logic, change: *change, effects: 0 };
+        let run = clock.run(&mut host, at, 7, rules, &players);
+        *change = host.change;
+        effects += host.effects;
+        fired += run.changes;
         said.extend(run.notes.iter().map(|(_, t)| format!("\"{t}\"")));
         errors.extend(run.errors);
     }

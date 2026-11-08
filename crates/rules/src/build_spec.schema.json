@@ -456,7 +456,8 @@
         "stage_days",
         "harvest",
         "gives",
-        "every_days"
+        "every_days",
+        "sells"
       ],
       "properties": {
         "name": {
@@ -469,7 +470,8 @@
             "item",
             "crop",
             "source",
-            "fixture"
+            "fixture",
+            "shop"
           ]
         },
         "title": {
@@ -532,6 +534,20 @@
             }
           ],
           "description": "source: days between gifts to the same player (null: 1)."
+        },
+        "sells": {
+          "anyOf": [
+            {
+              "type": "null"
+            },
+            {
+              "type": "array",
+              "items": {
+                "$ref": "#/$defs/offer"
+              }
+            }
+          ],
+          "description": "shop: what it sells (up to 10), each for a price in items, e.g. seeds for coins."
         }
       }
     },
@@ -584,6 +600,22 @@
         },
         "build": {
           "$ref": "#/$defs/build"
+        }
+      }
+    },
+    "offer": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "item",
+        "price"
+      ],
+      "properties": {
+        "item": {
+          "$ref": "#/$defs/stack"
+        },
+        "price": {
+          "$ref": "#/$defs/stack"
         }
       }
     }

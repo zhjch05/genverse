@@ -118,6 +118,10 @@ live at once for everyone. Keep "build" and "terrain" null unless they also ask 
     your script's on_place builds it. Only "name", "kind", "title".
   item: something players carry. crop / source: simple farming without scripts (crop: "seed",
     "stage_days", "harvest"; source: "gives", "every_days").
+  shop: "sells": [{"item": {"item", "count"}, "price": {"item", "count"}}] (up to 10; prices in
+    items, e.g. coins). Players put it down from the game bar, or your script spawns an entity
+    with shop = "<its name>" (and a look and label); E on it opens the shop, and buying takes the
+    price and gives the item with no script needed.
 - "models": [{"name":"crate","build":{...}}]: every piece is drawn as one of these voxel models,
   in exactly the "build" format and under the same limits and style rules as builds (12.5 cm
   voxels: a 1 m tile is 8 voxels). There is no other way to draw pieces, so the whole world keeps
@@ -160,6 +164,29 @@ live at once for everyone. Keep "build" and "terrain" null unless they also ask 
     zone = {size = {w, d}}: a rectangle centered on pos; a player walking in sends "enter", and
       while they have a pawn there, their movement keys come to on_key instead of walking
     pawn = player id: that player's hero stands on this entity; move it to move them
+    shop = "name": one of your shop defs; E on it opens that shop
+  Players (stat names without ":" are your package's):
+    stat(player, name) -> number or nil      stat_max(player, name) -> number or nil
+    set_stat(player, name, value, max)       add_stat(player, name, delta) -> new value
+      stats stay between 0 and max (max optional: hp 10/10, gold uncapped); they follow the
+      player between the game's worlds, with their items
+    hud(player, id, widget): pinned to the player's screen ("*" for everyone); nil takes it off:
+      {kind = "bar", label = "HP", stat = "hp", color = "#d84a4a"}
+      {kind = "counter", label = "Gold", stat = "gold"}   {kind = "text", text = "Find the key"}
+      {kind = "items", label = "Coins", item = "coin"}: how many of an item they carry (money
+      that shops take is an item, so show it this way)
+    show(player, {id = "inn", title = "The innkeeper", text = "...", entity = id,
+      choices = {{id = "room", label = "Rent a room", detail = "5 gold"}, ...}})
+      opens a panel (dialogue, a menu): their pick calls on_choose(ev) with ev.choice, ev.panel
+      (its id) and ev.entity; it stays open until you show another or close(player). Up to 12
+      choices; the player can always close it.
+  The world's voxels (whoever installed the game answers for it: their land and budget):
+    build(model, pos, turn) -> build id: places one of your models as a real, solid build
+      (walls, a bridge, a house that appears); unbuild(id) removes one you placed. The player
+      stands about 2 m from on_place's ev.pos: keep builds clear of them (a house goes beyond
+      ev.pos, its door facing the player), or they'll be walled in
+    terrain({x, z, w, d}, {name = "...", ops = {...}}): reshapes land in that area (meters),
+      with the same ops as a land change (dig a moat, raise a hill); keep areas small
 - One meter per tile works well (the hero is 1.35 m tall). Positions are meters; ev.pos from
   on_place is on the ground. A failed check (bad component, someone else's entity) or a Lua error
   refuses the whole action; the player sees the message, and you get it with the next request.
@@ -167,11 +194,12 @@ live at once for everyone. Keep "build" and "terrain" null unless they also ask 
   strings, booleans); keep each component under 4 KB.
 - Before answering, play your game with the test_game tool: place it, enter, and play it through
   to the end (win it), then fix anything refused or wrong. Its map shows where everything is.
-  "wait <seconds>" lets time pass so timers go off.
+  "wait <seconds>" lets time pass so timers go off; "choose <id>" picks in the open panel and
+  "close" closes it; the report lists the tester's stats, HUD and open panel.
 
 Example "game": walk onto the mat and collect the coins.
 {"name":"coins","title":"Coin mat","defs":[{"name":"mat","kind":"fixture","title":"Coin mat","seed":null,
-  "stage_days":null,"harvest":null,"gives":null,"every_days":null}],
+  "stage_days":null,"harvest":null,"gives":null,"every_days":null,"sells":null}],
  "models":[{"name":"mat","build":{"name":"Mat","size":[40,1,40],"palette":[{"name":"straw","hex":"#d9c79a","material":"matte"}],
    "shapes":[{"kind":"box","color":"straw","from":[0,0,0],"to":[40,1,40],"radius":null,"wobble":null}]}},
   {"name":"coin","build":{"name":"Coin","size":[3,3,3],"palette":[{"name":"gold","hex":"#f4cf4b","material":"glow"}],

@@ -4,7 +4,7 @@
 use cubewish_rules::{
     log::{Action, Provenance, Snapshot, WORLD, WorldLog, replay, replay_from},
     logic::{
-        Clockwork, Effect, EntityId, Intent, LogicRules, Scope,
+        Clockwork, Effect, EntityId, Intent, LogicRules, Scope, TimerHost,
         data::{DefSpec, GameSpec, ModelSpec, ScriptSpec},
         trial,
     },
@@ -95,13 +95,29 @@ fn timers_go_off_into_the_log_and_replay() {
 /// Runs `clock` on the log's world at `now`, with players at `players`, and records
 /// what went off. Returns what was said.
 fn run(clock: &mut Clockwork, log: &mut WorldLog, now: u64, players: &[[f32; 3]]) -> Vec<String> {
-    let mut state = replay(log);
-    let first = log.changes.last().unwrap().id + 1;
-    let run = clock.run(&mut state.logic, first, now, log.seed, &LogicRules::default(), players);
-    assert!(run.errors.is_empty(), "{:?}", run.errors);
-    for (id, package, effects) in run.changes {
-        assert_eq!(log.push(by(WORLD, now), Action::Timers { package, until: now, effects }), id);
+    /// A world as a server keeps it: the log, and its replay.
+    struct Host<'a> {
+        log: &'a mut WorldLog,
+        state: cubewish_rules::log::Replay,
     }
+    impl TimerHost for Host<'_> {
+        fn logic(&self) -> &cubewish_rules::logic::Logic {
+            &self.state.logic
+        }
+        fn next_change(&self) -> u64 {
+            self.log.changes.last().unwrap().id + 1
+        }
+        fn record(&mut self, package: &str, now: u64, effects: Vec<Effect>) -> Result<(), String> {
+            let id = self.log.push(by(WORLD, now), Action::Timers { package: package.into(), until: now, effects });
+            let change = self.log.changes.iter().find(|c| c.id == id).unwrap().clone();
+            self.state.apply(&change, false).map(|_| ())
+        }
+    }
+    let seed = log.seed;
+    let state = replay(log);
+    let mut host = Host { log, state };
+    let run = clock.run(&mut host, now, seed, &LogicRules::default(), players);
+    assert!(run.errors.is_empty(), "{:?}", run.errors);
     run.notes.into_iter().map(|(_, t)| t).collect()
 }
 

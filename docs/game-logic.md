@@ -8,7 +8,12 @@ world (`trial`, the `test_game` tool) before answering. Changed from this propos
 to the whole world, and only admins change them; an intent goes only to the package that
 owns its item or entity; scripts change the world through a checked batch as they run,
 rather than returning a list of intents. Timers replace per-tick events (see
-[Timers](#timers)). Not built yet: the game master agent.
+[Timers](#timers)). Also built: players' stats, HUD widgets, and panels (dialogue, menus,
+shops, with `Intent::Choose`), shops as data, and games changing the world's voxels
+(`build`, `unbuild`, `terrain`) through the world's own rules, charged to the installer's
+land and budget, all or nothing (see [`entity`](../crates/rules/src/logic/entity.rs) and
+[testing-games.md](testing-games.md)). Not built yet: NPC movement and schedules,
+spawners, migrations, preview, and the game master agent.
 
 ## Timers
 

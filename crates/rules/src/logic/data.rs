@@ -49,7 +49,21 @@ pub enum Def {
     /// Something players can put down by its name, which the package's script sets up
     /// (`on_place`): a game board, a machine.
     Fixture { title: String },
+    /// A shop: what it sells, for what. Put down (or spawned by a script with a `shop`
+    /// component), E opens it, and buying needs no script.
+    Shop { title: String, sells: Vec<Offer> },
 }
+
+/// One thing a shop sells, and its price.
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct Offer {
+    pub item: Stack,
+    pub price: Stack,
+}
+
+/// The most a shop sells.
+pub const MAX_OFFERS: usize = 10;
 
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
@@ -105,7 +119,7 @@ pub fn check(package: &Package) -> Vec<String> {
     };
     for (name, def) in &parsed {
         match def {
-            Def::Item { title } | Def::Crop { title, .. } | Def::Source { title, .. } | Def::Fixture { title }
+            Def::Item { title } | Def::Crop { title, .. } | Def::Source { title, .. } | Def::Fixture { title } | Def::Shop { title, .. }
                 if title.trim().is_empty() || title.len() > 80 =>
             {
                 errors.push(format!("\"{name}\": title must be 1-80 characters"));
@@ -133,6 +147,15 @@ pub fn check(package: &Package) -> Vec<String> {
                 stack(&mut errors, name, "gives", gives);
                 if !(1..=365).contains(every_days) {
                     errors.push(format!("\"{name}\": every_days must be 1 to 365"));
+                }
+            }
+            Def::Shop { sells, .. } => {
+                if sells.is_empty() || sells.len() > MAX_OFFERS {
+                    errors.push(format!("\"{name}\": a shop sells 1 to {MAX_OFFERS} things"));
+                }
+                for offer in sells {
+                    stack(&mut errors, name, "sells", &offer.item);
+                    stack(&mut errors, name, "price", &offer.price);
                 }
             }
         }
@@ -180,6 +203,9 @@ pub struct DefSpec {
     pub harvest: Option<Stack>,
     pub gives: Option<Stack>,
     pub every_days: Option<u32>,
+    /// shop: what it sells, for what.
+    #[serde(default)]
+    pub sells: Option<Vec<Offer>>,
 }
 
 impl GameSpec {
@@ -204,11 +230,21 @@ impl GameSpec {
                 field("harvest", stack(&d.harvest));
                 field("gives", stack(&d.gives));
                 field("every_days", d.every_days.map(Into::into));
+                field(
+                    "sells",
+                    d.sells.as_ref().map(|offers| {
+                        offers
+                            .iter()
+                            .map(|o| json!({ "item": { "item": full(&o.item.item), "count": o.item.count }, "price": { "item": full(&o.price.item), "count": o.price.count } }))
+                            .collect()
+                    }),
+                );
                 (full(&d.name), value)
             })
             .collect();
-        let manifest =
-            Manifest { name: ns.clone(), version, title: self.title.clone(), permissions: vec![Permission::Spawn], depends: Vec::new() };
+        // Agents' packages may place builds and reshape land, within the installer's budget.
+        let permissions = vec![Permission::Spawn, Permission::Build];
+        let manifest = Manifest { name: ns.clone(), version, title: self.title.clone(), permissions, depends: Vec::new() };
         let scripts = self.scripts.iter().map(|s| (s.name.clone(), s.source.clone())).collect();
         let models = self.models.iter().map(|m| (m.name.clone(), m.build.clone())).collect();
         Package { manifest, defs, scripts, models }
@@ -243,6 +279,13 @@ impl GameSpec {
                         ..Default::default()
                     },
                     Def::Fixture { title } => DefSpec { name, kind: "fixture".into(), title, ..Default::default() },
+                    Def::Shop { title, sells } => DefSpec {
+                        name,
+                        kind: "shop".into(),
+                        title,
+                        sells: Some(sells.iter().map(|o| Offer { item: stack(&o.item), price: stack(&o.price) }).collect()),
+                        ..Default::default()
+                    },
                 }
             })
             .collect();
@@ -255,7 +298,9 @@ impl GameSpec {
 /// A definition's title, for what players see ("Turnip seeds"); the name if it has none.
 pub fn title(package: &Package, name: &str) -> String {
     match defs(package).get(name) {
-        Some(Def::Item { title } | Def::Crop { title, .. } | Def::Source { title, .. } | Def::Fixture { title }) => title.clone(),
+        Some(Def::Item { title } | Def::Crop { title, .. } | Def::Source { title, .. } | Def::Fixture { title } | Def::Shop { title, .. }) => {
+            title.clone()
+        }
         None => name.to_string(),
     }
 }
@@ -297,6 +342,10 @@ impl DataRules {
                     let components = [(item.clone(), json!({}))].into();
                     return Ok(vec![Effect::Spawn { position: *position, components }]);
                 }
+                if let Some(Def::Shop { title, .. }) = defs.get(item.as_str()) {
+                    let components = [("shop".to_string(), json!(item)), ("label".to_string(), json!(title))].into();
+                    return Ok(vec![Effect::Spawn { position: *position, components }]);
+                }
                 let crop = defs.iter().find(|(_, d)| matches!(d, Def::Crop { seed, .. } if seed == item));
                 Ok(match crop {
                     Some((name, _)) => vec![
@@ -306,6 +355,7 @@ impl DataRules {
                     None => Vec::new(),
                 })
             }
+            Intent::Choose { .. } => Ok(Vec::new()),
             Intent::Interact { entity: id } => {
                 let Some(entity) = state.get(*id).filter(|e| e.package == package.manifest.name) else {
                     return Ok(Vec::new());

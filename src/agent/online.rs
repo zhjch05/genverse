@@ -298,6 +298,18 @@ fn committed(
                         );
                     }
                 }
+                // A game's builds and land changes: ours too, since games make them.
+                (Action::Intent { .. } | Action::Timers { .. }, _) => {
+                    for (p, id) in &edits {
+                        world.set(*p, *id);
+                    }
+                    let built = state.last_world.as_ref().is_some_and(|(_, w)| {
+                        w.iter().any(|c| matches!(c, cubewish_rules::logic::WorldChange::Build { .. } | cubewish_rules::logic::WorldChange::Unbuild { .. }))
+                    });
+                    if built {
+                        creations.resync(commands, &state.builds);
+                    }
+                }
                 (_, Some(_)) => {}
                 (Action::PlaceBuild(b) | Action::UpdateBuild(b), None) => creations.upsert(commands, b),
                 (Action::RemoveBuild { build }, None) => creations.remove(commands, *build),

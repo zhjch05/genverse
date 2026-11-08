@@ -22,9 +22,9 @@ use bevy_math::{IVec2, Vec2};
 use serde::{Deserialize, Serialize};
 
 pub use clock::{ClockRules, WorldTime};
-pub use clockwork::{Clockwork, Fired, Run};
+pub use clockwork::{Clockwork, Fired, Run, TimerHost};
 pub use data::{Def, DataRules};
-pub use entity::{Batch, Effect, Entity, EntityId, GameState, Grants, Timer};
+pub use entity::{Batch, Choice, Effect, Entity, EntityId, GameState, Grants, Panel, PanelSpec, Stat, Timer, Widget};
 pub use package::{Manifest, Package, PackageRef, Permission};
 
 use crate::{land::parcel_of, log::fnv1a, terrain::VOXEL_SIZE};
@@ -123,6 +123,12 @@ pub enum Intent {
     Place { item: String, position: [f32; 3] },
     /// A key pressed inside a `zone` (see [`entity`]), or entering and leaving it.
     Key { entity: EntityId, key: String },
+    /// A choice made in the panel the player has open (dialogue, a menu, a shop), or
+    /// closing it (`None`). It goes to the package whose panel it is.
+    Choose {
+        #[serde(default)]
+        choice: Option<String>,
+    },
 }
 
 /// What [`Intent::Key`] may carry: directions are the world's (north is -z).
@@ -139,6 +145,8 @@ impl Intent {
                 .ok_or(format!("entity {}.{} doesn't exist", entity.change, entity.n)),
             Intent::Place { position, .. } if position.iter().all(|v| v.is_finite()) => Ok(*position),
             Intent::Place { .. } => Err("that isn't a place".into()),
+            // A panel is the player's own, wherever they are.
+            Intent::Choose { .. } => Ok([0.0; 3]),
         }
     }
 
@@ -149,6 +157,8 @@ impl Intent {
             Intent::Interact { entity } | Intent::UseItem { target: entity, .. } | Intent::Key { entity, .. } => {
                 state.get(*entity).map(|e| e.package.clone())
             }
+            // Its package is the open panel's: see [`Logic::prepare`].
+            Intent::Choose { .. } => None,
         }
     }
 }
@@ -207,6 +217,38 @@ pub struct Outcome {
     pub effects: u32,
     /// Messages for players: who, and what.
     pub notes: Vec<(String, String)>,
+    /// What it did to the world's voxels, for the world to apply.
+    pub world: Vec<WorldChange>,
+}
+
+/// What a game does to the world's voxels: the world applies it under its own rules
+/// (land, budgets), charged to whoever installed the package.
+#[derive(Clone, Debug, PartialEq)]
+pub enum WorldChange {
+    /// One of the package's models, placed as a solid build.
+    Build { id: u64, package: String, model: String, spec: crate::build::BuildSpec, position: [f32; 3], yaw: f32 },
+    Unbuild { id: u64 },
+    Terrain { package: String, area: crate::sculpt::Area, spec: crate::sculpt::TerrainSpec },
+}
+
+/// A package's answer, checked but not applied yet: the world applies its
+/// [`WorldChange`]s first, and only then [`Logic::commit`] lands it, so it all lands or
+/// none of it does.
+pub struct Prepared {
+    done: entity::Done,
+    pub effects: u32,
+    pub notes: Vec<(String, String)>,
+    pub world: Vec<WorldChange>,
+    /// Who installed the package, and answers for what it does to the world.
+    pub installer: String,
+    /// Timers have run up to here, when it's what timers did.
+    until: Option<u64>,
+}
+
+impl Prepared {
+    fn nothing() -> Self {
+        Self { done: GameState::default().batch(0, "", 0).finish(), effects: 0, notes: Vec::new(), world: Vec::new(), installer: String::new(), until: None }
+    }
 }
 
 /// An installed package.
@@ -287,32 +329,153 @@ impl Logic {
     }
 
     /// Asks the package that owns the intent's item or entity, if it's installed there,
-    /// and applies what it does, or nothing if any of it isn't allowed.
+    /// and applies what it does, or nothing if any of it isn't allowed. What it does to
+    /// the world's voxels comes back in [`Outcome::world`], unapplied: replay applies it
+    /// ([`crate::log::Replay`]), through [`Self::prepare`].
     pub fn act(&mut self, change: u64, player: &str, at: u64, world_seed: u32, rules: &LogicRules, intent: &Intent) -> Result<Outcome, String> {
+        let prepared = self.prepare(change, player, at, world_seed, rules, intent)?;
+        Ok(self.commit(prepared))
+    }
+
+    /// What an intent would do, checked, without doing it.
+    pub fn prepare(&self, change: u64, player: &str, at: u64, world_seed: u32, rules: &LogicRules, intent: &Intent) -> Result<Prepared, String> {
+        if let Intent::Choose { choice } = intent {
+            return self.choose(change, player, at, world_seed, rules, intent, choice.as_deref());
+        }
         let position = intent.position(&self.state)?;
         let Some(install) = intent.package(&self.state).and_then(|name| self.installed.get(&name)) else {
-            return Ok(Outcome::default());
+            return Ok(Prepared::nothing());
         };
         if !install.scope.contains(position) {
-            return Ok(Outcome::default());
+            return Ok(Prepared::nothing());
         }
-        let runtime = self.runtime.clone().unwrap_or_else(|| Arc::new(Rules));
         let package = self.package(install).ok_or(format!("package {} is missing", install.package.name))?;
-        let seed = fnv1a(format!("{world_seed}/{change}/{}", install.package.name).as_bytes());
-        let event = Event { change, player, trigger: Trigger::Intent(intent), time: rules.clock.at(at), at, seed };
         let grants = grants(package, install, rules);
         let mut batch = self.state.batch(change, player, rules.max_effects);
-        runtime.handle(package, &event, &mut batch, &grants)?;
+        // E on a shop opens it: the engine's, whatever the package's rules are.
+        if let Intent::Interact { entity } = intent
+            && let Some(shop) = self.state.get(*entity).and_then(|e| e.components.get("shop")).and_then(|v| v.as_str())
+        {
+            let panel = shop_panel(package, shop, *entity)?;
+            batch.apply(&grants, &Effect::Show { player: player.into(), panel: Some(panel) })?;
+        } else {
+            let runtime = self.runtime.clone().unwrap_or_else(|| Arc::new(Rules));
+            let seed = fnv1a(format!("{world_seed}/{change}/{}", install.package.name).as_bytes());
+            let event = Event { change, player, trigger: Trigger::Intent(intent), time: rules.clock.at(at), at, seed };
+            runtime.handle(package, &event, &mut batch, &grants)?;
+        }
+        Ok(self.prepared(batch, package, install, None))
+    }
+
+    /// A choice in the open panel: closing it, buying in a shop, or the package's
+    /// `on_choose`.
+    #[allow(clippy::too_many_arguments)]
+    fn choose(
+        &self,
+        change: u64,
+        player: &str,
+        at: u64,
+        world_seed: u32,
+        rules: &LogicRules,
+        intent: &Intent,
+        choice: Option<&str>,
+    ) -> Result<Prepared, String> {
+        let panel = self.state.panel(player).ok_or("there's no panel open")?;
+        let Some(install) = self.installed.get(&panel.package) else {
+            // Its game is gone: closing is all there is to do.
+            let grants = Grants {
+                package: panel.package.clone(),
+                write: Vec::new(),
+                spawn: false,
+                scope: Scope::World,
+                max_entities: 0,
+                models: Vec::new(),
+                drawn: false,
+                build: false,
+            };
+            let mut batch = self.state.batch(change, player, rules.max_effects);
+            batch.apply(&grants, &Effect::Show { player: player.into(), panel: None })?;
+            let done = batch.finish();
+            return Ok(Prepared { effects: 1, notes: Vec::new(), world: Vec::new(), installer: String::new(), until: None, done });
+        };
+        let package = self.package(install).ok_or(format!("package {} is missing", install.package.name))?;
+        let grants = grants(package, install, rules);
+        let mut batch = self.state.batch(change, player, rules.max_effects);
+        match choice {
+            None => {
+                batch.apply(&grants, &Effect::Show { player: player.into(), panel: None })?;
+            }
+            Some(choice) if !panel.spec.choices.iter().any(|c| c.id == choice) => return Err(format!("\"{choice}\" isn't a choice here")),
+            Some(choice) if panel.spec.id.starts_with("shop:") => {
+                let shop = &panel.spec.id["shop:".len()..];
+                let Some(data::Def::Shop { sells, .. }) = data::defs(package).get(shop).cloned() else {
+                    return Err("that shop is gone".into());
+                };
+                let offer = choice.strip_prefix("buy:").and_then(|i| i.parse::<usize>().ok()).and_then(|i| sells.get(i)).ok_or("that isn't for sale")?;
+                let have = batch.items(player, &offer.price.item);
+                if have < offer.price.count {
+                    return Err(format!("you need {} {} and have {have}", offer.price.count, data::title(package, &offer.price.item)));
+                }
+                batch.apply(&grants, &Effect::Take { item: offer.price.item.clone(), count: offer.price.count })?;
+                batch.apply(&grants, &Effect::Give { player: player.into(), item: offer.item.item.clone(), count: offer.item.count })?;
+                let bought = format!("Bought {} {}.", offer.item.count, data::title(package, &offer.item.item));
+                batch.apply(&grants, &Effect::Notify { player: player.into(), text: bought })?;
+            }
+            Some(_) => {
+                let runtime = self.runtime.clone().unwrap_or_else(|| Arc::new(Rules));
+                let seed = fnv1a(format!("{world_seed}/{change}/{}", install.package.name).as_bytes());
+                let event = Event { change, player, trigger: Trigger::Intent(intent), time: rules.clock.at(at), at, seed };
+                runtime.handle(package, &event, &mut batch, &grants)?;
+            }
+        }
+        Ok(self.prepared(batch, package, install, None))
+    }
+
+    /// A finished batch, with what it does to the world worked out.
+    fn prepared(&self, batch: Batch, package: &Package, install: &Install, until: Option<u64>) -> Prepared {
         let effects = batch.applied;
         let done = batch.finish();
         let notes = done.notes.clone();
-        self.state.commit(done);
-        Ok(Outcome { effects, notes })
+        let name = package.manifest.name.clone();
+        let world = done
+            .world
+            .iter()
+            .filter_map(|(effect, id)| match (effect, id) {
+                (Effect::Build { model, position, turn }, Some(id)) => package.models.get(model).map(|spec| WorldChange::Build {
+                    id: *id,
+                    package: name.clone(),
+                    model: model.clone(),
+                    spec: spec.clone(),
+                    position: entity::snap(*position),
+                    yaw: *turn as f32 * std::f32::consts::FRAC_PI_2,
+                }),
+                (Effect::Unbuild { build }, _) => Some(WorldChange::Unbuild { id: *build }),
+                (Effect::Terrain { area, spec }, _) => Some(WorldChange::Terrain { package: name.clone(), area: *area, spec: spec.clone() }),
+                _ => None,
+            })
+            .collect();
+        Prepared { done, effects, notes, world, installer: install.by.clone(), until }
+    }
+
+    /// Lands what [`Self::prepare`] (or [`Self::prepare_timers`]) worked out.
+    pub fn commit(&mut self, prepared: Prepared) -> Outcome {
+        self.state.commit(prepared.done);
+        if let Some(until) = prepared.until {
+            self.timers_until = self.timers_until.max(until);
+        }
+        Outcome { effects: prepared.effects, notes: prepared.notes, world: prepared.world }
     }
 
     /// Applies what `package`'s timers did up to `until` (see [`Clockwork::fire`]),
-    /// checking each effect again.
+    /// checking each effect again. What they do to the world's voxels isn't applied
+    /// here; replay goes through [`Self::prepare_timers`] for that.
     pub fn apply_timers(&mut self, change: u64, package: &str, until: u64, effects: &[Effect], rules: &LogicRules) -> Result<Vec<(String, String)>, String> {
+        let prepared = self.prepare_timers(change, package, until, effects, rules)?;
+        Ok(self.commit(prepared).notes)
+    }
+
+    /// What `package`'s timers did, checked, without doing it.
+    pub fn prepare_timers(&self, change: u64, package: &str, until: u64, effects: &[Effect], rules: &LogicRules) -> Result<Prepared, String> {
         let install = self.installed.get(package).ok_or(format!("{package} isn't installed"))?;
         let found = self.package(install).ok_or(format!("package {package} is missing"))?;
         let grants = grants(found, install, rules);
@@ -320,16 +483,29 @@ impl Logic {
         for effect in effects {
             batch.apply(&grants, effect)?;
         }
-        let done = batch.finish();
-        let notes = done.notes.clone();
-        self.state.commit(done);
-        self.timers_until = self.timers_until.max(until);
-        Ok(notes)
+        Ok(self.prepared(batch, found, install, Some(until)))
     }
 
     pub fn package(&self, install: &Install) -> Option<&Package> {
         self.packages.get(&install.package.hash).map(|p| &**p)
     }
+}
+
+/// The panel for the shop `shop` (one of `package`'s definitions), on `entity`.
+fn shop_panel(package: &Package, shop: &str, entity: EntityId) -> Result<PanelSpec, String> {
+    let Some(data::Def::Shop { title, sells }) = data::defs(package).get(shop).cloned() else {
+        return Err(format!("{} has no shop \"{shop}\"", package.manifest.name));
+    };
+    let choices = sells
+        .iter()
+        .enumerate()
+        .map(|(i, o)| Choice {
+            id: format!("buy:{i}"),
+            label: format!("{} × {}", o.item.count, data::title(package, &o.item.item)),
+            detail: format!("{} {}", o.price.count, data::title(package, &o.price.item)),
+        })
+        .collect();
+    Ok(PanelSpec { id: format!("shop:{shop}"), title, text: String::new(), choices, entity: Some(entity) })
 }
 
 fn allowed(admin: bool, rules: &LogicRules) -> Result<(), String> {
@@ -357,5 +533,6 @@ pub fn grants(package: &Package, install: &Install, rules: &LogicRules) -> Grant
         max_entities: rules.max_entities,
         models: package.models.keys().cloned().collect(),
         drawn: !package.scripts.is_empty(),
+        build: perms.contains(&Permission::Build),
     }
 }

@@ -167,6 +167,10 @@ fn describe(logic: &Logic, e: &Piece, today: u64) -> (Look, Option<String>) {
         let turn = look["turn"].as_u64().unwrap_or(0).min(3) as u8;
         return (Look::Model { package: installed, model, turn }, label);
     }
+    // A shop from data alone is drawn like a seed bin.
+    if e.components.contains_key("shop") {
+        return (Look::Source, label);
+    }
     let defs = data::defs(package);
     for (component, value) in &e.components {
         match defs.get(component.as_str()) {
@@ -252,7 +256,7 @@ pub fn sync_pieces(
 
 /// Shows what an action did: what the game said, what you got, or why not. Script
 /// errors also go to the chat, where the agent sees them next time.
-fn report(result: Result<Acted, String>, ledger: &Ledger, play: &mut Play, chat: &mut Chat, now_s: f32) {
+pub(super) fn report(result: Result<Acted, String>, ledger: &Ledger, play: &mut Play, chat: &mut Chat, now_s: f32) {
     match result {
         Ok(acted) if !acted.notes.is_empty() => play.toast(acted.notes.join(" · "), now_s),
         Ok(acted) if !acted.gained.is_empty() => play.toast(describe_gains(ledger, &acted.gained), now_s),
@@ -500,7 +504,7 @@ fn placeable(ledger: &Ledger) -> Vec<(String, String, Option<u32>)> {
         let Some(package) = logic.package(install) else { continue };
         for (name, def) in data::defs(package) {
             match def {
-                Def::Fixture { title } | Def::Source { title, .. } => out.push((title, name.to_string(), None)),
+                Def::Fixture { title } | Def::Source { title, .. } | Def::Shop { title, .. } => out.push((title, name.to_string(), None)),
                 Def::Crop { seed, .. } => seeds.push(seed),
                 Def::Item { .. } => {}
             }
@@ -685,7 +689,11 @@ pub fn script_play(
         let fixture = placeable(&ledger).into_iter().find(|(_, name, count)| count.is_none() && name.contains(':'));
         step = fixture.map_or(step, |(_, name, _)| name);
     }
-    let result = if step == "use" {
+    let result = if let Some(choice) = step.strip_prefix("choose ") {
+        ledger.act(Intent::Choose { choice: Some(choice.trim().to_string()) })
+    } else if step == "close" {
+        ledger.act(Intent::Choose { choice: None })
+    } else if step == "use" {
         match play.near {
             Some(entity) => ledger.act(Intent::Interact { entity }),
             None => Err("nothing to use".into()),

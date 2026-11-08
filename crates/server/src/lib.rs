@@ -102,6 +102,28 @@ struct Place {
     snapshot_path: PathBuf,
     /// Which timers have run up to when.
     clock: Clockwork,
+    /// Changes timers made since they were last sent.
+    fresh: Vec<Change>,
+}
+
+impl cubewish_rules::logic::TimerHost for Place {
+    fn logic(&self) -> &cubewish_rules::logic::Logic {
+        &self.state.logic
+    }
+
+    fn next_change(&self) -> u64 {
+        self.log.changes.last().map_or(1, |c| c.id + 1)
+    }
+
+    fn record(&mut self, package: &str, now: u64, effects: Vec<cubewish_rules::logic::Effect>) -> Result<(), String> {
+        let action = Action::Timers { package: package.into(), until: now, effects };
+        let change = Change { id: self.next_change(), by: Provenance::new(WORLD, "World", None, None, now), action, sig: None };
+        self.state.apply(&change, true)?;
+        self.log.changes.push(change.clone());
+        self.saved();
+        self.fresh.push(change);
+        Ok(())
+    }
 }
 
 struct Server {
@@ -261,7 +283,7 @@ impl Server {
             }
             println!("world {name}: {} changes, {} builds", log.changes.len(), state.builds.len());
             let clock = Clockwork::new(state.logic.timers_until);
-            self.places.insert(name.to_string(), Place { file, log, state, snapshot, snapshot_path, clock });
+            self.places.insert(name.to_string(), Place { file, log, state, snapshot, snapshot_path, clock, fresh: Vec::new() });
             // Nobody is in it yet, so the changes need sending to no one.
             let _ = self.sync_packages(name);
         }
@@ -329,13 +351,17 @@ impl Server {
         self.place(world).map_err(|e| e.to_string())?;
         let (left, me) = self.conns.get(&conn).map(|c| (c.world.clone(), c.player.clone())).unwrap_or_default();
         if let (Some(left), Some((player, _))) = (left.filter(|l| l != world), me) {
-            let items = self.places.get(&left).map(|p| p.state.logic.state.carried(&player)).unwrap_or_default();
-            if !items.is_empty() {
-                let depart = Action::Depart { player: player.clone(), to: world.to_string(), items: items.clone() };
+            let (items, stats) = self
+                .places
+                .get(&left)
+                .map(|p| (p.state.logic.state.carried(&player), p.state.logic.state.carried_stats(&player)))
+                .unwrap_or_default();
+            if !items.is_empty() || !stats.is_empty() {
+                let depart = Action::Depart { player: player.clone(), to: world.to_string(), items: items.clone(), stats: stats.clone() };
                 if let Some(Ok(change)) = self.places.get_mut(&left).map(|p| p.record(depart)) {
                     self.broadcast(&left, change, Vec::new(), None, u64::MAX, 0);
                 }
-                let arrive = Action::Arrive { player, from: left.clone(), items };
+                let arrive = Action::Arrive { player, from: left.clone(), items, stats };
                 if let Some(Ok(change)) = self.places.get_mut(world).map(|p| p.record(arrive)) {
                     self.broadcast(world, change, Vec::new(), None, u64::MAX, 0);
                 }
@@ -604,20 +630,14 @@ impl Place {
     /// Fires the timers due by `now` and commits what each package's did; returns the
     /// changes, to send.
     fn run_timers(&mut self, now: u64, players: &[[f32; 3]]) -> Vec<Change> {
-        let first = self.log.changes.last().map_or(1, |c| c.id + 1);
-        let run = self.clock.run(&mut self.state.logic, first, now, self.log.seed, &self.state.rules.logic, players);
+        let mut clock = std::mem::take(&mut self.clock);
+        let (seed, rules) = (self.log.seed, self.state.rules.logic);
+        let run = clock.run(self, now, seed, &rules, players);
+        self.clock = clock;
         for error in &run.errors {
             eprintln!("{error}");
         }
-        let mut out = Vec::new();
-        for (id, package, effects) in run.changes {
-            let action = Action::Timers { package, until: now, effects };
-            let change = Change { id, by: Provenance::new(WORLD, "World", None, None, now), action, sig: None };
-            self.log.changes.push(change.clone());
-            self.saved();
-            out.push(change);
-        }
-        out
+        std::mem::take(&mut self.fresh)
     }
 
     /// Checks a proposal and, if the rules allow it, appends it to the log.

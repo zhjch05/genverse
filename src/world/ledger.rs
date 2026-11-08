@@ -335,6 +335,11 @@ pub struct Ledger {
     pub version: u64,
     /// What games said to the local player on their own (timers), for the game to show.
     pub heard: Vec<String>,
+    /// What games did to the voxels (builds, land), and who installed them: for the game
+    /// to draw.
+    pub pending_world: Vec<(String, Vec<cubewish_rules::logic::WorldChange>)>,
+    /// Why the last change recorded didn't apply, if it didn't.
+    refused: Option<String>,
     /// Offline, which timers have run up to when; online, the server runs them.
     clock: Clockwork,
     /// Where the log is saved, offline.
@@ -382,6 +387,28 @@ pub struct Online {
 #[cfg(not(target_arch = "wasm32"))]
 const FIRST_REQUEST: u64 = 1 << 40;
 
+/// Offline, the game keeps the world, so timers run here.
+impl cubewish_rules::logic::TimerHost for Ledger {
+    fn logic(&self) -> &Logic {
+        &self.logic
+    }
+
+    fn next_change(&self) -> u64 {
+        self.log.changes.last().map_or(1, |c| c.id + 1)
+    }
+
+    fn record(&mut self, package: &str, now: u64, effects: Vec<cubewish_rules::logic::Effect>) -> Result<(), String> {
+        let by = Provenance::new(&self.profile.id, &self.profile.name, None, None, now);
+        self.log.push_signed(by, Action::Timers { package: package.into(), until: now, effects }, &self.key);
+        let result = self.advance();
+        if result.is_err() {
+            self.log.changes.pop();
+        }
+        self.save();
+        result
+    }
+}
+
 impl Ledger {
     /// Appends a change made by the local player (through `agent`, if one did it) and
     /// saves the log. Returns the change's id. Online, the change is proposed to the
@@ -409,7 +436,10 @@ impl Ledger {
         }
         self.log.push_signed(by, action, &self.key);
         let id = self.log.changes.last().map_or(0, |c| c.id);
-        self.advance();
+        if let Err(why) = self.advance() {
+            warn!("change {id} doesn't apply: {why}");
+            self.refused = Some(why);
+        }
         self.save();
         id
     }
@@ -417,11 +447,11 @@ impl Ledger {
     /// Applies the log's last change on top of the current state, as a server does:
     /// the cost of a change never grows with the history. Undos change which changes
     /// count, so they replay (without voxels).
-    fn advance(&mut self) {
-        let Some(change) = self.log.changes.last().cloned() else { return };
+    fn advance(&mut self) -> Result<(), String> {
+        let Some(change) = self.log.changes.last().cloned() else { return Ok(()) };
         if change.action.is_undo() {
             self.adopt(&replay_land(&self.log));
-            return;
+            return Ok(());
         }
         let mut state = Replay::new(&self.log);
         state.builds = std::mem::take(&mut self.builds);
@@ -432,8 +462,10 @@ impl Ledger {
         state.footprints = std::mem::take(&mut self.footprints);
         state.logic = Logic { packages: self.log.packages.clone(), ..std::mem::take(&mut self.logic) };
         state.portals = std::mem::take(&mut self.portals);
-        if let Err(why) = state.apply(&change, false) {
-            warn!("change {} doesn't apply: {why}", change.id);
+        let result = state.apply(&change, false).map(|_| ());
+        // What a game did to the voxels, for the game to draw (replay has no voxels here).
+        if let Some(world) = state.last_world.take().filter(|(_, w)| !w.is_empty()) {
+            self.pending_world.push(world);
         }
         self.builds = state.builds;
         self.land = state.land;
@@ -444,6 +476,7 @@ impl Ledger {
         self.logic = state.logic;
         self.portals = state.portals;
         self.version += 1;
+        result
     }
 
     /// Takes on who-owns-what, rules, rates and budgets from a replayed world.
@@ -567,7 +600,14 @@ impl Ledger {
             .map(|item| (item.to_string(), *after.get(item).unwrap_or(&0) as i64 - *before.get(item).unwrap_or(&0) as i64))
             .filter(|(_, n)| *n != 0)
             .collect();
+        self.refused = None;
         self.record(None, None, Action::Intent { intent });
+        // The world may refuse what the game does to it (land, budgets): then it's not kept.
+        if let Some(why) = self.refused.take() {
+            self.log.changes.pop();
+            self.save();
+            return Err(why);
+        }
         Ok(Acted { gained, notes })
     }
 
@@ -579,16 +619,10 @@ impl Ledger {
             return Vec::new();
         }
         let now = now();
-        let first = self.log.changes.last().map_or(1, |c| c.id + 1);
-        let run = self.clock.run(&mut self.logic, first, now, self.log.seed, &self.rules.logic, players);
-        if !run.changes.is_empty() {
-            for (_, package, effects) in run.changes {
-                let by = Provenance::new(&self.profile.id, &self.profile.name, None, None, now);
-                self.log.push_signed(by, Action::Timers { package, until: now, effects }, &self.key);
-            }
-            self.version += 1;
-            self.save();
-        }
+        let mut clock = std::mem::take(&mut self.clock);
+        let (seed, rules) = (self.log.seed, self.rules.logic);
+        let run = clock.run(self, now, seed, &rules, players);
+        self.clock = clock;
         let me = &self.profile.id;
         self.heard.extend(run.notes.into_iter().filter(|(to, _)| to == me).map(|(_, t)| t));
         run.errors
@@ -927,7 +961,8 @@ struct SavedEdits {
 /// Saves a snapshot of the local world as of the log's last change: its voxel `edits`
 /// and the games.
 pub fn write_snapshot(ledger: &Ledger, edits: Vec<[i32; 4]>) {
-    let snapshot = Snapshot::new(&ledger.log, edits, &ledger.logic);
+    let game = cubewish_rules::log::GameSave::of(&ledger.logic, &ledger.builds, &ledger.footprints);
+    let snapshot = Snapshot::new(&ledger.log, edits, game);
     #[cfg(not(target_arch = "wasm32"))]
     write_json(&snapshot_path(), &snapshot);
     #[cfg(target_arch = "wasm32")]
@@ -1050,6 +1085,8 @@ fn empty(log: WorldLog, profile: Profile, key: Keypair) -> Ledger {
         portals: default(),
         version: 0,
         heard: Vec::new(),
+        pending_world: Vec::new(),
+        refused: None,
         clock: Clockwork::default(),
         #[cfg(not(target_arch = "wasm32"))]
         file: None,
