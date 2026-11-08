@@ -155,7 +155,9 @@ shares every world of the game; each player is in one world at a time and sees o
 and changes there. Ask the agent for **a portal** ("a stone arch, a portal to sokoban") and it
 builds one linked to that world; walk up to it and press E. Portals lead to a world of this game
 (`sokoban`, works for everyone in it), another of your games (`game/world`), or a server
-(`host:port`). Chat: `/worlds`, `/world`, `/newworld`, `/games`, `/game`, `/newgame`,
+(`host:port`). What you carry goes with you between a game's worlds. Game rules belong to the
+game: install a game once and turn it on in the worlds that play it (the Rules tab); a new
+version reaches every world that runs it. Chat: `/worlds`, `/world`, `/newworld`, `/games`, `/game`, `/newgame`,
 `/savegame`, `/loadgame`, `/portal`. Design: `docs/worlds.md`.
 
 ## Playing together

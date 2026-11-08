@@ -447,7 +447,10 @@ pub fn save_game(ledger: &mut Ledger, name: &str) -> String {
 /// Puts every world of the game back to a game save.
 pub fn load_game(ledger: &mut Ledger, name: &str) -> String {
     if ledger.is_online() {
-        return "Load a game save on the computer hosting it, for now; on a server, load each world's save.".into();
+        return match ledger.load_game(name) {
+            Ok(n) => format!("Asking the server to put {n} world(s) back to \"{}\"…", name.trim()),
+            Err(why) => why,
+        };
     }
     match ledger.load_game(name) {
         Ok(n) => format!("Loaded the game save \"{}\": {n} world(s) went back. Each can be undone in its history.", name.trim()),
@@ -543,8 +546,14 @@ fn rules(ledger: &Ledger) -> String {
 
 fn packages(ledger: &crate::world::ledger::Ledger) -> String {
     let logic = &ledger.logic;
+    let catalog = match &ledger.online {
+        Some(online) => online.game.as_ref().map(|g| g.packages()).unwrap_or_default(),
+        None => crate::world::ledger::read_game(&crate::world::ledger::game_name()).packages(),
+    };
+    let off: Vec<String> = catalog.keys().filter(|n| !logic.installed.contains_key(*n)).cloned().collect();
+    let off = if off.is_empty() { String::new() } else { format!("\nIn the game but off here: {} (turn them on from the Game window's Rules)", off.join(", ")) };
     if logic.installed.is_empty() {
-        return "No game rules yet. Admins can ask the agent for a game.".into();
+        return format!("No game rules on in this world. Admins can ask the agent for a game.{off}");
     }
     let lines: Vec<String> = logic
         .installed
@@ -559,7 +568,7 @@ fn packages(ledger: &crate::world::ledger::Ledger) -> String {
             format!("{} \"{title}\" v{} for {place}, by {who}, {} piece(s)", i.package.name, i.package.version, logic.state.count(&i.package.name))
         })
         .collect();
-    lines.join("\n")
+    lines.join("\n") + &off
 }
 
 fn short_id(id: &str) -> String {

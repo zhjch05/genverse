@@ -8,7 +8,8 @@
 //!   loading screen. On a server, the server is asked; its welcome does the rest
 //!   ([`super::online`]).
 //! - **The window:** Worlds (enter, new, remove), Saves (this world's and the game's),
-//!   Portals (go, link, unlink), Games (local games, servers, hosting).
+//!   Portals (go, link, unlink), Rules (the game's packages, and which run here), Games
+//!   (local games, servers, hosting).
 //! - **Portals:** builds linked by [`Action::SetPortal`]. Walking up to one shows where
 //!   it leads; E goes.
 
@@ -20,6 +21,7 @@ use cubewish_rules::{
     build::VOXEL_SIZE as BUILD_VOXEL,
     game::GameAction,
     log::{Action, BuildState, PortalTo},
+    logic::{Package, Scope},
 };
 use egui_phosphor::regular as icon;
 
@@ -171,6 +173,14 @@ pub fn travel(
                 chat.say(Role::System, format!("There's no world \"{name}\" in {game}."));
                 return;
             }
+            // Within a game, what the player carries goes with them.
+            let me = ledger.profile.id.clone();
+            let carried = ledger.logic.state.carried(&me);
+            let carry = !ledger.is_online() && game == game_name() && !carried.is_empty() && ledger.land.is_admin(&me);
+            if carry {
+                ledger.record(None, None, Action::Depart { player: me.clone(), to: name.clone(), items: carried.clone() });
+            }
+            let left_world = world_name();
             // The world left behind loads fast next time.
             if !ledger.is_online() {
                 ledger::write_snapshot(&ledger, world.edit_list());
@@ -179,6 +189,9 @@ pub fn travel(
             ledger::set_place(&game, &name);
             let (fresh, edits) = ledger::load_local(SEED);
             *ledger = fresh;
+            if carry {
+                ledger.record(None, None, Action::Arrive { player: me, from: left_world, items: carried });
+            }
             world.reset(&mut commands, ledger.log.terrain(), edits);
             creations.resync(&mut commands, &ledger.builds);
             landscape.forget_history();
@@ -283,6 +296,7 @@ enum Tab {
     Worlds,
     Saves,
     Portals,
+    Rules,
     Games,
 }
 
@@ -301,6 +315,8 @@ pub struct WorldsWindow {
     /// The worlds and local games, read when the window opens, after changes, and in
     /// each new place.
     rows: Option<(Vec<Row>, Vec<ledger::GameInfo>)>,
+    /// The game's packages, read with the rows.
+    catalog: Vec<std::sync::Arc<Package>>,
     /// Where they were read.
     listed_in: String,
     new_name: String,
@@ -322,6 +338,7 @@ impl Default for WorldsWindow {
             open: false,
             tab: Tab::default(),
             rows: None,
+            catalog: Vec::new(),
             listed_in: String::new(),
             new_name: String::new(),
             new_flat: true,
@@ -366,6 +383,9 @@ enum Do {
     LoadGame(String),
     NewGame,
     Portal(PortalTo),
+    TurnOn(std::sync::Arc<Package>),
+    TurnOff(String),
+    RemovePackage(String),
     Link(u64),
     Unlink(u64),
     Host,
@@ -440,6 +460,11 @@ pub fn worlds_window(
     }
     if window.rows.is_none() {
         window.rows = Some(rows(&ledger));
+        let catalog = match &ledger.online {
+            Some(online) => online.game.as_ref().map(|g| g.packages()).unwrap_or_default(),
+            None => ledger::read_game(&game_name()).packages(),
+        };
+        window.catalog = catalog.into_values().collect();
     }
     let (worlds, games) = window.rows.take().unwrap_or_default();
     let online = ledger.is_online();
@@ -481,7 +506,8 @@ pub fn worlds_window(
             });
             ui.add_space(4.0);
             ui.horizontal(|ui| {
-                for (tab, title) in [(Tab::Worlds, "Worlds"), (Tab::Saves, "Saves"), (Tab::Portals, "Portals"), (Tab::Games, "Games")] {
+                let tabs = [(Tab::Worlds, "Worlds"), (Tab::Saves, "Saves"), (Tab::Portals, "Portals"), (Tab::Rules, "Rules"), (Tab::Games, "Games")];
+                for (tab, title) in tabs {
                     ui.selectable_value(&mut window.tab, tab, title);
                 }
             });
@@ -566,7 +592,7 @@ pub fn worlds_window(
                                 ui.label(egui::RichText::new(name).color(p.strong));
                                 let who = ledger.describe(&c.by);
                                 ui.label(egui::RichText::new(format!("{} worlds · {who}", worlds.len())).small().color(p.muted));
-                                if admin && !online && ui.small_button("Load").on_hover_text("Put every world back to this save").clicked() {
+                                if admin && ui.small_button("Load").on_hover_text("Put every world back to this save").clicked() {
                                     todo = Some(Do::LoadGame(name.to_string()));
                                 }
                             });
@@ -655,6 +681,42 @@ pub fn worlds_window(
                                         todo = Some(Do::Portal(to.clone()));
                                     }
                                 });
+                            });
+                            ui.separator();
+                        }
+                    });
+                }
+                Tab::Rules => {
+                    theme::note(ui, "The game's rules are installed once for the whole game; each world turns on the ones it plays. A new version reaches every world that runs it.");
+                    if window.catalog.is_empty() {
+                        theme::note(ui, "None yet: ask the agent for a game, and its rules land here.");
+                    }
+                    egui::ScrollArea::vertical().auto_shrink(false).show(ui, |ui| {
+                        for package in &window.catalog {
+                            let name = &package.manifest.name;
+                            let here = ledger.logic.installed.get(name);
+                            ui.horizontal(|ui| {
+                                ui.label(egui::RichText::new(&package.manifest.title).strong().color(p.strong));
+                                let state = match here {
+                                    Some(i) if i.package.hash == package.hash() => "on here",
+                                    Some(_) => "on here (an older version)",
+                                    None => "off here",
+                                };
+                                ui.label(egui::RichText::new(format!("{name} v{} · {state}", package.manifest.version)).small().color(p.muted));
+                                if admin {
+                                    ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                                        if theme::icon_button(ui, icon::TRASH, "Take it out of the game (every world stops running it)") {
+                                            todo = Some(Do::RemovePackage(name.clone()));
+                                        }
+                                        if here.is_some() {
+                                            if ui.button("Turn off here").clicked() {
+                                                todo = Some(Do::TurnOff(name.clone()));
+                                            }
+                                        } else if ui.button("Turn on here").clicked() {
+                                            todo = Some(Do::TurnOn(package.clone()));
+                                        }
+                                    });
+                                }
                             });
                             ui.separator();
                         }
@@ -770,6 +832,21 @@ pub fn worlds_window(
             Some(commands::new_game(&ledger, &mut travel, &name, flat))
         }
         Do::Portal(to) => travel.portal(&to, &ledger).err(),
+        Do::TurnOn(package) => {
+            let title = package.manifest.title.clone();
+            Some(match ledger.install((*package).clone(), Scope::World, None, None) {
+                Ok(_) => format!("{title} is on in this world."),
+                Err(why) => format!("⚠ Couldn't turn {title} on: {why}."),
+            })
+        }
+        Do::TurnOff(name) => {
+            ledger.record(None, None, Action::UninstallPackage { name: name.clone() });
+            Some(format!("{name} is off in this world; its pieces stay, asleep."))
+        }
+        Do::RemovePackage(name) => Some(match ledger.set_game_package(GameAction::RemovePackage { name: name.clone() }) {
+            Ok(()) => format!("Took {name} out of the game; worlds stop running it."),
+            Err(why) => why,
+        }),
         Do::Link(build) => Some(match PortalTo::parse(&window.link) {
             Ok(to) => {
                 let label = to.label();
@@ -798,5 +875,8 @@ pub fn game_reply(action: Option<&GameAction>) -> Option<String> {
         GameAction::RemoveWorld { name } => format!("Removed {name}."),
         GameAction::SetAdmins { .. } => "Changed who runs the game.".into(),
         GameAction::Save { name, worlds } => format!("Saved the game as \"{name}\" ({} worlds).", worlds.len()),
+        GameAction::AddPackage { package } => format!("The game has {} v{} now.", package.manifest.title, package.manifest.version),
+        GameAction::RemovePackage { name } => format!("Took {name} out of the game."),
+        GameAction::LoadSave { name, .. } => format!("Loaded the game save \"{name}\": every world went back."),
     })
 }

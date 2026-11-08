@@ -167,6 +167,11 @@ pub enum Action {
     /// An admin putting the world back exactly as it was right after change `to`
     /// (loading a save): every change after it, undos included, stops counting.
     Restore { to: u64 },
+    /// A player leaving for another world of the game, with what they carry: it goes
+    /// with them ([`Action::Arrive`] there).
+    Depart { player: String, to: String, items: Vec<(String, u32)> },
+    /// A player arriving from another world of the game with what they carried.
+    Arrive { player: String, from: String, items: Vec<(String, u32)> },
     /// Makes a placed build a portal to another world (`None` unlinks it). Whoever may
     /// change the build may do this; the link stays when the build moves or changes.
     SetPortal { build: u64, to: Option<PortalTo> },
@@ -214,6 +219,8 @@ impl Action {
             Action::Intent { intent: Intent::Key { key, .. } } => format!("pressed {key}"),
             Action::Timers { package, effects, .. } => format!("{package}'s timers ({} change(s))", effects.len()),
             Action::Save { name } => format!("saved \"{name}\""),
+            Action::Depart { to, items, .. } => format!("left for {to} carrying {} kind(s) of item", items.len()),
+            Action::Arrive { from, items, .. } => format!("arrived from {from} carrying {} kind(s) of item", items.len()),
             Action::Restore { to } => format!("restored the world to change {to}"),
             Action::SetPortal { build, to: Some(to) } => format!("made build {build} a portal to {}", to.label()),
             Action::SetPortal { build, to: None } => format!("unlinked the portal on build {build}"),
@@ -599,7 +606,9 @@ impl Replay {
     pub fn apply(&mut self, change: &Change, voxels: bool) -> Result<Vec<(IVec3, VoxelId)>, String> {
         let by = &change.by;
         let parcels = |list: &[[i32; 2]]| list.iter().map(|p| IVec2::from_array(*p)).collect::<Vec<_>>();
-        let admin = self.admins.contains(&by.player);
+        // The server's own changes (timers, players carrying things between worlds)
+        // count as an admin's: no player can sign as the world.
+        let admin = self.admins.contains(&by.player) || by.player == WORLD;
         // Rate limits count changes that add to the world, by their voxels.
         let cost = match &change.action {
             Action::PlaceBuild(b) | Action::UpdateBuild(b) => Some(build_usage(&b.spec).voxels),
@@ -693,7 +702,10 @@ impl Replay {
             Action::Intent { intent } => {
                 self.logic.act(change.id, &by.player, by.at, self.seed, &self.rules.logic, intent)?;
             }
-            Action::Timers { .. } if !admin && by.player != WORLD => return Err("only the world runs timers".into()),
+            Action::Timers { .. } if !admin => return Err("only the world runs timers".into()),
+            Action::Depart { .. } | Action::Arrive { .. } if !admin => return Err("only the world moves players between worlds".into()),
+            Action::Depart { player, items, .. } => self.logic.state.carry_out(player, items)?,
+            Action::Arrive { player, items, .. } => self.logic.state.carry_in(player, items),
             Action::Timers { package, until, effects } => {
                 self.logic.apply_timers(change.id, package, *until, effects, &self.rules.logic)?;
             }
@@ -796,6 +808,23 @@ mod tests {
             position: [0.0, 10.0, 0.0],
             yaw: 0.0,
         })
+    }
+
+    #[test]
+    fn only_the_world_carries_things_between_worlds() {
+        let mut log = WorldLog::new(1);
+        log.admins = vec!["admin".into()];
+        let items = vec![("farm:seed".to_string(), 3)];
+        // Bo can't make things up by arriving with them.
+        log.push(by("bo"), Action::Arrive { player: "bo".into(), from: "x".into(), items: items.clone() });
+        assert_eq!(replay_land(&log).logic.state.items("bo", "farm:seed"), 0);
+        log.push(by(WORLD), Action::Arrive { player: "bo".into(), from: "x".into(), items: items.clone() });
+        assert_eq!(replay_land(&log).logic.state.items("bo", "farm:seed"), 3);
+        // Leaving takes exactly what was carried, and can't take more.
+        log.push(by(WORLD), Action::Depart { player: "bo".into(), to: "y".into(), items: vec![("farm:seed".into(), 5)] });
+        assert!(replay_land(&log).problems.iter().any(|p| p.contains("doesn't carry")));
+        log.push(by(WORLD), Action::Depart { player: "bo".into(), to: "y".into(), items });
+        assert_eq!(replay_land(&log).logic.state.inventory("bo").count(), 0);
     }
 
     #[test]

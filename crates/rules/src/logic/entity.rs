@@ -291,6 +291,45 @@ impl GameState {
         self.items.get(player).into_iter().flatten().map(|(item, n)| (item.as_str(), *n))
     }
 
+    /// Everything `player` carries, to take to another world.
+    pub fn carried(&self, player: &str) -> Vec<(String, u32)> {
+        self.inventory(player).map(|(item, n)| (item.to_string(), n)).collect()
+    }
+
+    /// Takes `items` from `player`, who's leaving for another world with them.
+    pub fn carry_out(&mut self, player: &str, items: &[(String, u32)]) -> Result<(), String> {
+        for (item, n) in items {
+            if self.items(player, item) < *n {
+                return Err(format!("{player} doesn't carry {n} \"{item}\""));
+            }
+        }
+        let carried = self.items.entry(player.to_string()).or_default();
+        for (item, n) in items {
+            let left = carried.get(item).copied().unwrap_or(0) - n;
+            if left == 0 {
+                carried.remove(item);
+            } else {
+                carried.insert(item.clone(), left);
+            }
+        }
+        if carried.is_empty() {
+            self.items.remove(player);
+        }
+        Ok(())
+    }
+
+    /// Gives `player` what they carried here from another world.
+    pub fn carry_in(&mut self, player: &str, items: &[(String, u32)]) {
+        let carried = self.items.entry(player.to_string()).or_default();
+        for (item, n) in items.iter().filter(|(_, n)| *n > 0) {
+            let have = carried.entry(item.clone()).or_default();
+            *have = have.saturating_add(*n).min(MAX_ITEMS);
+        }
+        if carried.is_empty() {
+            self.items.remove(player);
+        }
+    }
+
     /// Every waiting timer: package, name, timer.
     pub fn timers(&self) -> impl Iterator<Item = (&str, &str, &Timer)> {
         self.timers.iter().map(|((p, n), t)| (p.as_str(), n.as_str(), t))

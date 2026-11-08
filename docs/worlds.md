@@ -1,7 +1,8 @@
 # Games, worlds, and portals between them
 
-Status: 2026-11-08. Built: games with many worlds, locally and hosted; game-level admins
-and saves; portals within a game and to other games. *Later* marks what isn't built.
+Status: 2026-11-08. Built: games with many worlds, locally and hosted; game-level admins,
+saves and packages; items that travel with players between a game's worlds; portals
+within a game and to other games. *Later* marks what isn't built.
 
 ## Goal
 
@@ -15,8 +16,8 @@ an agent builds on request. Everything keeps the rule so far: each log is the tr
 | | Game | World |
 |---|---|---|
 | What it is | What you host or join: one address, one set of players | One place in a game, with its own ground |
-| Owns | Players and roles (admins), which worlds exist, game saves | Ground (seed, flat or natural), voxel edits, builds, land, game pieces and timers |
-| Log | `game.jsonl`: worlds made and removed, admins, saves | `world.jsonl`, as before |
+| Owns | Players and roles (admins), which worlds exist, game saves, the game's packages | Ground (seed, flat or natural), voxel edits, builds, land, which packages run here, game pieces and timers, what the players in it carry |
+| Log | `game.json`: worlds made and removed, admins, saves, packages | `world.jsonl`, as before |
 
 Other games split it the same way: Roblox experiences hold places, a Minecraft server
 holds dimensions, a CK3 campaign is saved as one thing.
@@ -40,10 +41,36 @@ GameAction::CreateWorld { name, seed, flat }
 GameAction::RemoveWorld { name }      // moved to saves/trash, never deleted
 GameAction::SetAdmins { admins }
 GameAction::Save { name, worlds }     // world name → its last change: a save of everything
+GameAction::LoadSave { name, signed } // the admin's signed Restore for each world
+GameAction::AddPackage { package }    // a package for the whole game, or a new version
+GameAction::RemovePackage { name }
 ```
 
 Saving the game bookmarks every world at once, like a strategy game's save. Loading it
-is a `Restore` in each world's log (each one undoable), as loading a world's save is.
+is a `Restore` in each world's log (each one undoable), as loading a world's save is. On
+a server the admin signs each world's restore, so every world change stays signed by
+whoever made it; the server checks the signatures and makes them all.
+
+## Game packages
+
+Game rules are installed once for the whole game; each world turns on the ones it plays.
+
+- Installing a package in a world (asking the agent for a game) also adds it to the
+  game. Other worlds turn it on from the Rules tab.
+- A new version of a package reaches every world that runs it: loaded worlds on a server
+  at once, the others when they're next loaded (`GameLog::sync`, recorded in the world's
+  log by the world). Taking a package out of the game turns it off everywhere.
+- A world running a package from before games had packages gives it to the game.
+
+## Items travel
+
+What a player carries follows them between the worlds of a game. Leaving a world
+records `Action::Depart { player, to, items }` there; arriving records `Action::Arrive`
+in the new world before its welcome, so each world's log stays the truth and the items
+are always in exactly one world. Only the world (a server; offline, an admin's game)
+records these. Items keep their package's name; a world where that package is off
+shows them by name. Going to another game or a server doesn't carry anything: items
+belong to their game.
 
 ## Entering a world
 
@@ -89,13 +116,13 @@ enum PortalTo {
   Natural), Fork from a save, Move to trash.
 - **Saves:** game saves (every world) and this world's saves: Save, Load (admins),
   Fork.
+- **Rules:** the game's packages, which are on here: Turn on, Turn off, Take out of
+  the game (admins).
 - **Portals:** this world's portals: Go, Unlink, link the selected build.
 - **Games:** your local games (Enter, New) and servers (Join; recent ones remembered);
   Host this game; Leave.
 
 ## Later
 
-- Inventories that follow a player between worlds (game-level items, handed over in
-  the game log), and game packages installed once per game with each world choosing
-  which run. Today both stay per world.
 - Each world on its own thread or machine; renaming worlds and games; thumbnails.
+- Moving between games with items (a trade between games' logs).

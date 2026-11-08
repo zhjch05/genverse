@@ -472,8 +472,75 @@ impl Ledger {
         trial.packages.insert(reference.hash.clone(), Arc::new(package.clone()));
         self.check(&scope.parcels())?;
         trial.install(&self.profile.id, self.is_admin(), &self.rules.logic, &reference, &scope)?;
-        let action = Action::InstallPackage { package: reference, scope };
-        Ok(self.record_with(agent, prompt, action, Some(package)))
+        let action = Action::InstallPackage { package: reference.clone(), scope };
+        let id = self.record_with(agent, prompt, action, Some(package.clone()));
+        // The game keeps it too, so other worlds can turn it on, and those that run it
+        // move to this version.
+        let known = match &self.online {
+            Some(online) => online.game.as_ref().map(|g| g.packages()),
+            None => Some(read_game(&game_name()).packages()),
+        };
+        if known.and_then(|k| k.get(&package.manifest.name).map(|p| p.hash())) != Some(reference.hash) {
+            let action = GameAction::AddPackage { package: Box::new(package) };
+            #[cfg(not(target_arch = "wasm32"))]
+            if self.online.is_some() {
+                let _ = self.propose_game(action);
+                return Ok(id);
+            }
+            if let Err(why) = self.change_game(action) {
+                warn!("the game didn't take the package: {why}");
+            }
+        }
+        Ok(id)
+    }
+
+    /// Records a change to this (local) game.
+    fn change_game(&mut self, action: GameAction) -> Result<(), String> {
+        let game = game_name();
+        let mut game_log = read_game(&game);
+        let by = Provenance::new(&self.profile.id, &self.profile.name, None, None, now());
+        game_log.push(by, action)?;
+        write_game(&game, &game_log);
+        Ok(())
+    }
+
+    /// Changes the game's packages (admins): adds or removes one. Locally the current
+    /// world follows at once; on a server, every loaded world does.
+    pub fn set_game_package(&mut self, action: GameAction) -> Result<(), String> {
+        #[cfg(not(target_arch = "wasm32"))]
+        if self.online.is_some() {
+            return self.propose_game(action).map(|_| ());
+        }
+        self.change_game(action)?;
+        self.sync_packages();
+        Ok(())
+    }
+
+    /// Brings this (local) world's packages in line with its game's: moves to the game's
+    /// versions, stops what it took out, and gives the game those it doesn't have yet.
+    pub fn sync_packages(&mut self) {
+        if self.is_online() || !self.is_admin() {
+            return;
+        }
+        let game = read_game(&game_name());
+        for sync in game.sync(&self.logic.installed) {
+            match sync {
+                cubewish_rules::game::Sync::Upgrade(package, scope) => {
+                    let reference = package.reference();
+                    self.log.packages.insert(reference.hash.clone(), package);
+                    self.record(None, None, Action::InstallPackage { package: reference, scope });
+                }
+                cubewish_rules::game::Sync::Remove(name) => {
+                    self.record(None, None, Action::UninstallPackage { name });
+                }
+                cubewish_rules::game::Sync::Adopt(name) => {
+                    let found = self.logic.installed.get(&name).and_then(|i| self.logic.package(i)).cloned();
+                    if let Some(found) = found {
+                        let _ = self.change_game(GameAction::AddPackage { package: Box::new(found) });
+                    }
+                }
+            }
+        }
     }
 
     /// Does `intent`, after trying it on a copy of the game: refused, it says why and
@@ -597,13 +664,27 @@ impl Ledger {
         Ok(n)
     }
 
-    /// Loads a game save: every world goes back to how it was then (admins). The current
-    /// world's restore is recorded like any change; the others' are written to their
-    /// logs, for when they're entered next.
+    /// Loads a game save: every world goes back to how it was then (admins). Locally,
+    /// the current world's restore is recorded like any change and the others' are
+    /// written to their logs, for when they're entered next. On a server, the admin signs
+    /// each world's restore and the server makes them.
     pub fn load_game(&mut self, name: &str) -> Result<usize, String> {
         if !self.is_admin() {
             return Err("Only admins load saves.".into());
         }
+        #[cfg(not(target_arch = "wasm32"))]
+        if let Some(online) = &self.online {
+            let game = online.game.as_ref().ok_or("the server hasn't welcomed us yet")?;
+            let worlds = game.save_named(name).ok_or(format!("There's no game save \"{name}\"."))?.clone();
+            let by = Provenance::new(&self.profile.id, &self.profile.name, None, None, now());
+            let signed = worlds
+                .iter()
+                .map(|(world, to)| (world.clone(), self.key.sign(&signing_bytes(&by, &Action::Restore { to: *to }))))
+                .collect();
+            self.propose_game_by(by, GameAction::LoadSave { name: name.into(), signed })?;
+            return Ok(worlds.len());
+        }
+        self.change_game(GameAction::LoadSave { name: name.into(), signed: BTreeMap::new() })?;
         let game = game_name();
         let game_log = read_game(&game);
         let (_, _, worlds) = game_log.saves().rev().find(|(_, n, _)| n.eq_ignore_ascii_case(name)).ok_or(format!("There's no game save \"{name}\"."))?;
@@ -653,6 +734,11 @@ impl Ledger {
     #[cfg(not(target_arch = "wasm32"))]
     pub fn propose_game(&mut self, action: GameAction) -> Result<u64, String> {
         let by = Provenance::new(&self.profile.id, &self.profile.name, None, None, now());
+        self.propose_game_by(by, action)
+    }
+
+    #[cfg(not(target_arch = "wasm32"))]
+    fn propose_game_by(&mut self, by: Provenance, action: GameAction) -> Result<u64, String> {
         let sig = self.key.sign(&cubewish_rules::game::signing_bytes(&by, &action));
         let online = self.online.as_mut().ok_or("not online")?;
         let request = online.next_request;
@@ -942,6 +1028,8 @@ fn load_with(seed: u32, join: bool) -> (Ledger, HashMap<IVec3, VoxelId>) {
     {
         ledger.file = file;
     }
+    // The game's packages may have moved on while this world was away.
+    ledger.sync_packages();
     #[cfg(target_arch = "wasm32")]
     let _ = file;
     (ledger, edits)

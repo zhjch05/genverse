@@ -262,8 +262,47 @@ impl Server {
             println!("world {name}: {} changes, {} builds", log.changes.len(), state.builds.len());
             let clock = Clockwork::new(state.logic.timers_until);
             self.places.insert(name.to_string(), Place { file, log, state, snapshot, snapshot_path, clock });
+            // Nobody is in it yet, so the changes need sending to no one.
+            let _ = self.sync_packages(name);
         }
         Ok(self.places.get_mut(name).expect("just loaded"))
+    }
+
+    /// Brings a loaded world's packages in line with the game's: returns the changes
+    /// it made there.
+    fn sync_packages(&mut self, name: &str) -> Vec<Change> {
+        let Some(place) = self.places.get_mut(name) else { return Vec::new() };
+        let mut out = Vec::new();
+        let mut adopted = false;
+        for sync in self.game.sync(&place.state.logic.installed) {
+            match sync {
+                game::Sync::Upgrade(package, scope) => {
+                    let reference = package.reference();
+                    place.log.packages.insert(reference.hash.clone(), package.clone());
+                    place.state.logic.packages.insert(reference.hash.clone(), package);
+                    match place.record(Action::InstallPackage { package: reference, scope }) {
+                        Ok(change) => out.push(change),
+                        Err(why) => eprintln!("{name}: couldn't move to the game's package: {why}"),
+                    }
+                }
+                game::Sync::Remove(package) => {
+                    if let Ok(change) = place.record(Action::UninstallPackage { name: package }) {
+                        out.push(change);
+                    }
+                }
+                game::Sync::Adopt(package) => {
+                    let found = place.state.logic.installed.get(&package).and_then(|i| place.state.logic.package(i)).cloned();
+                    if let Some(found) = found {
+                        let by = Provenance::new(WORLD, "World", None, None, now());
+                        adopted |= self.game.push(by, GameAction::AddPackage { package: Box::new(found) }).is_ok();
+                    }
+                }
+            }
+        }
+        if adopted {
+            self.game_changed(None);
+        }
+        out
     }
 
     /// Fires the timers due by `now` in every loaded world.
@@ -284,8 +323,24 @@ impl Server {
         }
     }
 
-    /// Puts the player on `conn` in `world`: the welcome, and who's there.
+    /// Puts the player on `conn` in `world`: what they carry comes along, then the
+    /// welcome, and who's there.
     fn enter(&mut self, conn: u64, world: &str) -> Result<(), String> {
+        self.place(world).map_err(|e| e.to_string())?;
+        let (left, me) = self.conns.get(&conn).map(|c| (c.world.clone(), c.player.clone())).unwrap_or_default();
+        if let (Some(left), Some((player, _))) = (left.filter(|l| l != world), me) {
+            let items = self.places.get(&left).map(|p| p.state.logic.state.carried(&player)).unwrap_or_default();
+            if !items.is_empty() {
+                let depart = Action::Depart { player: player.clone(), to: world.to_string(), items: items.clone() };
+                if let Some(Ok(change)) = self.places.get_mut(&left).map(|p| p.record(depart)) {
+                    self.broadcast(&left, change, Vec::new(), None, u64::MAX, 0);
+                }
+                let arrive = Action::Arrive { player, from: left.clone(), items };
+                if let Some(Ok(change)) = self.places.get_mut(world).map(|p| p.record(arrive)) {
+                    self.broadcast(world, change, Vec::new(), None, u64::MAX, 0);
+                }
+            }
+        }
         let game = self.game.clone();
         let place = self.place(world).map_err(|e| e.to_string())?;
         let snapshot = place.snapshot.clone().filter(|s| s.fits(&place.log));
@@ -409,6 +464,22 @@ impl Server {
             return Err("that save names changes the worlds don't have".into());
         }
         let by = Provenance { prompt: None, ..by };
+        // Loading a game save: every world's restore must be signed by the admin.
+        let mut restores = Vec::new();
+        if let GameAction::LoadSave { name, signed } = &action {
+            let worlds = self.game.save_named(name).ok_or(format!("there's no game save \"{name}\""))?.clone();
+            for (world, to) in worlds {
+                if self.game.world(&world).is_none() {
+                    continue;
+                }
+                let restore = Action::Restore { to };
+                let sig = signed.get(&world).ok_or(format!("the restore of {world} isn't signed"))?;
+                if !verify(&by.player, &signing_bytes(&by, &restore), sig) {
+                    return Err(format!("the restore of {world} isn't signed by you"));
+                }
+                restores.push((world, restore, sig.clone()));
+            }
+        }
         // A save names where every world is; the server knows that best.
         let action = match action {
             GameAction::Save { name, worlds } if worlds.is_empty() => {
@@ -417,6 +488,7 @@ impl Server {
             }
             other => other,
         };
+        let by_for_restores = by.clone();
         self.game.push(by, action.clone())?;
         match &action {
             GameAction::CreateWorld { name, .. } => {
@@ -436,6 +508,32 @@ impl Server {
             }
             GameAction::SetAdmins { .. } => self.admins_changed(),
             GameAction::Save { .. } => {}
+            GameAction::AddPackage { .. } | GameAction::RemovePackage { .. } => {
+                // Loaded worlds follow at once; the others when they're next loaded.
+                let names: Vec<String> = self.places.keys().cloned().collect();
+                for name in names {
+                    for change in self.sync_packages(&name) {
+                        self.broadcast(&name, change, Vec::new(), None, u64::MAX, 0);
+                    }
+                }
+            }
+            GameAction::LoadSave { .. } => {
+                for (world, restore, sig) in restores {
+                    let Action::Restore { to } = restore else { continue };
+                    // Loading may add changes of its own (package upgrades), so the
+                    // last change is read after.
+                    let Ok(place) = self.place(&world) else { continue };
+                    let last = place.log.changes.last().map_or(0, |c| c.id);
+                    if last <= to {
+                        continue;
+                    }
+                    let change = Change { id: last + 1, by: by_for_restores.clone(), action: restore, sig: Some(sig) };
+                    place.log.changes.push(change.clone());
+                    place.state = replay(&place.log);
+                    place.saved();
+                    self.broadcast(&world, change, Vec::new(), None, u64::MAX, 0);
+                }
+            }
         }
         println!("{} {:?}", player, action);
         Ok(())
@@ -493,6 +591,16 @@ impl Server {
 }
 
 impl Place {
+    /// Appends a change the server makes itself (by the world).
+    fn record(&mut self, action: Action) -> Result<Change, String> {
+        let id = self.log.changes.last().map_or(1, |c| c.id + 1);
+        let change = Change { id, by: Provenance::new(WORLD, "World", None, None, now()), action, sig: None };
+        self.state.apply(&change, true)?;
+        self.log.changes.push(change.clone());
+        self.saved();
+        Ok(change)
+    }
+
     /// Fires the timers due by `now` and commits what each package's did; returns the
     /// changes, to send.
     fn run_timers(&mut self, now: u64, players: &[[f32; 3]]) -> Vec<Change> {

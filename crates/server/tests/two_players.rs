@@ -413,3 +413,86 @@ fn a_game_hosts_many_worlds() {
     }
     let _ = std::fs::remove_dir_all(&dir);
 }
+
+/// Reads messages until one matches.
+fn until(p: &Player, mut matches: impl FnMut(&ToClient) -> bool) -> ToClient {
+    for _ in 0..30 {
+        let message = p.next();
+        if matches(&message) {
+            return message;
+        }
+    }
+    panic!("{} never heard it", p.name);
+}
+
+#[test]
+fn items_and_rules_follow_the_game() {
+    use cubewish_rules::game::{GameAction, signing_bytes as game_bytes};
+    let dir = std::env::temp_dir().join(format!("cubewish-follow-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&dir);
+    let server = start(ServerConfig { data_dir: dir.clone(), port: 0, seed: 1337, flat: true }).unwrap();
+    let ada = Player::join(&server.addr.to_string(), 1, "Ada");
+    let now = || SystemTime::now().duration_since(UNIX_EPOCH).unwrap().as_secs();
+    let game_change = |request: u64, by: Provenance, action: GameAction| {
+        let sig = ada.key.sign(&game_bytes(&by, &action));
+        ada.client.send(ToServer::ProposeGame { request, by, action, sig });
+        until(&ada, |m| matches!(m, ToClient::Game { request: Some(r), .. } if *r == request))
+    };
+    let by = || Provenance::new(&ada.key.player_id(), "Ada", None, None, now());
+    let farm = |version: u32| {
+        let bin = DefSpec {
+            name: "bin".into(),
+            kind: "source".into(),
+            title: format!("Seed bin {version}"),
+            gives: Some(serde_json::from_value(serde_json::json!({ "item": "seed", "count": 5 })).unwrap()),
+            ..Default::default()
+        };
+        let seed = DefSpec { name: "seed".into(), kind: "item".into(), title: "Seeds".into(), ..Default::default() };
+        GameSpec { name: "farm".into(), title: "Farm".into(), defs: vec![bin, seed], scripts: Vec::new(), models: Vec::new() }.to_package(version)
+    };
+
+    // Ada installs the farm in main and the game keeps it.
+    let v1 = farm(1);
+    ada.propose_with(1, Action::InstallPackage { package: v1.reference(), scope: Scope::World }, Some(v1.clone()));
+    until(&ada, |m| matches!(m, ToClient::Committed { request: Some(1), .. }));
+    game_change(2, by(), GameAction::AddPackage { package: Box::new(v1) });
+    // A seed bin gives her seeds.
+    ada.propose(3, Action::Intent { intent: Intent::Place { item: "farm:bin".into(), position: [6.0, 9.0, 6.0] } });
+    let ToClient::Committed { change, .. } = until(&ada, |m| matches!(m, ToClient::Committed { request: Some(3), .. })) else { unreachable!() };
+    ada.propose(4, Action::Intent { intent: Intent::Interact { entity: EntityId { change: change.id, n: 0 } } });
+    until(&ada, |m| matches!(m, ToClient::Committed { request: Some(4), .. }));
+
+    // She goes to a new world: the seeds go with her.
+    game_change(5, by(), GameAction::CreateWorld { name: "arena".into(), seed: 7, flat: true });
+    ada.client.send(ToServer::Enter { world: "arena".into() });
+    let ToClient::Welcome { log, .. } = until(&ada, |m| matches!(m, ToClient::Welcome { .. })) else { unreachable!() };
+    let me = ada.key.player_id();
+    assert_eq!(cubewish_rules::log::replay(&log).logic.state.items(&me, "farm:seed"), 5);
+
+    // A new version of the farm reaches main, which runs it, though nobody is there.
+    let v2 = farm(2);
+    game_change(6, by(), GameAction::AddPackage { package: Box::new(v2.clone()) });
+
+    // A game save, a change in the arena, then loading the save puts it back.
+    game_change(7, by(), GameAction::Save { name: "start".into(), worlds: Default::default() });
+    ada.propose(8, lamp(1, 4.0, 4.0));
+    until(&ada, |m| matches!(m, ToClient::Committed { request: Some(8), .. }));
+    let ToClient::Game { game, .. } = game_change(9, by(), GameAction::SetAdmins { admins: vec![me.clone()] }) else { unreachable!() };
+    let worlds = game.save_named("start").unwrap().clone();
+    let load_by = by();
+    let signed = worlds
+        .iter()
+        .map(|(w, to)| (w.clone(), ada.key.sign(&signing_bytes(&load_by, &Action::Restore { to: *to }))))
+        .collect();
+    game_change(10, load_by, GameAction::LoadSave { name: "start".into(), signed });
+    drop(ada);
+
+    let world = |name: &str| cubewish_rules::store::LogFile::open(&dir.join("worlds").join(name)).unwrap().1.unwrap();
+    let (main, arena) = (cubewish_rules::log::replay(&world("main")), cubewish_rules::log::replay(&world("arena")));
+    assert!(main.problems.is_empty() && arena.problems.is_empty(), "{:?} {:?}", main.problems, arena.problems);
+    assert_eq!(main.logic.state.items(&me, "farm:seed"), 0);
+    assert_eq!(arena.logic.state.items(&me, "farm:seed"), 5);
+    assert_eq!(main.logic.installed["farm"].package.hash, v2.hash());
+    assert!(arena.builds.is_empty(), "the load took the lamp back");
+    let _ = std::fs::remove_dir_all(&dir);
+}

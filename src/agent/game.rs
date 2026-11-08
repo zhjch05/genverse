@@ -425,7 +425,8 @@ fn describe_gains(ledger: &Ledger, gained: &[(String, i64)]) -> String {
 
 fn item_title(logic: &Logic, item: &str) -> String {
     let package = item.split(':').next().and_then(|ns| package_of(logic, ns));
-    package.map_or(item.to_string(), |p| data::title(p, item))
+    // Carried in from a world whose game rules aren't on here: its name will do.
+    package.map_or_else(|| item.rsplit(':').next().unwrap_or(item).replace('_', " "), |p| data::title(p, item))
 }
 
 /// While holding something, a click on the ground puts it there; right-click or Esc
