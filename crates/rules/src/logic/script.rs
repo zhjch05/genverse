@@ -15,10 +15,12 @@
 //! function on_use(ev) end       -- ev.item used on ev.entity
 //! function on_key(ev) end       -- ev.key in ev.entity's zone: "north", "south",
 //!                               -- "east", "west", "action", "reset", "enter", "leave"
+//! function on_timer(ev) end     -- timer ev.name went off, with ev.data; ev.missed
+//!                               -- more times went by unrun (nobody was here)
 //! ```
 //!
-//! `ev` also has `player`, `pos` (`{x, y, z}` in meters), `day` and `time` (0..1 of the
-//! day). The world, as the package sees it (names without a `:` are the package's own;
+//! `ev` also has `player` (nil for timers), `pos` (`{x, y, z}` in meters), `day` and
+//! `time` (0..1 of the day), and `now` (seconds). The world, as the package sees it (names without a `:` are the package's own;
 //! `look`, `label`, `zone` and `pawn` are the engine's, see [`super::entity`]):
 //!
 //! ```lua
@@ -29,7 +31,17 @@
 //! give(player, item, n)   take(item, n)   count(player, item)
 //! notify(player, text)
 //! random() -> 0..1   random_int(a, b)
+//! after(seconds, name, data, near)  -- on_timer once, `seconds` from now (at least 1)
+//! every(seconds, name, data, near)  -- on_timer every `seconds`, the first in `seconds`
+//! cancel(name)                      -- a timer of the same name is replaced by after/every
 //! ```
+//!
+//! `near` (an entity id, optional) puts the timer to sleep while no player is within
+//! 64 m of that entity; it catches up (`ev.missed`) when someone comes back.
+//!
+//! Timers are how a game moves on its own (crops, countdowns, NPC turns). Nothing runs
+//! between them, so a quiet game costs nothing; each timer that does something becomes
+//! one change in the log.
 
 use super::{Batch, Event, Grants, Package};
 
@@ -79,8 +91,8 @@ mod vm {
 
     use super::{MAX_MEMORY, MAX_STEPS};
     use crate::logic::{
-        Batch, Effect, Event, Grants, Intent, Package,
-        entity::{EntityId, RESERVED},
+        Batch, Effect, Event, Grants, Intent, Package, Trigger,
+        entity::{EntityId, MIN_WAIT, RESERVED},
     };
 
     fn fail(text: impl Into<String>) -> Error {
@@ -246,6 +258,29 @@ mod vm {
                 "notify",
                 scope.create_function(|_, (player, text): (String, String)| apply(Effect::Notify { player, text }).map(|_| ()))?,
             )?;
+            let schedule = |lua: &Lua, (seconds, name, data, near, every): (f64, String, Value, Option<String>, bool)| -> mlua::Result<()> {
+                if !seconds.is_finite() || seconds < MIN_WAIT as f64 || seconds > 1e9 {
+                    return Err(fail(format!("a timer waits at least {MIN_WAIT} second")));
+                }
+                let seconds = seconds.round() as u64;
+                let data: serde_json::Value = lua.from_value(data)?;
+                let near = near.as_deref().map(parse_id).transpose()?;
+                let effect = Effect::Schedule { name, due: event.at + seconds, every: every.then_some(seconds), data, near };
+                apply(effect).map(|_| ())
+            };
+            globals.set(
+                "after",
+                scope.create_function(move |lua, (s, name, data, near): (f64, String, Value, Option<String>)| {
+                    schedule(lua, (s, name, data, near, false))
+                })?,
+            )?;
+            globals.set(
+                "every",
+                scope.create_function(move |lua, (s, name, data, near): (f64, String, Value, Option<String>)| {
+                    schedule(lua, (s, name, data, near, true))
+                })?,
+            )?;
+            globals.set("cancel", scope.create_function(|_, name: String| apply(Effect::Cancel { name }).map(|_| ()))?)?;
             globals.set("random", scope.create_function(|_, ()| Ok(next_random(&mut rng.borrow_mut())))?)?;
             globals.set(
                 "random_int",
@@ -259,32 +294,41 @@ mod vm {
                 lua.load(source.as_str()).set_name(file.as_str()).exec()?;
             }
             let ev = lua.create_table()?;
-            ev.set("player", event.player)?;
+            if !event.player.is_empty() {
+                ev.set("player", event.player)?;
+            }
+            ev.set("now", event.at)?;
             ev.set("day", event.time.day)?;
             ev.set("time", event.time.time_of_day)?;
             let at = |id: &EntityId| world.borrow().get(*id).map(|e| e.position);
-            let handler = match event.intent {
-                Intent::Place { item, position } => {
+            let handler = match event.trigger {
+                Trigger::Timer { name, data, missed } => {
+                    ev.set("name", name)?;
+                    ev.set("data", lua.to_value(data)?)?;
+                    ev.set("missed", missed)?;
+                    "on_timer"
+                }
+                Trigger::Intent(Intent::Place { item, position }) => {
                     ev.set("item", short(item))?;
                     ev.set("pos", pos_table(&lua, *position)?)?;
                     "on_place"
                 }
-                Intent::Interact { entity } => {
+                Trigger::Intent(Intent::Interact { entity }) => {
                     ev.set("entity", id_text(*entity))?;
                     "on_interact"
                 }
-                Intent::UseItem { item, target } => {
+                Trigger::Intent(Intent::UseItem { item, target }) => {
                     ev.set("item", short(item))?;
                     ev.set("entity", id_text(*target))?;
                     "on_use"
                 }
-                Intent::Key { entity, key } => {
+                Trigger::Intent(Intent::Key { entity, key }) => {
                     ev.set("entity", id_text(*entity))?;
                     ev.set("key", key.as_str())?;
                     "on_key"
                 }
             };
-            if let Intent::Interact { entity } | Intent::UseItem { target: entity, .. } | Intent::Key { entity, .. } = event.intent
+            if let Trigger::Intent(Intent::Interact { entity } | Intent::UseItem { target: entity, .. } | Intent::Key { entity, .. }) = event.trigger
                 && let Some(p) = at(entity)
             {
                 ev.set("pos", pos_table(&lua, p)?)?;
@@ -303,7 +347,7 @@ mod tests {
     use std::collections::BTreeMap;
 
     use super::*;
-    use crate::logic::{EntityId, GameState, Intent, Manifest, Permission, Scope, WorldTime};
+    use crate::logic::{EntityId, GameState, Intent, Manifest, Permission, Scope, Trigger, WorldTime};
 
     /// A package with one script and a crate model.
     fn package(source: &str) -> Package {
@@ -323,7 +367,7 @@ mod tests {
 
     fn act(state: &mut GameState, package: &Package, intent: Intent) -> Result<Vec<(String, String)>, String> {
         let time = WorldTime { day: 0, year: 0, season: 0, day_of_season: 0, time_of_day: 0.0 };
-        let event = Event { change: 9, player: "p", intent: &intent, time, seed: 1 };
+        let event = Event { change: 9, player: "p", trigger: Trigger::Intent(&intent), time, at: 100, seed: 1 };
         let models = package.models.keys().cloned().collect();
         let grants = Grants { package: "game".into(), write: Vec::new(), spawn: true, scope: Scope::World, max_entities: 100, models, drawn: true };
         let mut batch = state.batch(9, "p", 256);

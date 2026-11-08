@@ -7,8 +7,63 @@ package's voxel models, built like builds, and agents test packages in a throwaw
 world (`trial`, the `test_game` tool) before answering. Changed from this proposal: a game's rules apply
 to the whole world, and only admins change them; an intent goes only to the package that
 owns its item or entity; scripts change the world through a checked batch as they run,
-rather than returning a list of intents. Not built yet: per-tick events,
-and the game master agent.
+rather than returning a list of intents. Timers replace per-tick events (see
+[Timers](#timers)). Not built yet: the game master agent.
+
+## Timers
+
+A game moves on its own through timers, never through a world tick. A script calls
+`after(seconds, name, data)` or `every(seconds, name, data)`, and `on_timer(ev)` runs
+when it goes off. Timers are part of the game state, and the log keeps them like any
+other effect.
+
+- **Cost follows events, not time.** Nothing runs between timers, so an idle world, or
+  a thousand installed games that are waiting, cost nothing. The same idea runs
+  discrete-event simulations and MMO server timers.
+- **The log keeps what changed, not the time that passed.** The server (offline, the
+  admin's game) runs the due timers about twice a second, and commits what each
+  package's timers did as one `Action::Timers { package, until, effects }` by `world`.
+  A repeating timer that changes nothing leaves no trace. A one-time timer always
+  records, so it's forgotten on replay.
+- **Replay doesn't run timers.** It applies the recorded effects, checked against the
+  package's grants again. So timer scripts needn't be deterministic, and upgrading a
+  package never changes the past.
+- **Catching up.** A repeating timer that was due several times while nobody ran it
+  (a server that was down, a single-player world that was closed) goes off once, with
+  `ev.missed` saying how many runs it skipped. A game catches up itself (a crop grows
+  three stages) instead of replaying every step.
+- **Only near players.** `after(s, name, data, near)` and `every(...)` take an entity
+  (the game's board): the timer sleeps while no player is within 64 m of it, and
+  catches up through `missed` when someone comes. A world full of games costs only for
+  the games people are at. The [`Clockwork`](../crates/rules/src/logic/clockwork.rs)
+  that runs timers (on the server, offline in the game, and in `test_game`) remembers
+  when each sleeping timer last ran; after a restart, sleepers count from the log's
+  last timer change.
+- **A one-time timer records cancelling itself** when it goes off, so replay forgets it
+  too, and it never goes off twice.
+- **Limits.** A timer waits at least 1 second. A package may have 256 waiting, and
+  runs at most 64 per firing (the rest go off next time). A timer that errors or runs
+  too long is rolled back and cancelled, and the others still run. Players can't
+  record `Timers` changes; only the world or an admin can.
+- **Fast motion stays out of the log.** A hero gliding, animation and later physics run
+  live on each machine. Only results that matter to the game (a round ending, a hit)
+  should become changes.
+
+## Costs that don't grow with history
+
+- **Saving appends.** The log is `world.jsonl`: a header, then one line per package and
+  per change ([`store`](../crates/rules/src/store.rs)). Saving a change writes that
+  change; a cut-off last line is skipped on load. Old `world.json` files move over once.
+- **Changes apply on top.** Offline, the game applies each change to its current state,
+  as the server does, instead of replaying the log (undos still replay, without voxels).
+- **Snapshots hold the games.** A snapshot (`snapshot.json`; on the server every 50
+  changes, offline every 2 s after voxel changes or 30 s after game changes) holds the
+  voxels and the games' state and timers. Loading, restarting and joining replay only
+  the changes after it, and never run the old intents' scripts again.
+
+Not built: compacting the log itself. Joining still downloads the whole log (players
+need it for history and undo); a base snapshot that replaces old changes would cap
+that, but it needs land, budgets and rates saved too.
 
 ## Goal
 
@@ -106,7 +161,8 @@ end)
 ```
 
 Events: `interact`, `use_item`, `enter_region`, `leave_region`, `day_start`,
-`timer`, `tick` (rate limited), `turn` (in turn-based modes).
+`timer`, `tick` (rate limited), `turn` (in turn-based modes). (Built instead: `on_place`,
+`on_interact`, `on_use`, `on_key` and `on_timer`; no tick. See [Timers](#timers).)
 
 A script never changes the world directly. It returns **intents** (set a component,
 spawn an entity, give an item, open a dialogue, place a build spec). The kernel

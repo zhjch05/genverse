@@ -16,6 +16,7 @@ use cubewish_net::{ClientEvent, ToClient, ToServer};
 use cubewish_rules::{
     IVec3,
     log::{Action, Change, chunk_of, chunk_prints, replay, replay_from},
+    logic::Effect,
 };
 
 use super::{Chat, Role, creations::Creations, landscape::Landscape, presence::Peers};
@@ -237,6 +238,15 @@ fn committed(
         online.committed.insert(reference, change.id);
     }
     ledger.log.changes.push(change.clone());
+    if let Action::Timers { effects, .. } = &change.action {
+        for effect in effects {
+            if let Effect::Notify { player, text } = effect
+                && *player == ledger.profile.id
+            {
+                ledger.heard.push(text.clone());
+            }
+        }
+    }
     let Some(state) = &mut online.state else {
         ledger.online = Some(online);
         return;
@@ -271,7 +281,7 @@ fn committed(
                     }
                 }
             }
-            if own.is_none() && !matches!(change.action, Action::Intent { .. }) {
+            if own.is_none() && !matches!(change.action, Action::Intent { .. } | Action::Timers { .. }) {
                 chat.say(Role::System, format!("{} {}.", change.by.player_name, change.action.describe()));
             }
         }
@@ -281,7 +291,7 @@ fn committed(
             world.replace_edits(state.edits.iter().map(|(p, id)| (*p, *id)));
             creations.resync(commands, &state.builds);
             landscape.forget_history();
-            if own.is_none() && !matches!(change.action, Action::Intent { .. }) {
+            if own.is_none() && !matches!(change.action, Action::Intent { .. } | Action::Timers { .. }) {
                 chat.say(Role::System, format!("{} {}.", change.by.player_name, change.action.describe()));
             }
         }

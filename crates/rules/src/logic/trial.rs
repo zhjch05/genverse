@@ -6,7 +6,7 @@
 use std::{collections::BTreeMap, fmt::Write};
 
 use super::{
-    EntityId, GameState, Intent, KEYS, Logic, LogicRules, Package, Scope,
+    Clockwork, EntityId, GameState, Intent, KEYS, Logic, LogicRules, Package, Scope,
     package::split_name,
 };
 use crate::terrain::{FLAT_GROUND, VOXEL_SIZE};
@@ -34,8 +34,8 @@ pub fn pawn_of(state: &GameState, player: &str) -> Option<[f32; 3]> {
 
 /// Plays `package` through `steps` and says what happened. Steps are `place <item>`
 /// (each 32 m from the last), a key (`enter`, `north`, ..., sent to the zone the
-/// tester's pawn or last placement is in), or `interact` (the labeled entity nearest
-/// them).
+/// tester's pawn or last placement is in), `interact` (the labeled entity nearest
+/// them), or `wait <seconds>` (timers go off as they would). Each step takes a second.
 pub fn play(package: &Package, steps: &[String]) -> String {
     let mut out = String::new();
     if let Err(errors) = package.check() {
@@ -53,10 +53,29 @@ pub fn play(package: &Package, steps: &[String]) -> String {
     let ground = (FLAT_GROUND + 1) as f32 * VOXEL_SIZE;
     let mut spot = None::<[f32; 3]>;
     let mut placed = 0;
+    let mut now = 1_000u64;
+    let mut change = 1u64;
+    let mut clock = Clockwork::new(now);
     out.push_str("Installed in an empty flat world (ground at y = 0 below; positions are meters from the last place).\n");
     for (i, step) in steps.iter().enumerate() {
         let step = step.trim();
-        let change = i as u64 + 2;
+        if let Some(seconds) = step.strip_prefix("wait ") {
+            let Ok(seconds) = seconds.trim().parse::<u64>() else {
+                let _ = writeln!(out, "{}. {step}: REFUSED: wait takes whole seconds", i + 1);
+                continue;
+            };
+            let target = now + seconds.min(30 * 86_400);
+            let report = wait(&mut logic, &mut clock, &mut change, &mut now, target, &rules);
+            let _ = writeln!(out, "{}. {step}: {report}", i + 1);
+            continue;
+        }
+        now += 1;
+        change += 1;
+        let target = now;
+        let tick = wait(&mut logic, &mut clock, &mut change, &mut now, target, &rules);
+        if tick != "no timers went off" {
+            let _ = writeln!(out, "   (before step {}: {tick})", i + 1);
+        }
         let here = pawn_of(&logic.state, TESTER).or(spot);
         let intent = if let Some(item) = step.strip_prefix("place ") {
             let item = item.trim();
@@ -83,7 +102,7 @@ pub fn play(package: &Package, steps: &[String]) -> String {
         } else {
             Err(format!("unknown step \"{step}\" (use \"place <item>\", a key: {}, or \"interact\")", KEYS.join(", ")))
         };
-        let result = intent.and_then(|intent| logic.act(change, TESTER, 1_000 + change, 7, &rules, &intent));
+        let result = intent.and_then(|intent| logic.act(change, TESTER, now, 7, &rules, &intent));
         let _ = match result {
             Ok(o) if o.effects == 0 => writeln!(out, "{}. {step}: nothing changed", i + 1),
             Ok(o) => {
@@ -97,6 +116,40 @@ pub fn play(package: &Package, steps: &[String]) -> String {
     let origin = pawn_of(&logic.state, TESTER).and(spot).or(spot).unwrap_or([0.0, ground, 0.0]);
     describe(&mut out, &logic.state, origin, ground);
     out
+}
+
+/// Runs timers up to `target`, at each time one goes off (the tester is everywhere, so
+/// nothing sleeps), and says what they did.
+fn wait(logic: &mut Logic, clock: &mut Clockwork, change: &mut u64, now: &mut u64, target: u64, rules: &LogicRules) -> String {
+    let (mut fired, mut effects, mut said, mut errors, mut rounds) = (0, 0, Vec::new(), Vec::new(), 0);
+    let everywhere = |logic: &Logic| -> Vec<[f32; 3]> { logic.state.entities().map(|(_, e)| e.position).collect() };
+    while let Some(at) = clock.next_due(logic, &everywhere(logic)).filter(|at| *at <= target) {
+        rounds += 1;
+        if rounds > 2000 {
+            errors.push("stopped after 2000 rounds of timers".to_string());
+            break;
+        }
+        let run = clock.run(logic, *change + 1, at, 7, rules, &everywhere(logic));
+        *change += run.changes.len() as u64;
+        fired += run.changes.len();
+        effects += run.changes.iter().map(|(_, _, e)| e.len()).sum::<usize>();
+        said.extend(run.notes.iter().map(|(_, t)| format!("\"{t}\"")));
+        errors.extend(run.errors);
+    }
+    clock.finish(logic, target, &everywhere(logic));
+    *now = target;
+    if fired == 0 && errors.is_empty() {
+        return "no timers went off".into();
+    }
+    said.truncate(8);
+    let mut text = format!("timers went off {fired} time(s), {effects} change(s)");
+    if !said.is_empty() {
+        text += &format!("; said {}", said.join(", "));
+    }
+    if !errors.is_empty() {
+        text += &format!("; ERRORS: {}", errors.join("; "));
+    }
+    text
 }
 
 fn distance(a: [f32; 3], b: [f32; 3]) -> f32 {

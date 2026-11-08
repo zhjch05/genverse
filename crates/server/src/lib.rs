@@ -8,8 +8,17 @@
 //! owns the world and handles events in order; each connection has a reader and a
 //! writer thread.
 //!
+//! It also runs the games' timers ([`cubewish_rules::logic::clockwork`]): about twice a
+//! second it fires those that are due and commits what they did as one change per
+//! package, by [`WORLD`]. A timer that does nothing leaves no trace, and one anchored to
+//! a game piece sleeps while no player is near it.
+//!
+//! The log is kept append-only (`world.jsonl`, [`cubewish_rules::store`]), so saving a
+//! change writes only that change.
+//!
 //! Every [`SNAPSHOT_EVERY`] changes the server saves a snapshot of the world's voxels
-//! (`snapshot.json`), so restarting and joining only replay the changes after it. With
+//! and games (`snapshot.json`), so restarting and joining only replay the changes after
+//! it, without running old game scripts again. With
 //! each land change it sends fingerprints of the chunks it touched; a player whose
 //! chunks disagree fetches the server's.
 
@@ -21,24 +30,25 @@ use std::{
     sync::{
         Arc,
         atomic::{AtomicUsize, Ordering},
-        mpsc::{self, Receiver, Sender},
+        mpsc::{self, Receiver, RecvTimeoutError, Sender},
     },
     thread,
-    time::{SystemTime, UNIX_EPOCH},
+    time::{Duration, SystemTime, UNIX_EPOCH},
 };
 
 use cubewish_net::{Presence, ToClient, ToServer, VERSION, hello_bytes, read_messages, write_message};
 use cubewish_rules::{
     identity::verify,
     log::{
-        Action, Change, RULES_VERSION, Replay, Snapshot, WorldLog, chunk_edits, chunk_of, chunk_prints, replay, replay_from,
-        signing_bytes,
+        Action, Change, Provenance, RULES_VERSION, Replay, Snapshot, WORLD, WorldLog, chunk_edits, chunk_of, chunk_prints,
+        replay, replay_from, signing_bytes,
     },
-    logic::Package,
+    logic::{Clockwork, Package},
+    store::LogFile,
 };
 
 pub struct ServerConfig {
-    /// Where the world's log is kept (`world.json`).
+    /// Where the world's log (`world.jsonl`) and snapshot are kept.
     pub data_dir: PathBuf,
     /// 0 picks a free port.
     pub port: u16,
@@ -78,21 +88,29 @@ struct Conn {
 
 struct World {
     path: PathBuf,
+    file: LogFile,
     log: WorldLog,
     state: Replay,
     snapshot: Option<Snapshot>,
     conns: HashMap<u64, Conn>,
     players: Arc<AtomicUsize>,
+    /// Which timers have run up to when.
+    clock: Clockwork,
 }
 
 pub fn start(config: ServerConfig) -> io::Result<Running> {
     std::fs::create_dir_all(&config.data_dir)?;
-    let path = config.data_dir.join("world.json");
-    let log = match std::fs::read_to_string(&path) {
-        Ok(text) => serde_json::from_str(&text).map_err(io::Error::other)?,
-        Err(_) => WorldLog { flat: config.flat, ..WorldLog::new(config.seed) },
+    let path = config.data_dir.join("snapshot.json");
+    let (mut file, log) = LogFile::open(&config.data_dir)?;
+    let log = match log {
+        Some(log) => log,
+        None => {
+            let log = WorldLog { flat: config.flat, ..WorldLog::new(config.seed) };
+            file.rewrite(&log)?;
+            log
+        }
     };
-    let snapshot: Option<Snapshot> = std::fs::read_to_string(config.data_dir.join("snapshot.json"))
+    let snapshot: Option<Snapshot> = std::fs::read_to_string(&path)
         .ok()
         .and_then(|text| serde_json::from_str(&text).ok())
         .filter(|s: &Snapshot| s.fits(&log));
@@ -112,7 +130,8 @@ pub fn start(config: ServerConfig) -> io::Result<Running> {
     let (events_tx, events) = mpsc::channel();
     thread::Builder::new().name("accept".into()).spawn(move || accept(listener, events_tx))?;
     let players = Arc::new(AtomicUsize::new(0));
-    let world = World { path, log, state, snapshot, conns: HashMap::new(), players: players.clone() };
+    let clock = Clockwork::new(state.logic.timers_until);
+    let world = World { path, file, log, state, snapshot, conns: HashMap::new(), players: players.clone(), clock };
     thread::Builder::new().name("world".into()).spawn(move || run(world, events))?;
     Ok(Running { addr, players })
 }
@@ -164,8 +183,19 @@ fn now() -> u64 {
     SystemTime::now().duration_since(UNIX_EPOCH).map_or(0, |d| d.as_secs())
 }
 
+/// How often the server looks for timers to run.
+const TIMER_POLL: Duration = Duration::from_millis(500);
+
 fn run(mut world: World, events: Receiver<Event>) {
-    for event in events {
+    loop {
+        let event = match events.recv_timeout(TIMER_POLL) {
+            Ok(event) => event,
+            Err(RecvTimeoutError::Timeout) => {
+                world.run_timers(now());
+                continue;
+            }
+            Err(RecvTimeoutError::Disconnected) => return,
+        };
         match event {
             Event::Connected { conn, out, nonce } => {
                 world.conns.insert(conn, Conn { out, nonce, player: None, presence: None });
@@ -183,6 +213,24 @@ fn run(mut world: World, events: Receiver<Event>) {
 }
 
 impl World {
+    /// Fires the timers due by `now` and commits what each package's did.
+    fn run_timers(&mut self, now: u64) {
+        // Where the players are: timers anchored to game pieces run only near someone.
+        let players: Vec<[f32; 3]> = self.conns.values().filter(|c| c.player.is_some()).filter_map(|c| c.presence.as_ref().map(|p| p.position)).collect();
+        let first = self.log.changes.last().map_or(1, |c| c.id + 1);
+        let run = self.clock.run(&mut self.state.logic, first, now, self.log.seed, &self.state.rules.logic, &players);
+        for error in &run.errors {
+            eprintln!("{error}");
+        }
+        for (id, package, effects) in run.changes {
+            let action = Action::Timers { package, until: now, effects };
+            let change = Change { id, by: Provenance::new(WORLD, "World", None, None, now), action, sig: None };
+            self.log.changes.push(change.clone());
+            self.saved();
+            self.broadcast(change, Vec::new(), None, u64::MAX, 0);
+        }
+    }
+
     fn handle(&mut self, conn: u64, message: ToServer) {
         let Some(c) = self.conns.get(&conn) else { return };
         let (out, nonce, player) = (c.out.clone(), c.nonce.clone(), c.player.as_ref().map(|(id, _)| id.clone()));
@@ -201,7 +249,7 @@ impl World {
                 if self.log.admins.is_empty() {
                     self.log.admins.push(player.clone());
                     self.state = replay(&self.log);
-                    self.save();
+                    self.saved();
                 }
                 println!("{name} joined ({}…)", &player[..8.min(player.len())]);
                 if let Some(c) = self.conns.get_mut(&conn)
@@ -249,6 +297,11 @@ impl World {
         package: Option<Package>,
     ) -> Result<(Change, Vec<([i32; 3], u64)>, Option<Package>), String> {
         let player = player.ok_or("say hello first")?;
+        if matches!(action, Action::Timers { .. }) {
+            return Err("only the world runs timers".into());
+        }
+        // Whatever was due goes off first, so the change lands on the world as it is now.
+        self.run_timers(now());
         if by.player != player {
             return Err("you can only make changes as yourself".into());
         }
@@ -312,18 +365,19 @@ impl World {
         chunks.sort_unstable_by_key(|c| c.to_array());
         chunks.dedup();
         let prints = chunk_prints(&self.state.edits, &chunks);
-        self.save();
-        if self.log.changes.len().is_multiple_of(SNAPSHOT_EVERY) {
-            self.take_snapshot();
-        }
+        self.saved();
         println!("{} {}", change.by.player_name, change.action.describe());
         Ok((change, prints, new_package.map(|(_, p)| (*p).clone())))
     }
 
     fn take_snapshot(&mut self) {
         let snapshot = Snapshot::take(&self.log, &self.state);
-        let path = self.path.with_file_name("snapshot.json");
-        let result = serde_json::to_string(&snapshot).map_err(io::Error::other).and_then(|t| std::fs::write(&path, t));
+        let path = &self.path;
+        let tmp = path.with_extension("json.tmp");
+        let result = serde_json::to_string(&snapshot)
+            .map_err(io::Error::other)
+            .and_then(|t| std::fs::write(&tmp, t))
+            .and_then(|_| std::fs::rename(&tmp, path));
         if let Err(e) = result {
             eprintln!("couldn't save {}: {e}", path.display());
         }
@@ -350,10 +404,13 @@ impl World {
         }
     }
 
-    fn save(&self) {
-        let result = serde_json::to_string(&self.log).map_err(io::Error::other).and_then(|t| std::fs::write(&self.path, t));
-        if let Err(e) = result {
-            eprintln!("couldn't save {}: {e}", self.path.display());
+    /// Saves what the log gained, and now and then a snapshot.
+    fn saved(&mut self) {
+        if let Err(e) = self.file.sync(&self.log) {
+            eprintln!("couldn't save {}: {e}", self.file.path().display());
+        }
+        if self.log.changes.len().is_multiple_of(SNAPSHOT_EVERY) {
+            self.take_snapshot();
         }
     }
 }

@@ -15,6 +15,8 @@ pub mod logic;
 pub mod rate;
 pub mod sculpt;
 pub mod settings;
+#[cfg(not(target_arch = "wasm32"))]
+pub mod store;
 pub mod terrain;
 pub mod voxel;
 

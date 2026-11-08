@@ -1,9 +1,11 @@
 //! The world's change log in the game ([`cubewish_rules::log`]): loading it, recording
 //! changes with who made them, and saving.
 //!
-//! On desktop the log is `saves/world.json`. Replaying it is the truth;
-//! `saves/world_edits.json` is a cache of the replayed voxels, used when its hash
-//! matches the log. `CUBEWISH_WORLD=name` plays another world, kept in
+//! On desktop the log is `saves/world.jsonl`, append-only ([`cubewish_rules::store`]):
+//! a change is saved by writing just that change. Replaying it is the truth;
+//! `saves/snapshot.json` holds the voxels and games as of some change, so loading
+//! replays only what came after (it's ignored when it no longer fits the log). Changes
+//! made here are applied on top of the current state, never by replaying everything. `CUBEWISH_WORLD=name` plays another world, kept in
 //! `saves/worlds/<name>/`; a new one there starts flat and empty. Saves from before the log are migrated once (the old files are
 //! kept as `.bak`). The local player is `saves/profile.json`: a name and a secret key
 //! whose public half is the player's id, and every change is signed with it. The
@@ -15,7 +17,7 @@
 //! comes back to be applied. Local saves aren't touched while online.
 //!
 //! The web build has no saves and no builder yet, so nothing records there.
-#![cfg_attr(target_arch = "wasm32", allow(dead_code))]
+#![cfg_attr(target_arch = "wasm32", allow(dead_code, unused_imports, unused_mut, unused_assignments))]
 
 use std::{
     collections::{BTreeMap, HashMap},
@@ -31,8 +33,8 @@ use cubewish_rules::{
     land::Land,
     rate::Rates,
     settings::WorldRules,
-    log::{Action, BuildState, Provenance, Replay, WorldLog, replay, replay_land, signing_bytes},
-    logic::{Intent, Logic, Package, Scope},
+    log::{Action, BuildState, Provenance, Replay, Snapshot, WorldLog, replay, replay_from, replay_land, signing_bytes},
+    logic::{Clockwork, Intent, Logic, Package, Scope},
 };
 use serde::{Deserialize, Serialize};
 
@@ -50,14 +52,15 @@ pub fn world_dir() -> String {
     world_name().map_or("saves".into(), |name| format!("saves/worlds/{name}"))
 }
 
-#[cfg(not(target_arch = "wasm32"))]
-fn log_path() -> String {
-    format!("{}/world.json", world_dir())
-}
-
+/// The voxel cache from before snapshots, read only to migrate saves from before the log.
 #[cfg(not(target_arch = "wasm32"))]
 fn cache_path() -> String {
     format!("{}/world_edits.json", world_dir())
+}
+
+#[cfg(not(target_arch = "wasm32"))]
+fn snapshot_path() -> String {
+    format!("{}/snapshot.json", world_dir())
 }
 #[cfg(not(target_arch = "wasm32"))]
 const PROFILE_PATH: &str = "saves/profile.json";
@@ -105,6 +108,13 @@ pub struct Ledger {
     pub logic: Logic,
     /// Bumped on every recorded change, so the voxel cache knows to follow.
     pub version: u64,
+    /// What games said to the local player on their own (timers), for the game to show.
+    pub heard: Vec<String>,
+    /// Offline, which timers have run up to when; online, the server runs them.
+    clock: Clockwork,
+    /// Where the log is saved, offline.
+    #[cfg(not(target_arch = "wasm32"))]
+    file: Option<cubewish_rules::store::LogFile>,
     /// The server this world lives on, when playing online.
     #[cfg(not(target_arch = "wasm32"))]
     pub online: Option<Online>,
@@ -166,9 +176,39 @@ impl Ledger {
         }
         self.log.push_signed(by, action, &self.key);
         let id = self.log.changes.last().map_or(0, |c| c.id);
-        self.adopt(&replay_land(&self.log));
+        self.advance();
         self.save();
         id
+    }
+
+    /// Applies the log's last change on top of the current state, as a server does:
+    /// the cost of a change never grows with the history. Undos change which changes
+    /// count, so they replay (without voxels).
+    fn advance(&mut self) {
+        let Some(change) = self.log.changes.last().cloned() else { return };
+        if matches!(change.action, Action::Revert { .. } | Action::Rollback { .. }) {
+            self.adopt(&replay_land(&self.log));
+            return;
+        }
+        let mut state = Replay::new(&self.log);
+        state.builds = std::mem::take(&mut self.builds);
+        state.land = std::mem::take(&mut self.land);
+        state.rules = std::mem::take(&mut self.rules);
+        state.rates = std::mem::take(&mut self.rates);
+        state.budgets = std::mem::take(&mut self.budgets);
+        state.footprints = std::mem::take(&mut self.footprints);
+        state.logic = Logic { packages: self.log.packages.clone(), ..std::mem::take(&mut self.logic) };
+        if let Err(why) = state.apply(&change, false) {
+            warn!("change {} doesn't apply: {why}", change.id);
+        }
+        self.builds = state.builds;
+        self.land = state.land;
+        self.rules = state.rules;
+        self.rates = state.rates;
+        self.budgets = state.budgets;
+        self.footprints = state.footprints;
+        self.logic = state.logic;
+        self.version += 1;
     }
 
     /// Takes on who-owns-what, rules, rates and budgets from a replayed world.
@@ -228,6 +268,29 @@ impl Ledger {
         Ok(Acted { gained, notes })
     }
 
+    /// Offline, fires the games' timers that are due and records what each package's
+    /// did, as a server would. Timers anchored to game pieces run only while one of
+    /// `players` (the hero) is near. Returns the timers that failed (and stopped).
+    pub fn run_timers(&mut self, players: &[[f32; 3]]) -> Vec<String> {
+        if self.is_online() || !self.is_admin() {
+            return Vec::new();
+        }
+        let now = now();
+        let first = self.log.changes.last().map_or(1, |c| c.id + 1);
+        let run = self.clock.run(&mut self.logic, first, now, self.log.seed, &self.rules.logic, players);
+        if !run.changes.is_empty() {
+            for (_, package, effects) in run.changes {
+                let by = Provenance::new(&self.profile.id, &self.profile.name, None, None, now);
+                self.log.push_signed(by, Action::Timers { package, until: now, effects }, &self.key);
+            }
+            self.version += 1;
+            self.save();
+        }
+        let me = &self.profile.id;
+        self.heard.extend(run.notes.into_iter().filter(|(to, _)| to == me).map(|(_, t)| t));
+        run.errors
+    }
+
     /// The change id a reference from [`Self::record`] stands for: itself offline,
     /// and online once the server has committed it.
     pub fn resolve(&self, reference: u64) -> Option<u64> {
@@ -263,10 +326,12 @@ impl Ledger {
     #[cfg(not(target_arch = "wasm32"))]
     pub fn go_offline(&mut self) -> Replay {
         self.online = None;
-        let (log, _) = load_log(self.log.seed);
+        let (log, file, _) = load_log(self.log.seed);
         self.log = log;
+        self.file = file;
         let full = replay(&self.log);
         self.adopt(&full);
+        self.clock = Clockwork::new(self.logic.timers_until);
         full
     }
 
@@ -366,10 +431,13 @@ impl Ledger {
         format!("{who}{how}, {}", ago(now().saturating_sub(by.at)))
     }
 
-    fn save(&self) {
+    fn save(&mut self) {
         #[cfg(not(target_arch = "wasm32"))]
-        if self.online.is_none() {
-            write_json(&log_path(), &self.log);
+        if self.online.is_none()
+            && let Some(file) = &mut self.file
+            && let Err(e) = file.sync(&self.log)
+        {
+            error!("couldn't save {}: {e}", file.path().display());
         }
     }
 }
@@ -414,20 +482,23 @@ struct SavedEdits {
     edits: Vec<[i32; 4]>,
 }
 
-/// Writes the voxel cache for the current log.
-pub fn write_cache(log: &WorldLog, edits: Vec<[i32; 4]>) {
-    let saved = SavedEdits { seed: log.seed, log_hash: Some(log.hash()), edits };
+/// Saves a snapshot of the local world as of the log's last change: its voxel `edits`
+/// and the games.
+pub fn write_snapshot(ledger: &Ledger, edits: Vec<[i32; 4]>) {
+    let snapshot = Snapshot::new(&ledger.log, edits, &ledger.logic);
     #[cfg(not(target_arch = "wasm32"))]
-    write_json(&cache_path(), &saved);
+    write_json(&snapshot_path(), &snapshot);
     #[cfg(target_arch = "wasm32")]
-    let _ = saved;
+    let _ = snapshot;
 }
 
 #[cfg(not(target_arch = "wasm32"))]
 fn write_json(path: &str, value: &impl Serialize) {
     let dir = std::path::Path::new(path).parent().unwrap_or(std::path::Path::new("."));
+    let tmp = format!("{path}.tmp");
     let result = std::fs::create_dir_all(dir)
-        .and_then(|_| std::fs::write(path, serde_json::to_string(value).unwrap_or_default()));
+        .and_then(|_| std::fs::write(&tmp, serde_json::to_string(value).unwrap_or_default()))
+        .and_then(|_| std::fs::rename(&tmp, path));
     if let Err(e) = result {
         error!("couldn't save {path}: {e}");
     }
@@ -445,7 +516,7 @@ pub fn load(seed: u32) -> (Ledger, HashMap<IVec3, VoxelId>) {
     let (profile, key, old_id) = load_profile();
     // The local world is upgraded along with the profile even when playing online, so
     // it never names a player id the profile no longer has.
-    let (mut log, cached) = load_log(seed);
+    let (mut log, mut file, snapshot) = load_log(seed);
     // The world's first player runs it.
     let mut changed = log.admins.is_empty();
     if changed {
@@ -467,9 +538,12 @@ pub fn load(seed: u32) -> (Ledger, HashMap<IVec3, VoxelId>) {
             changed = true;
         }
     }
-    if changed {
-        #[cfg(not(target_arch = "wasm32"))]
-        write_json(&log_path(), &log);
+    #[cfg(not(target_arch = "wasm32"))]
+    if changed
+        && let Some(file) = &mut file
+        && let Err(e) = file.rewrite(&log)
+    {
+        error!("couldn't save {}: {e}", file.path().display());
     }
     #[cfg(not(target_arch = "wasm32"))]
     if let Some(online) = connect(&profile, &key) {
@@ -480,22 +554,25 @@ pub fn load(seed: u32) -> (Ledger, HashMap<IVec3, VoxelId>) {
         ledger.online = Some(online);
         return (ledger, HashMap::new());
     }
-    // Builds and land always come from the log (cheap); voxels from the cache when it
-    // matches, otherwise from a full replay.
-    let (replayed, edits) = match cached {
-        Some(edits) => (replay_land(&log), edits),
-        None => {
-            let mut full = replay(&log);
-            let edits = std::mem::take(&mut full.edits);
-            (full, edits)
-        }
-    };
+    // From the snapshot when it fits: only the changes after it are replayed.
+    if snapshot.is_none() {
+        info!("replaying {} saved changes", log.changes.len());
+    }
+    let mut replayed = replay_from(&log, snapshot.as_ref());
+    let edits = std::mem::take(&mut replayed.edits);
     for problem in &replayed.problems {
         warn!("saved change no longer applies: {problem}");
     }
     let (profile, key) = guest().unwrap_or((profile, key));
     let mut ledger = empty(log, profile, key);
     ledger.adopt(&replayed);
+    ledger.clock = Clockwork::new(ledger.logic.timers_until);
+    #[cfg(not(target_arch = "wasm32"))]
+    {
+        ledger.file = file;
+    }
+    #[cfg(target_arch = "wasm32")]
+    let _ = file;
     (ledger, edits)
 }
 
@@ -512,6 +589,10 @@ fn empty(log: WorldLog, profile: Profile, key: Keypair) -> Ledger {
         footprints: default(),
         logic: default(),
         version: 0,
+        heard: Vec::new(),
+        clock: Clockwork::default(),
+        #[cfg(not(target_arch = "wasm32"))]
+        file: None,
         #[cfg(not(target_arch = "wasm32"))]
         online: None,
         #[cfg(not(target_arch = "wasm32"))]
@@ -594,43 +675,46 @@ fn load_profile() -> (Profile, Keypair, Option<String>) {
     (profile, key, saved.map(|p| p.id))
 }
 
-/// The log, and the cached voxels if they match it.
+/// The log, its file, and the snapshot if it fits the log.
 #[cfg(target_arch = "wasm32")]
-fn load_log(seed: u32) -> (WorldLog, Option<HashMap<IVec3, VoxelId>>) {
-    (WorldLog::new(seed), None)
+fn load_log(seed: u32) -> (WorldLog, Option<()>, Option<Snapshot>) {
+    (WorldLog::new(seed), None, None)
 }
 
 #[cfg(not(target_arch = "wasm32"))]
-fn load_log(seed: u32) -> (WorldLog, Option<HashMap<IVec3, VoxelId>>) {
-    let (log_path, cache_path) = (log_path(), cache_path());
-    let cache: Option<SavedEdits> = read_json(&cache_path);
-    let to_map = |edits: &[[i32; 4]]| edits.iter().map(|[x, y, z, id]| (IVec3::new(*x, *y, *z), *id as VoxelId)).collect();
-    match read_json::<WorldLog>(&log_path) {
-        Some(log) if log.seed == seed => {
-            let hash = log.hash();
-            let cached = cache.filter(|c| c.seed == seed && c.log_hash == Some(hash)).map(|c| to_map(&c.edits));
-            if cached.is_none() {
-                info!("replaying {} saved changes", log.changes.len());
-            }
-            (log, cached)
+fn load_log(seed: u32) -> (WorldLog, Option<cubewish_rules::store::LogFile>, Option<Snapshot>) {
+    use cubewish_rules::store::LogFile;
+    let dir = world_dir();
+    let (mut file, log) = match LogFile::open(std::path::Path::new(&dir)) {
+        Ok(opened) => opened,
+        Err(e) => {
+            error!("couldn't read the world in {dir}: {e}");
+            return (WorldLog::new(seed), None, None);
         }
+    };
+    let log = match log {
+        Some(log) if log.seed == seed => log,
         Some(log) => {
-            warn!("ignoring {log_path}: it was made for seed {}, not {seed}", log.seed);
-            (WorldLog::new(seed), None)
+            warn!("ignoring {}: it was made for seed {}, not {seed}", file.path().display(), log.seed);
+            return (WorldLog::new(seed), None, None);
         }
         // A new named world is an empty, flat one.
         None if world_name().is_some() => {
-            let log = WorldLog { flat: true, ..WorldLog::new(seed) };
-            info!("made a new flat world in {}", world_dir());
-            write_json(&log_path, &log);
-            (log, None)
+            info!("made a new flat world in {dir}");
+            WorldLog { flat: true, ..WorldLog::new(seed) }
         }
         None => {
-            let log = migrate(seed, cache.filter(|c| c.seed == seed));
-            write_json(&log_path, &log);
-            (log, None)
+            let cache: Option<SavedEdits> = read_json(&cache_path());
+            migrate(seed, cache.filter(|c| c.seed == seed))
         }
+    };
+    if !file.path().exists()
+        && let Err(e) = file.rewrite(&log)
+    {
+        error!("couldn't save {}: {e}", file.path().display());
     }
+    let snapshot = read_json::<Snapshot>(&snapshot_path()).filter(|s| s.fits(&log));
+    (log, Some(file), snapshot)
 }
 
 /// Builds a log from the save files that came before it: voxel edits become one
@@ -672,7 +756,7 @@ fn migrate(seed: u32, voxels: Option<SavedEdits>) -> WorldLog {
         );
     }
     if !log.changes.is_empty() {
-        info!("migrated old saves into {} ({} changes)", log_path(), log.changes.len());
+        info!("migrated old saves into {} ({} changes)", world_dir(), log.changes.len());
     }
     for old in ["saves/creations.json", "saves/terrain_changes.json"] {
         if std::path::Path::new(old).exists() {

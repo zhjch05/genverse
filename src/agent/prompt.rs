@@ -124,7 +124,10 @@ live at once for everyone. Keep "build" and "terrain" null unless they also ask 
     on_interact(ev)  E on ev.entity (an entity of yours with a "label")
     on_key(ev)       ev.key inside ev.entity's zone: "enter" (walked in), "leave" (Esc),
                      "north" (-z), "south" (+z), "east" (+x), "west" (-x), "action" (E), "reset" (R)
-  ev also has player (id), pos ({x,y,z} meters; for keys, the zone's), day, time.
+    on_timer(ev)     your timer ev.name went off, with ev.data (what you gave it); ev.missed is
+                     how many more times a repeating timer went by unrun (catch up, don't loop)
+  ev also has player (id; nil for timers), pos ({x,y,z} meters; for keys, the zone's), day,
+  time (0..1 of the day), now (seconds).
   The world API (component names without ":" are your package's):
     get(id) -> {id, pos, owner, c = components} or nil
     find(component) -> list of entities that have it, in id order
@@ -132,6 +135,16 @@ live at once for everyone. Keep "build" and "terrain" null unless they also ask 
     set(id, name, value)    remove(id, name)       notify(player, text)
     give(player, item, n)   take(item, n)          count(player, item)
     random() -> 0..1        random_int(a, b)       (no os, io, print or math.random)
+    after(seconds, name, data, near)   on_timer once, seconds from now (1 or more)
+    every(seconds, name, data, near)   on_timer every that many seconds    cancel(name)
+  Timers are how the game moves on its own (countdowns, crops, NPCs taking turns, a monster
+  stepping). Nothing runs between them, so make them as slow as the game allows: a timer per
+  thing that changes, or one "every" that updates many things, never a fast loop that does
+  nothing. Pass near = your board's (or field's) entity id: the timer then sleeps while no
+  player is within 64 m and catches up when one comes back (ev.missed), so a world full of
+  games costs nothing where nobody is. Leave near out only for things that must run
+  everywhere. A timer with the same name replaces the old one; name them per entity if
+  needed ("grow:" .. id). Up to 256 waiting per package; a timer that errors is stopped.
   Engine components on your entities:
     look = {model = "crate", turn = 0}: drawn as that model of yours standing on pos, turned by
       quarter turns (0-3); positions snap to the 12.5 cm voxel grid
@@ -146,6 +159,7 @@ live at once for everyone. Keep "build" and "terrain" null unless they also ask 
   strings, booleans); keep each component under 4 KB.
 - Before answering, play your game with the test_game tool: place it, enter, and play it through
   to the end (win it), then fix anything refused or wrong. Its map shows where everything is.
+  "wait <seconds>" lets time pass so timers go off.
 
 Example "game": walk onto the mat and collect the coins.
 {"name":"coins","title":"Coin mat","defs":[{"name":"mat","kind":"fixture","title":"Coin mat","seed":null,

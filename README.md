@@ -57,6 +57,11 @@ each step did plus a map of the pieces, and fixes what fails. The game then chec
 and installs it for the whole world, live (`crates/rules/src/logic`, design in
 `docs/game-logic.md`). Only admins change a world's games; everyone plays them.
 
+- **Timers, not ticks:** games move on their own through timers (`after`, `every`,
+  `on_timer`). Nothing runs between them, and the log keeps only what a timer changed. The
+  server runs them; offline, your game does. A repeating timer that missed runs while nobody
+  was there goes off once, with `ev.missed`.
+
 - **One style:** game pieces can only be drawn as the package's voxel models, written in the
   same format, compiled by the same code and held to the same limits as builds. They're drawn
   the way builds are, and every piece stands on the 12.5 cm build voxel grid.
@@ -94,7 +99,7 @@ Cubewish is heading for shared, open worlds: anyone can build and reshape land w
 agent, nothing is lost, and every change says who made it. Everything below works the same in
 single player and on a server.
 
-The world is the seed plus an ordered log of changes (`saves/world.json`): builds placed,
+The world is the seed plus an ordered log of changes (`saves/world.jsonl`, append-only): builds placed,
 moved, revised and removed, terrain changes, rule changes, and undos. Each change records who
 made it, which agent did if one did, a hash of the request, and when. A selected build shows
 "made by you with Claude Code, 2 h ago".
@@ -148,7 +153,7 @@ Two ways to host:
   ```
 
   It's a small program with no graphics (only the rules and protocol crates), so it runs on any
-  machine with a terminal. Its whole world is `server-data/world.json`; back that file up.
+  machine with a terminal. Its whole world is `server-data/world.jsonl`; back that file up (`snapshot.json` only speeds up loading).
 
 **On the same network, nobody types an address.** A hosting game announces itself to the
 local network (a small UDP broadcast on port 7877, once a second: world name, host name, port,

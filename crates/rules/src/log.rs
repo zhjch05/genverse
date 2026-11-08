@@ -26,13 +26,16 @@ use crate::{
     build::BuildSpec,
     identity::{Keypair, verify},
     land::{Land, area_parcels, build_parcels},
-    logic::{Intent, Logic, Package, PackageRef, Runtime, Scope},
+    logic::{Effect, GameState, Intent, Logic, Package, PackageRef, Runtime, Scope},
     rate::Rates,
     sculpt::{self, Area, Columns, TerrainSpec},
     settings::WorldRules,
     terrain::{Terrain, WORLD_HEIGHT},
     voxel::VoxelId,
 };
+
+/// Who a server's own changes are by: timers going off.
+pub const WORLD: &str = "world";
 
 /// Bumped when the rules change in a way that rasterizes the same log differently.
 pub const RULES_VERSION: u32 = 1;
@@ -111,6 +114,15 @@ pub enum Action {
     UninstallPackage { name: String },
     /// A player doing something the installed packages respond to.
     Intent { intent: Intent },
+    /// A package's timers going off, up to `until` (Unix seconds): what they did, so
+    /// replay applies it without running them again. Made by the world (a server) or,
+    /// offline, by an admin's game.
+    Timers {
+        package: String,
+        until: u64,
+        #[serde(default)]
+        effects: Vec<Effect>,
+    },
 }
 
 impl Action {
@@ -138,6 +150,7 @@ impl Action {
             Action::Intent { intent: Intent::UseItem { item, .. } } => format!("used {item}"),
             Action::Intent { intent: Intent::Place { item, .. } } => format!("placed {item}"),
             Action::Intent { intent: Intent::Key { key, .. } } => format!("pressed {key}"),
+            Action::Timers { package, effects, .. } => format!("{package}'s timers ({} change(s))", effects.len()),
         }
     }
 }
@@ -314,6 +327,8 @@ pub struct Replay {
     /// Changes that no longer apply (refused by the land rules, or by tightened
     /// limits), with why.
     pub problems: Vec<String>,
+    /// Leaves out what games did (intents, timers): a snapshot has it already.
+    skip_games: bool,
 }
 
 pub fn parcels_of(build: &BuildState) -> Vec<IVec2> {
@@ -341,9 +356,10 @@ pub fn replay_land(log: &WorldLog) -> Replay {
     walk(log, false, None)
 }
 
-/// The world's voxels as of some change, so replay (on a server restart, or a player
-/// joining) only redoes the changes after it. It's only valid while the changes up to
-/// it that count stay the same: undoing an older change makes it stale.
+/// The world's voxels and games as of some change, so replay (on a load, a server
+/// restart, or a player joining) only redoes the changes after it: no rasterizing and no
+/// game scripts before it. It's only valid while the changes up to it that count stay
+/// the same: undoing an older change makes it stale.
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 pub struct Snapshot {
     /// The last change it includes.
@@ -352,6 +368,23 @@ pub struct Snapshot {
     pub basis: u64,
     /// Every voxel edit, as `[x, y, z, block]`, sorted.
     pub edits: Vec<[i32; 4]>,
+    /// The games' entities, inventories and timers.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub game: Option<GameSave>,
+}
+
+/// What games keep, in a [`Snapshot`].
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+pub struct GameSave {
+    pub state: GameState,
+    #[serde(default)]
+    pub timers_until: u64,
+}
+
+impl GameSave {
+    pub fn of(logic: &Logic) -> Self {
+        Self { state: logic.state.clone(), timers_until: logic.timers_until }
+    }
 }
 
 /// Edge length, in voxels, of the chunks fingerprints cover (the game's mesh chunks).
@@ -398,10 +431,15 @@ fn basis(log: &WorldLog, upto: u64) -> u64 {
 impl Snapshot {
     /// The world `state` (replayed with voxels) as of the log's last change.
     pub fn take(log: &WorldLog, state: &Replay) -> Self {
+        let edits: Vec<[i32; 4]> = state.edits.iter().map(|(p, id)| [p.x, p.y, p.z, *id as i32]).collect();
+        Self::new(log, edits, &state.logic)
+    }
+
+    /// The world as of the log's last change, from its voxel edits and games.
+    pub fn new(log: &WorldLog, mut edits: Vec<[i32; 4]>, logic: &Logic) -> Self {
         let upto = log.changes.last().map_or(0, |c| c.id);
-        let mut edits: Vec<[i32; 4]> = state.edits.iter().map(|(p, id)| [p.x, p.y, p.z, *id as i32]).collect();
         edits.sort_unstable();
-        Self { upto, basis: basis(log, upto), edits }
+        Self { upto, basis: basis(log, upto), edits, game: Some(GameSave::of(logic)) }
     }
 
     /// Whether the changes it stands for still count as they did.
@@ -417,11 +455,20 @@ pub fn replay_from(log: &WorldLog, snapshot: Option<&Snapshot>) -> Replay {
         return replay(log);
     };
     let mut out = Replay::new(log);
+    out.skip_games = snapshot.game.is_some();
     let mut loaded = false;
+    let load = |out: &mut Replay| {
+        out.edits = snapshot.edits.iter().map(|[x, y, z, id]| (IVec3::new(*x, *y, *z), *id as VoxelId)).collect();
+        if let Some(game) = &snapshot.game {
+            out.logic.state = game.state.clone();
+            out.logic.timers_until = game.timers_until;
+        }
+        out.skip_games = false;
+    };
     for change in log.effective() {
         let after = change.id > snapshot.upto;
         if after && !loaded {
-            out.edits = snapshot.edits.iter().map(|[x, y, z, id]| (IVec3::new(*x, *y, *z), *id as VoxelId)).collect();
+            load(&mut out);
             loaded = true;
         }
         if let Err(why) = out.apply(change, after) {
@@ -429,7 +476,7 @@ pub fn replay_from(log: &WorldLog, snapshot: Option<&Snapshot>) -> Replay {
         }
     }
     if !loaded {
-        out.edits = snapshot.edits.iter().map(|[x, y, z, id]| (IVec3::new(*x, *y, *z), *id as VoxelId)).collect();
+        load(&mut out);
     }
     out
 }
@@ -548,8 +595,13 @@ impl Replay {
                 self.land.claim(&by.player, &by.player_name, &claims);
             }
             Action::UninstallPackage { name } => self.logic.uninstall(&by.player, admin, &self.rules.logic, name)?,
+            Action::Intent { .. } | Action::Timers { .. } if self.skip_games => {}
             Action::Intent { intent } => {
                 self.logic.act(change.id, &by.player, by.at, self.seed, &self.rules.logic, intent)?;
+            }
+            Action::Timers { .. } if !admin && by.player != WORLD => return Err("only the world runs timers".into()),
+            Action::Timers { package, until, effects } => {
+                self.logic.apply_timers(change.id, package, *until, effects, &self.rules.logic)?;
             }
             Action::Revert { .. } | Action::Rollback { .. } => {}
         }
@@ -587,7 +639,7 @@ pub fn ground_columns(terrain: Terrain, area: Area, edits: &HashMap<IVec3, Voxel
 mod tests {
     use super::*;
     use crate::{
-        logic::{Batch, Effect, EntityId, Event, Grants, LogicMode, package::tests::farm},
+        logic::{Batch, EntityId, Event, Grants, LogicMode, Trigger, package::tests::farm},
         sculpt::{OpArea, TerrainOp},
     };
 
@@ -818,7 +870,8 @@ mod tests {
     impl Runtime for Farmer {
         fn handle(&self, package: &Package, event: &Event, world: &mut Batch, grants: &Grants) -> Result<(), String> {
             assert_eq!(package.manifest.name, "farm");
-            let effect = match event.intent {
+            let Trigger::Intent(intent) = event.trigger else { return Ok(()) };
+            let effect = match intent {
                 Intent::Place { item, position } if item == "farm:seed" => Effect::Spawn {
                     position: *position,
                     components: [("farm:crop".to_string(), serde_json::json!({ "planted": event.time.day }))].into(),

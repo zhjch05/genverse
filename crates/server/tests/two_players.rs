@@ -10,7 +10,7 @@ use cubewish_rules::{
     identity::Keypair,
     log::{Action, BuildState, Provenance, signing_bytes},
     logic::{
-        EntityId, Intent, Package, Scope,
+        Effect, EntityId, Intent, Package, Scope,
         data::{DefSpec, GameSpec, ModelSpec, ScriptSpec},
     },
 };
@@ -169,8 +169,7 @@ fn two_players_share_one_ordered_world() {
     let again = start(ServerConfig { data_dir: dir.clone(), port: 0, seed: 1337, flat: false }).unwrap();
     let dee = Player::join(&again.addr.to_string(), 4, "Dee");
     drop(dee);
-    let saved: cubewish_rules::log::WorldLog =
-        serde_json::from_str(&std::fs::read_to_string(dir.join("world.json")).unwrap()).unwrap();
+    let saved = cubewish_rules::store::LogFile::open(&dir).unwrap().1.unwrap();
     assert_eq!(saved.changes.len(), 3);
     assert!(saved.changes.iter().all(|c| c.verified()));
     assert!(saved.changes.iter().all(|c| c.by.prompt.is_none()));
@@ -251,8 +250,7 @@ fn packages_travel_with_the_change_that_installs_them() {
     // A newcomer gets the package in the log.
     let cy = Player::join(&addr, 3, "Cy");
     drop((ada, bo, cy));
-    let saved: cubewish_rules::log::WorldLog =
-        serde_json::from_str(&std::fs::read_to_string(dir.join("world.json")).unwrap()).unwrap();
+    let saved = cubewish_rules::store::LogFile::open(&dir).unwrap().1.unwrap();
     assert!(saved.packages.contains_key(&reference.hash));
     let state = cubewish_rules::log::replay(&saved);
     assert!(state.problems.is_empty(), "{:?}", state.problems);
@@ -261,5 +259,64 @@ fn packages_travel_with_the_change_that_installs_them() {
     assert!(game.entities().any(|(_, e)| e.components.get("pawn").is_some_and(|p| *p == bo_id.as_str())));
     let pushed = game.entities().filter_map(|(_, e)| e.components.get("sokoban:box")).any(|b| b["col"] == 6.0);
     assert!(pushed, "the first box sits on its target");
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+#[test]
+fn the_server_runs_timers() {
+    let dir = std::env::temp_dir().join(format!("cubewish-timers-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&dir);
+    let server = start(ServerConfig { data_dir: dir.clone(), port: 0, seed: 1337, flat: true }).unwrap();
+    let addr = server.addr.to_string();
+    let ada = Player::join(&addr, 1, "Ada");
+    let bo = Player::join(&addr, 2, "Bo");
+    let script = r#"
+    function on_place(ev)
+      local id = spawn(ev.pos, { look = { model = "box" }, label = "Bell" })
+      after(1, "ring", { bell = id, who = ev.player })
+    end
+    function on_timer(ev)
+      set(ev.data.bell, "label", "Rang")
+      notify(ev.data.who, "Ring!")
+    end
+    "#;
+    let models = sokoban().models;
+    let bell = GameSpec {
+        name: "bell".into(),
+        title: "Bell".into(),
+        defs: vec![DefSpec { name: "bell".into(), kind: "fixture".into(), title: "Bell".into(), ..Default::default() }],
+        scripts: vec![ScriptSpec { name: "main.luau".into(), source: script.into() }],
+        models,
+    };
+    let package = bell.to_package(1);
+    let install = Action::InstallPackage { package: package.reference(), scope: Scope::World };
+    ada.propose_with(1, install, Some(package));
+    assert!(matches!(ada.next(), ToClient::Committed { request: Some(1), .. }));
+    assert!(matches!(bo.next(), ToClient::Committed { .. }));
+    bo.propose(1, Action::Intent { intent: Intent::Place { item: "bell:bell".into(), position: [4.0, 9.0, 4.0] } });
+    assert!(matches!(bo.next(), ToClient::Committed { request: Some(1), .. }));
+    assert!(matches!(ada.next(), ToClient::Committed { .. }));
+    // A second or two later, the world rings it, for everyone.
+    let bo_id = Keypair::from_seed([2; 32]).player_id();
+    for player in [&ada, &bo] {
+        match player.next() {
+            ToClient::Committed { change, request: None, .. } => {
+                assert_eq!(change.by.player, cubewish_rules::log::WORLD);
+                let Action::Timers { package, effects, .. } = change.action else { panic!("{:?}", change.action) };
+                assert_eq!(package, "bell");
+                assert!(effects.iter().any(|e| matches!(e, Effect::Notify { player, text } if *player == bo_id && text == "Ring!")));
+            }
+            other => panic!("{other:?}"),
+        }
+    }
+    // Players can't make timers go off themselves.
+    bo.propose(2, Action::Timers { package: "bell".into(), until: 0, effects: Vec::new() });
+    assert!(matches!(bo.next(), ToClient::Rejected { why, .. } if why.contains("only the world")));
+    drop((ada, bo));
+    let saved = cubewish_rules::store::LogFile::open(&dir).unwrap().1.unwrap();
+    let state = cubewish_rules::log::replay(&saved);
+    assert!(state.problems.is_empty(), "{:?}", state.problems);
+    assert!(state.logic.state.entities().any(|(_, e)| e.components["label"] == "Rang"));
+    assert_eq!(state.logic.state.timers().count(), 0);
     let _ = std::fs::remove_dir_all(&dir);
 }

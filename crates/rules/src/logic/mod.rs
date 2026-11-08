@@ -9,6 +9,7 @@
 //! `docs/game-logic.md`.
 
 pub mod clock;
+pub mod clockwork;
 pub mod data;
 pub mod entity;
 pub mod package;
@@ -21,8 +22,9 @@ use bevy_math::{IVec2, Vec2};
 use serde::{Deserialize, Serialize};
 
 pub use clock::{ClockRules, WorldTime};
+pub use clockwork::{Clockwork, Fired, Run};
 pub use data::{Def, DataRules};
-pub use entity::{Batch, Effect, Entity, EntityId, GameState, Grants};
+pub use entity::{Batch, Effect, Entity, EntityId, GameState, Grants, Timer};
 pub use package::{Manifest, Package, PackageRef, Permission};
 
 use crate::{land::parcel_of, log::fnv1a, terrain::VOXEL_SIZE};
@@ -151,19 +153,33 @@ impl Intent {
     }
 }
 
+/// What wakes a package's rules.
+#[derive(Clone, Copy, Debug)]
+pub enum Trigger<'a> {
+    /// A player did something.
+    Intent(&'a Intent),
+    /// One of its timers went off; `missed` more times went by unfired, if it repeats
+    /// and nobody was here to run it.
+    Timer { name: &'a str, data: &'a serde_json::Value, missed: u64 },
+}
+
 /// What a package's rules are asked about.
 #[derive(Clone, Debug)]
 pub struct Event<'a> {
     pub change: u64,
+    /// Who acted; empty for a timer.
     pub player: &'a str,
-    pub intent: &'a Intent,
+    pub trigger: Trigger<'a>,
     pub time: WorldTime,
+    /// Unix seconds: what timers count from.
+    pub at: u64,
     /// For the package's random numbers: the same for everyone replaying this change.
     pub seed: u64,
 }
 
-/// Runs packages' rules. It must answer the same way for the same inputs on every
-/// machine, since replay asks it again.
+/// Runs packages' rules. For intents it must answer the same way for the same inputs on
+/// every machine, since replay asks it again. Timers are run once, live, and their
+/// effects recorded, so replay never asks.
 pub trait Runtime: Send + Sync {
     /// Does what `package` does about `event`, through `world` (as `grants` allow). An
     /// error refuses the whole change, and is what the player is told.
@@ -212,6 +228,8 @@ pub struct Logic {
     pub state: GameState,
     /// What answers intents in place of [`Rules`] (for tests).
     pub runtime: Option<Arc<dyn Runtime>>,
+    /// Timers have been run up to here (Unix seconds), as far as the log says.
+    pub timers_until: u64,
 }
 
 impl Logic {
@@ -281,7 +299,7 @@ impl Logic {
         let runtime = self.runtime.clone().unwrap_or_else(|| Arc::new(Rules));
         let package = self.package(install).ok_or(format!("package {} is missing", install.package.name))?;
         let seed = fnv1a(format!("{world_seed}/{change}/{}", install.package.name).as_bytes());
-        let event = Event { change, player, intent, time: rules.clock.at(at), seed };
+        let event = Event { change, player, trigger: Trigger::Intent(intent), time: rules.clock.at(at), at, seed };
         let grants = grants(package, install, rules);
         let mut batch = self.state.batch(change, player, rules.max_effects);
         runtime.handle(package, &event, &mut batch, &grants)?;
@@ -290,6 +308,23 @@ impl Logic {
         let notes = done.notes.clone();
         self.state.commit(done);
         Ok(Outcome { effects, notes })
+    }
+
+    /// Applies what `package`'s timers did up to `until` (see [`Clockwork::fire`]),
+    /// checking each effect again.
+    pub fn apply_timers(&mut self, change: u64, package: &str, until: u64, effects: &[Effect], rules: &LogicRules) -> Result<Vec<(String, String)>, String> {
+        let install = self.installed.get(package).ok_or(format!("{package} isn't installed"))?;
+        let found = self.package(install).ok_or(format!("package {package} is missing"))?;
+        let grants = grants(found, install, rules);
+        let mut batch = self.state.batch(change, "", rules.max_effects);
+        for effect in effects {
+            batch.apply(&grants, effect)?;
+        }
+        let done = batch.finish();
+        let notes = done.notes.clone();
+        self.state.commit(done);
+        self.timers_until = self.timers_until.max(until);
+        Ok(notes)
     }
 
     pub fn package(&self, install: &Install) -> Option<&Package> {

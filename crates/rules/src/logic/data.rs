@@ -21,7 +21,7 @@ use serde::{Deserialize, Serialize};
 use serde_json::json;
 
 use super::{
-    Batch, Effect, Event, Grants, Intent, Manifest, Package, Permission, Runtime,
+    Batch, Effect, Event, Grants, Intent, Manifest, Package, Permission, Runtime, Trigger,
     package::split_name,
 };
 
@@ -290,7 +290,8 @@ impl DataRules {
     fn answer(&self, package: &Package, event: &Event, state: &Batch) -> Result<Vec<Effect>, String> {
         let defs = defs(package);
         let today = event.time.day;
-        match event.intent {
+        let Trigger::Intent(intent) = event.trigger else { return Ok(Vec::new()) };
+        match intent {
             Intent::Place { item, position } => {
                 if let Some(Def::Source { .. }) = defs.get(item.as_str()) {
                     let components = [(item.clone(), json!({}))].into();

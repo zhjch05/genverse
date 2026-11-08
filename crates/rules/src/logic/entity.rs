@@ -43,7 +43,7 @@ pub struct EntityId {
     pub n: u32,
 }
 
-#[derive(Clone, Debug, PartialEq)]
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 pub struct Entity {
     /// The package that spawned it.
     pub package: String,
@@ -73,6 +73,71 @@ pub enum Effect {
     Take { item: String, count: u32 },
     /// Tells a player something ("Solved in 14 moves!"). Changes nothing.
     Notify { player: String, text: String },
+    /// Wakes the package's `on_timer` at `due` (Unix seconds), and again every `every`
+    /// seconds after if given. A timer of the same name is replaced. With `near`, it
+    /// sleeps while no player is near that entity (see [`Timer::near`]).
+    Schedule {
+        name: String,
+        due: u64,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        every: Option<u64>,
+        #[serde(default)]
+        data: Value,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        near: Option<EntityId>,
+    },
+    /// Stops one of the package's timers, if it has it.
+    Cancel { name: String },
+}
+
+/// A package's wakeup: see [`Effect::Schedule`].
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+pub struct Timer {
+    pub due: u64,
+    pub every: Option<u64>,
+    pub data: Value,
+    /// Runs only while a player is within [`WAKE_RADIUS`] of this entity: a game board's
+    /// timers sleep while nobody is there, and catch up when someone comes.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub near: Option<EntityId>,
+}
+
+/// How near a player must be for a timer anchored to an entity to run, in meters.
+pub const WAKE_RADIUS: f32 = 64.0;
+
+/// The most timers one package may have waiting.
+pub const MAX_TIMERS: usize = 256;
+/// The shortest a timer may wait, and repeat, in seconds.
+pub const MIN_WAIT: u64 = 1;
+
+impl Timer {
+    /// When it goes off by `now`, if it does, and how many times it would have. A
+    /// one-time timer goes off once it's due (and is gone after). A repeating one goes
+    /// off for its times in `(since, now]`, folded into one firing when it fell behind.
+    pub fn fires(&self, since: u64, now: u64) -> Option<(u64, u64)> {
+        match self.every {
+            _ if self.due > now => None,
+            None => Some((self.due, 1)),
+            Some(every) => {
+                let every = every.max(MIN_WAIT);
+                let last = self.due + (now - self.due) / every * every;
+                let first = if self.due > since { self.due } else { self.due + ((since - self.due) / every + 1) * every };
+                (first <= last).then(|| (last, (last - first) / every + 1))
+            }
+        }
+    }
+
+    /// When it next goes off after `since`, if ever.
+    pub fn next(&self, since: u64) -> Option<u64> {
+        match self.every {
+            _ if self.due > since => Some(self.due),
+            None => Some(self.due),
+            Some(every) => {
+                let every = every.max(MIN_WAIT);
+                Some(self.due + ((since - self.due) / every + 1) * every)
+            }
+        }
+    }
 }
 
 /// Components the engine itself reads.
@@ -148,13 +213,51 @@ impl Grants {
     }
 }
 
-#[derive(Clone, Debug, Default)]
+#[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
+#[serde(from = "SavedState", into = "SavedState")]
 pub struct GameState {
     entities: BTreeMap<EntityId, Entity>,
     /// Entities per package, for its limit.
     counts: BTreeMap<String, u32>,
     /// What each player carries: item name to how many (never 0).
     items: BTreeMap<String, BTreeMap<String, u32>>,
+    /// Packages' timers, by package and name.
+    timers: BTreeMap<(String, String), Timer>,
+}
+
+/// [`GameState`] as saved in snapshots: JSON maps need string keys.
+#[derive(Serialize, Deserialize)]
+struct SavedState {
+    entities: Vec<(EntityId, Entity)>,
+    #[serde(default)]
+    items: BTreeMap<String, BTreeMap<String, u32>>,
+    #[serde(default)]
+    timers: Vec<(String, String, Timer)>,
+}
+
+impl From<GameState> for SavedState {
+    fn from(state: GameState) -> Self {
+        Self {
+            entities: state.entities.into_iter().collect(),
+            items: state.items,
+            timers: state.timers.into_iter().map(|((p, n), t)| (p, n, t)).collect(),
+        }
+    }
+}
+
+impl From<SavedState> for GameState {
+    fn from(saved: SavedState) -> Self {
+        let mut counts: BTreeMap<String, u32> = BTreeMap::new();
+        for (_, e) in &saved.entities {
+            *counts.entry(e.package.clone()).or_default() += 1;
+        }
+        Self {
+            entities: saved.entities.into_iter().collect(),
+            counts,
+            items: saved.items,
+            timers: saved.timers.into_iter().map(|(p, n, t)| ((p, n), t)).collect(),
+        }
+    }
 }
 
 impl GameState {
@@ -188,6 +291,16 @@ impl GameState {
         self.items.get(player).into_iter().flatten().map(|(item, n)| (item.as_str(), *n))
     }
 
+    /// Every waiting timer: package, name, timer.
+    pub fn timers(&self) -> impl Iterator<Item = (&str, &str, &Timer)> {
+        self.timers.iter().map(|((p, n), t)| (p.as_str(), n.as_str(), t))
+    }
+
+    /// `package`'s waiting timers.
+    pub fn timers_of<'a>(&'a self, package: &'a str) -> impl Iterator<Item = (&'a str, &'a Timer)> {
+        self.timers.range((package.to_string(), String::new())..).take_while(move |((p, _), _)| p == package).map(|((_, n), t)| (n.as_str(), t))
+    }
+
     /// Starts a set of effects for change `change` by `actor`, at most `max_effects`,
     /// none applied until [`Batch::finish`].
     pub fn batch<'a>(&'a self, change: u64, actor: &'a str, max_effects: u32) -> Batch<'a> {
@@ -202,6 +315,8 @@ impl GameState {
             counts: BTreeMap::new(),
             items: BTreeMap::new(),
             notes: Vec::new(),
+            timers: BTreeMap::new(),
+            effects: Vec::new(),
         }
     }
 
@@ -228,6 +343,12 @@ impl GameState {
                 self.items.remove(&player);
             }
         }
+        for (key, timer) in done.timers {
+            match timer {
+                Some(t) => self.timers.insert(key, t),
+                None => self.timers.remove(&key),
+            };
+        }
     }
 }
 
@@ -247,6 +368,22 @@ pub struct Batch<'a> {
     /// New item counts, by player and item.
     items: BTreeMap<(String, String), u32>,
     notes: Vec<(String, String)>,
+    /// Timers set (`None`: cancelled), by package and name.
+    timers: BTreeMap<(String, String), Option<Timer>>,
+    /// Every effect staged, in order: what a timer's firing records in the log.
+    pub effects: Vec<Effect>,
+}
+
+/// A point in a batch to go back to, if what follows fails ([`Batch::rollback`]).
+pub struct Mark {
+    applied: u32,
+    spawned: u32,
+    touched: BTreeMap<EntityId, Option<Entity>>,
+    counts: BTreeMap<String, i32>,
+    items: BTreeMap<(String, String), u32>,
+    notes: usize,
+    timers: BTreeMap<(String, String), Option<Timer>>,
+    effects: usize,
 }
 
 /// What a batch changes, to [`GameState::commit`].
@@ -254,6 +391,7 @@ pub struct Done {
     touched: BTreeMap<EntityId, Option<Entity>>,
     counts: BTreeMap<String, i32>,
     items: BTreeMap<(String, String), u32>,
+    timers: BTreeMap<(String, String), Option<Timer>>,
     /// Messages for players: who, and what.
     pub notes: Vec<(String, String)>,
 }
@@ -280,6 +418,41 @@ impl Batch<'_> {
         ids
     }
 
+    /// Where the batch is now, to [`Self::rollback`] to.
+    pub fn mark(&self) -> Mark {
+        Mark {
+            applied: self.applied,
+            spawned: self.spawned,
+            touched: self.touched.clone(),
+            counts: self.counts.clone(),
+            items: self.items.clone(),
+            notes: self.notes.len(),
+            timers: self.timers.clone(),
+            effects: self.effects.len(),
+        }
+    }
+
+    /// Drops everything staged since `mark`.
+    pub fn rollback(&mut self, mark: Mark) {
+        self.applied = mark.applied;
+        self.spawned = mark.spawned;
+        self.touched = mark.touched;
+        self.counts = mark.counts;
+        self.items = mark.items;
+        self.notes.truncate(mark.notes);
+        self.timers = mark.timers;
+        self.effects.truncate(mark.effects);
+    }
+
+    /// `package`'s timer `name` as staged.
+    pub fn timer(&self, package: &str, name: &str) -> Option<&Timer> {
+        let key = (package.to_string(), name.to_string());
+        match self.timers.get(&key) {
+            Some(t) => t.as_ref(),
+            None => self.base.timers.get(&key),
+        }
+    }
+
     /// The player whose action this is.
     pub fn actor(&self) -> &str {
         self.actor
@@ -287,6 +460,12 @@ impl Batch<'_> {
 
     /// Checks and stages `effect` for the package `grants` describes, or says why not.
     pub fn apply(&mut self, grants: &Grants, effect: &Effect) -> Result<Option<EntityId>, String> {
+        let result = self.stage(grants, effect)?;
+        self.effects.push(effect.clone());
+        Ok(result)
+    }
+
+    fn stage(&mut self, grants: &Grants, effect: &Effect) -> Result<Option<EntityId>, String> {
         if self.applied >= self.max_effects {
             return Err(format!("one action may cause at most {} changes here", self.max_effects));
         }
@@ -388,11 +567,39 @@ impl Batch<'_> {
                 self.notes.push((player.clone(), text.chars().take(200).collect()));
                 Ok(None)
             }
+            Effect::Schedule { name, due, every, data, near } => {
+                if name.is_empty() || name.chars().count() > 64 {
+                    return Err("a timer's name is 1 to 64 characters".into());
+                }
+                if every.is_some_and(|e| e < MIN_WAIT) {
+                    return Err(format!("a timer repeats at most every {MIN_WAIT} s"));
+                }
+                check_value(name, data)?;
+                let key = (grants.package.clone(), name.clone());
+                if self.timer(&grants.package, name).is_none() && self.waiting(&grants.package) >= MAX_TIMERS {
+                    return Err(format!("{} already has {MAX_TIMERS} timers waiting", grants.package));
+                }
+                if let Some(id) = near {
+                    entity(self, *id)?;
+                }
+                self.timers.insert(key, Some(Timer { due: *due, every: *every, data: data.clone(), near: *near }));
+                Ok(None)
+            }
+            Effect::Cancel { name } => {
+                self.timers.insert((grants.package.clone(), name.clone()), None);
+                Ok(None)
+            }
         }
     }
 
+    /// How many timers `package` has waiting, as staged.
+    fn waiting(&self, package: &str) -> usize {
+        let base = self.base.timers_of(package).filter(|(n, _)| !self.timers.contains_key(&(package.to_string(), n.to_string()))).count();
+        base + self.timers.iter().filter(|((p, _), t)| p == package && t.is_some()).count()
+    }
+
     pub fn finish(self) -> Done {
-        Done { touched: self.touched, counts: self.counts, items: self.items, notes: self.notes }
+        Done { touched: self.touched, counts: self.counts, items: self.items, timers: self.timers, notes: self.notes }
     }
 }
 
@@ -494,6 +701,30 @@ mod tests {
         world.commit(batch.finish());
         assert_eq!((world.items("a", "farm:seed"), world.items("b", "farm:seed")), (1, 0));
         assert_eq!(world.inventory("b").count(), 0);
+    }
+
+    #[test]
+    fn timers_go_off_once_per_span() {
+        let once = Timer { due: 10, every: None, data: Value::Null, near: None };
+        assert_eq!((once.fires(5, 9), once.fires(5, 10), once.fires(10, 20)), (None, Some((10, 1)), Some((10, 1))));
+        let every = Timer { due: 10, every: Some(3), data: Value::Null, near: None };
+        // 10, 13, 16, 19: by 20, all four, folded into the last.
+        assert_eq!(every.fires(0, 20), Some((19, 4)));
+        assert_eq!(every.fires(10, 15), Some((13, 1)));
+        assert_eq!(every.fires(13, 15), None);
+        assert_eq!((every.next(0), every.next(10), every.next(14)), (Some(10), Some(13), Some(16)));
+        let world = GameState::default();
+        let mut batch = world.batch(1, "a", 1000);
+        let game = grants("game", Scope::World);
+        let schedule = |name: String| Effect::Schedule { name, due: 5, every: None, data: Value::Null, near: None };
+        for n in 0..MAX_TIMERS {
+            batch.apply(&game, &schedule(n.to_string())).unwrap();
+        }
+        assert!(batch.apply(&game, &schedule("more".into())).unwrap_err().contains("timers waiting"));
+        // Replacing one is fine.
+        batch.apply(&game, &schedule("0".into())).unwrap();
+        let fast = Effect::Schedule { name: "0".into(), due: 5, every: Some(0), data: Value::Null, near: None };
+        assert!(batch.apply(&game, &fast).is_err());
     }
 
     #[test]

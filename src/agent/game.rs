@@ -14,6 +14,8 @@
 //! - What the rules say back ("Solved!") shows at the top of the view. Script errors also
 //!   go to the chat, and to the agent with the next request, so asking it to fix them
 //!   is enough.
+//! - **Timers:** offline, the game runs the packages' timers twice a second (online, the
+//!   server does), and shows what they say to you the same way.
 //!
 //! Everything goes through the ledger as intents, tried first so a refusal shows right
 //! away instead of landing in the log.
@@ -254,6 +256,30 @@ fn report(result: Result<Acted, String>, ledger: &Ledger, play: &mut Play, chat:
             }
             play.toast(why, now_s);
         }
+    }
+}
+
+/// Runs the games' timers (offline; those anchored to pieces only near the hero) and
+/// shows what games said on their own.
+pub fn run_timers(
+    time: Res<Time>,
+    mut ledger: ResMut<Ledger>,
+    mut play: ResMut<Play>,
+    mut chat: ResMut<Chat>,
+    heroes: Query<&Transform, With<Player>>,
+    mut last: Local<f32>,
+) {
+    let now_s = time.elapsed_secs();
+    if now_s - *last >= 0.5 {
+        *last = now_s;
+        let players: Vec<[f32; 3]> = heroes.iter().map(|t| t.translation.to_array()).collect();
+        for why in ledger.run_timers(&players) {
+            report(Err(format!("script error: {why}")), &ledger, &mut play, &mut chat, now_s);
+        }
+    }
+    if !ledger.heard.is_empty() {
+        let heard = std::mem::take(&mut ledger.heard);
+        play.toast(heard.join(" · "), now_s);
     }
 }
 

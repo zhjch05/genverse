@@ -437,8 +437,10 @@ fn setup_world(mut commands: Commands, mut materials: ResMut<Assets<VoxelMateria
     });
 }
 
-/// Writes the voxel cache at most every couple of seconds, when the voxels or the log
-/// changed (never while a preview is applied).
+/// Writes the snapshot (voxels and games) at most every couple of seconds when the
+/// voxels changed, and every half minute when only the games did (a busy game's timers
+/// change them all the time; the log has every change anyway). Never while a preview is
+/// applied.
 fn save_edits(
     time: Res<Time>,
     ledger: Res<Ledger>,
@@ -446,8 +448,9 @@ fn save_edits(
     mut last: Local<(f32, u64)>,
 ) {
     let now = time.elapsed_secs();
-    // Online, the world lives on the server; the local cache belongs to the local world.
-    if ledger.is_online() || !(world.unsaved || ledger.version != last.1) || world.hold_saves || now - last.0 < 2.0 {
+    let wait = if world.unsaved { 2.0 } else { 30.0 };
+    // Online, the world lives on the server; the local snapshot belongs to the local world.
+    if ledger.is_online() || !(world.unsaved || ledger.version != last.1) || world.hold_saves || now - last.0 < wait {
         return;
     }
     *last = (now, ledger.version);
@@ -457,7 +460,7 @@ fn save_edits(
         .values()
         .flat_map(|chunk| chunk.iter().map(|(p, id)| [p.x, p.y, p.z, *id as i32]))
         .collect();
-    ledger::write_cache(&ledger.log, edits);
+    ledger::write_snapshot(&ledger, edits);
 }
 
 /// How many of `items` pass `have`, and how many there are.
