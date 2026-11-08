@@ -342,7 +342,10 @@ impl World {
                     return Err(format!("change {target} is already undone"));
                 }
             }
-            Action::Rollback { .. } if !self.log.is_admin(&player) => return Err("only admins roll back".into()),
+            Action::Rollback { .. } | Action::Restore { .. } if !self.log.is_admin(&player) => {
+                return Err("only admins roll back or load saves".into());
+            }
+            Action::Restore { to } if !self.log.changes.iter().any(|c| c.id == *to) => return Err(format!("there's no change {to}")),
             _ => match self.state.apply(&change, true) {
                 Ok(edits) => made = edits,
                 Err(why) => {
@@ -358,7 +361,7 @@ impl World {
         }
         self.log.changes.push(change.clone());
         // Undos change which changes count: rebuild from the log.
-        if matches!(change.action, Action::Revert { .. } | Action::Rollback { .. }) {
+        if change.action.is_undo() {
             self.state = replay(&self.log);
         }
         let mut chunks: Vec<_> = made.iter().map(|(p, _)| chunk_of(*p)).collect();

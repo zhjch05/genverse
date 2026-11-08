@@ -139,6 +139,13 @@ Chat commands do the same and more: `/history [n]`, `/revert <id>`, `/rules`,
 side with `CUBEWISH_AS=Bo cargo run`, a non-admin guest for one run; script them with
 `CUBEWISH_PROMPT="/rate 5; /history"`.
 
+**Saves** work like a strategy game's, on a world everyone shares: `/save <name>` bookmarks
+the world as it is (anyone can), `/saves` lists them, and an admin's `/load <name>` puts the
+world back exactly as it was at that save, for everyone, game state included. Nothing is
+deleted: loading a later save, or reverting the load, brings the later changes back.
+`/fork <save> <world>` starts a new world of your own from a save
+(`CUBEWISH_WORLD=<world> cargo run`), leaving this one as it is.
+
 ## Playing together
 
 Two ways to host:

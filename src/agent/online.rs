@@ -252,7 +252,7 @@ fn committed(
         return;
     };
 
-    let incremental = !matches!(change.action, Action::Revert { .. } | Action::Rollback { .. });
+    let incremental = !change.action.is_undo();
     let applied = if incremental { state.apply(&change, true).map_err(|why| warn!("{why}")).ok() } else { None };
     match applied {
         Some(edits) => {

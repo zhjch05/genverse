@@ -52,6 +52,22 @@ pub fn world_dir() -> String {
     world_name().map_or("saves".into(), |name| format!("saves/worlds/{name}"))
 }
 
+/// Writes `log` as a new named world (`saves/worlds/<name>/`), unless there is one.
+#[cfg(not(target_arch = "wasm32"))]
+pub fn write_world(name: &str, log: &WorldLog) -> Result<(), String> {
+    let dir = std::path::PathBuf::from(format!("saves/worlds/{name}"));
+    if dir.exists() {
+        return Err(format!("There's already a world called \"{name}\"."));
+    }
+    let (mut file, _) = cubewish_rules::store::LogFile::open(&dir).map_err(|e| e.to_string())?;
+    file.rewrite(log).map_err(|e| format!("Couldn't write {}: {e}", dir.display()))
+}
+
+#[cfg(target_arch = "wasm32")]
+pub fn write_world(_name: &str, _log: &WorldLog) -> Result<(), String> {
+    Err("Worlds can't be saved on the web yet.".into())
+}
+
 /// The voxel cache from before snapshots, read only to migrate saves from before the log.
 #[cfg(not(target_arch = "wasm32"))]
 fn cache_path() -> String {
@@ -186,7 +202,7 @@ impl Ledger {
     /// count, so they replay (without voxels).
     fn advance(&mut self) {
         let Some(change) = self.log.changes.last().cloned() else { return };
-        if matches!(change.action, Action::Revert { .. } | Action::Rollback { .. }) {
+        if change.action.is_undo() {
             self.adopt(&replay_land(&self.log));
             return;
         }

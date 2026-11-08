@@ -4,7 +4,6 @@
 
 use bevy::prelude::*;
 use bevy_egui::{EguiContexts, egui};
-use cubewish_rules::log::Action;
 use egui_phosphor::regular as icon;
 
 use super::{
@@ -115,7 +114,7 @@ pub fn history_window(
                         let how = how.split_once(", ").map_or(how.as_str(), |(_, when)| when).to_string();
                         let agent = c.by.agent.as_deref().map(|a| format!("with {a} · ")).unwrap_or_default();
                         ui.label(egui::RichText::new(format!("{agent}{how}")).small().weak());
-                        let undo_kind = matches!(c.action, Action::Revert { .. } | Action::Rollback { .. });
+                        let undo_kind = c.action.is_undo();
                         if !gone && !undo_kind && ledger.log.may_revert(&me, c.id) && ui.small_button("Undo").clicked() {
                             pick = Some(Pick::Undo(c.id));
                         }

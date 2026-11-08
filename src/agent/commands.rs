@@ -11,6 +11,9 @@
 //!   or `/bevel off` rounds voxels' edges for everyone.
 //!
 //! - `/packages` lists the world's game rules; admins `/uninstall <name>` one.
+//! - `/save <name>` bookmarks the world as it is (anyone); `/saves` lists them; admins
+//!   `/load <name>` puts the world back exactly as it was then, for everyone (undoable);
+//!   `/fork <save> <world>` starts a new local world from a save, leaving this one be.
 //!
 //! Anything that undoes changes other than your latest rebuilds the world from the log.
 
@@ -46,7 +49,7 @@ const fn command(name: &'static str, args: &'static str, about: &'static str, ad
 }
 
 /// Every command, in the order they're suggested. `/play` is the panel's own.
-pub const COMMANDS: [Command; 16] = [
+pub const COMMANDS: [Command; 20] = [
     command("history", "[n]", "The latest changes, with ids", false),
     command("revert", "<id>", "Undo one of your changes", false),
     command("rules", "", "This world's rules", false),
@@ -56,6 +59,10 @@ pub const COMMANDS: [Command; 16] = [
     command("join", "<host[:port]>", "Play on another world", false),
     command("leave", "", "Back to your local world", false),
     command("packages", "", "The game rules in this world", false),
+    command("save", "<name>", "Bookmark the world as it is now", false),
+    command("saves", "", "The saves you can load or fork", false),
+    command("fork", "<save> <world>", "Start a new world of your own from a save", false),
+    command("load", "<name>", "Put the world back to a save, for everyone", true),
     command("rollback", "<player>", "Undo everything a player did", true),
     command("restore", "<id>", "Put the world back to right after a change", true),
     command("land", "open|parcels", "Whether land is open or claimed by parcel", true),
@@ -96,7 +103,13 @@ pub fn run(text: &str, cx: &mut Context) -> String {
                 format!("{} of {} changes aren't signed by their authors: {}", bad.len(), changes.len(), bad.join(", "))
             }
         }
-        "revert" | "rollback" | "restore" | "host" | "join" | "leave" if busy => "Keep or discard your draft first.".into(),
+        "revert" | "rollback" | "restore" | "load" | "host" | "join" | "leave" if busy => "Keep or discard your draft first.".into(),
+        "save" => save(cx.ledger, &args.join(" ")),
+        "saves" => saves(cx.ledger),
+        "fork" => match args.as_slice() {
+            [save, world] => fork(cx.ledger, save, world),
+            _ => "Usage: /fork <save> <new world name>".into(),
+        },
         "host" => super::online::host(cx.ledger),
         "join" => match args.first() {
             Some(addr) => super::online::join(cx.ledger, addr),
@@ -107,7 +120,11 @@ pub fn run(text: &str, cx: &mut Context) -> String {
             Some(id) => revert(cx, id),
             None => "Usage: /revert <change id> (see /history)".into(),
         },
-        "rollback" | "restore" | "land" | "rate" | "bevel" | "uninstall" if !admin => "Only admins can do that.".into(),
+        "rollback" | "restore" | "load" | "land" | "rate" | "bevel" | "uninstall" if !admin => "Only admins can do that.".into(),
+        "load" => match cx.ledger.log.save_named(&args.join(" ")).map(|c| c.id) {
+            Some(id) if !args.is_empty() => restore(cx, id),
+            _ => format!("Usage: /load <name>. {}", saves(cx.ledger)),
+        },
         "packages" => packages(cx.ledger),
         "uninstall" => match args.first() {
             Some(name) => {
@@ -208,19 +225,86 @@ pub fn rollback(cx: &mut Context, who: &str) -> String {
     format!("Rolled back {n} change(s) by {who}.")
 }
 
-/// Admins: puts the world back how it was right after change `id`.
+/// Admins: puts the world back exactly as it was right after change `id` (a save, or
+/// any change): everything after it stops counting, undos included.
 pub fn restore(cx: &mut Context, id: u64) -> String {
     if !cx.ledger.land.is_admin(&cx.ledger.profile.id) {
         return "Only admins can do that.".into();
     }
-    let changes: Vec<u64> = cx.ledger.log.effective().filter(|c| c.id > id).map(|c| c.id).collect();
-    if changes.is_empty() {
+    if !cx.ledger.log.changes.iter().any(|c| c.id == id) {
+        return format!("There's no change {id}.");
+    }
+    let n = cx.ledger.log.changes.iter().filter(|c| c.id > id).count();
+    if n == 0 {
         return format!("Nothing has changed since change {id}.");
     }
-    let n = changes.len();
-    cx.ledger.record(None, None, Action::Rollback { changes, note: format!("restore to change {id}") });
+    let reference = cx.ledger.record(None, None, Action::Restore { to: id });
     rebuild(cx);
-    format!("Restored the world to change {id} ({n} later change(s) undone; undo the rollback to bring them back).")
+    let name = cx.ledger.log.changes.iter().find(|c| c.id == id).and_then(|c| match &c.action {
+        Action::Save { name } => Some(format!("\"{name}\"")),
+        _ => None,
+    });
+    let what = name.unwrap_or(format!("change {id}"));
+    let undo = match cx.ledger.resolve(reference) {
+        Some(change) => format!("/revert {change} brings them back"),
+        None => "reverting the load (/history) brings them back".into(),
+    };
+    format!("Loaded {what}: {n} later change(s) no longer count; {undo}.")
+}
+
+/// Bookmarks the world as it is now.
+fn save(ledger: &mut Ledger, name: &str) -> String {
+    let name = name.trim();
+    if name.is_empty() || name.chars().count() > 40 {
+        return "Usage: /save <name> (up to 40 characters)".into();
+    }
+    if let Some(old) = ledger.log.save_named(name) {
+        let old = old.id;
+        ledger.record(None, None, Action::Save { name: name.into() });
+        return format!("Saved \"{name}\" (it replaces the save of that name from change {old}).");
+    }
+    ledger.record(None, None, Action::Save { name: name.into() });
+    format!("Saved \"{name}\". An admin can /load it; anyone can /fork it into a world of their own.")
+}
+
+fn saves(ledger: &Ledger) -> String {
+    let undone = ledger.log.undone();
+    let mut seen = std::collections::HashSet::new();
+    let lines: Vec<String> = ledger
+        .log
+        .saves()
+        .rev()
+        .filter(|(_, name)| seen.insert(name.to_lowercase()))
+        .take(20)
+        .map(|(c, name)| {
+            let later = if undone.contains(&c.id) { " (after the current state)" } else { "" };
+            format!("\"{name}\": change {}, {}{later}", c.id, ledger.describe(&c.by))
+        })
+        .collect();
+    if lines.is_empty() { "No saves yet: /save <name>".into() } else { format!("Saves, newest first: {}", lines.join(" · ")) }
+}
+
+/// Starts a new local world from a save: the log up to it, with the local player made an
+/// admin there too.
+fn fork(ledger: &Ledger, save: &str, world: &str) -> String {
+    let Some(at) = ledger.log.save_named(save).map(|c| c.id) else {
+        return format!("There's no save \"{save}\". {}", saves(ledger));
+    };
+    let clean: String = world.chars().filter(|c| c.is_ascii_alphanumeric() || *c == '-' || *c == '_').collect();
+    if clean.is_empty() || clean != world {
+        return "A world's name is letters, digits, - and _.".into();
+    }
+    let mut log = ledger.log.fork(at);
+    if !log.is_admin(&ledger.profile.id) {
+        log.admins.push(ledger.profile.id.clone());
+    }
+    match crate::world::ledger::write_world(&clean, &log) {
+        Ok(()) => format!(
+            "Started world \"{clean}\" from \"{save}\" ({} changes). This world carries on as it is. Play it with: CUBEWISH_WORLD={clean} cargo run",
+            log.changes.len()
+        ),
+        Err(why) => why,
+    }
 }
 
 /// Makes the world (voxels and builds) match the change log again.

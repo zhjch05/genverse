@@ -320,3 +320,38 @@ fn the_server_runs_timers() {
     assert_eq!(state.logic.state.timers().count(), 0);
     let _ = std::fs::remove_dir_all(&dir);
 }
+
+#[test]
+fn saves_load_for_everyone() {
+    let dir = std::env::temp_dir().join(format!("cubewish-saves-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&dir);
+    let server = start(ServerConfig { data_dir: dir.clone(), port: 0, seed: 1337, flat: true }).unwrap();
+    let addr = server.addr.to_string();
+    let ada = Player::join(&addr, 1, "Ada");
+    let bo = Player::join(&addr, 2, "Bo");
+    let committed = |p: &Player| match p.next() {
+        ToClient::Committed { change, .. } => change.id,
+        other => panic!("{other:?}"),
+    };
+    ada.propose(1, lamp(1, 4.0, 4.0));
+    committed(&ada);
+    committed(&bo);
+    // Anyone saves.
+    bo.propose(1, Action::Save { name: "before".into() });
+    let save = committed(&bo);
+    committed(&ada);
+    ada.propose(2, lamp(2, 12.0, 4.0));
+    committed(&ada);
+    committed(&bo);
+    // Only admins load, for everyone.
+    bo.propose(2, Action::Restore { to: save });
+    assert!(matches!(bo.next(), ToClient::Rejected { why, .. } if why.contains("only admins")));
+    ada.propose(3, Action::Restore { to: save });
+    committed(&ada);
+    committed(&bo);
+    drop((ada, bo));
+    let saved = cubewish_rules::store::LogFile::open(&dir).unwrap().1.unwrap();
+    let state = cubewish_rules::log::replay(&saved);
+    assert_eq!(state.builds.keys().copied().collect::<Vec<_>>(), vec![1]);
+    let _ = std::fs::remove_dir_all(&dir);
+}

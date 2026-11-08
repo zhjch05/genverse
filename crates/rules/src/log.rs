@@ -9,6 +9,11 @@
 //! set of changes: a player's, or everything after some point (restoring a version).
 //! Reverts can themselves be reverted.
 //!
+//! Saves are bookmarks in the log ([`Action::Save`]): anyone may make one. Loading one is
+//! an admin's [`Action::Restore`], which undoes everything after it, undos included, so
+//! the world is exactly as it was when it was saved. Loading a later save undoes that
+//! load in turn, and the restore itself can be reverted, so nothing is ever lost.
+//!
 //! Replay also enforces the world's rules ([`crate::settings`]) as of each change:
 //! land, limits, budgets and rate limits. So a log can't hold anything its authors
 //! weren't allowed to do, and ownership and budgets fall out of the log too.
@@ -114,6 +119,12 @@ pub enum Action {
     UninstallPackage { name: String },
     /// A player doing something the installed packages respond to.
     Intent { intent: Intent },
+    /// A bookmark: the world as it is now, to load later ([`Action::Restore`]) or to
+    /// start a new world from.
+    Save { name: String },
+    /// An admin putting the world back exactly as it was right after change `to`
+    /// (loading a save): every change after it, undos included, stops counting.
+    Restore { to: u64 },
     /// A package's timers going off, up to `until` (Unix seconds): what they did, so
     /// replay applies it without running them again. Made by the world (a server) or,
     /// offline, by an admin's game.
@@ -126,6 +137,12 @@ pub enum Action {
 }
 
 impl Action {
+    /// Whether it undoes other changes: those need a full replay, since they change
+    /// which changes count.
+    pub fn is_undo(&self) -> bool {
+        matches!(self, Action::Revert { .. } | Action::Rollback { .. } | Action::Restore { .. })
+    }
+
     /// A few words for history lists: "placed \"Stone well\"".
     pub fn describe(&self) -> String {
         match self {
@@ -151,6 +168,8 @@ impl Action {
             Action::Intent { intent: Intent::Place { item, .. } } => format!("placed {item}"),
             Action::Intent { intent: Intent::Key { key, .. } } => format!("pressed {key}"),
             Action::Timers { package, effects, .. } => format!("{package}'s timers ({} change(s))", effects.len()),
+            Action::Save { name } => format!("saved \"{name}\""),
+            Action::Restore { to } => format!("restored the world to change {to}"),
         }
     }
 }
@@ -253,7 +272,7 @@ impl WorldLog {
     /// brings its changes back.
     pub fn undone(&self) -> HashSet<u64> {
         let mut undone = HashSet::new();
-        for c in self.changes.iter().rev() {
+        for (i, c) in self.changes.iter().enumerate().rev() {
             if undone.contains(&c.id) {
                 continue;
             }
@@ -262,6 +281,9 @@ impl WorldLog {
                     undone.insert(*change);
                 }
                 Action::Rollback { changes, .. } if self.is_admin(&c.by.player) => undone.extend(changes),
+                Action::Restore { to } if self.is_admin(&c.by.player) => {
+                    undone.extend(self.changes[..i].iter().rev().take_while(|c| c.id > *to).map(|c| c.id));
+                }
                 _ => {}
             }
         }
@@ -272,8 +294,28 @@ impl WorldLog {
     pub fn effective(&self) -> impl Iterator<Item = &Change> {
         let undone = self.undone();
         self.changes.iter().filter(move |c| {
-            !undone.contains(&c.id) && !matches!(c.action, Action::Revert { .. } | Action::Rollback { .. })
+            !undone.contains(&c.id) && !c.action.is_undo()
         })
+    }
+
+    /// Every save, newest last: its change and name. Undone ones too, since loading an
+    /// earlier save undoes later ones and they can still be loaded.
+    pub fn saves(&self) -> impl DoubleEndedIterator<Item = (&Change, &str)> {
+        self.changes.iter().filter_map(|c| match &c.action {
+            Action::Save { name } => Some((c, name.as_str())),
+            _ => None,
+        })
+    }
+
+    /// The newest save named `name`.
+    pub fn save_named(&self, name: &str) -> Option<&Change> {
+        self.saves().rev().find(|(_, n)| n.eq_ignore_ascii_case(name)).map(|(c, _)| c)
+    }
+
+    /// A new world that starts as this one was right after change `upto` (a save): the
+    /// same seed, rules, admins and packages, and the changes up to it.
+    pub fn fork(&self, upto: u64) -> Self {
+        Self { changes: self.changes.iter().take_while(|c| c.id <= upto).cloned().collect(), ..self.clone() }
     }
 
     /// A stable fingerprint of the whole log, for checking a cache is current.
@@ -516,7 +558,8 @@ impl Replay {
             Action::RemoveBuild { .. }
             | Action::ClaimParcels { .. }
             | Action::InstallPackage { .. }
-            | Action::UninstallPackage { .. } => Some(0),
+            | Action::UninstallPackage { .. }
+            | Action::Save { .. } => Some(0),
             _ => None,
         };
         if let Some(cost) = cost.filter(|_| !admin) {
@@ -603,7 +646,12 @@ impl Replay {
             Action::Timers { package, until, effects } => {
                 self.logic.apply_timers(change.id, package, *until, effects, &self.rules.logic)?;
             }
-            Action::Revert { .. } | Action::Rollback { .. } => {}
+            Action::Save { name } if name.trim().is_empty() || name.chars().count() > 40 => {
+                return Err("a save's name is 1 to 40 characters".into());
+            }
+            Action::Save { .. } => {}
+            Action::Restore { .. } if !admin => return Err("only admins load saves".into()),
+            Action::Revert { .. } | Action::Rollback { .. } | Action::Restore { .. } => {}
         }
         // A change that went through counts toward its author's rate.
         if let Some(cost) = cost.filter(|_| !admin) {
@@ -684,6 +732,45 @@ mod tests {
             position: [0.0, 10.0, 0.0],
             yaw: 0.0,
         })
+    }
+
+    #[test]
+    fn loading_a_save_puts_the_world_back_exactly() {
+        let mut log = WorldLog::new(1);
+        log.admins = vec!["admin".into()];
+        let builds = |log: &WorldLog| replay_land(log).builds.keys().copied().collect::<Vec<_>>();
+        log.push(by("admin"), lamp(1));
+        let reverted = log.push(by("admin"), lamp(2));
+        log.push(by("admin"), Action::Revert { change: reverted });
+        let first = log.push(by("ada"), Action::Save { name: "first".into() });
+        log.push(by("admin"), lamp(3));
+        // An undo after the save: loading it must bring 1 back too.
+        let one = log.changes[0].id;
+        log.push(by("admin"), Action::Revert { change: one });
+        let second = log.push(by("ada"), Action::Save { name: "second".into() });
+        log.push(by("admin"), lamp(4));
+        assert_eq!(builds(&log), vec![3, 4]);
+        // Players save, but only admins load: anyone else's load counts for nothing.
+        log.push(by("ada"), Action::Restore { to: first });
+        assert_eq!(builds(&log), vec![3, 4]);
+        log.push(by("admin"), Action::Restore { to: first });
+        assert_eq!(builds(&log), vec![1]);
+        // Loading the later save undoes the first load.
+        log.push(by("admin"), Action::Restore { to: second });
+        assert_eq!(builds(&log), vec![3]);
+        log.push(by("admin"), Action::Restore { to: first });
+        assert_eq!(builds(&log), vec![1]);
+        // Saves made after the loaded one are still there to load.
+        assert_eq!(log.saves().map(|(_, n)| n).collect::<Vec<_>>(), vec!["first", "second"]);
+        assert_eq!(log.save_named("SECOND").map(|c| c.id), Some(second));
+        // The latest load reverted: back to the load before it.
+        let latest = log.changes.last().unwrap().id;
+        log.push(by("admin"), Action::Revert { change: latest });
+        assert_eq!(builds(&log), vec![3]);
+        // A fork starts from the save, with nothing after it.
+        let fork = log.fork(first);
+        assert_eq!(fork.changes.last().map(|c| c.id), Some(first));
+        assert_eq!(builds(&fork), vec![1]);
     }
 
     #[test]
