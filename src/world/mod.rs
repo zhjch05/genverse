@@ -337,7 +337,11 @@ impl VoxelWorld {
         for dz in -SCAN..=SCAN {
             for dx in -SCAN..=SCAN {
                 let cell = center + IVec2::new(dx, dz);
-                let (have, of) = match wanted(dx * dx + dz * dz, None) {
+                // The level streaming chose, which it keeps while the view moves a little
+                // (so a hero moved across a cell during loading still finishes); before it
+                // has run, the level it will choose.
+                let lod = if self.cells.is_empty() { wanted(dx * dx + dz * dz, None) } else { self.cells.get(&cell).copied() };
+                let (have, of) = match lod {
                     Some(Lod::Near) => count(cell_chunks(cell), |c| self.loaded.contains_key(c)),
                     Some(Lod::Far) => count(cell_coarse(cell), |k| self.coarse.contains_key(k)),
                     None => (0, 0),
@@ -411,9 +415,10 @@ fn setup_world(mut commands: Commands, mut materials: ResMut<Assets<VoxelMateria
     for (p, id) in loaded {
         edits.entry(chunk_of(p)).or_default().insert(p, id);
     }
+    let terrain = ledger.log.terrain();
     commands.insert_resource(ledger);
     commands.insert_resource(VoxelWorld {
-        terrain: Terrain { seed: SEED },
+        terrain,
         palette: Arc::new(palette),
         materials,
         loaded: default(),
@@ -689,7 +694,7 @@ mod tests {
 
     fn world() -> VoxelWorld {
         VoxelWorld {
-            terrain: Terrain { seed: SEED },
+            terrain: Terrain { seed: SEED, flat: false },
             palette: Arc::new(terrain::palette()),
             materials: vec![Handle::default(); terrain::palette().surfaces.len()],
             loaded: default(),

@@ -882,7 +882,7 @@ fn copy_into(columns: &mut Columns, grid: &VoxelGrid, min: IVec3) {
 mod tests {
     use super::*;
 
-    const TERRAIN: Terrain = Terrain { seed: 1337 };
+    const TERRAIN: Terrain = Terrain { seed: 1337, flat: false };
 
     fn columns(area: Area) -> Columns {
         Columns::read(area, |x, z, out| {

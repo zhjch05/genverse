@@ -3,7 +3,8 @@
 //!
 //! On desktop the log is `saves/world.json`. Replaying it is the truth;
 //! `saves/world_edits.json` is a cache of the replayed voxels, used when its hash
-//! matches the log. Saves from before the log are migrated once (the old files are
+//! matches the log. `CUBEWISH_WORLD=name` plays another world, kept in
+//! `saves/worlds/<name>/`; a new one there starts flat and empty. Saves from before the log are migrated once (the old files are
 //! kept as `.bak`). The local player is `saves/profile.json`: a name and a secret key
 //! whose public half is the player's id, and every change is signed with it. The
 //! world's first player is its admin. `CUBEWISH_AS=Name` plays as a different
@@ -16,7 +17,10 @@
 //! The web build has no saves and no builder yet, so nothing records there.
 #![cfg_attr(target_arch = "wasm32", allow(dead_code))]
 
-use std::collections::{BTreeMap, HashMap};
+use std::{
+    collections::{BTreeMap, HashMap},
+    sync::Arc,
+};
 #[cfg(not(target_arch = "wasm32"))]
 use std::net::SocketAddr;
 
@@ -28,17 +32,43 @@ use cubewish_rules::{
     rate::Rates,
     settings::WorldRules,
     log::{Action, BuildState, Provenance, Replay, WorldLog, replay, replay_land, signing_bytes},
+    logic::{Intent, Logic, Package, Scope},
 };
 use serde::{Deserialize, Serialize};
 
 use crate::voxel::VoxelId;
 
+/// The world `CUBEWISH_WORLD` names, if it names one.
+pub fn world_name() -> Option<String> {
+    let name = std::env::var("CUBEWISH_WORLD").ok()?;
+    let name: String = name.trim().chars().filter(|c| c.is_ascii_alphanumeric() || *c == '-' || *c == '_').collect();
+    (!name.is_empty()).then_some(name)
+}
+
+/// Where this world's log and caches are kept.
+pub fn world_dir() -> String {
+    world_name().map_or("saves".into(), |name| format!("saves/worlds/{name}"))
+}
+
 #[cfg(not(target_arch = "wasm32"))]
-const LOG_PATH: &str = "saves/world.json";
+fn log_path() -> String {
+    format!("{}/world.json", world_dir())
+}
+
 #[cfg(not(target_arch = "wasm32"))]
-const CACHE_PATH: &str = "saves/world_edits.json";
+fn cache_path() -> String {
+    format!("{}/world_edits.json", world_dir())
+}
 #[cfg(not(target_arch = "wasm32"))]
 const PROFILE_PATH: &str = "saves/profile.json";
+
+/// What an action did for the local player.
+pub struct Acted {
+    /// How their items changed, by item.
+    pub gained: Vec<(String, i64)>,
+    /// What the game told them.
+    pub notes: Vec<String>,
+}
 
 /// The local player.
 #[derive(Clone, Serialize, Deserialize)]
@@ -71,6 +101,8 @@ pub struct Ledger {
     pub budgets: Budgets,
     /// Each placed build's share of the budgets.
     pub footprints: HashMap<u64, Footprint>,
+    /// Game packages, what's installed where, entities and inventories.
+    pub logic: Logic,
     /// Bumped on every recorded change, so the voxel cache knows to follow.
     pub version: u64,
     /// The server this world lives on, when playing online.
@@ -113,6 +145,12 @@ impl Ledger {
     /// server instead, and the returned reference is its request number until the
     /// server commits it ([`Self::resolve`]).
     pub fn record(&mut self, agent: Option<&str>, prompt: Option<&str>, action: Action) -> u64 {
+        self.record_with(agent, prompt, action, None)
+    }
+
+    /// [`Self::record`], with the package an [`Action::InstallPackage`] names (online,
+    /// it goes to the server along with the change).
+    fn record_with(&mut self, agent: Option<&str>, prompt: Option<&str>, action: Action, package: Option<Package>) -> u64 {
         let by = Provenance::new(&self.profile.id, &self.profile.name, agent, prompt, now());
         #[cfg(not(target_arch = "wasm32"))]
         if let Some(online) = &mut self.online {
@@ -120,8 +158,11 @@ impl Ledger {
             let request = online.next_request;
             online.next_request += 1;
             online.pending.insert(request, sig.clone());
-            online.client.send(cubewish_net::ToServer::Propose { request, by, action, sig });
+            online.client.send(cubewish_net::ToServer::Propose { request, by, action, sig, package });
             return request;
+        }
+        if let Some(package) = package {
+            self.log.add_package(package);
         }
         self.log.push_signed(by, action, &self.key);
         let id = self.log.changes.last().map_or(0, |c| c.id);
@@ -138,7 +179,53 @@ impl Ledger {
         self.budgets = state.budgets.clone();
         self.footprints = state.footprints.clone();
         self.builds = state.builds.clone();
+        self.logic = state.logic.clone();
         self.version += 1;
+    }
+
+    fn is_admin(&self) -> bool {
+        self.land.is_admin(&self.profile.id)
+    }
+
+    /// Installs `package` over `scope` (or replaces the installed version), after checking
+    /// the rules would allow it. Returns the change's reference.
+    pub fn install(&mut self, package: Package, scope: Scope, agent: Option<&str>, prompt: Option<&str>) -> Result<u64, String> {
+        package.check().map_err(|e| e.join("; "))?;
+        let reference = package.reference();
+        let mut trial = self.logic.clone();
+        trial.packages.insert(reference.hash.clone(), Arc::new(package.clone()));
+        self.check(&scope.parcels())?;
+        trial.install(&self.profile.id, self.is_admin(), &self.rules.logic, &reference, &scope)?;
+        let action = Action::InstallPackage { package: reference, scope };
+        Ok(self.record_with(agent, prompt, action, Some(package)))
+    }
+
+    /// Does `intent`, after trying it on a copy of the game: refused, it says why and
+    /// nothing is recorded. A key that changes nothing (walking into a wall) isn't
+    /// recorded either.
+    pub fn act(&mut self, intent: Intent) -> Result<Acted, String> {
+        let mut trial = self.logic.clone();
+        let next = self.log.changes.last().map_or(1, |c| c.id + 1);
+        let outcome = trial.act(next, &self.profile.id, now(), self.log.seed, &self.rules.logic, &intent)?;
+        let me = &self.profile.id;
+        let notes = outcome.notes.into_iter().filter(|(to, _)| to == me).map(|(_, text)| text).collect();
+        if outcome.effects == 0 {
+            return match intent {
+                Intent::Key { .. } => Ok(Acted { gained: Vec::new(), notes }),
+                Intent::Place { .. } => Err("Nothing here plays that; its game rules aren't installed (/packages)".into()),
+                _ => Err("Nothing happened.".into()),
+            };
+        }
+        let before: BTreeMap<&str, u32> = self.logic.state.inventory(me).collect();
+        let after: BTreeMap<&str, u32> = trial.state.inventory(me).collect();
+        let items = before.keys().chain(after.keys()).collect::<std::collections::BTreeSet<_>>();
+        let gained = items
+            .into_iter()
+            .map(|item| (item.to_string(), *after.get(item).unwrap_or(&0) as i64 - *before.get(item).unwrap_or(&0) as i64))
+            .filter(|(_, n)| *n != 0)
+            .collect();
+        self.record(None, None, Action::Intent { intent });
+        Ok(Acted { gained, notes })
     }
 
     /// The change id a reference from [`Self::record`] stands for: itself offline,
@@ -282,7 +369,7 @@ impl Ledger {
     fn save(&self) {
         #[cfg(not(target_arch = "wasm32"))]
         if self.online.is_none() {
-            write_json(LOG_PATH, &self.log);
+            write_json(&log_path(), &self.log);
         }
     }
 }
@@ -331,14 +418,15 @@ struct SavedEdits {
 pub fn write_cache(log: &WorldLog, edits: Vec<[i32; 4]>) {
     let saved = SavedEdits { seed: log.seed, log_hash: Some(log.hash()), edits };
     #[cfg(not(target_arch = "wasm32"))]
-    write_json(CACHE_PATH, &saved);
+    write_json(&cache_path(), &saved);
     #[cfg(target_arch = "wasm32")]
     let _ = saved;
 }
 
 #[cfg(not(target_arch = "wasm32"))]
 fn write_json(path: &str, value: &impl Serialize) {
-    let result = std::fs::create_dir_all("saves")
+    let dir = std::path::Path::new(path).parent().unwrap_or(std::path::Path::new("."));
+    let result = std::fs::create_dir_all(dir)
         .and_then(|_| std::fs::write(path, serde_json::to_string(value).unwrap_or_default()));
     if let Err(e) = result {
         error!("couldn't save {path}: {e}");
@@ -381,13 +469,14 @@ pub fn load(seed: u32) -> (Ledger, HashMap<IVec3, VoxelId>) {
     }
     if changed {
         #[cfg(not(target_arch = "wasm32"))]
-        write_json(LOG_PATH, &log);
+        write_json(&log_path(), &log);
     }
     #[cfg(not(target_arch = "wasm32"))]
     if let Some(online) = connect(&profile, &key) {
         // The server sends the world once we've logged in; until then, just the seed.
         let (profile, key) = guest().unwrap_or((profile, key));
-        let mut ledger = empty(WorldLog::new(seed), profile, key);
+        // Named worlds are flat, so they can join flat servers.
+        let mut ledger = empty(WorldLog { flat: world_name().is_some(), ..WorldLog::new(seed) }, profile, key);
         ledger.online = Some(online);
         return (ledger, HashMap::new());
     }
@@ -421,6 +510,7 @@ fn empty(log: WorldLog, profile: Profile, key: Keypair) -> Ledger {
         rates: default(),
         budgets: default(),
         footprints: default(),
+        logic: default(),
         version: 0,
         #[cfg(not(target_arch = "wasm32"))]
         online: None,
@@ -512,9 +602,10 @@ fn load_log(seed: u32) -> (WorldLog, Option<HashMap<IVec3, VoxelId>>) {
 
 #[cfg(not(target_arch = "wasm32"))]
 fn load_log(seed: u32) -> (WorldLog, Option<HashMap<IVec3, VoxelId>>) {
-    let cache: Option<SavedEdits> = read_json(CACHE_PATH);
+    let (log_path, cache_path) = (log_path(), cache_path());
+    let cache: Option<SavedEdits> = read_json(&cache_path);
     let to_map = |edits: &[[i32; 4]]| edits.iter().map(|[x, y, z, id]| (IVec3::new(*x, *y, *z), *id as VoxelId)).collect();
-    match read_json::<WorldLog>(LOG_PATH) {
+    match read_json::<WorldLog>(&log_path) {
         Some(log) if log.seed == seed => {
             let hash = log.hash();
             let cached = cache.filter(|c| c.seed == seed && c.log_hash == Some(hash)).map(|c| to_map(&c.edits));
@@ -524,12 +615,19 @@ fn load_log(seed: u32) -> (WorldLog, Option<HashMap<IVec3, VoxelId>>) {
             (log, cached)
         }
         Some(log) => {
-            warn!("ignoring {LOG_PATH}: it was made for seed {}, not {seed}", log.seed);
+            warn!("ignoring {log_path}: it was made for seed {}, not {seed}", log.seed);
             (WorldLog::new(seed), None)
+        }
+        // A new named world is an empty, flat one.
+        None if world_name().is_some() => {
+            let log = WorldLog { flat: true, ..WorldLog::new(seed) };
+            info!("made a new flat world in {}", world_dir());
+            write_json(&log_path, &log);
+            (log, None)
         }
         None => {
             let log = migrate(seed, cache.filter(|c| c.seed == seed));
-            write_json(LOG_PATH, &log);
+            write_json(&log_path, &log);
             (log, None)
         }
     }
@@ -574,7 +672,7 @@ fn migrate(seed: u32, voxels: Option<SavedEdits>) -> WorldLog {
         );
     }
     if !log.changes.is_empty() {
-        info!("migrated old saves into {LOG_PATH} ({} changes)", log.changes.len());
+        info!("migrated old saves into {} ({} changes)", log_path(), log.changes.len());
     }
     for old in ["saves/creations.json", "saves/terrain_changes.json"] {
         if std::path::Path::new(old).exists() {

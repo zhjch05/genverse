@@ -1,9 +1,19 @@
-//! Entities: the things game rules keep state on (crops, creatures, chests, NPCs).
-//! Each one belongs to the package that spawned it and carries named components
-//! (`farm:crop`) whose values are plain JSON.
+//! The game's state: entities (boxes, walls, crops, NPCs) and what each player carries.
+//! Each entity belongs to the package that spawned it and carries named components
+//! (`sokoban:box`) whose values are plain JSON; items are named the same way.
 //!
-//! Packages never write here directly. They return [`Effect`]s, and a [`Batch`] checks
-//! each against what the package may do before any of them lands.
+//! A few components belong to the engine, which acts on them, and only an entity's own
+//! package sets them:
+//! - `look`: how it's drawn, `{"size": [w, h, d], "color": "#rrggbb", "glow": false}`
+//!   (meters, standing on its position).
+//! - `label`: a name shown over it when a player is near.
+//! - `zone`: `{"size": [w, d]}`, a rectangle centered on it. A player who walks in hands
+//!   their movement keys to its package (as [`super::Intent::Key`]) instead of walking.
+//! - `pawn`: a player id. That player's hero stands where this entity is, so a game
+//!   moves its players by moving their pawns.
+//!
+//! Packages never write here directly. Each change goes through a [`Batch`], which checks
+//! it against what the package may do; the batch lands whole, or not at all.
 
 use std::collections::BTreeMap;
 
@@ -14,6 +24,8 @@ use super::{Scope, package::split_name};
 
 /// The most one component's value may weigh, as JSON.
 pub const MAX_COMPONENT_BYTES: usize = 4096;
+/// The most of one item a player may carry.
+pub const MAX_ITEMS: u32 = 9999;
 
 /// Named by the change that spawned it and its place among that change's spawns, so
 /// undoing an earlier change never renames a later one's entities.
@@ -47,6 +59,43 @@ pub enum Effect {
     Move { entity: EntityId, position: [f32; 3] },
     Set { entity: EntityId, component: String, value: Value },
     Remove { entity: EntityId, component: String },
+    /// Gives a player items.
+    Give { player: String, item: String, count: u32 },
+    /// Takes items from the player acting, failing if they don't have them.
+    Take { item: String, count: u32 },
+    /// Tells a player something ("Solved in 14 moves!"). Changes nothing.
+    Notify { player: String, text: String },
+}
+
+/// Components the engine itself reads.
+pub const RESERVED: [&str; 4] = ["look", "label", "zone", "pawn"];
+
+/// Checks an engine component's value, phrased for the agent that wrote it.
+fn check_reserved(name: &str, value: &Value) -> Result<(), String> {
+    let sizes = |key: &str, n: usize, max: f64| {
+        let list = value[key].as_array().filter(|a| a.len() == n);
+        list.is_some_and(|a| a.iter().all(|v| v.as_f64().is_some_and(|v| v > 0.0 && v <= max)))
+    };
+    let ok = match name {
+        "look" => {
+            let color = value["color"].as_str().is_some_and(|c| c.len() == 7 && c.starts_with('#') && c[1..].chars().all(|c| c.is_ascii_hexdigit()));
+            sizes("size", 3, 16.0) && color && (value["glow"].is_null() || value["glow"].is_boolean())
+        }
+        "label" => value.as_str().is_some_and(|l| l.chars().count() <= 60),
+        "zone" => sizes("size", 2, 128.0),
+        "pawn" => value.as_str().is_some_and(|p| !p.is_empty() && p.len() <= 128),
+        _ => true,
+    };
+    if ok {
+        Ok(())
+    } else {
+        Err(match name {
+            "look" => "\"look\" is {\"size\": [w, h, d] (meters, 0-16), \"color\": \"#rrggbb\", \"glow\": true/false}".into(),
+            "label" => "\"label\" is text of up to 60 characters".into(),
+            "zone" => "\"zone\" is {\"size\": [w, d]} (meters, 0-128)".into(),
+            _ => "\"pawn\" is a player id".into(),
+        })
+    }
 }
 
 /// What one installed package may touch.
@@ -60,14 +109,15 @@ pub struct Grants {
 }
 
 impl Grants {
-    fn writable(&self, component: &str) -> Result<(), String> {
-        let Some((ns, _)) = split_name(component) else {
-            return Err(format!("component \"{component}\" must be named \"<package>:<name>\""));
+    /// Whether it may change the component or item `name`.
+    fn writable(&self, name: &str) -> Result<(), String> {
+        let Some((ns, _)) = split_name(name) else {
+            return Err(format!("\"{name}\" must be named \"<package>:<name>\""));
         };
         if ns == self.package || self.write.iter().any(|w| w == ns) {
             Ok(())
         } else {
-            Err(format!("{} may not change \"{component}\", which belongs to {ns}", self.package))
+            Err(format!("{} may not change \"{name}\", which belongs to {ns}", self.package))
         }
     }
 
@@ -81,67 +131,113 @@ impl Grants {
 }
 
 #[derive(Clone, Debug, Default)]
-pub struct Entities {
-    all: BTreeMap<EntityId, Entity>,
+pub struct GameState {
+    entities: BTreeMap<EntityId, Entity>,
     /// Entities per package, for its limit.
     counts: BTreeMap<String, u32>,
+    /// What each player carries: item name to how many (never 0).
+    items: BTreeMap<String, BTreeMap<String, u32>>,
 }
 
-impl Entities {
+impl GameState {
     pub fn get(&self, id: EntityId) -> Option<&Entity> {
-        self.all.get(&id)
+        self.entities.get(&id)
     }
 
-    pub fn iter(&self) -> impl Iterator<Item = (EntityId, &Entity)> {
-        self.all.iter().map(|(id, e)| (*id, e))
+    pub fn entities(&self) -> impl Iterator<Item = (EntityId, &Entity)> {
+        self.entities.iter().map(|(id, e)| (*id, e))
     }
 
     pub fn len(&self) -> usize {
-        self.all.len()
+        self.entities.len()
     }
 
     pub fn is_empty(&self) -> bool {
-        self.all.is_empty()
+        self.entities.is_empty()
     }
 
     pub fn count(&self, package: &str) -> u32 {
         self.counts.get(package).copied().unwrap_or(0)
     }
 
-    /// Starts a set of effects for change `change`, none applied until [`Batch::finish`].
-    pub fn batch(&self, change: u64) -> Batch<'_> {
-        Batch { base: self, change, spawned: 0, touched: BTreeMap::new(), counts: BTreeMap::new() }
+    /// How many of `item` `player` carries.
+    pub fn items(&self, player: &str, item: &str) -> u32 {
+        self.items.get(player).and_then(|i| i.get(item)).copied().unwrap_or(0)
+    }
+
+    /// Everything `player` carries.
+    pub fn inventory(&self, player: &str) -> impl Iterator<Item = (&str, u32)> {
+        self.items.get(player).into_iter().flatten().map(|(item, n)| (item.as_str(), *n))
+    }
+
+    /// Starts a set of effects for change `change` by `actor`, at most `max_effects`,
+    /// none applied until [`Batch::finish`].
+    pub fn batch<'a>(&'a self, change: u64, actor: &'a str, max_effects: u32) -> Batch<'a> {
+        Batch {
+            base: self,
+            change,
+            actor,
+            max_effects,
+            applied: 0,
+            spawned: 0,
+            touched: BTreeMap::new(),
+            counts: BTreeMap::new(),
+            items: BTreeMap::new(),
+            notes: Vec::new(),
+        }
     }
 
     /// Lands a finished batch.
     pub fn commit(&mut self, done: Done) {
         for (id, entity) in done.touched {
             match entity {
-                Some(e) => self.all.insert(id, e),
-                None => self.all.remove(&id),
+                Some(e) => self.entities.insert(id, e),
+                None => self.entities.remove(&id),
             };
         }
         for (package, delta) in done.counts {
             let count = self.counts.entry(package).or_default();
             *count = count.saturating_add_signed(delta);
         }
+        for ((player, item), n) in done.items {
+            let carried = self.items.entry(player.clone()).or_default();
+            if n == 0 {
+                carried.remove(&item);
+            } else {
+                carried.insert(item, n);
+            }
+            if carried.is_empty() {
+                self.items.remove(&player);
+            }
+        }
     }
 }
 
-/// Effects checked and staged on top of the entities, all or nothing.
+/// Effects checked and staged on top of the state, all or nothing. Reads see what's
+/// staged so far, so rules see their own changes.
 pub struct Batch<'a> {
-    base: &'a Entities,
+    base: &'a GameState,
     change: u64,
+    actor: &'a str,
+    max_effects: u32,
+    /// Effects staged so far.
+    pub applied: u32,
     spawned: u32,
     /// Entities changed so far (`None`: removed).
     touched: BTreeMap<EntityId, Option<Entity>>,
     counts: BTreeMap<String, i32>,
+    /// New item counts, by player and item.
+    items: BTreeMap<(String, String), u32>,
+    notes: Vec<(String, String)>,
 }
 
-/// What a batch changes, to [`Entities::commit`].
+/// What a batch changes, to [`GameState::commit`].
 pub struct Done {
     touched: BTreeMap<EntityId, Option<Entity>>,
     counts: BTreeMap<String, i32>,
+    items: BTreeMap<(String, String), u32>,
+    /// Messages for players: who, and what.
+    pub notes: Vec<(String, String)>,
 }
 
 impl Batch<'_> {
@@ -152,8 +248,31 @@ impl Batch<'_> {
         }
     }
 
+    pub fn items(&self, player: &str, item: &str) -> u32 {
+        let key = (player.to_string(), item.to_string());
+        self.items.get(&key).copied().unwrap_or_else(|| self.base.items(player, item))
+    }
+
+    /// Every entity as staged, in id order.
+    pub fn ids(&self) -> Vec<EntityId> {
+        let base = self.base.entities.keys().filter(|id| !self.touched.contains_key(id));
+        let staged = self.touched.iter().filter(|(_, e)| e.is_some()).map(|(id, _)| id);
+        let mut ids: Vec<EntityId> = base.chain(staged).copied().collect();
+        ids.sort_unstable();
+        ids
+    }
+
+    /// The player whose action this is.
+    pub fn actor(&self) -> &str {
+        self.actor
+    }
+
     /// Checks and stages `effect` for the package `grants` describes, or says why not.
     pub fn apply(&mut self, grants: &Grants, effect: &Effect) -> Result<Option<EntityId>, String> {
+        if self.applied >= self.max_effects {
+            return Err(format!("one action may cause at most {} changes here", self.max_effects));
+        }
+        self.applied += 1;
         let entity = |batch: &Self, id: EntityId| batch.get(id).cloned().ok_or(format!("entity {}.{} doesn't exist", id.change, id.n));
         match effect {
             Effect::Spawn { position, components } => {
@@ -166,7 +285,11 @@ impl Batch<'_> {
                     return Err(format!("{} already has {count} entities; this world allows {}", grants.package, grants.max_entities));
                 }
                 for (name, value) in components {
-                    grants.writable(name)?;
+                    if RESERVED.contains(&name.as_str()) {
+                        check_reserved(name, value)?;
+                    } else {
+                        grants.writable(name)?;
+                    }
                     check_value(name, value)?;
                 }
                 let id = EntityId { change: self.change, n: self.spawned };
@@ -194,7 +317,12 @@ impl Batch<'_> {
             }
             Effect::Set { entity: id, component, value } => {
                 let mut e = entity(self, *id)?;
-                grants.writable(component)?;
+                if RESERVED.contains(&component.as_str()) {
+                    own(grants, &e)?;
+                    check_reserved(component, value)?;
+                } else {
+                    grants.writable(component)?;
+                }
                 grants.inside(e.position)?;
                 check_value(component, value)?;
                 e.components.insert(component.clone(), value.clone());
@@ -203,17 +331,41 @@ impl Batch<'_> {
             }
             Effect::Remove { entity: id, component } => {
                 let mut e = entity(self, *id)?;
-                grants.writable(component)?;
+                if RESERVED.contains(&component.as_str()) {
+                    own(grants, &e)?;
+                } else {
+                    grants.writable(component)?;
+                }
                 grants.inside(e.position)?;
                 e.components.remove(component);
                 self.touched.insert(*id, Some(e));
+                Ok(None)
+            }
+            Effect::Give { player, item, count } => {
+                grants.writable(item)?;
+                let n = self.items(player, item).saturating_add(*count);
+                if n > MAX_ITEMS {
+                    return Err(format!("nobody can carry more than {MAX_ITEMS} of \"{item}\""));
+                }
+                self.items.insert((player.clone(), item.clone()), n);
+                Ok(None)
+            }
+            Effect::Take { item, count } => {
+                grants.writable(item)?;
+                let have = self.items(self.actor, item);
+                let n = have.checked_sub(*count).ok_or(format!("you need {count} \"{item}\" and have {have}"))?;
+                self.items.insert((self.actor.to_string(), item.clone()), n);
+                Ok(None)
+            }
+            Effect::Notify { player, text } => {
+                self.notes.push((player.clone(), text.chars().take(200).collect()));
                 Ok(None)
             }
         }
     }
 
     pub fn finish(self) -> Done {
-        Done { touched: self.touched, counts: self.counts }
+        Done { touched: self.touched, counts: self.counts, items: self.items, notes: self.notes }
     }
 }
 
@@ -221,7 +373,7 @@ fn own(grants: &Grants, e: &Entity) -> Result<(), String> {
     if e.package == grants.package {
         Ok(())
     } else {
-        Err(format!("{} may only move or remove its own entities, not {}'s", grants.package, e.package))
+        Err(format!("{} may only move, remove or restyle its own entities, not {}'s", grants.package, e.package))
     }
 }
 
@@ -249,16 +401,16 @@ mod tests {
 
     #[test]
     fn batches_are_all_or_nothing() {
-        let mut world = Entities::default();
+        let mut world = GameState::default();
         let farm = grants("farm", Scope::World);
-        let mut batch = world.batch(7);
+        let mut batch = world.batch(7, "a", 256);
         let id = batch.apply(&farm, &spawn(1.0)).unwrap().unwrap();
         assert_eq!(id, EntityId { change: 7, n: 0 });
         batch.apply(&farm, &Effect::Set { entity: id, component: "farm:crop".into(), value: json!({ "day": 1 }) }).unwrap();
         // Dropping a batch leaves the world as it was.
         drop(batch);
         assert!(world.is_empty());
-        let mut batch = world.batch(7);
+        let mut batch = world.batch(7, "a", 256);
         batch.apply(&farm, &spawn(1.0)).unwrap();
         batch.apply(&farm, &spawn(2.0)).unwrap();
         assert!(batch.apply(&farm, &spawn(3.0)).unwrap_err().contains("allows 2"));
@@ -269,9 +421,9 @@ mod tests {
 
     #[test]
     fn packages_keep_to_their_namespace_and_scope() {
-        let mut world = Entities::default();
+        let mut world = GameState::default();
         let farm = grants("farm", Scope::Parcels { parcels: vec![[0, 0]] });
-        let mut batch = world.batch(1);
+        let mut batch = world.batch(1, "a", 256);
         let id = batch.apply(&farm, &spawn(1.0)).unwrap().unwrap();
         // 8 m is a parcel's edge (32 voxels of 25 cm).
         assert!(batch.apply(&farm, &spawn(9.0)).is_err());
@@ -279,7 +431,7 @@ mod tests {
         world.commit(batch.finish());
 
         let fish = grants("fish", Scope::World);
-        let mut batch = world.batch(2);
+        let mut batch = world.batch(2, "a", 256);
         let set = |component: &str| Effect::Set { entity: id, component: component.into(), value: json!(true) };
         assert!(batch.apply(&fish, &set("farm:crop")).unwrap_err().contains("belongs to farm"));
         assert!(batch.apply(&fish, &Effect::Despawn { entity: id }).is_err());
@@ -290,5 +442,52 @@ mod tests {
         batch.apply(&fish, &set("farm:crop")).unwrap();
         assert!(batch.apply(&fish, &set("farm:nope!")).is_err());
         assert!(batch.apply(&fish, &Effect::Set { entity: id, component: "farm:big".into(), value: json!("x".repeat(5000)) }).is_err());
+    }
+
+    #[test]
+    fn items_are_given_and_taken_from_the_actor() {
+        let mut world = GameState::default();
+        let farm = grants("farm", Scope::World);
+        let give = |player: &str, count| Effect::Give { player: player.into(), item: "farm:seed".into(), count };
+        let take = |count| Effect::Take { item: "farm:seed".into(), count };
+        let mut batch = world.batch(1, "a", 256);
+        batch.apply(&farm, &give("a", 3)).unwrap();
+        batch.apply(&farm, &take(2)).unwrap();
+        assert!(batch.apply(&farm, &take(2)).unwrap_err().contains("have 1"));
+        assert!(batch.apply(&farm, &Effect::Give { player: "a".into(), item: "fish:cod".into(), count: 1 }).is_err());
+        assert!(batch.apply(&farm, &give("a", MAX_ITEMS)).is_err());
+        world.commit(batch.finish());
+        assert_eq!(world.items("a", "farm:seed"), 1);
+
+        // "b" acting takes from "b", not from "a".
+        let mut batch = world.batch(2, "b", 256);
+        assert!(batch.apply(&farm, &take(1)).is_err());
+        batch.apply(&farm, &give("b", 1)).unwrap();
+        batch.apply(&farm, &take(1)).unwrap();
+        world.commit(batch.finish());
+        assert_eq!((world.items("a", "farm:seed"), world.items("b", "farm:seed")), (1, 0));
+        assert_eq!(world.inventory("b").count(), 0);
+    }
+
+    #[test]
+    fn engine_components_are_checked_and_owned() {
+        let mut world = GameState::default();
+        let game = grants("game", Scope::World);
+        let look = json!({ "size": [1, 1, 1], "color": "#8a6a4a" });
+        let mut batch = world.batch(1, "a", 3);
+        let spawn = Effect::Spawn { position: [0.0; 3], components: BTreeMap::from([("look".into(), look), ("label".into(), json!("Box"))]) };
+        let id = batch.apply(&game, &spawn).unwrap().unwrap();
+        let bad = Effect::Set { entity: id, component: "look".into(), value: json!({ "size": [1, 1], "color": "red" }) };
+        assert!(batch.apply(&game, &bad).unwrap_err().contains("\"look\" is"));
+        // Another package can't restyle it, even with permission to write game's data.
+        let mut other = grants("other", Scope::World);
+        other.write.push("game".into());
+        let label = Effect::Set { entity: id, component: "label".into(), value: json!("Mine") };
+        assert!(batch.apply(&other, &label).is_err());
+        // The batch caps how much one action does.
+        assert!(batch.apply(&game, &label).unwrap_err().contains("at most 3"));
+        assert_eq!(batch.ids(), vec![id]);
+        world.commit(batch.finish());
+        assert_eq!(world.get(id).unwrap().components["label"], "Box");
     }
 }

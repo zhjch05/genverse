@@ -39,9 +39,10 @@ pub fn host(ledger: &mut Ledger) -> String {
         return "Already online; only your local world can be hosted.".into();
     }
     let config = cubewish_server::ServerConfig {
-        data_dir: "saves".into(),
+        data_dir: crate::world::ledger::world_dir().into(),
         port: cubewish_net::DEFAULT_PORT,
         seed: ledger.log.seed,
+        flat: ledger.log.flat,
     };
     let running = match cubewish_server::start(config) {
         Ok(running) => running,
@@ -153,8 +154,8 @@ pub fn sync_online(
             }
             ClientEvent::Message(ToClient::Welcome { log, snapshot }) => {
                 peers.clear(&mut commands);
-                if log.seed != world.terrain.seed {
-                    chat.say(Role::System, "⚠ This server's world has a different seed; can't join it.");
+                if log.seed != world.terrain.seed || log.flat != world.terrain.flat {
+                    chat.say(Role::System, "⚠ This server's world has different ground (seed or flatness); can't join it.");
                     continue;
                 }
                 ledger.log = log;
@@ -195,7 +196,14 @@ pub fn sync_online(
                     online.state = Some(full);
                 }
             }
-            ClientEvent::Message(ToClient::Committed { change, request, prints }) => {
+            ClientEvent::Message(ToClient::Committed { change, request, prints, package }) => {
+                if let Some(package) = package {
+                    let hash = ledger.log.add_package(package);
+                    let package = ledger.log.packages[&hash].clone();
+                    if let Some(state) = ledger.online.as_mut().and_then(|o| o.state.as_mut()) {
+                        state.logic.packages.insert(hash, package);
+                    }
+                }
                 committed(&mut commands, &mut ledger, &mut world, &mut creations, &mut landscape, &mut chat, change, request);
                 check_prints(&ledger, prints);
             }
@@ -263,7 +271,7 @@ fn committed(
                     }
                 }
             }
-            if own.is_none() {
+            if own.is_none() && !matches!(change.action, Action::Intent { .. }) {
                 chat.say(Role::System, format!("{} {}.", change.by.player_name, change.action.describe()));
             }
         }
@@ -273,7 +281,7 @@ fn committed(
             world.replace_edits(state.edits.iter().map(|(p, id)| (*p, *id)));
             creations.resync(commands, &state.builds);
             landscape.forget_history();
-            if own.is_none() {
+            if own.is_none() && !matches!(change.action, Action::Intent { .. }) {
                 chat.say(Role::System, format!("{} {}.", change.by.player_name, change.action.describe()));
             }
         }

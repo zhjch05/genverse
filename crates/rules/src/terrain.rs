@@ -99,7 +99,12 @@ pub fn pick<const N: usize>(ids: [VoxelId; N], t: f32) -> VoxelId {
 #[derive(Clone, Copy)]
 pub struct Terrain {
     pub seed: u32,
+    /// An empty world: level grass everywhere, no water, trees or plants.
+    pub flat: bool,
 }
+
+/// The ground's top voxel in a flat world: a little above the sea.
+pub const FLAT_GROUND: i32 = SEA_LEVEL + 4;
 
 const TREE_CELL: i32 = 18;
 /// Farthest a tree's leaves reach from its trunk, including noise.
@@ -108,6 +113,9 @@ const TREE_REACH: i32 = 14;
 impl Terrain {
     /// Height of the top solid voxel in column `(x, z)`.
     pub fn height(&self, x: i32, z: i32) -> i32 {
+        if self.flat {
+            return FLAT_GROUND;
+        }
         let p = Vec2::new(x as f32, z as f32);
         let continent = fbm_xz(p / 260.0, self.seed);
         let hills = fbm_xz(p / 70.0, self.seed + 10);
@@ -141,7 +149,7 @@ impl Terrain {
         for z in min.z..max.z {
             for x in min.x..max.x {
                 let h = height(x, z);
-                let beach = h <= SEA_LEVEL + 1;
+                let beach = h <= SEA_LEVEL + 1 && !self.flat;
                 // Below y = 0 is solid stone, so the world has no visible underside.
                 for y in min.y..max.y.min(h + 1).max(min.y) {
                     let p = IVec3::new(x, y, z);
@@ -166,6 +174,9 @@ impl Terrain {
             }
         }
 
+        if self.flat {
+            return grid;
+        }
         // Trees, one candidate per jittered cell.
         let cells = |a: i32, b: i32| (a - TREE_REACH).div_euclid(TREE_CELL)..=(b + TREE_REACH).div_euclid(TREE_CELL);
         for cz in cells(min.z, max.z) {

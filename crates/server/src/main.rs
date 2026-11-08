@@ -1,19 +1,24 @@
-//! `cubewish-server [--port 7878] [--data server-data]`: runs a world others can join
-//! with `CUBEWISH_SERVER=host:port cargo run`.
+//! `cubewish-server [--port 7878] [--data server-data] [--flat]`: runs a world others can
+//! join with `CUBEWISH_SERVER=host:port cargo run`. `--flat` makes a new world flat and
+//! empty; players join it from a named (flat) world: `CUBEWISH_WORLD=<name>`.
 
 use std::path::PathBuf;
 
 use cubewish_server::{ServerConfig, start};
 
 fn main() {
-    let mut config = ServerConfig { data_dir: "server-data".into(), port: cubewish_net::DEFAULT_PORT, seed: 1337 };
+    let mut config = ServerConfig { data_dir: "server-data".into(), port: cubewish_net::DEFAULT_PORT, seed: 1337, flat: false };
     let mut args = std::env::args().skip(1);
     while let Some(arg) = args.next() {
+        if arg == "--flat" {
+            config.flat = true;
+            continue;
+        }
         match (arg.as_str(), args.next()) {
             ("--port", Some(port)) => config.port = port.parse().expect("--port takes a number"),
             ("--data", Some(dir)) => config.data_dir = PathBuf::from(dir),
             _ => {
-                eprintln!("usage: cubewish-server [--port 7878] [--data server-data]");
+                eprintln!("usage: cubewish-server [--port 7878] [--data server-data] [--flat]");
                 std::process::exit(2);
             }
         }

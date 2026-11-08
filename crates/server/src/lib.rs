@@ -34,6 +34,7 @@ use cubewish_rules::{
         Action, Change, RULES_VERSION, Replay, Snapshot, WorldLog, chunk_edits, chunk_of, chunk_prints, replay, replay_from,
         signing_bytes,
     },
+    logic::Package,
 };
 
 pub struct ServerConfig {
@@ -43,6 +44,8 @@ pub struct ServerConfig {
     pub port: u16,
     /// The terrain seed for a new world.
     pub seed: u32,
+    /// A new world is flat and empty.
+    pub flat: bool,
 }
 
 /// A running server.
@@ -87,7 +90,7 @@ pub fn start(config: ServerConfig) -> io::Result<Running> {
     let path = config.data_dir.join("world.json");
     let log = match std::fs::read_to_string(&path) {
         Ok(text) => serde_json::from_str(&text).map_err(io::Error::other)?,
-        Err(_) => WorldLog::new(config.seed),
+        Err(_) => WorldLog { flat: config.flat, ..WorldLog::new(config.seed) },
     };
     let snapshot: Option<Snapshot> = std::fs::read_to_string(config.data_dir.join("snapshot.json"))
         .ok()
@@ -227,8 +230,8 @@ impl World {
                 let edits = chunk_edits(&self.state.edits, &chunks);
                 let _ = out.send(ToClient::Chunks { chunks: edits.into_iter().map(|(c, e)| (c.to_array(), e)).collect() });
             }
-            ToServer::Propose { request, by, action, sig } => match self.commit(player, by, action, sig) {
-                Ok((change, prints)) => self.broadcast(change, prints, conn, request),
+            ToServer::Propose { request, by, action, sig, package } => match self.commit(player, by, action, sig, package) {
+                Ok((change, prints, package)) => self.broadcast(change, prints, package, conn, request),
                 Err(why) => {
                     let _ = out.send(ToClient::Rejected { request, why });
                 }
@@ -243,7 +246,8 @@ impl World {
         by: cubewish_rules::log::Provenance,
         action: Action,
         sig: String,
-    ) -> Result<(Change, Vec<([i32; 3], u64)>), String> {
+        package: Option<Package>,
+    ) -> Result<(Change, Vec<([i32; 3], u64)>, Option<Package>), String> {
         let player = player.ok_or("say hello first")?;
         if by.player != player {
             return Err("you can only make changes as yourself".into());
@@ -258,6 +262,23 @@ impl World {
         let by = cubewish_rules::log::Provenance { prompt: None, ..by };
         let id = self.log.changes.last().map_or(1, |c| c.id + 1);
         let change = Change { id, by, action, sig: Some(sig) };
+        // A package that comes along must be the one the change installs; it's kept
+        // only if the change goes through.
+        let new_package = match (&change.action, package) {
+            (Action::InstallPackage { package: named, .. }, Some(package)) => {
+                if package.hash() != named.hash {
+                    return Err("that package doesn't match the one the change names".into());
+                }
+                package.check().map_err(|e| e.join("; "))?;
+                let fresh = !self.log.packages.contains_key(&named.hash);
+                fresh.then(|| (named.hash.clone(), Arc::new(package)))
+            }
+            (_, Some(_)) => return Err("only installing a package brings one along".into()),
+            (_, None) => None,
+        };
+        if let Some((hash, package)) = &new_package {
+            self.state.logic.packages.insert(hash.clone(), package.clone());
+        }
         let mut made = Vec::new();
         match &change.action {
             Action::Revert { change: target } => {
@@ -269,9 +290,18 @@ impl World {
                 }
             }
             Action::Rollback { .. } if !self.log.is_admin(&player) => return Err("only admins roll back".into()),
-            _ => {
-                made = self.state.apply(&change, true)?;
-            }
+            _ => match self.state.apply(&change, true) {
+                Ok(edits) => made = edits,
+                Err(why) => {
+                    if let Some((hash, _)) = &new_package {
+                        self.state.logic.packages.remove(hash);
+                    }
+                    return Err(why);
+                }
+            },
+        }
+        if let Some((hash, package)) = &new_package {
+            self.log.packages.insert(hash.clone(), package.clone());
         }
         self.log.changes.push(change.clone());
         // Undos change which changes count: rebuild from the log.
@@ -287,7 +317,7 @@ impl World {
             self.take_snapshot();
         }
         println!("{} {}", change.by.player_name, change.action.describe());
-        Ok((change, prints))
+        Ok((change, prints, new_package.map(|(_, p)| (*p).clone())))
     }
 
     fn take_snapshot(&mut self) {
@@ -310,11 +340,12 @@ impl World {
         }
     }
 
-    fn broadcast(&self, change: Change, prints: Vec<([i32; 3], u64)>, from: u64, request: u64) {
+    fn broadcast(&self, change: Change, prints: Vec<([i32; 3], u64)>, package: Option<Package>, from: u64, request: u64) {
         for (conn, c) in &self.conns {
             if c.player.is_some() {
                 let request = (*conn == from).then_some(request);
-                let _ = c.out.send(ToClient::Committed { change: change.clone(), request, prints: prints.clone() });
+                let (change, prints, package) = (change.clone(), prints.clone(), package.clone());
+                let _ = c.out.send(ToClient::Committed { change, request, prints, package });
             }
         }
     }

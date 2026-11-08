@@ -1,15 +1,18 @@
 //! Game logic: what the world *does*, next to what it looks like.
 //!
-//! Agents write [`Package`]s (content as data, and later scripts), and a world installs
-//! them, everywhere or on some parcels. Players act through [`Intent`]s ("interact with
-//! that"), never by sending state; the installed packages' rules answer with
-//! [`Effect`]s, and those land only if every one is something its package may do. All
-//! of it goes through the log, so replay rebuilds the game's state like it rebuilds
-//! the voxels. See `docs/game-logic.md`.
+//! Agents write [`Package`]s: definitions as data, and Luau scripts ([`script`]) for the
+//! rules data can't say. A world installs them. Players act through [`Intent`]s ("put
+//! this here", "interact with that", "north"), never by sending state; the package that
+//! owns the item or entity answers through a [`Batch`] that checks every change against
+//! what the package may do, and lands only if all of them pass. All of it goes through
+//! the log, so replay rebuilds the game's state like it rebuilds the voxels. See
+//! `docs/game-logic.md`.
 
 pub mod clock;
+pub mod data;
 pub mod entity;
 pub mod package;
+pub mod script;
 
 use std::{collections::BTreeMap, sync::Arc};
 
@@ -17,18 +20,20 @@ use bevy_math::{IVec2, Vec2};
 use serde::{Deserialize, Serialize};
 
 pub use clock::{ClockRules, WorldTime};
-pub use entity::{Effect, Entities, Entity, EntityId, Grants};
+pub use data::{Def, DataRules};
+pub use entity::{Batch, Effect, Entity, EntityId, GameState, Grants};
 pub use package::{Manifest, Package, PackageRef, Permission};
 
 use crate::{land::parcel_of, log::fnv1a, terrain::VOXEL_SIZE};
 
-/// Who may install and change packages.
+/// Who may install and change packages. Playing them is always open to everyone.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum LogicMode {
     /// Anyone, on land they may change, with the default permissions.
-    #[default]
     Open,
+    /// Admins only: the game's rules are the world's, like its other rules.
+    #[default]
     AdminOnly,
     /// Nobody, until an admin changes the rules again: for a running campaign or match.
     Locked,
@@ -47,7 +52,7 @@ pub struct LogicRules {
 
 impl Default for LogicRules {
     fn default() -> Self {
-        Self { mode: LogicMode::Open, clock: ClockRules::default(), max_entities: 10_000, max_effects: 256 }
+        Self { mode: LogicMode::default(), clock: ClockRules::default(), max_entities: 10_000, max_effects: 256 }
     }
 }
 
@@ -110,20 +115,37 @@ impl Scope {
 pub enum Intent {
     Interact { entity: EntityId },
     UseItem { item: String, target: EntityId },
-    /// Puts an item down somewhere (plants a seed, sets a trap): how entities begin.
+    /// Puts an item down somewhere (plants a seed, sets up a game board): how entities
+    /// begin.
     Place { item: String, position: [f32; 3] },
+    /// A key pressed inside a `zone` (see [`entity`]), or entering and leaving it.
+    Key { entity: EntityId, key: String },
 }
 
+/// What [`Intent::Key`] may carry: directions are the world's (north is -z).
+pub const KEYS: [&str; 8] = ["north", "south", "east", "west", "action", "reset", "enter", "leave"];
+
 impl Intent {
-    /// Where it happens, which decides the packages asked.
-    pub fn position(&self, entities: &Entities) -> Result<[f32; 3], String> {
+    /// Where it happens: a package acts only where it's installed.
+    pub fn position(&self, state: &GameState) -> Result<[f32; 3], String> {
         match self {
-            Intent::Interact { entity } | Intent::UseItem { target: entity, .. } => entities
+            Intent::Key { key, .. } if !KEYS.contains(&key.as_str()) => Err(format!("\"{key}\" isn't a key games get")),
+            Intent::Interact { entity } | Intent::UseItem { target: entity, .. } | Intent::Key { entity, .. } => state
                 .get(*entity)
                 .map(|e| e.position)
                 .ok_or(format!("entity {}.{} doesn't exist", entity.change, entity.n)),
             Intent::Place { position, .. } if position.iter().all(|v| v.is_finite()) => Ok(*position),
             Intent::Place { .. } => Err("that isn't a place".into()),
+        }
+    }
+
+    /// The package that answers: the item's, or the entity's.
+    pub fn package(&self, state: &GameState) -> Option<String> {
+        match self {
+            Intent::Place { item, .. } => package::split_name(item).map(|(ns, _)| ns.to_string()),
+            Intent::Interact { entity } | Intent::UseItem { target: entity, .. } | Intent::Key { entity, .. } => {
+                state.get(*entity).map(|e| e.package.clone())
+            }
         }
     }
 }
@@ -142,8 +164,32 @@ pub struct Event<'a> {
 /// Runs packages' rules. It must answer the same way for the same inputs on every
 /// machine, since replay asks it again.
 pub trait Runtime: Send + Sync {
-    /// What `package` does about `event`, seeing the world as it was before the change.
-    fn handle(&self, package: &Package, event: &Event, entities: &Entities) -> Result<Vec<Effect>, String>;
+    /// Does what `package` does about `event`, through `world` (as `grants` allow). An
+    /// error refuses the whole change, and is what the player is told.
+    fn handle(&self, package: &Package, event: &Event, world: &mut Batch, grants: &Grants) -> Result<(), String>;
+}
+
+/// The rules every world runs: a package's scripts if it has them, its definitions
+/// otherwise.
+pub struct Rules;
+
+impl Runtime for Rules {
+    fn handle(&self, package: &Package, event: &Event, world: &mut Batch, grants: &Grants) -> Result<(), String> {
+        if package.scripts.is_empty() {
+            DataRules.handle(package, event, world, grants)
+        } else {
+            script::run(package, event, world, grants)
+        }
+    }
+}
+
+/// What an intent did.
+#[derive(Debug, Default)]
+pub struct Outcome {
+    /// How many changes the rules made; none means nothing here plays this.
+    pub effects: u32,
+    /// Messages for players: who, and what.
+    pub notes: Vec<(String, String)>,
 }
 
 /// An installed package.
@@ -155,15 +201,15 @@ pub struct Install {
     pub by: String,
 }
 
-/// The game's state: packages, what's installed where, and the entities.
+/// The game: packages, what's installed where, and the entities and inventories.
 #[derive(Clone, Default)]
 pub struct Logic {
     /// Every package the log has, by hash.
     pub packages: BTreeMap<String, Arc<Package>>,
     /// By package name.
     pub installed: BTreeMap<String, Install>,
-    pub entities: Entities,
-    /// Without one, intents are kept but nothing answers them.
+    pub state: GameState,
+    /// What answers intents in place of [`Rules`] (for tests).
     pub runtime: Option<Arc<dyn Runtime>>,
 }
 
@@ -221,32 +267,28 @@ impl Logic {
         Ok(())
     }
 
-    /// Asks every package installed where the intent's target is, in name order, and
-    /// applies all their effects, or none if any isn't allowed.
-    pub fn act(&mut self, change: u64, player: &str, at: u64, world_seed: u32, rules: &LogicRules, intent: &Intent) -> Result<(), String> {
-        let position = intent.position(&self.entities)?;
-        let Some(runtime) = self.runtime.clone() else {
-            return Ok(());
+    /// Asks the package that owns the intent's item or entity, if it's installed there,
+    /// and applies what it does, or nothing if any of it isn't allowed.
+    pub fn act(&mut self, change: u64, player: &str, at: u64, world_seed: u32, rules: &LogicRules, intent: &Intent) -> Result<Outcome, String> {
+        let position = intent.position(&self.state)?;
+        let Some(install) = intent.package(&self.state).and_then(|name| self.installed.get(&name)) else {
+            return Ok(Outcome::default());
         };
-        let mut batch = self.entities.batch(change);
-        let mut effects = 0;
-        for install in self.installed.values().filter(|i| i.scope.contains(position)) {
-            let package = self.package(install).ok_or(format!("package {} is missing", install.package.name))?;
-            let seed = fnv1a(format!("{world_seed}/{change}/{}", install.package.name).as_bytes());
-            let event = Event { change, player, intent, time: rules.clock.at(at), seed };
-            let answer = runtime.handle(package, &event, &self.entities).map_err(|e| format!("{}: {e}", install.package.name))?;
-            effects += answer.len();
-            if effects > rules.max_effects as usize {
-                return Err(format!("that would cause more than {} effects", rules.max_effects));
-            }
-            let grants = grants(package, install, rules);
-            for effect in &answer {
-                batch.apply(&grants, effect)?;
-            }
+        if !install.scope.contains(position) {
+            return Ok(Outcome::default());
         }
+        let runtime = self.runtime.clone().unwrap_or_else(|| Arc::new(Rules));
+        let package = self.package(install).ok_or(format!("package {} is missing", install.package.name))?;
+        let seed = fnv1a(format!("{world_seed}/{change}/{}", install.package.name).as_bytes());
+        let event = Event { change, player, intent, time: rules.clock.at(at), seed };
+        let grants = grants(package, install, rules);
+        let mut batch = self.state.batch(change, player, rules.max_effects);
+        runtime.handle(package, &event, &mut batch, &grants)?;
+        let effects = batch.applied;
         let done = batch.finish();
-        self.entities.commit(done);
-        Ok(())
+        let notes = done.notes.clone();
+        self.state.commit(done);
+        Ok(Outcome { effects, notes })
     }
 
     pub fn package(&self, install: &Install) -> Option<&Package> {

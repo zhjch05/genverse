@@ -17,8 +17,7 @@ pub const MAX_SCRIPTS: usize = 64;
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 pub struct Package {
     pub manifest: Manifest,
-    /// Content definitions by name ("farm:turnip"). Their kinds come with data-only
-    /// packages; for now they're only checked for names and size.
+    /// Content definitions by name ("farm:turnip"): see [`super::data::Def`].
     #[serde(default)]
     pub defs: BTreeMap<String, serde_json::Value>,
     /// Script sources by file name ("watering.luau"). Kept, not run yet.
@@ -124,6 +123,8 @@ impl Package {
                 _ => errors.push(format!("definition \"{name}\" must be named \"{}:<lowercase name>\"", m.name)),
             }
         }
+        errors.extend(super::data::check(self));
+        errors.extend(super::script::check(self));
         if self.scripts.len() > MAX_SCRIPTS {
             errors.push(format!("{} scripts; the most is {MAX_SCRIPTS}", self.scripts.len()));
         }
@@ -167,7 +168,20 @@ pub(crate) mod tests {
                 permissions: vec![Permission::Spawn],
                 depends: Vec::new(),
             },
-            defs: BTreeMap::from([("farm:turnip".into(), serde_json::json!({ "grow_days": 4 }))]),
+            defs: BTreeMap::from([
+                ("farm:turnip_seed".into(), serde_json::json!({ "kind": "item", "title": "Turnip seeds" })),
+                ("farm:turnip".into(), serde_json::json!({ "kind": "item", "title": "Turnip" })),
+                (
+                    "farm:turnip_crop".into(),
+                    serde_json::json!({ "kind": "crop", "title": "turnips", "seed": "farm:turnip_seed",
+                        "stage_days": [1, 2, 1], "harvest": { "item": "farm:turnip", "count": 2 } }),
+                ),
+                (
+                    "farm:seed_bin".into(),
+                    serde_json::json!({ "kind": "source", "title": "seed bin",
+                        "gives": { "item": "farm:turnip_seed", "count": 5 } }),
+                ),
+            ]),
             scripts: BTreeMap::new(),
         }
     }

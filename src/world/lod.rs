@@ -198,7 +198,7 @@ mod tests {
 
     #[test]
     fn coarse_chunks_mesh_the_seed() {
-        let terrain = Terrain { seed: super::super::SEED };
+        let terrain = Terrain { seed: super::super::SEED, flat: false };
         let meshes = build_coarse(terrain, &terrain::palette(), IVec3::new(3, 0, -2), &[]);
         assert!(!meshes.is_empty());
     }

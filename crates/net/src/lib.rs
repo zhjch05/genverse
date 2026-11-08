@@ -24,12 +24,13 @@ use std::{
 
 use cubewish_rules::{
     log::{Action, Change, Provenance, RULES_VERSION, Snapshot, WorldLog},
+    logic::Package,
     sculpt::Area,
 };
 use serde::{Deserialize, Serialize};
 
 /// Bumped when the protocol changes incompatibly.
-pub const VERSION: u32 = 4;
+pub const VERSION: u32 = 5;
 pub const DEFAULT_PORT: u16 = 7878;
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
@@ -41,7 +42,16 @@ pub enum ToServer {
     Hello { version: u32, rules: u32, player: String, name: String, sig: String },
     /// A change the player wants made. `request` is the client's own number for it,
     /// echoed in the answer; `sig` is the player's signature of `by` and `action`.
-    Propose { request: u64, by: Provenance, action: Action, sig: String },
+    /// Installing a package the server doesn't have yet brings the package along (the
+    /// change names it by hash, so it's signed too).
+    Propose {
+        request: u64,
+        by: Provenance,
+        action: Action,
+        sig: String,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        package: Option<Package>,
+    },
     /// Where the player is and what they're doing, for others to see. Not kept.
     Presence(Presence),
     /// The edits in these chunks, because ours disagree with the server's fingerprints.
@@ -85,7 +95,14 @@ pub enum ToClient {
     /// A change the server accepted, for everyone. `request` is set only for the player
     /// who proposed it. `prints` fingerprints the chunks it changed, as the server has
     /// them, so players can check theirs.
-    Committed { change: Change, request: Option<u64>, prints: Vec<([i32; 3], u64)> },
+    /// `package` comes with the change that first installs it.
+    Committed {
+        change: Change,
+        request: Option<u64>,
+        prints: Vec<([i32; 3], u64)>,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        package: Option<Package>,
+    },
     /// The edits in the chunks a player asked for, as `[x, y, z, block]`.
     Chunks { chunks: Vec<([i32; 3], Vec<[i32; 4]>)> },
     /// Why the server refused a player's proposal.

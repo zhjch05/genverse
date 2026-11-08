@@ -7,11 +7,14 @@
 //! if it breaks a limit) -> a draft appears in the world -> Place saves it.
 //!
 //! Land works the same way ([`landscape`]): select an area with G, describe it, and
-//! the agent's terrain operations are previewed in the world until kept.
+//! the agent's terrain operations are previewed in the world until kept. Asked for
+//! gameplay there ("a turnip farm"), the agent answers with a data package that's
+//! installed on the area's parcels and played with [`game`].
 
 mod commands;
 mod creations;
 mod fps;
+mod game;
 mod history;
 mod lan;
 mod landscape;
@@ -51,6 +54,7 @@ use crate::{
 use cubewish_rules::{
     land::area_parcels,
     log::Action as LogAction,
+    logic::{Scope, data::GameSpec},
     settings::{LandMode, WorldRules},
 };
 use creations::{
@@ -92,6 +96,7 @@ impl Plugin for AgentPlugin {
             .init_resource::<loading::Loading>()
             .init_resource::<settings::SettingsWindow>()
             .init_resource::<lan::Lan>()
+            .init_resource::<game::Play>()
             .init_gizmo_group::<AreaGizmos>()
             .init_gizmo_group::<presence::RingGizmos>()
             .add_systems(Startup, (attach_interface.after(graphics::spawn_screen), settings::load_settings))
@@ -105,11 +110,12 @@ impl Plugin for AgentPlugin {
                     (online::sync_online, lan::update_lan, update_build_site, answer_tool_calls, poll_agent).chain(),
                     (presence::send_presence, presence::move_avatars, presence::draw_peers, history::toggle_history, (loading::track_loading, fps::track_frames).chain()),
                     auto_prompt,
-                    (shortcuts, select_area, follow_cursor, check_clearance, click_in_world, outline_creations, draw_area, highlight_area, draw_parcels)
+                    (game::script_play.after(auto_prompt), game::play_zones, game::sync_pieces, game::use_pieces).chain(),
+                    (game::place_held, shortcuts, select_area, follow_cursor, check_clearance, click_in_world, outline_creations, draw_area, highlight_area, draw_parcels)
                         .chain(),
                 ),
             )
-            .add_systems(EguiPrimaryContextPass, (install_icon_font, chat_panel, shortcut_hints, loading::loading_screen).chain())
+            .add_systems(EguiPrimaryContextPass, (install_icon_font, chat_panel, shortcut_hints, game::game_bar, loading::loading_screen).chain())
             .add_systems(EguiPrimaryContextPass, (presence::name_tags, presence::hover_credit, history::history_window, fps::fps_overlay, settings::settings_window));
     }
 }
@@ -170,6 +176,8 @@ struct Chat {
     panel: Option<egui::Rect>,
     /// The shortcut hints at the bottom of the view are showing (F1 toggles them).
     hints: bool,
+    /// Recent errors from the world's game scripts, for the agent to fix.
+    script_errors: Vec<String>,
 }
 
 impl Default for Chat {
@@ -200,6 +208,7 @@ impl Default for Chat {
             covered: 0.0,
             panel: None,
             hints: prefs::get("hints").and_then(|v| v.as_bool()).unwrap_or(true),
+            script_errors: Vec::new(),
         }
     }
 }
@@ -237,9 +246,10 @@ impl Chat {
         creations: &mut Creations,
         commands: &mut Commands,
         tools: Option<&McpServer>,
-        rules: &WorldRules,
+        ledger: &Ledger,
         area: Option<String>,
     ) {
+        let rules = &ledger.rules;
         let text = self.input.trim().to_string();
         if text.is_empty() || self.pending.is_some() {
             return;
@@ -254,7 +264,8 @@ impl Chat {
             .collect();
         let history = &turns[turns.len().saturating_sub(HISTORY)..];
         let draft = creations.draft.as_ref().map(|d| &d.spec);
-        let request = prompt::request(history, draft, area.as_deref(), &text);
+        let game = game_context(ledger, &self.script_errors);
+        let request = prompt::request(history, draft, area.as_deref(), game.as_deref(), &text);
         self.say(Role::Player, text.clone());
         self.start(tools, rules, self.provider, text, request, 0, restore);
     }
@@ -273,6 +284,26 @@ fn area_context(
         return None;
     }
     landscape.context(world, ledger, player, camera.map(|c| *c.forward()))
+}
+
+/// The world's game rules, so the agent changes them instead of starting over, and the
+/// errors their scripts hit lately, so "fix it" is enough.
+fn game_context(ledger: &Ledger, errors: &[String]) -> Option<String> {
+    let logic = &ledger.logic;
+    let specs: Vec<String> = logic
+        .installed
+        .values()
+        .filter_map(|i| logic.package(i))
+        .map(|p| serde_json::to_string(&GameSpec::from_package(p)).unwrap_or_default())
+        .collect();
+    if specs.is_empty() {
+        return None;
+    }
+    let mut out = format!("Game rules in this world (answer \"game\" with the same name to change one):\n{}", specs.join("\n"));
+    if !errors.is_empty() {
+        out.push_str(&format!("\nRecent errors from these scripts while players played:\n- {}", errors.join("\n- ")));
+    }
+    Some(out)
 }
 
 /// Why a message about the selected land can't go to the agent: the land rules don't
@@ -348,7 +379,7 @@ fn auto_prompt(
             return;
         }
         let area = area_context(&creations, &landscape, &world, &ledger, Some(hero.translation), cameras.single().ok());
-        chat.send(&mut creations, &mut commands, tools.as_deref(), &ledger.rules, area);
+        chat.send(&mut creations, &mut commands, tools.as_deref(), &ledger, area);
     }
 }
 
@@ -483,6 +514,36 @@ fn poll_agent(
                     warn!("terrain rejected again: {errors:?}");
                     chat.say(Role::System, format!("⚠ Land change rejected:\n• {}", errors.join("\n• ")));
                 }
+            },
+        }
+    }
+    if let Some(game) = answer.game {
+        let provider = pending.provider.label();
+        let version = ledger.logic.installed.get(&game.name).map_or(1, |i| i.package.version + 1);
+        let package = game.to_package(version);
+        match package.check() {
+            Err(errors) if pending.repairs == 0 && !repairing => {
+                warn!("game rules rejected, asking for a fix: {errors:?}");
+                chat.say(Role::System, format!("Game rules broke {} rule(s); asking for a fix…", errors.len()));
+                let request = prompt::repair_game(&game, &errors);
+                chat.start(tools.as_deref(), &ledger.rules, pending.provider, pending.prompt.clone(), request, 1, false);
+                repairing = true;
+            }
+            Err(errors) => chat.say(Role::System, format!("⚠ Game rules rejected:\n• {}", errors.join("\n• "))),
+            // Live: it replaces the running version at once, for everyone.
+            Ok(()) => match ledger.install(package, Scope::World, Some(provider), Some(&pending.prompt)) {
+                Ok(_) if version > 1 => {
+                    chat.script_errors.clear();
+                    chat.say(Role::System, format!("Updated \"{}\" to v{version}; it's live.", game.title));
+                }
+                Ok(_) => {
+                    chat.script_errors.clear();
+                    chat.say(
+                        Role::System,
+                        format!("Installed \"{}\" in this world. Pick it from the game bar above the hints, then click the ground.", game.title),
+                    );
+                }
+                Err(why) => chat.say(Role::System, format!("⚠ Couldn't install \"{}\": {why}.", game.title)),
             },
         }
     }
@@ -795,11 +856,13 @@ fn click_in_world(
     mut creations: ResMut<Creations>,
     mut chat: ResMut<Chat>,
     landscape: Res<Landscape>,
+    play: Res<game::Play>,
     mut ledger: ResMut<Ledger>,
     mut pressed_at: Local<[Option<Vec2>; 3]>,
     mut last_select: Local<Option<(Entity, f32)>>,
 ) {
-    if landscape.selecting {
+    // Clicks put down what the player holds instead ([`game::place_held`]).
+    if landscape.selecting || play.holding.is_some() {
         *pressed_at = default();
         return;
     }
@@ -861,6 +924,7 @@ fn shortcut_hints(
     chat: Res<Chat>,
     creations: Res<Creations>,
     landscape: Res<Landscape>,
+    play: Res<game::Play>,
 ) -> Result {
     let actions: &[(&str, &str)] = match &creations.draft {
         Some(d) if d.follow => &[
@@ -875,6 +939,8 @@ fn shortcut_hints(
             &[("Enter", "keep the change"), ("T", "ask for changes"), ("Esc", "put the ground back")]
         }
         None if landscape.selecting => &[("Drag", "select an area (a click: 6 m)"), ("G or Esc", "stop")],
+        None if play.holding.is_some() => &[("Click", "put it down"), ("Esc or right-click", "put it away")],
+        None if play.playing.is_some() => &[("WASD/arrows", "move"), ("R", "reset"), ("E", "action"), ("Esc", "leave the game")],
         None if creations.selected.is_some() => &[
             ("T", "change it"),
             ("M or double-click", "move"),
@@ -887,6 +953,14 @@ fn shortcut_hints(
         None if landscape.area.is_some() => {
             &[("T", "describe what this land should become"), ("G", "select again"), ("Esc", "clear the area")]
         }
+        None if play.near.is_some() => &[
+            ("E", "use"),
+            ("T", "describe a build"),
+            ("G", "reshape the ground"),
+            ("Click", "select a build"),
+            ("P", "land"),
+            ("H", "history"),
+        ],
         None => &[
             ("T", "describe a build"),
             ("G", "reshape the ground"),
@@ -1857,7 +1931,7 @@ fn chat_panel(
             } else {
                 let player = players.single().ok().map(|t| t.translation);
                 let area = area_context(&creations, &landscape, &world, &ledger, player, cameras.single().ok());
-                chat.send(&mut creations, &mut commands, tools.as_deref(), &ledger.rules, area);
+                chat.send(&mut creations, &mut commands, tools.as_deref(), &ledger, area);
             }
         }
         Some(Action::KeepTerrain) => keep_terrain(&mut creations, &mut landscape, &mut world, &mut ledger, &mut chat),

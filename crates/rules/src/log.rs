@@ -137,6 +137,7 @@ impl Action {
             Action::Intent { intent: Intent::Interact { .. } } => "interacted".into(),
             Action::Intent { intent: Intent::UseItem { item, .. } } => format!("used {item}"),
             Action::Intent { intent: Intent::Place { item, .. } } => format!("placed {item}"),
+            Action::Intent { intent: Intent::Key { key, .. } } => format!("pressed {key}"),
         }
     }
 }
@@ -176,6 +177,9 @@ pub struct WorldLog {
     /// The rules the world started with; admins' `SetRules` changes replace them.
     #[serde(default)]
     pub rules: WorldRules,
+    /// Flat and empty ground instead of the natural landscape.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub flat: bool,
     pub changes: Vec<Change>,
     /// Game packages, by hash: everything an [`Action::InstallPackage`] may name.
     /// Packages that were never installed are harmless; they just wait.
@@ -190,9 +194,15 @@ impl WorldLog {
             rules_version: RULES_VERSION,
             admins: Vec::new(),
             rules: WorldRules::default(),
+            flat: false,
             changes: Vec::new(),
             packages: BTreeMap::new(),
         }
+    }
+
+    /// The ground this world is made of.
+    pub fn terrain(&self) -> Terrain {
+        Terrain { seed: self.seed, flat: self.flat }
     }
 
     /// Keeps `package` so changes can install it. Returns its hash.
@@ -287,6 +297,7 @@ pub fn fnv1a(bytes: &[u8]) -> u64 {
 #[derive(Clone, Default)]
 pub struct Replay {
     pub seed: u32,
+    pub flat: bool,
     pub admins: Vec<String>,
     pub builds: BTreeMap<u64, BuildState>,
     /// Voxel edits on top of the seed.
@@ -440,7 +451,7 @@ impl Replay {
         let rules = log.rules.clone();
         let land = Land::new(log.admins.clone(), rules.spawn.clone(), rules.land);
         let logic = Logic { packages: log.packages.clone(), ..Default::default() };
-        Self { seed: log.seed, admins: log.admins.clone(), land, rules, logic, ..Default::default() }
+        Self { seed: log.seed, flat: log.flat, admins: log.admins.clone(), land, rules, logic, ..Default::default() }
     }
 
     /// Applies one change on top of the current state, or says why the rules refuse it
@@ -502,7 +513,7 @@ impl Replay {
                 let claims = self.land.authorize(&by.player, &area_parcels(*area))?;
                 self.budgets.check(&cost, None, &self.rules.budgets)?;
                 if voxels {
-                    let terrain = Terrain { seed: self.seed };
+                    let terrain = Terrain { seed: self.seed, flat: self.flat };
                     let columns = ground_columns(terrain, *area, &self.edits);
                     let edit = sculpt::compile(spec, *area, terrain, columns, &self.rules.terrain)
                         .map_err(|errors| format!("\"{name}\" {}", errors.join("; ")))?;
@@ -576,7 +587,7 @@ pub fn ground_columns(terrain: Terrain, area: Area, edits: &HashMap<IVec3, Voxel
 mod tests {
     use super::*;
     use crate::{
-        logic::{Effect, Entities, EntityId, Event, LogicMode, package::tests::farm},
+        logic::{Batch, Effect, EntityId, Event, Grants, LogicMode, package::tests::farm},
         sculpt::{OpArea, TerrainOp},
     };
 
@@ -787,7 +798,7 @@ mod tests {
     #[test]
     fn generated_columns_match_however_the_region_is_cut() {
         // Chunks generate in pieces; replay generates whole areas. They must agree.
-        let terrain = Terrain { seed: 1337 };
+        let terrain = Terrain { seed: 1337, flat: false };
         let a = terrain.generate(IVec3::new(390, 0, -12), UVec3::new(48, WORLD_HEIGHT as u32, 48));
         let b = terrain.generate(IVec3::new(400, 0, 0), UVec3::new(32, WORLD_HEIGHT as u32, 32));
         for z in 0..32 {
@@ -805,20 +816,19 @@ mod tests {
     struct Farmer;
 
     impl Runtime for Farmer {
-        fn handle(&self, package: &Package, event: &Event, entities: &Entities) -> Result<Vec<Effect>, String> {
+        fn handle(&self, package: &Package, event: &Event, world: &mut Batch, grants: &Grants) -> Result<(), String> {
             assert_eq!(package.manifest.name, "farm");
-            Ok(match event.intent {
-                Intent::Place { item, position } if item == "farm:seed" => vec![Effect::Spawn {
+            let effect = match event.intent {
+                Intent::Place { item, position } if item == "farm:seed" => Effect::Spawn {
                     position: *position,
                     components: [("farm:crop".to_string(), serde_json::json!({ "planted": event.time.day }))].into(),
-                }],
-                Intent::Interact { entity } if entities.get(*entity).is_some() => vec![Effect::Set {
-                    entity: *entity,
-                    component: "farm:watered".into(),
-                    value: true.into(),
-                }],
-                _ => Vec::new(),
-            })
+                },
+                Intent::Interact { entity } if world.get(*entity).is_some() => {
+                    Effect::Set { entity: *entity, component: "farm:watered".into(), value: true.into() }
+                }
+                _ => return Ok(()),
+            };
+            world.apply(grants, &effect).map(|_| ())
         }
     }
 
@@ -837,6 +847,7 @@ mod tests {
     #[test]
     fn packages_install_and_answer_intents_through_replay() {
         let mut log = WorldLog::new(1337);
+        log.admins = vec!["a".into()];
         log.rules.logic.clock.day_seconds = 100;
         let install = install(&mut log, here());
         log.push(at("a", 0), install);
@@ -849,29 +860,72 @@ mod tests {
 
         let state = replay_with(&log, Arc::new(Farmer));
         assert!(state.problems.is_empty(), "{:?}", state.problems);
-        let e = state.logic.entities.get(crop).expect("planted");
+        let e = state.logic.state.get(crop).expect("planted");
         assert_eq!(e.components["farm:crop"]["planted"], 2);
         assert_eq!(e.components["farm:watered"], true);
-        assert_eq!(state.logic.entities.len(), 1);
+        assert_eq!(state.logic.state.len(), 1);
 
         // The log survives JSON, packages and all, and replays the same.
         let reloaded: WorldLog = serde_json::from_str(&serde_json::to_string(&log).unwrap()).unwrap();
         assert_eq!(reloaded.hash(), log.hash());
         let again = replay_with(&reloaded, Arc::new(Farmer));
-        assert_eq!(again.logic.entities.get(crop), Some(e));
+        assert_eq!(again.logic.state.get(crop), Some(e));
 
-        // Without a runtime the intents are kept but nothing happens.
-        assert!(replay(&log).logic.entities.is_empty());
+        // The built-in data rules don't know `farm:seed`, so there nothing grows.
+        assert!(replay(&log).logic.state.is_empty());
 
         // Undoing the install undoes what it would have done.
         log.push(at("a", 400), Action::Revert { change: 1 });
         let undone = replay_with(&log, Arc::new(Farmer));
-        assert!(undone.logic.installed.is_empty() && undone.logic.entities.is_empty());
+        assert!(undone.logic.installed.is_empty() && undone.logic.state.is_empty());
+    }
+
+    #[test]
+    fn a_data_package_plays_a_farming_loop() {
+        let mut log = WorldLog::new(1337);
+        log.admins = vec!["a".into()];
+        log.rules.logic.clock.day_seconds = 100;
+        let install = install(&mut log, here());
+        log.push(at("a", 0), install);
+        let intent = |intent| Action::Intent { intent };
+        let place = |item: &str, position| intent(Intent::Place { item: item.into(), position });
+        let touch = |entity| intent(Intent::Interact { entity });
+        let plot = [PLOT[0] + 1.0, PLOT[1], PLOT[2]];
+
+        log.push(at("a", 5), place("farm:turnip_seed", plot));
+        let bin = EntityId { change: log.push(at("a", 10), place("farm:seed_bin", PLOT)), n: 0 };
+        log.push(at("a", 20), touch(bin));
+        log.push(at("a", 30), touch(bin));
+        let crop = EntityId { change: log.push(at("a", 40), place("farm:turnip_seed", plot)), n: 0 };
+        log.push(at("a", 150), touch(crop));
+        log.push(at("a", 450), touch(crop));
+        log.push(at("b", 460), touch(bin));
+        log.push(at("a", 470), touch(bin));
+
+        let state = replay(&log);
+        let problems = &state.problems;
+        assert_eq!(problems.len(), 3, "{problems:#?}");
+        assert!(problems[0].contains("need 1 \"farm:turnip_seed\" and have 0"));
+        assert!(problems[1].contains("already taken from the seed bin"));
+        assert!(problems[2].contains("aren't ripe yet (stage 2 of 3)"));
+        let game = &state.logic.state;
+        assert_eq!(game.items("a", "farm:turnip"), 2);
+        assert_eq!(game.items("a", "farm:turnip_seed"), 4 + 5);
+        assert_eq!(game.items("b", "farm:turnip_seed"), 5);
+        assert!(game.get(crop).is_none() && game.get(bin).is_some());
     }
 
     #[test]
     fn installs_follow_land_and_the_logic_mode() {
+        // By default only admins change the game's rules; players can play them.
         let mut log = WorldLog::new(1337);
+        log.add_package(farm(1));
+        log.push(at("a", 0), install(&mut log.clone(), here()));
+        assert!(replay(&log).problems[0].contains("only admins"));
+
+        // An open world lets players install on land they may change.
+        let mut log = WorldLog::new(1337);
+        log.rules.logic.mode = LogicMode::Open;
         log.admins = vec!["admin".into()];
         let everywhere = install(&mut log, Scope::World);
         log.push(at("a", 0), everywhere.clone());
@@ -886,6 +940,7 @@ mod tests {
 
         // Parcels mode: installing on free land claims it, like building there would.
         let mut log = WorldLog::new(1337);
+        log.rules.logic.mode = LogicMode::Open;
         log.rules.land = crate::settings::LandMode::Parcels;
         log.add_package(farm(1));
         log.push(at("a", 0), mine.clone());
@@ -912,8 +967,50 @@ mod tests {
     }
 
     #[test]
+    fn live_upgrades_keep_what_is_placed() {
+        let mut log = WorldLog::new(1337);
+        log.admins = vec!["admin".into()];
+        log.rules.logic.clock.day_seconds = 100;
+        let mut spec = crate::logic::data::tests::sample_farm();
+        let put = |log: &mut WorldLog, spec: &crate::logic::data::GameSpec, version, t| {
+            let package = spec.to_package(version);
+            let reference = package.reference();
+            log.add_package(package);
+            log.push(at("admin", t), Action::InstallPackage { package: reference, scope: Scope::World })
+        };
+        put(&mut log, &spec, 1, 0);
+        let intent = |intent| Action::Intent { intent };
+        let bin = EntityId { change: log.push(at("p", 1), intent(Intent::Place { item: "farm:seed_bin".into(), position: PLOT })), n: 0 };
+        log.push(at("p", 2), intent(Intent::Interact { entity: bin }));
+        let crop = EntityId { change: log.push(at("p", 3), intent(Intent::Place { item: "farm:turnip_seed".into(), position: PLOT })), n: 0 };
+        // v2 while it grows: turnips ripen in a day. The crop already planted follows.
+        spec.defs[2].stage_days = Some(vec![1]);
+        put(&mut log, &spec, 2, 50);
+        log.push(at("p", 150), intent(Intent::Interact { entity: crop }));
+        let state = replay(&log);
+        assert!(state.problems.is_empty(), "{:?}", state.problems);
+        assert_eq!(state.logic.state.items("p", "farm:turnip"), 2);
+
+        // v3 drops the seed bin: the placed bin sleeps (kept, does nothing) instead of
+        // breaking anything, and wakes up when a later version brings it back.
+        spec.defs.retain(|d| d.name != "seed_bin");
+        put(&mut log, &spec, 3, 160);
+        log.push(at("p", 260), intent(Intent::Interact { entity: bin }));
+        let state = replay(&log);
+        assert!(state.problems.is_empty(), "{:?}", state.problems);
+        assert!(state.logic.state.get(bin).is_some());
+        assert_eq!(state.logic.state.items("p", "farm:turnip_seed"), 4);
+        put(&mut log, &crate::logic::data::tests::sample_farm(), 4, 270);
+        log.push(at("p", 280), intent(Intent::Interact { entity: bin }));
+        let state = replay(&log);
+        assert!(state.problems.is_empty(), "{:?}", state.problems);
+        assert_eq!(state.logic.state.items("p", "farm:turnip_seed"), 4 + 5);
+    }
+
+    #[test]
     fn packages_must_be_uploaded_and_match() {
         let mut log = WorldLog::new(1337);
+        log.admins = vec!["a".into()];
         let Action::InstallPackage { mut package, scope } = install(&mut log, here()) else { unreachable!() };
         package.version = 2;
         log.push(at("a", 0), Action::InstallPackage { package: package.clone(), scope: scope.clone() });

@@ -1,7 +1,7 @@
 //! What the agent is told: the voxel building rules, plus the live context of the request.
 
 use super::spec::BuildSpec;
-use cubewish_rules::{sculpt::TerrainSpec, settings::WorldRules};
+use cubewish_rules::{logic::data::GameSpec, sculpt::TerrainSpec, settings::WorldRules};
 
 /// The system prompt, with this world's limits.
 pub fn system(with_tools: bool, rules: &WorldRules) -> String {
@@ -11,8 +11,8 @@ pub fn system(with_tools: bool, rules: &WorldRules) -> String {
 The player chats with you and you design one voxel object at a time, or reshape an area of
 land they selected. You cannot edit files, run commands, or change the world in any other way:
 you only answer with JSON that matches the provided schema. Put a short, friendly message in
-"reply". Put an object in "build" and land changes in "terrain"; use null for what you don't
-change (both null if the request is unclear, unsafe, or not something to make).
+"reply". Put an object in "build", land changes in "terrain", and game rules in "game"; use null
+for what you don't change (all null if the request is unclear, unsafe, or not something to make).
 
 Coordinates
 - Integer voxel grid of size [x, y, z]. +Y is up; y = 0 is the ground the object stands on.
@@ -95,6 +95,52 @@ Example "terrain" for a small pond in a 10 × 8 m area:
         max_points = terrain_limits.max_path_points,
         max_ops = terrain_limits.max_ops,
     ));
+    out.push_str(
+        r##"
+
+Game rules (when the player asks for a game, gameplay, or to change how the world plays)
+You can make the world playable: puzzles, board games, minigames. Answer with "game": a package
+of definitions plus Luau scripts that the engine runs. It applies to the whole world and goes
+live at once for everyone. Keep "build" and "terrain" null unless they also ask for those.
+- "name": lowercase id (e.g. "sokoban"). The request lists the world's game rules first; to
+  change one, reuse its name and send the whole package back with your changes (all scripts
+  too): it replaces the running version, and what's already placed keeps going.
+- "defs", each with every field (null where unused), names lowercase and local to the package:
+  fixture: something players put down by its name from the game bar (a board, a machine);
+    your script's on_place builds it. Only "name", "kind", "title".
+  item: something players carry. crop / source: simple farming without scripts (crop: "seed",
+    "stage_days", "harvest"; source: "gives", "every_days").
+- "scripts": [{"name":"main.luau","source":"..."}]. Each player action runs your scripts fresh,
+  so keep all state in the world (entities and components), never in Lua globals. Define:
+    on_place(ev)     ev.item (local name) was put down at ev.pos
+    on_interact(ev)  E on ev.entity (an entity of yours with a "label")
+    on_key(ev)       ev.key inside ev.entity's zone: "enter" (walked in), "leave" (Esc),
+                     "north" (-z), "south" (+z), "east" (+x), "west" (-x), "action" (E), "reset" (R)
+  ev also has player (id), pos ({x,y,z} meters; for keys, the zone's), day, time.
+  The world API (component names without ":" are your package's):
+    get(id) -> {id, pos, owner, c = components} or nil
+    find(component) -> list of entities that have it, in id order
+    spawn(pos, components) -> id     despawn(id)    move(id, pos)
+    set(id, name, value)    remove(id, name)       notify(player, text)
+    give(player, item, n)   take(item, n)          count(player, item)
+    random() -> 0..1        random_int(a, b)       (no os, io, print or math.random)
+  Engine components on your entities:
+    look = {size = {w, h, d}, color = "#rrggbb", glow = false}: drawn as a block standing on pos
+    label = "text": shown over it nearby; E on it calls on_interact
+    zone = {size = {w, d}}: a rectangle centered on pos; a player walking in sends "enter", and
+      while they have a pawn there, their movement keys come to on_key instead of walking
+    pawn = player id: that player's hero stands on this entity; move it to move them
+- One meter per tile works well (the hero is 1.35 m tall). Positions are meters; ev.pos from
+  on_place is on the ground. A failed check (bad component, someone else's entity) or a Lua error
+  refuses the whole action; the player sees the message, and you get it with the next request.
+- Limits per action: 256 changes, 200k steps, 16 MB. Values must be plain data (tables, numbers,
+  strings, booleans); keep each component under 4 KB.
+
+Example "game": walk onto the mat and collect the coins.
+{"name":"coins","title":"Coin mat","defs":[{"name":"mat","kind":"fixture","title":"Coin mat","seed":null,
+  "stage_days":null,"harvest":null,"gives":null,"every_days":null}],
+ "scripts":[{"name":"main.luau","source":"local N = 5\nlocal function tile(o, c, r) return {x = o.x + c - 3, y = o.y, z = o.z + r - 3} end\nfunction on_place(ev)\n  spawn(ev.pos, {mat = {origin = ev.pos}, zone = {size = {N, N}}, label = 'Coin mat', look = {size = {N, 0.05, N}, color = '#c9b78f'}})\n  for i = 1, 3 do\n    local c, r = random_int(1, N), random_int(1, N)\n    spawn(tile(ev.pos, c, r), {coin = {c = c, r = r}, look = {size = {0.4, 0.4, 0.4}, color = '#f4cf4b', glow = true}})\n  end\nend\nlocal STEP = {north = {0, -1}, south = {0, 1}, east = {1, 0}, west = {-1, 0}}\nfunction on_key(ev)\n  local mat = get(ev.entity)\n  local me\n  for _, p in ipairs(find('walker')) do if p.c.pawn == ev.player then me = p end end\n  if ev.key == 'enter' and not me then\n    spawn(tile(mat.c.mat.origin, 3, 3), {walker = {c = 3, r = 3}, pawn = ev.player})\n  elseif ev.key == 'leave' and me then\n    despawn(me.id)\n  elseif STEP[ev.key] and me then\n    local c, r = me.c.walker.c + STEP[ev.key][1], me.c.walker.r + STEP[ev.key][2]\n    if c < 1 or c > N or r < 1 or r > N then return end\n    set(me.id, 'walker', {c = c, r = r})\n    move(me.id, tile(mat.c.mat.origin, c, r))\n    for _, coin in ipairs(find('coin')) do\n      if coin.c.coin.c == c and coin.c.coin.r == r then despawn(coin.id) end\n    end\n    if #find('coin') == 0 then notify(ev.player, 'All coins!') end\n  end\nend\n"}]}"##,
+    );
     if with_tools {
         out.push_str(
             r#"
@@ -119,10 +165,14 @@ pub struct Turn<'a> {
     pub text: &'a str,
 }
 
-/// The user prompt: the selected area (for terrain), recent conversation, the current
-/// draft (so "make it taller" works), and the new request.
-pub fn request(history: &[Turn], draft: Option<&BuildSpec>, area: Option<&str>, message: &str) -> String {
+/// The user prompt: the world's game rules, the selected area (for terrain), recent
+/// conversation, the current draft (so "make it taller" works), and the new request.
+pub fn request(history: &[Turn], draft: Option<&BuildSpec>, area: Option<&str>, game: Option<&str>, message: &str) -> String {
     let mut out = String::new();
+    if let Some(game) = game {
+        out.push_str(game);
+        out.push_str("\n\n");
+    }
     if let Some(area) = area {
         out.push_str(area);
         out.push('\n');
@@ -158,6 +208,15 @@ pub fn repair(spec: &BuildSpec, errors: &[String]) -> String {
 pub fn repair_terrain(spec: &TerrainSpec, errors: &[String]) -> String {
     format!(
         "Your terrain change was rejected:\n- {}\n\nHere it is:\n{}\n\nReturn corrected \"terrain\" that keeps the idea (\"build\" null).",
+        errors.join("\n- "),
+        serde_json::to_string(spec).unwrap_or_default()
+    )
+}
+
+/// Asks the agent to fix game rules the game rejected.
+pub fn repair_game(spec: &GameSpec, errors: &[String]) -> String {
+    format!(
+        "Your game rules were rejected:\n- {}\n\nHere they are:\n{}\n\nReturn corrected \"game\" that keeps the idea (\"build\" and \"terrain\" null).",
         errors.join("\n- "),
         serde_json::to_string(spec).unwrap_or_default()
     )

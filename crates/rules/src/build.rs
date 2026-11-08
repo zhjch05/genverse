@@ -9,7 +9,7 @@ use bevy_color::prelude::*;
 use bevy_math::prelude::*;
 use serde::{Deserialize, Serialize};
 
-use crate::sculpt::TerrainSpec;
+use crate::{logic::data::GameSpec, sculpt::TerrainSpec};
 use crate::voxel::{
     ModelData,
     faces::count_visible,
@@ -71,6 +71,9 @@ pub struct AgentAnswer {
     pub reply: String,
     pub build: Option<BuildSpec>,
     pub terrain: Option<TerrainSpec>,
+    /// Game rules for the selected area, as a data package.
+    #[serde(default)]
+    pub game: Option<Box<GameSpec>>,
 }
 
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]

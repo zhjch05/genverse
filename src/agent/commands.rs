@@ -10,11 +10,14 @@
 //!   `/rate <changes per minute> [voxels per 10 minutes]` or `/rate off`; `/bevel <0-0.3>`
 //!   or `/bevel off` rounds voxels' edges for everyone.
 //!
+//! - `/packages` lists the world's game rules; admins `/uninstall <name>` one.
+//!
 //! Anything that undoes changes other than your latest rebuilds the world from the log.
 
 use bevy::prelude::*;
 use cubewish_rules::{
     log::{Action, replay},
+    logic::Scope,
     settings::{LandMode, Look, RateLimits},
 };
 
@@ -43,7 +46,7 @@ const fn command(name: &'static str, args: &'static str, about: &'static str, ad
 }
 
 /// Every command, in the order they're suggested. `/play` is the panel's own.
-pub const COMMANDS: [Command; 14] = [
+pub const COMMANDS: [Command; 16] = [
     command("history", "[n]", "The latest changes, with ids", false),
     command("revert", "<id>", "Undo one of your changes", false),
     command("rules", "", "This world's rules", false),
@@ -52,11 +55,13 @@ pub const COMMANDS: [Command; 14] = [
     command("host", "", "Open this world to others", false),
     command("join", "<host[:port]>", "Play on another world", false),
     command("leave", "", "Back to your local world", false),
+    command("packages", "", "The game rules in this world", false),
     command("rollback", "<player>", "Undo everything a player did", true),
     command("restore", "<id>", "Put the world back to right after a change", true),
     command("land", "open|parcels", "Whether land is open or claimed by parcel", true),
     command("rate", "<per min> [voxels/10 min] | off", "Limit how fast players change things", true),
     command("bevel", "<0-0.3> | off", "Round voxels' edges for everyone", true),
+    command("uninstall", "<name>", "Remove game rules from this world", true),
     command("help", "", "List the commands", false),
 ];
 
@@ -102,7 +107,15 @@ pub fn run(text: &str, cx: &mut Context) -> String {
             Some(id) => revert(cx, id),
             None => "Usage: /revert <change id> (see /history)".into(),
         },
-        "rollback" | "restore" | "land" | "rate" | "bevel" if !admin => "Only admins can do that.".into(),
+        "rollback" | "restore" | "land" | "rate" | "bevel" | "uninstall" if !admin => "Only admins can do that.".into(),
+        "packages" => packages(cx.ledger),
+        "uninstall" => match args.first() {
+            Some(name) => {
+                cx.ledger.record(None, None, Action::UninstallPackage { name: name.to_string() });
+                format!("Uninstalling {name}; its pieces stay, asleep, in case it comes back.")
+            }
+            None => "Usage: /uninstall <name> (see /packages)".into(),
+        },
         "rollback" => match args.first() {
             Some(who) => rollback(cx, who),
             None => "Usage: /rollback <player name>".into(),
@@ -272,4 +285,29 @@ fn rules(ledger: &Ledger) -> String {
         bevel_line(r.look.bevel),
         ledger.log.admins.len()
     )
+}
+
+fn packages(ledger: &crate::world::ledger::Ledger) -> String {
+    let logic = &ledger.logic;
+    if logic.installed.is_empty() {
+        return "No game rules yet. Admins can ask the agent for a game.".into();
+    }
+    let lines: Vec<String> = logic
+        .installed
+        .values()
+        .map(|i| {
+            let title = logic.package(i).map_or(i.package.name.clone(), |p| p.manifest.title.clone());
+            let place = match &i.scope {
+                Scope::World => "the whole world".to_string(),
+                Scope::Parcels { parcels } => format!("{} parcel(s)", parcels.len()),
+            };
+            let who = if i.by == ledger.profile.id { "you".to_string() } else { short_id(&i.by) };
+            format!("{} \"{title}\" v{} for {place}, by {who}, {} piece(s)", i.package.name, i.package.version, logic.state.count(&i.package.name))
+        })
+        .collect();
+    lines.join("\n")
+}
+
+fn short_id(id: &str) -> String {
+    format!("{}…", &id[..8.min(id.len())])
 }

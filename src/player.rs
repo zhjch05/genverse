@@ -31,6 +31,7 @@ pub struct PlayerPlugin;
 impl Plugin for PlayerPlugin {
     fn build(&self, app: &mut App) {
         app.init_resource::<InputBlocked>()
+            .init_resource::<Pawned>()
             .init_resource::<PointerOverUi>()
             .init_resource::<OrbitLock>()
             .add_systems(Startup, spawn_player)
@@ -50,6 +51,11 @@ impl Plugin for PlayerPlugin {
 /// Set while a UI (like the builder chat) is taking keyboard input.
 #[derive(Resource, Default)]
 pub struct InputBlocked(pub bool);
+
+/// Where a game holds the hero, while it does: the hero walks there by itself and the
+/// movement keys belong to the game (see `agent::game`).
+#[derive(Resource, Default)]
+pub struct Pawned(pub Option<Vec3>);
 
 /// Set while the pointer is over a UI, whose scrolling isn't the camera's zoom.
 #[derive(Resource, Default)]
@@ -101,6 +107,13 @@ pub struct FollowCamera {
     pitch: f32,
     distance: f32,
     target: Vec3,
+}
+
+impl FollowCamera {
+    /// Which way the camera looks, radians around Y (0 looks north, -z).
+    pub fn yaw(&self) -> f32 {
+        self.yaw
+    }
 }
 
 impl Default for FollowCamera {
@@ -254,6 +267,7 @@ fn move_player(
     time: Res<Time>,
     keys: Res<ButtonInput<KeyCode>>,
     blocked: Res<InputBlocked>,
+    pawned: Res<Pawned>,
     world: Res<VoxelWorld>,
     cameras: Query<&FollowCamera>,
     solids: Query<(&VoxelModel, &GlobalTransform), With<SolidModel>>,
@@ -283,6 +297,30 @@ fn move_player(
                 transform.translation.y += VOXEL_SIZE;
             }
             player.spawned = true;
+        }
+
+        // A game moves the hero: glide to its spot, facing the way it goes (or jump
+        // straight there from afar, as when a game holds the hero at startup).
+        if let Some(spot) = pawned.0 {
+            if spot.distance(transform.translation) > 3.0 {
+                transform.translation = spot;
+            }
+            let step = spot - transform.translation;
+            if step.xz().length() > 0.02 {
+                let goal = f32::atan2(-step.x, -step.z);
+                let diff = (goal - player.facing + PI).rem_euclid(TAU) - PI;
+                player.facing += diff * (1.0 - (-18.0 * dt).exp());
+            }
+            let pos = transform.translation + step * (1.0 - (-14.0 * dt).exp());
+            player.velocity = (pos - transform.translation) / dt.max(1e-4);
+            player.grounded = true;
+            transform.translation = pos;
+            transform.rotation = Quat::from_rotation_y(player.facing);
+            let moving = player.velocity.xz().length();
+            player.pace += (moving - player.pace) * (1.0 - (-10.0 * dt).exp());
+            let pace = player.pace;
+            player.stride = (player.stride + pace * dt * 3.2).rem_euclid(TAU);
+            continue;
         }
 
         let pressed = |key| !blocked.0 && keys.pressed(key);
