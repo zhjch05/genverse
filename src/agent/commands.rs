@@ -24,7 +24,11 @@ use cubewish_rules::{
     settings::{LandMode, Look, RateLimits},
 };
 
-use super::{creations::Creations, landscape::Landscape};
+use super::{
+    creations::Creations,
+    landscape::Landscape,
+    worlds::{Travel, Trip},
+};
 use crate::world::{VoxelWorld, ledger::Ledger};
 
 pub struct Context<'a, 'w, 's> {
@@ -33,6 +37,8 @@ pub struct Context<'a, 'w, 's> {
     pub world: &'a mut VoxelWorld,
     pub creations: &'a mut Creations,
     pub landscape: &'a mut Landscape,
+    /// Where to go next, for commands that change worlds.
+    pub travel: &'a mut Travel,
 }
 
 /// A command, as the chat suggests it while you type.
@@ -49,7 +55,7 @@ const fn command(name: &'static str, args: &'static str, about: &'static str, ad
 }
 
 /// Every command, in the order they're suggested. `/play` is the panel's own.
-pub const COMMANDS: [Command; 20] = [
+pub const COMMANDS: [Command; 24] = [
     command("history", "[n]", "The latest changes, with ids", false),
     command("revert", "<id>", "Undo one of your changes", false),
     command("rules", "", "This world's rules", false),
@@ -62,6 +68,10 @@ pub const COMMANDS: [Command; 20] = [
     command("save", "<name>", "Bookmark the world as it is now", false),
     command("saves", "", "The saves you can load or fork", false),
     command("fork", "<save> <world>", "Start a new world of your own from a save", false),
+    command("worlds", "", "Your worlds (O opens the Worlds window)", false),
+    command("world", "<name>", "Go to one of your worlds", false),
+    command("newworld", "<name> [flat|natural]", "Make a new world and go there", false),
+    command("portal", "<world|host:port> | off", "Make the selected build a portal", false),
     command("load", "<name>", "Put the world back to a save, for everyone", true),
     command("rollback", "<player>", "Undo everything a player did", true),
     command("restore", "<id>", "Put the world back to right after a change", true),
@@ -103,7 +113,9 @@ pub fn run(text: &str, cx: &mut Context) -> String {
                 format!("{} of {} changes aren't signed by their authors: {}", bad.len(), changes.len(), bad.join(", "))
             }
         }
-        "revert" | "rollback" | "restore" | "load" | "host" | "join" | "leave" if busy => "Keep or discard your draft first.".into(),
+        "revert" | "rollback" | "restore" | "load" | "host" | "join" | "leave" | "world" | "newworld" if busy => {
+            "Keep or discard your draft first.".into()
+        }
         "save" => save(cx.ledger, &args.join(" ")),
         "saves" => saves(cx.ledger),
         "fork" => match args.as_slice() {
@@ -115,7 +127,35 @@ pub fn run(text: &str, cx: &mut Context) -> String {
             Some(addr) => super::online::join(cx.ledger, addr),
             None => "Usage: /join <host[:port]>".into(),
         },
-        "leave" => super::online::leave(cx.commands, cx.ledger, cx.world, cx.creations, cx.landscape),
+        "leave" => super::online::leave(cx.ledger, cx.travel),
+        "worlds" => worlds(cx.ledger),
+        "world" => match args.first() {
+            Some(name) if name.eq_ignore_ascii_case("home") => {
+                cx.travel.next = Some(Trip::Local(None));
+                String::new()
+            }
+            Some(name) => match crate::world::ledger::clean_name(name) {
+                Some(name) => {
+                    cx.travel.next = Some(Trip::Local(Some(name)));
+                    String::new()
+                }
+                None => "Usage: /world <name> (see /worlds)".into(),
+            },
+            None => worlds(cx.ledger),
+        },
+        "newworld" => {
+            let flat = !matches!(args.get(1).copied(), Some("natural"));
+            let seed = if flat { crate::world::SEED } else { std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map_or(1, |d| d.subsec_nanos()) };
+            match args.first().map(|n| crate::world::ledger::create_world(n, flat, seed)) {
+                Some(Ok(name)) => {
+                    cx.travel.next = Some(Trip::Local(Some(name)));
+                    String::new()
+                }
+                Some(Err(why)) => why,
+                None => "Usage: /newworld <name> [flat|natural]".into(),
+            }
+        }
+        "portal" => portal(cx, &args.join(" ")),
         "revert" => match args.first().and_then(|n| n.parse::<u64>().ok()) {
             Some(id) => revert(cx, id),
             None => "Usage: /revert <change id> (see /history)".into(),
@@ -252,8 +292,37 @@ pub fn restore(cx: &mut Context, id: u64) -> String {
     format!("Loaded {what}: {n} later change(s) no longer count; {undo}.")
 }
 
+/// The local worlds, for the chat.
+fn worlds(ledger: &Ledger) -> String {
+    let here = super::worlds::current_title(ledger);
+    let list: Vec<String> = crate::world::ledger::list_worlds()
+        .iter()
+        .map(|w| format!("{}{} ({}, {} changes)", w.title(), if w.title() == here { " ← here" } else { "" }, if w.flat { "flat" } else { "natural" }, w.changes))
+        .collect();
+    format!("Worlds: {}. /world <name> goes; O opens the Worlds window.", list.join(" · "))
+}
+
+/// Makes the selected build a portal to `to` (`off` unlinks it).
+fn portal(cx: &mut Context, to: &str) -> String {
+    let Some(build) = cx.creations.selected().map(|b| b.build) else {
+        return "Select a build first (click it), then /portal <world or host:port>.".into();
+    };
+    if to.trim() == "off" {
+        cx.ledger.record(None, None, Action::SetPortal { build, to: None });
+        return "It's an ordinary build again.".into();
+    }
+    match cubewish_rules::log::PortalTo::parse(to) {
+        Ok(to) => {
+            let label = to.label().to_string();
+            cx.ledger.record(None, None, Action::SetPortal { build, to: Some(to) });
+            format!("It's a portal to {label} now: walk up to it and press E.")
+        }
+        Err(why) => format!("Usage: /portal <world or host:port> | off ({why})"),
+    }
+}
+
 /// Bookmarks the world as it is now.
-fn save(ledger: &mut Ledger, name: &str) -> String {
+pub fn save(ledger: &mut Ledger, name: &str) -> String {
     let name = name.trim();
     if name.is_empty() || name.chars().count() > 40 {
         return "Usage: /save <name> (up to 40 characters)".into();
@@ -286,7 +355,7 @@ fn saves(ledger: &Ledger) -> String {
 
 /// Starts a new local world from a save: the log up to it, with the local player made an
 /// admin there too.
-fn fork(ledger: &Ledger, save: &str, world: &str) -> String {
+pub fn fork(ledger: &Ledger, save: &str, world: &str) -> String {
     let Some(at) = ledger.log.save_named(save).map(|c| c.id) else {
         return format!("There's no save \"{save}\". {}", saves(ledger));
     };
@@ -300,7 +369,7 @@ fn fork(ledger: &Ledger, save: &str, world: &str) -> String {
     }
     match crate::world::ledger::write_world(&clean, &log) {
         Ok(()) => format!(
-            "Started world \"{clean}\" from \"{save}\" ({} changes). This world carries on as it is. Play it with: CUBEWISH_WORLD={clean} cargo run",
+            "Started world \"{clean}\" from \"{save}\" ({} changes); this world carries on as it is. Enter it from the Worlds window (O) or with /world {clean}.",
             log.changes.len()
         ),
         Err(why) => why,

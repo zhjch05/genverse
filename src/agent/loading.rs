@@ -26,13 +26,21 @@ pub struct Loading {
     settling_since: Option<f32>,
     /// Smooth frames in a row since then.
     steady: u32,
-    /// When the world was ready, in seconds since startup; it stays ready from then on.
+    /// When the world was ready, in seconds since startup; it stays ready until the
+    /// player goes to another world.
     ready_at: Option<f32>,
+    /// The world being entered, after the first.
+    entering: Option<String>,
 }
 
 impl Loading {
     pub fn is_done(&self) -> bool {
         self.ready_at.is_some()
+    }
+
+    /// Covers the view again while another world loads.
+    pub fn restart(&mut self, world: &str) {
+        *self = Self { entering: Some(world.to_string()), ..Self::default() };
     }
 }
 
@@ -88,7 +96,8 @@ pub fn loading_screen(mut contexts: EguiContexts, time: Res<Time<Real>>, loading
             let card = egui::Rect::from_center_size(rect.center(), egui::vec2(rect.width().min(360.0) - 32.0, 120.0));
             ui.scope_builder(egui::UiBuilder::new().max_rect(card), |ui| {
                 ui.vertical_centered(|ui| {
-                    ui.label(egui::RichText::new("Cubewish").size(30.0).strong().color(p.strong));
+                    let title = loading.entering.as_deref().unwrap_or("Cubewish");
+                    ui.label(egui::RichText::new(title).size(30.0).strong().color(p.strong));
                     ui.add_space(4.0);
                     let status = if loaded < total {
                         "Growing the world"

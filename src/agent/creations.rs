@@ -37,6 +37,8 @@ pub struct Draft {
     /// The agent designed this version (rather than a copy or a move), so placing it
     /// is recorded as the agent's change.
     pub by_agent: bool,
+    /// Where it leads, if the agent made it a portal: linked when it's placed.
+    pub portal: Option<cubewish_rules::log::PortalTo>,
 }
 
 #[derive(Resource, Default)]
@@ -146,7 +148,7 @@ impl Creations {
         let (spec, stats, prompt, provider) = draft;
         let entity = spawn(commands, model, &spec.name, at.0, at.1);
         commands.entity(entity).insert(DraftMarker);
-        self.draft = Some(Draft { entity, spec, stats, prompt, provider, replaces, lift, blocked: false, denied: None, follow, by_agent: true });
+        self.draft = Some(Draft { entity, spec, stats, prompt, provider, replaces, lift, blocked: false, denied: None, follow, by_agent: true, portal: None });
     }
 
     /// Drops the draft; if it was an edit, the original build comes back unchanged.
@@ -188,6 +190,7 @@ impl Creations {
             denied: None,
             follow,
             by_agent: false,
+            portal: None,
         });
         Some(name)
     }
@@ -253,6 +256,7 @@ impl Creations {
             denied: None,
             follow: true,
             by_agent: false,
+            portal: None,
         });
         Some(saved.name)
     }
@@ -374,6 +378,9 @@ impl Creations {
             None => Action::PlaceBuild(saved.clone()),
         };
         let change = ledger.record(agent, prompt, action);
+        if let Some(to) = draft.portal {
+            ledger.record(None, None, Action::SetPortal { build, to: Some(to) });
+        }
         self.history.push(match draft.replaces {
             Some(before) => Change::Replaced { before, change },
             None => Change::Placed { build, change },

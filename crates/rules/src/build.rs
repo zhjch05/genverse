@@ -74,6 +74,9 @@ pub struct AgentAnswer {
     /// Game rules for the selected area, as a data package.
     #[serde(default)]
     pub game: Option<Box<GameSpec>>,
+    /// Makes the build a portal to this world (by name) or server (`host:port`).
+    #[serde(default)]
+    pub portal: Option<String>,
 }
 
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]

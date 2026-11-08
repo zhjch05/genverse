@@ -39,6 +39,39 @@ use crate::{
     voxel::VoxelId,
 };
 
+/// Where a portal leads.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(tag = "kind", rename_all = "snake_case")]
+pub enum PortalTo {
+    /// A world on the player's computer, by name ("home" is the first world).
+    World { name: String },
+    /// A server, `host:port`.
+    Server { addr: String },
+}
+
+impl PortalTo {
+    /// "sokoban", or a server address: a world name has no `:`.
+    pub fn parse(text: &str) -> Result<Self, String> {
+        let text = text.trim();
+        if text.is_empty() || text.len() > 100 {
+            return Err("a portal leads to a world name or a host:port".into());
+        }
+        if text.contains(':') {
+            return Ok(PortalTo::Server { addr: text.into() });
+        }
+        if !text.chars().all(|c| c.is_ascii_alphanumeric() || c == '-' || c == '_') {
+            return Err(format!("\"{text}\" isn't a world name (letters, digits, - and _)"));
+        }
+        Ok(PortalTo::World { name: text.to_lowercase() })
+    }
+
+    pub fn label(&self) -> &str {
+        match self {
+            PortalTo::World { name } | PortalTo::Server { addr: name } => name,
+        }
+    }
+}
+
 /// Who a server's own changes are by: timers going off.
 pub const WORLD: &str = "world";
 
@@ -125,6 +158,9 @@ pub enum Action {
     /// An admin putting the world back exactly as it was right after change `to`
     /// (loading a save): every change after it, undos included, stops counting.
     Restore { to: u64 },
+    /// Makes a placed build a portal to another world (`None` unlinks it). Whoever may
+    /// change the build may do this; the link stays when the build moves or changes.
+    SetPortal { build: u64, to: Option<PortalTo> },
     /// A package's timers going off, up to `until` (Unix seconds): what they did, so
     /// replay applies it without running them again. Made by the world (a server) or,
     /// offline, by an admin's game.
@@ -170,6 +206,8 @@ impl Action {
             Action::Timers { package, effects, .. } => format!("{package}'s timers ({} change(s))", effects.len()),
             Action::Save { name } => format!("saved \"{name}\""),
             Action::Restore { to } => format!("restored the world to change {to}"),
+            Action::SetPortal { build, to: Some(to) } => format!("made build {build} a portal to {}", to.label()),
+            Action::SetPortal { build, to: None } => format!("unlinked the portal on build {build}"),
         }
     }
 }
@@ -366,6 +404,8 @@ pub struct Replay {
     pub footprints: HashMap<u64, Footprint>,
     /// Game packages, entities, and what's installed where.
     pub logic: Logic,
+    /// Builds that are portals, and where they lead.
+    pub portals: BTreeMap<u64, PortalTo>,
     /// Changes that no longer apply (refused by the land rules, or by tightened
     /// limits), with why.
     pub problems: Vec<String>,
@@ -559,7 +599,8 @@ impl Replay {
             | Action::ClaimParcels { .. }
             | Action::InstallPackage { .. }
             | Action::UninstallPackage { .. }
-            | Action::Save { .. } => Some(0),
+            | Action::Save { .. }
+            | Action::SetPortal { .. } => Some(0),
             _ => None,
         };
         if let Some(cost) = cost.filter(|_| !admin) {
@@ -594,6 +635,7 @@ impl Replay {
                 let touched = self.builds.get(build).map(parcels_of).unwrap_or_default();
                 self.land.authorize(&by.player, &touched)?;
                 self.builds.remove(build);
+                self.portals.remove(build);
                 if let Some(old) = self.footprints.remove(build) {
                     self.budgets.remove(&old);
                 }
@@ -650,6 +692,19 @@ impl Replay {
                 return Err("a save's name is 1 to 40 characters".into());
             }
             Action::Save { .. } => {}
+            Action::SetPortal { build, to } => {
+                let placed = self.builds.get(build).ok_or(format!("there's no build {build}"))?;
+                self.land.authorize(&by.player, &parcels_of(placed))?;
+                match to {
+                    Some(to) => {
+                        PortalTo::parse(to.label())?;
+                        self.portals.insert(*build, to.clone());
+                    }
+                    None => {
+                        self.portals.remove(build);
+                    }
+                }
+            }
             Action::Restore { .. } if !admin => return Err("only admins load saves".into()),
             Action::Revert { .. } | Action::Rollback { .. } | Action::Restore { .. } => {}
         }
@@ -732,6 +787,39 @@ mod tests {
             position: [0.0, 10.0, 0.0],
             yaw: 0.0,
         })
+    }
+
+    #[test]
+    fn portals_link_builds_to_worlds() {
+        let mut log = WorldLog::new(1);
+        log.admins = vec!["admin".into()];
+        let portals = |log: &WorldLog| replay_land(log).portals;
+        // Away from the protected spawn area.
+        let away = |mut action: Action| {
+            if let Action::PlaceBuild(b) | Action::UpdateBuild(b) = &mut action {
+                b.position = [100.0, 10.0, 100.0];
+            }
+            action
+        };
+        log.rules.land = crate::settings::LandMode::Parcels;
+        log.push(by("ada"), away(lamp(1)));
+        let to = |name: &str| Some(PortalTo::parse(name).unwrap());
+        // Bo can't change Ada's build, so he can't make it a portal.
+        log.push(by("bo"), Action::SetPortal { build: 1, to: to("bos-world") });
+        assert!(portals(&log).is_empty());
+        log.push(by("ada"), Action::SetPortal { build: 1, to: to("Sokoban") });
+        assert_eq!(portals(&log)[&1], PortalTo::World { name: "sokoban".into() });
+        assert_eq!(PortalTo::parse("host.example:7780"), Ok(PortalTo::Server { addr: "host.example:7780".into() }));
+        assert!(PortalTo::parse("no spaces").is_err());
+        // Moving the build keeps the link; removing it drops the link.
+        let Action::PlaceBuild(mut moved) = away(lamp(1)) else { unreachable!() };
+        moved.position[0] += 2.0;
+        log.push(by("ada"), Action::UpdateBuild(moved));
+        assert_eq!(portals(&log).len(), 1);
+        log.push(by("ada"), Action::RemoveBuild { build: 1 });
+        assert!(portals(&log).is_empty());
+        log.push(by("ada"), Action::SetPortal { build: 1, to: to("sokoban") });
+        assert!(replay_land(&log).problems.iter().any(|p| p.contains("no build 1")));
     }
 
     #[test]

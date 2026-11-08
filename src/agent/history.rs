@@ -59,6 +59,7 @@ pub fn history_window(
     mut creations: ResMut<Creations>,
     mut landscape: ResMut<Landscape>,
     mut chat: ResMut<Chat>,
+    mut travel: ResMut<super::worlds::Travel>,
     peers: Res<super::presence::Peers>,
 ) -> Result {
     if !history.open {
@@ -148,6 +149,7 @@ pub fn history_window(
         world: &mut world,
         creations: &mut creations,
         landscape: &mut landscape,
+        travel: &mut travel,
     };
     let reply = match pick {
         Pick::Undo(id) => commands::revert(cx, id),

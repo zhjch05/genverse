@@ -59,24 +59,15 @@ pub fn host(ledger: &mut Ledger) -> String {
 }
 
 /// Leaves the server for the local world.
-pub fn leave(
-    commands: &mut Commands,
-    ledger: &mut Ledger,
-    world: &mut VoxelWorld,
-    creations: &mut Creations,
-    landscape: &mut Landscape,
-) -> String {
+pub fn leave(ledger: &mut Ledger, travel: &mut super::worlds::Travel) -> String {
     if !ledger.is_online() {
         return "You're in your local world.".into();
     }
     if ledger.hosting.is_some() {
         return "You're hosting this world; it closes when you quit.".into();
     }
-    let full = ledger.go_offline();
-    world.replace_edits(full.edits.iter().map(|(p, id)| (*p, *id)));
-    creations.resync(commands, &full.builds);
-    landscape.forget_history();
-    "Back in your local world.".into()
+    travel.next = Some(super::worlds::Trip::Local(crate::world::ledger::world_name()));
+    String::new()
 }
 
 /// This computer's address on the local network: the one a route to the internet would
@@ -103,6 +94,11 @@ pub fn sync_online(
     mut chat: ResMut<Chat>,
     mut peers: ResMut<Peers>,
     assets: Res<AssetServer>,
+    (mut loading, mut play, mut heroes): (
+        ResMut<super::loading::Loading>,
+        ResMut<super::game::Play>,
+        Query<(&mut Transform, &mut crate::player::Player)>,
+    ),
 ) {
     let Some(online) = &ledger.online else {
         *retry_at = None;
@@ -155,10 +151,8 @@ pub fn sync_online(
             }
             ClientEvent::Message(ToClient::Welcome { log, snapshot }) => {
                 peers.clear(&mut commands);
-                if log.seed != world.terrain.seed || log.flat != world.terrain.flat {
-                    chat.say(Role::System, "⚠ This server's world has different ground (seed or flatness); can't join it.");
-                    continue;
-                }
+                // Other ground: start over on it, as when going to another world.
+                let other_ground = log.terrain() != world.terrain;
                 ledger.log = log;
                 // After a reconnect: our changes in flight either made it into the log
                 // (find them by signature) or were lost with the connection.
@@ -184,7 +178,17 @@ pub fn sync_online(
                     }
                 }
                 let full = replay_from(&ledger.log, snapshot.as_ref());
-                world.replace_edits(full.edits.iter().map(|(p, id)| (*p, *id)));
+                if other_ground {
+                    world.reset(&mut commands, ledger.log.terrain(), full.edits.iter().map(|(p, id)| (*p, *id)));
+                    play.leave_world();
+                    if let Ok((mut transform, mut player)) = heroes.single_mut() {
+                        transform.translation = crate::player::spawn_point(ledger.log.terrain(), IVec2::ZERO);
+                        player.arrive();
+                    }
+                    loading.restart(&ledger.online.as_ref().map(|o| o.addr.clone()).unwrap_or_default());
+                } else {
+                    world.replace_edits(full.edits.iter().map(|(p, id)| (*p, *id)));
+                }
                 creations.resync(&mut commands, &full.builds);
                 landscape.forget_history();
                 ledger.adopt(&full);

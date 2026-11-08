@@ -98,6 +98,14 @@ Example "terrain" for a small pond in a 10 × 8 m area:
     out.push_str(
         r##"
 
+Portals (when the player asks for a portal, gate or door to another world)
+Build it as voxel art with an opening a player can walk into (at least 10 voxels wide and 18
+tall inside: an arch, a ring, a doorway with a glowing glow-material fill), and set "portal" to
+the world's name from the list of the player's other worlds you're given, or to a server's
+host:port. Walking up to it and pressing E takes players there. With a build selected and no
+new build needed ("make this a portal to sokoban"), answer "build": null and set "portal".
+Otherwise "portal" is null.
+
 Game rules (when the player asks for a game, gameplay, or to change how the world plays)
 You can make the world playable: puzzles, board games, minigames. Answer with "game": a package
 of definitions plus Luau scripts that the engine runs. It applies to the whole world and goes

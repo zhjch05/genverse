@@ -279,6 +279,39 @@ impl VoxelWorld {
         self.unsaved = true;
     }
 
+    /// Starts over on other ground (another world): every chunk goes, and they stream in
+    /// again from `terrain` with `edits` on top.
+    pub fn reset(&mut self, commands: &mut Commands, terrain: Terrain, edits: impl IntoIterator<Item = (IVec3, VoxelId)>) {
+        for chunk in self.loaded.drain().map(|(_, c)| c) {
+            for e in chunk.entities {
+                commands.entity(e).despawn();
+            }
+        }
+        for e in self.coarse.drain().flat_map(|(_, list)| list) {
+            commands.entity(e).despawn();
+        }
+        self.pending.clear();
+        self.coarse_pending.clear();
+        self.coarse_regen.clear();
+        self.dirty.clear();
+        self.regen.clear();
+        self.cells.clear();
+        self.shown.clear();
+        self.versions.clear();
+        self.terrain = terrain;
+        self.edits = default();
+        for (p, id) in edits {
+            self.edits.entry(chunk_of(p)).or_default().insert(p, id);
+        }
+        self.unsaved = false;
+        self.hold_saves = false;
+    }
+
+    /// Every edit, as `[x, y, z, block]`, for snapshots.
+    pub fn edit_list(&self) -> Vec<[i32; 4]> {
+        self.edits.values().flat_map(|chunk| chunk.iter().map(|(p, id)| [p.x, p.y, p.z, *id as i32])).collect()
+    }
+
     /// Edits inside the padded grid of chunk `c`.
     fn edits_for(&self, c: IVec3) -> Vec<(IVec3, VoxelId)> {
         self.edits_in(c * CHUNK - IVec3::ONE, c * CHUNK + IVec3::splat(CHUNK + 1))
@@ -455,12 +488,7 @@ fn save_edits(
     }
     *last = (now, ledger.version);
     world.unsaved = false;
-    let edits: Vec<[i32; 4]> = world
-        .edits
-        .values()
-        .flat_map(|chunk| chunk.iter().map(|(p, id)| [p.x, p.y, p.z, *id as i32]))
-        .collect();
-    ledger::write_snapshot(&ledger, edits);
+    ledger::write_snapshot(&ledger, world.edit_list());
 }
 
 /// How many of `items` pass `have`, and how many there are.

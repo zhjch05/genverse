@@ -138,6 +138,30 @@ impl LogFile {
     }
 }
 
+/// A world at a glance, for lists: read without loading its changes.
+#[derive(Clone, Debug, PartialEq)]
+pub struct Summary {
+    pub seed: u32,
+    pub flat: bool,
+    pub changes: usize,
+    pub modified: Option<std::time::SystemTime>,
+}
+
+/// The world kept in `dir`, at a glance, if there is one.
+pub fn summary(dir: &Path) -> Option<Summary> {
+    let path = dir.join("world.jsonl");
+    let modified = |p: &Path| fs::metadata(p).and_then(|m| m.modified()).ok();
+    if let Ok(file) = fs::File::open(&path) {
+        let mut lines = BufReader::new(file).lines().map_while(Result::ok);
+        let Line::Head(head) = serde_json::from_str(&lines.next()?).ok()? else { return None };
+        let changes = lines.filter(|l| l.starts_with("{\"change\"")).count();
+        return Some(Summary { seed: head.seed, flat: head.flat, changes, modified: modified(&path) });
+    }
+    let old = dir.join("world.json");
+    let log: WorldLog = serde_json::from_str(&fs::read_to_string(&old).ok()?).ok()?;
+    Some(Summary { seed: log.seed, flat: log.flat, changes: log.changes.len(), modified: modified(&old) })
+}
+
 fn read_lines(path: &Path) -> io::Result<WorldLog> {
     let lines: Vec<String> = BufReader::new(fs::File::open(path)?).lines().collect::<io::Result<_>>()?;
     let mut log: Option<WorldLog> = None;

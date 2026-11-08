@@ -96,7 +96,7 @@ pub fn pick<const N: usize>(ids: [VoxelId; N], t: f32) -> VoxelId {
     ids[((t.clamp(0.0, 0.999)) * N as f32) as usize]
 }
 
-#[derive(Clone, Copy)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct Terrain {
     pub seed: u32,
     /// An empty world: level grass everywhere, no water, trees or plants.

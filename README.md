@@ -143,8 +143,15 @@ side with `CUBEWISH_AS=Bo cargo run`, a non-admin guest for one run; script them
 the world as it is (anyone can), `/saves` lists them, and an admin's `/load <name>` puts the
 world back exactly as it was at that save, for everyone, game state included. Nothing is
 deleted: loading a later save, or reverting the load, brings the later changes back.
-`/fork <save> <world>` starts a new world of your own from a save
-(`CUBEWISH_WORLD=<world> cargo run`), leaving this one as it is.
+`/fork <save> <world>` starts a new world of your own from a save, leaving this one as it is.
+
+**Worlds** (`O`, or the globe button): every world you have, Home first. Enter one, make a new
+one (flat and empty, or a natural landscape of its own), fork one from a save, or move one to
+`saves/trash/`. The window also has the world's saves, its portals, and servers to join or
+host. Ask the agent for **a portal** ("a stone arch, a portal to sokoban") and it builds one
+linked to that world; walk up to it and press E. Any build can be linked from the window, or
+with `/portal <world|host:port>` while it's selected. `/worlds`, `/world <name>` and
+`/newworld <name> [flat|natural]` do the same from the chat. Design: `docs/worlds.md`.
 
 ## Playing together
 

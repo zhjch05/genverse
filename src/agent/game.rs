@@ -22,7 +22,8 @@
 //!
 //! Script it: `CUBEWISH_PLAY="sokoban:board; enter; east; east"` puts things down in
 //! front of the hero (`place` is the game bar's first fixture), uses the nearest piece
-//! (`use`) or sends a key to the zone the hero is in, one step every half second once
+//! (`use`), goes through the portal the hero stands at (`portal`) or sends a key to the
+//! zone the hero is in, one step every half second once
 //! the hero has landed and the agent is done with `CUBEWISH_PROMPT`.
 
 use std::collections::HashMap;
@@ -81,8 +82,17 @@ pub struct Play {
 }
 
 impl Play {
-    fn toast(&mut self, text: impl Into<String>, now: f32) {
+    pub fn toast(&mut self, text: impl Into<String>, now: f32) {
         self.toast = Some((text.into(), now));
+    }
+
+    /// Forgets what was going on in the world left behind: holding, playing, near.
+    pub fn leave_world(&mut self) {
+        self.holding = None;
+        self.near = None;
+        self.playing = None;
+        self.inside = None;
+        self.held = None;
     }
 }
 
@@ -638,6 +648,7 @@ pub fn script_play(
     mut play: ResMut<Play>,
     mut chat: ResMut<Chat>,
     heroes: Query<(&Player, &Transform)>,
+    mut travel: ResMut<super::worlds::Travel>,
     mut steps: Local<Option<(Vec<String>, f32, usize)>>,
 ) {
     let now_s = time.elapsed_secs();
@@ -659,6 +670,16 @@ pub fn script_play(
     }
     *next = now_s + 0.5;
     let mut step = list.remove(0);
+    // Through the portal the hero stands at.
+    if step == "portal" {
+        let to = travel.near().cloned();
+        match to.map(|to| travel.portal(&to)) {
+            Some(Ok(())) => info!("CUBEWISH_PLAY portal: going"),
+            Some(Err(why)) => info!("CUBEWISH_PLAY portal: {why}"),
+            None => info!("CUBEWISH_PLAY portal: not at a portal (hero at {}, {} portals)", hero.translation, ledger.portals.len()),
+        }
+        return;
+    }
     if step == "place" {
         let fixture = placeable(&ledger).into_iter().find(|(_, name, count)| count.is_none() && name.contains(':'));
         step = fixture.map_or(step, |(_, name, _)| name);

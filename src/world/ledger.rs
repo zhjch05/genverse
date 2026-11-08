@@ -33,18 +33,101 @@ use cubewish_rules::{
     land::Land,
     rate::Rates,
     settings::WorldRules,
-    log::{Action, BuildState, Provenance, Replay, Snapshot, WorldLog, replay, replay_from, replay_land, signing_bytes},
+    log::{Action, BuildState, PortalTo, Provenance, Replay, Snapshot, WorldLog, replay_from, replay_land, signing_bytes},
     logic::{Clockwork, Intent, Logic, Package, Scope},
 };
 use serde::{Deserialize, Serialize};
 
 use crate::voxel::VoxelId;
 
-/// The world `CUBEWISH_WORLD` names, if it names one.
+/// The world being played, once chosen: `None` inside is Home.
+static CURRENT: std::sync::RwLock<Option<Option<String>>> = std::sync::RwLock::new(None);
+
+/// A world name as kept on disk: lowercase letters, digits, - and _.
+pub fn clean_name(name: &str) -> Option<String> {
+    let name: String = name.trim().to_lowercase().chars().filter(|c| c.is_ascii_alphanumeric() || *c == '-' || *c == '_').collect();
+    (!name.is_empty() && name.len() <= 40 && name != "home" && name != "trash").then_some(name)
+}
+
+/// The named world being played, or `None` for Home. It starts as `CUBEWISH_WORLD`.
 pub fn world_name() -> Option<String> {
-    let name = std::env::var("CUBEWISH_WORLD").ok()?;
-    let name: String = name.trim().chars().filter(|c| c.is_ascii_alphanumeric() || *c == '-' || *c == '_').collect();
-    (!name.is_empty()).then_some(name)
+    if let Some(current) = CURRENT.read().ok().and_then(|c| c.clone()) {
+        return current;
+    }
+    std::env::var("CUBEWISH_WORLD").ok().and_then(|n| clean_name(&n))
+}
+
+/// Switches which world [`world_dir`] means (`None`: Home).
+pub fn set_world(name: Option<String>) {
+    if let Ok(mut current) = CURRENT.write() {
+        *current = Some(name);
+    }
+}
+
+/// A local world, for lists.
+#[derive(Clone, Debug)]
+pub struct WorldInfo {
+    /// `None` for Home.
+    pub name: Option<String>,
+    pub flat: bool,
+    pub changes: usize,
+    pub modified: Option<std::time::SystemTime>,
+}
+
+impl WorldInfo {
+    pub fn title(&self) -> &str {
+        self.name.as_deref().unwrap_or("home")
+    }
+}
+
+/// Every local world: Home first, then the named ones, most recently played first.
+#[cfg(not(target_arch = "wasm32"))]
+pub fn list_worlds() -> Vec<WorldInfo> {
+    use cubewish_rules::store::summary;
+    let info = |name: Option<String>, dir: &std::path::Path| {
+        summary(dir).map(|s| WorldInfo { name, flat: s.flat, changes: s.changes, modified: s.modified })
+    };
+    let home = info(None, std::path::Path::new("saves")).unwrap_or(WorldInfo { name: None, flat: false, changes: 0, modified: None });
+    let mut named: Vec<WorldInfo> = std::fs::read_dir("saves/worlds")
+        .into_iter()
+        .flatten()
+        .flatten()
+        .filter(|e| e.path().is_dir())
+        .filter_map(|e| {
+            let name = e.file_name().to_string_lossy().to_string();
+            clean_name(&name).filter(|n| *n == name).and_then(|n| info(Some(n), &e.path()))
+        })
+        .collect();
+    named.sort_by_key(|w| std::cmp::Reverse(w.modified));
+    std::iter::once(home).chain(named).collect()
+}
+
+#[cfg(target_arch = "wasm32")]
+pub fn list_worlds() -> Vec<WorldInfo> {
+    Vec::new()
+}
+
+/// Makes a new named world: flat and empty, or a natural landscape from `seed`.
+pub fn create_world(name: &str, flat: bool, seed: u32) -> Result<String, String> {
+    let name = clean_name(name).ok_or("A world's name is letters, digits, - and _ (not \"home\").")?;
+    write_world(&name, &WorldLog { flat, ..WorldLog::new(seed) })?;
+    Ok(name)
+}
+
+/// Moves a named world to `saves/trash/`, never deleting it.
+#[cfg(not(target_arch = "wasm32"))]
+pub fn trash_world(name: &str) -> Result<(), String> {
+    if world_name().as_deref() == Some(name) {
+        return Err("You're in that world; go to another one first.".into());
+    }
+    let at = now();
+    std::fs::create_dir_all("saves/trash").map_err(|e| e.to_string())?;
+    std::fs::rename(format!("saves/worlds/{name}"), format!("saves/trash/{name}-{at}")).map_err(|e| e.to_string())
+}
+
+#[cfg(target_arch = "wasm32")]
+pub fn trash_world(_name: &str) -> Result<(), String> {
+    Err("Worlds can't be changed on the web yet.".into())
 }
 
 /// Where this world's log and caches are kept.
@@ -122,6 +205,8 @@ pub struct Ledger {
     pub footprints: HashMap<u64, Footprint>,
     /// Game packages, what's installed where, entities and inventories.
     pub logic: Logic,
+    /// Builds that are portals, and where they lead.
+    pub portals: BTreeMap<u64, PortalTo>,
     /// Bumped on every recorded change, so the voxel cache knows to follow.
     pub version: u64,
     /// What games said to the local player on their own (timers), for the game to show.
@@ -214,6 +299,7 @@ impl Ledger {
         state.budgets = std::mem::take(&mut self.budgets);
         state.footprints = std::mem::take(&mut self.footprints);
         state.logic = Logic { packages: self.log.packages.clone(), ..std::mem::take(&mut self.logic) };
+        state.portals = std::mem::take(&mut self.portals);
         if let Err(why) = state.apply(&change, false) {
             warn!("change {} doesn't apply: {why}", change.id);
         }
@@ -224,6 +310,7 @@ impl Ledger {
         self.budgets = state.budgets;
         self.footprints = state.footprints;
         self.logic = state.logic;
+        self.portals = state.portals;
         self.version += 1;
     }
 
@@ -236,6 +323,7 @@ impl Ledger {
         self.footprints = state.footprints.clone();
         self.builds = state.builds.clone();
         self.logic = state.logic.clone();
+        self.portals = state.portals.clone();
         self.version += 1;
     }
 
@@ -335,20 +423,6 @@ impl Ledger {
         online.state = None;
         online.closed = None;
         Ok(())
-    }
-
-    /// Leaves the server and loads the local world again. Returns it replayed, for the
-    /// game to show.
-    #[cfg(not(target_arch = "wasm32"))]
-    pub fn go_offline(&mut self) -> Replay {
-        self.online = None;
-        let (log, file, _) = load_log(self.log.seed);
-        self.log = log;
-        self.file = file;
-        let full = replay(&self.log);
-        self.adopt(&full);
-        self.clock = Clockwork::new(self.logic.timers_until);
-        full
     }
 
     pub fn is_online(&self) -> bool {
@@ -527,8 +601,17 @@ fn read_json<T: serde::de::DeserializeOwned>(path: &str) -> Option<T> {
 }
 
 /// Loads the log (or migrates old saves into one) and returns it with the voxel edits
-/// it describes.
+/// it describes. With `CUBEWISH_SERVER`, it joins that server instead.
 pub fn load(seed: u32) -> (Ledger, HashMap<IVec3, VoxelId>) {
+    load_with(seed, true)
+}
+
+/// Loads the current local world ([`world_name`]), never a server: for switching worlds.
+pub fn load_local(seed: u32) -> (Ledger, HashMap<IVec3, VoxelId>) {
+    load_with(seed, false)
+}
+
+fn load_with(seed: u32, join: bool) -> (Ledger, HashMap<IVec3, VoxelId>) {
     let (profile, key, old_id) = load_profile();
     // The local world is upgraded along with the profile even when playing online, so
     // it never names a player id the profile no longer has.
@@ -562,7 +645,7 @@ pub fn load(seed: u32) -> (Ledger, HashMap<IVec3, VoxelId>) {
         error!("couldn't save {}: {e}", file.path().display());
     }
     #[cfg(not(target_arch = "wasm32"))]
-    if let Some(online) = connect(&profile, &key) {
+    if join && let Some(online) = connect(&profile, &key) {
         // The server sends the world once we've logged in; until then, just the seed.
         let (profile, key) = guest().unwrap_or((profile, key));
         // Named worlds are flat, so they can join flat servers.
@@ -604,6 +687,7 @@ fn empty(log: WorldLog, profile: Profile, key: Keypair) -> Ledger {
         budgets: default(),
         footprints: default(),
         logic: default(),
+        portals: default(),
         version: 0,
         heard: Vec::new(),
         clock: Clockwork::default(),
@@ -709,7 +793,8 @@ fn load_log(seed: u32) -> (WorldLog, Option<cubewish_rules::store::LogFile>, Opt
         }
     };
     let log = match log {
-        Some(log) if log.seed == seed => log,
+        // Named worlds have their own ground; Home was always made from `seed`.
+        Some(log) if log.seed == seed || world_name().is_some() => log,
         Some(log) => {
             warn!("ignoring {}: it was made for seed {}, not {seed}", file.path().display(), log.seed);
             return (WorldLog::new(seed), None, None);

@@ -5,7 +5,8 @@
     "reply",
     "build",
     "terrain",
-    "game"
+    "game",
+    "portal"
   ],
   "properties": {
     "reply": {
@@ -42,6 +43,17 @@
         },
         {
           "$ref": "#/$defs/game"
+        }
+      ]
+    },
+    "portal": {
+      "description": "When the player asks for a portal (a gate, door or arch to another world): the world's name from the list you were given, or a server's host:port. The build (or the selected one) becomes a portal there. Null otherwise.",
+      "anyOf": [
+        {
+          "type": "null"
+        },
+        {
+          "type": "string"
         }
       ]
     }

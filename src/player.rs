@@ -13,7 +13,7 @@ use crate::{
     voxel::{VoxelModel, VoxelModelAsset, query::overlaps_box},
     world::{
         ChunkLoader, SolidModel, VoxelWorld,
-        terrain::{SEA_LEVEL, VOXEL_SIZE, is_solid},
+        terrain::{SEA_LEVEL, Terrain, VOXEL_SIZE, is_solid},
     },
 };
 
@@ -92,6 +92,30 @@ impl Player {
     pub fn has_landed(&self) -> bool {
         self.spawned && self.grounded
     }
+
+    /// Starts over at a new spot (another world): it waits for the ground there.
+    pub fn arrive(&mut self) {
+        self.velocity = Vec3::ZERO;
+        self.grounded = false;
+        self.spawned = false;
+        self.lag = 0.0;
+    }
+}
+
+/// Where the hero starts on `terrain`: the first dry ground walking out from `origin`
+/// (in voxels), feet in meters.
+pub fn spawn_point(terrain: Terrain, origin: IVec2) -> Vec3 {
+    let (mut x, mut z) = (origin.x, origin.y);
+    for i in 0..400 {
+        let angle = i as f32 * 2.4;
+        let r = (i as f32).sqrt() * 6.0;
+        (x, z) = (origin.x + (angle.cos() * r) as i32, origin.y + (angle.sin() * r) as i32);
+        if terrain.height(x, z) > SEA_LEVEL + 2 {
+            break;
+        }
+    }
+    let ground = terrain.height(x, z) + 1;
+    Vec3::new(x as f32 + 0.5, ground as f32 + 1.0, z as f32 + 0.5) * VOXEL_SIZE
 }
 
 /// One animated limb; `rest` is its translation relative to its parent joint.
@@ -136,17 +160,7 @@ fn spawn_player(mut commands: Commands, asset_server: Res<AssetServer>, world: R
         .ok()
         .and_then(|v| v.split_once(',').and_then(|(x, z)| Some((x.trim().parse::<f32>().ok()?, z.trim().parse::<f32>().ok()?))))
         .map_or(IVec2::ZERO, |(x, z)| (Vec2::new(x, z) / VOXEL_SIZE).as_ivec2());
-    let (mut x, mut z) = (origin.x, origin.y);
-    for i in 0..400 {
-        let angle = i as f32 * 2.4;
-        let r = (i as f32).sqrt() * 6.0;
-        (x, z) = (origin.x + (angle.cos() * r) as i32, origin.y + (angle.sin() * r) as i32);
-        if terrain.height(x, z) > SEA_LEVEL + 2 {
-            break;
-        }
-    }
-    let ground = terrain.height(x, z) + 1;
-    let start = Vec3::new(x as f32 + 0.5, ground as f32 + 1.0, z as f32 + 0.5) * VOXEL_SIZE;
+    let start = spawn_point(terrain, origin);
 
     commands
         .spawn((

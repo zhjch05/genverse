@@ -29,6 +29,7 @@ mod settings;
 mod theme;
 use cubewish_rules::build as spec;
 mod tools;
+mod worlds;
 
 use std::{
     sync::Mutex,
@@ -97,6 +98,8 @@ impl Plugin for AgentPlugin {
             .init_resource::<settings::SettingsWindow>()
             .init_resource::<lan::Lan>()
             .init_resource::<game::Play>()
+            .init_resource::<worlds::Travel>()
+            .init_resource::<worlds::WorldsWindow>()
             .init_gizmo_group::<AreaGizmos>()
             .init_gizmo_group::<presence::RingGizmos>()
             .add_systems(Startup, (attach_interface.after(graphics::spawn_screen), settings::load_settings))
@@ -110,13 +113,21 @@ impl Plugin for AgentPlugin {
                     (online::sync_online, lan::update_lan, update_build_site, answer_tool_calls, poll_agent).chain(),
                     (presence::send_presence, presence::move_avatars, presence::draw_peers, history::toggle_history, (loading::track_loading, fps::track_frames).chain()),
                     auto_prompt,
-                    (game::script_play.after(auto_prompt), game::run_timers, game::play_zones, game::sync_pieces, game::use_pieces).chain(),
+                    (game::script_play.after(auto_prompt), game::run_timers, game::play_zones, game::sync_pieces, game::use_pieces, worlds::use_portals)
+                        .chain(),
+                    worlds::toggle_worlds,
                     (game::place_held, shortcuts, select_area, follow_cursor, check_clearance, click_in_world, outline_creations, draw_area, highlight_area, draw_parcels)
                         .chain(),
                 ),
             )
             .add_systems(EguiPrimaryContextPass, (install_icon_font, chat_panel, shortcut_hints, game::game_bar, loading::loading_screen).chain())
-            .add_systems(EguiPrimaryContextPass, (presence::name_tags, presence::hover_credit, history::history_window, fps::fps_overlay, settings::settings_window));
+            .add_systems(
+                EguiPrimaryContextPass,
+                (presence::name_tags, presence::hover_credit, history::history_window, fps::fps_overlay, settings::settings_window, worlds::portal_prompt),
+            )
+            .add_systems(EguiPrimaryContextPass, worlds::worlds_window)
+            // Trips are taken last, once everything else this frame is done with the world.
+            .add_systems(PostUpdate, worlds::travel);
     }
 }
 
@@ -296,10 +307,13 @@ fn game_context(ledger: &Ledger, errors: &[String]) -> Option<String> {
         .filter_map(|i| logic.package(i))
         .map(|p| serde_json::to_string(&GameSpec::from_package(p)).unwrap_or_default())
         .collect();
+    let here = worlds::current_title(ledger);
+    let names: Vec<String> = crate::world::ledger::list_worlds().iter().map(|w| w.title().to_string()).filter(|n| *n != here).collect();
+    let mut out = format!("The player's other worlds (for portals): {}.", if names.is_empty() { "none yet".into() } else { names.join(", ") });
     if specs.is_empty() {
-        return None;
+        return Some(out);
     }
-    let mut out = format!("Game rules in this world (answer \"game\" with the same name to change one):\n{}", specs.join("\n"));
+    out.push_str(&format!("\nGame rules in this world (answer \"game\" with the same name to change one):\n{}", specs.join("\n")));
     if !errors.is_empty() {
         out.push_str(&format!("\nRecent errors from these scripts while players played:\n- {}", errors.join("\n- ")));
     }
@@ -330,6 +344,7 @@ fn auto_prompt(
     mut overlay: ResMut<ParcelOverlay>,
     mut world: ResMut<VoxelWorld>,
     mut ledger: ResMut<Ledger>,
+    mut travel: ResMut<worlds::Travel>,
     players: Query<(&Player, &Transform)>,
     cameras: Query<&GlobalTransform, With<Camera3d>>,
 ) {
@@ -367,6 +382,7 @@ fn auto_prompt(
                     world: &mut world,
                     creations: &mut creations,
                     landscape: &mut landscape,
+                    travel: &mut travel,
                 };
                 run_command(&mut chat, command.trim(), cx);
             }
@@ -394,7 +410,9 @@ fn run_command(chat: &mut Chat, text: &str, cx: &mut commands::Context) {
     }
     let reply = commands::run(text, cx);
     info!("{text} -> {reply}");
-    chat.say(Role::System, reply);
+    if !reply.is_empty() {
+        chat.say(Role::System, reply);
+    }
 }
 
 /// Serves the read-only world tools to agents. Without it, agents still work blind.
@@ -547,7 +565,21 @@ fn poll_agent(
             },
         }
     }
+    let portal = match answer.portal.as_deref().map(cubewish_rules::log::PortalTo::parse) {
+        Some(Ok(to)) => Some(to),
+        Some(Err(why)) => {
+            chat.say(Role::System, format!("⚠ The portal can't lead there: {why}."));
+            None
+        }
+        None => None,
+    };
     let Some(spec) = answer.build else {
+        // A portal for the build that's selected, without changing how it looks.
+        if let (Some(to), Some(build)) = (portal, creations.selected().map(|b| b.build)) {
+            let label = to.label().to_string();
+            ledger.record(None, None, cubewish_rules::log::Action::SetPortal { build, to: Some(to) });
+            chat.say(Role::System, format!("It's a portal to {label} now: walk up to it and press E."));
+        }
         keep_original(&mut creations, &mut chat);
         return;
     };
@@ -576,6 +608,20 @@ fn poll_agent(
             );
             let provider = pending.provider.label().to_string();
             creations.set_draft(&mut commands, &build.model, (spec, s, pending.prompt, provider), at);
+            if let Some(draft) = &mut creations.draft {
+                draft.portal = portal;
+            }
+            // `CUBEWISH_KEEP=1` places a scripted build where it was drafted, as a click would.
+            if std::env::var("CUBEWISH_KEEP").is_ok() {
+                // On the ground under where it was drafted.
+                let column = (at.0.xz() / crate::world::terrain::VOXEL_SIZE).floor().as_ivec2();
+                let ground = (ledger.log.terrain().height(column.x, column.y) + 1) as f32 * crate::world::terrain::VOXEL_SIZE;
+                let transform = Transform::from_translation(at.0.with_y(ground)).with_rotation(Quat::from_rotation_y(at.1));
+                match creations.place_draft(&mut commands, &transform, &mut ledger) {
+                    Ok(name) => chat.say(Role::System, format!("Placed \"{name}\".")),
+                    Err(why) => chat.say(Role::System, format!("⚠ {why}")),
+                }
+            }
         }
         Err(errors) if pending.repairs == 0 && !repairing => {
             warn!("build rejected, asking for a fix: {errors:?}");
@@ -968,6 +1014,7 @@ fn shortcut_hints(
             ("Middle-click", "copy a build"),
             ("P", "land"),
             ("H", "history"),
+            ("O", "worlds"),
         ],
     };
     // Looking around turns to the right button while the left one selects ground.
@@ -1433,7 +1480,12 @@ fn chat_panel(
     mut landscape: ResMut<Landscape>,
     mut world: ResMut<VoxelWorld>,
     mut ledger: ResMut<Ledger>,
-    (mut history, mut settings): (ResMut<history::History>, ResMut<settings::SettingsWindow>),
+    (mut history, mut settings, mut travel, mut worlds_window): (
+        ResMut<history::History>,
+        ResMut<settings::SettingsWindow>,
+        ResMut<worlds::Travel>,
+        ResMut<worlds::WorldsWindow>,
+    ),
     mut lan: ResMut<lan::Lan>,
     time: Res<Time>,
     players: Query<&Transform, With<Player>>,
@@ -1485,6 +1537,9 @@ fn chat_panel(
                             }
                             if theme::icon_button(ui, icon::CLOCK_COUNTER_CLOCKWISE, "History (H)") {
                                 action = Some(Action::History);
+                            }
+                            if theme::icon_button(ui, icon::GLOBE_HEMISPHERE_WEST, "Worlds, saves and portals (O)") {
+                                worlds_window.open = !worlds_window.open;
                             }
                             ui.add_enabled_ui(chat.pending.is_none(), |ui| {
                                 egui::ComboBox::from_id_salt("provider")
@@ -1922,6 +1977,7 @@ fn chat_panel(
                 world: &mut world,
                 creations: &mut creations,
                 landscape: &mut landscape,
+                travel: &mut travel,
             };
             run_command(&mut chat, text.trim(), cx);
         }
@@ -1965,8 +2021,10 @@ fn chat_panel(
             chat.say(Role::System, "Looking for worlds on your network…");
         }
         Some(Action::Leave) => {
-            let reply = online::leave(&mut commands, &mut ledger, &mut world, &mut creations, &mut landscape);
-            chat.say(Role::System, reply);
+            let reply = online::leave(&mut ledger, &mut travel);
+            if !reply.is_empty() {
+                chat.say(Role::System, reply);
+            }
         }
         Some(Action::Claim) => {
             if let Some(area) = landscape.area {
