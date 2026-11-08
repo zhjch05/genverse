@@ -7,6 +7,8 @@
 //!   Meshing runs on the async compute pool; the old children stay until the new ones
 //!   are ready, so a change never flashes a hole.
 //! - A [`Dormant`] model keeps its data but no meshes or lights, for builds out of view.
+//! - A [`Coarse`] model is drawn at half resolution without its lights, for builds
+//!   farther off.
 //!
 //! Gameplay code can mutate `VoxelModel::grid` directly and the change shows up a frame
 //! or two later.
@@ -203,7 +205,17 @@ struct VoxelModelParts(Vec<Entity>);
 /// A model's meshes being built in the background. Replacing it (the model changed
 /// again) or removing it drops the task, which cancels it.
 #[derive(Component)]
-pub struct Meshing(Task<Vec<mesher::ChunkMesh>>);
+pub struct Meshing {
+    task: Task<Vec<mesher::ChunkMesh>>,
+    /// Whether these are the half-resolution meshes.
+    coarse: bool,
+}
+
+/// Draws a model at half resolution, each 2x2x2 voxels merged into one, and without
+/// its lights (its glowing voxels still glow): about a quarter of the faces, for builds
+/// too far off to show the difference. Adding or removing it rebuilds the meshes.
+#[derive(Component)]
+pub struct Coarse;
 
 /// Keeps a model as data only: no meshes or lights, so it costs nothing to draw. Its
 /// grid still answers collision and selection. Removing it builds the meshes again.
@@ -269,22 +281,60 @@ fn put_to_sleep(mut commands: Commands, mut models: Query<(Entity, Option<&mut V
     }
 }
 
-/// Starts meshing every changed model, and every model that just woke up.
+/// Starts meshing every changed model, every model that just woke up, and every model
+/// whose resolution changed.
 fn start_rebuilds(
     mut commands: Commands,
     mut woken: RemovedComponents<Dormant>,
-    changed: Query<Entity, (Changed<VoxelModel>, Without<Dormant>)>,
-    models: Query<&VoxelModel, Without<Dormant>>,
+    mut refined: RemovedComponents<Coarse>,
+    changed: Query<Entity, (Or<(Changed<VoxelModel>, Added<Coarse>)>, Without<Dormant>)>,
+    models: Query<(&VoxelModel, Has<Coarse>), Without<Dormant>>,
 ) {
-    let woken: HashSet<Entity> = woken.read().collect();
-    for entity in changed.iter().chain(woken.into_iter()) {
-        let Ok(model) = models.get(entity) else {
+    let others: HashSet<Entity> = woken.read().chain(refined.read()).collect();
+    for entity in changed.iter().chain(others) {
+        let Ok((model, coarse)) = models.get(entity) else {
             continue;
         };
         let (grid, palette) = (model.grid.clone(), model.palette.clone());
-        let task = AsyncComputeTaskPool::get().spawn(async move { mesher::mesh_grid(&grid, &palette) });
-        commands.entity(entity).try_insert(Meshing(task));
+        let task = AsyncComputeTaskPool::get().spawn(async move {
+            let grid = if coarse { downsample(&grid) } else { grid };
+            mesher::mesh_grid(&grid, &palette)
+        });
+        commands.entity(entity).try_insert(Meshing { task, coarse });
     }
+}
+
+/// Merges each 2x2x2 voxels of `grid` into one: filled when at least two of them are,
+/// so thin posts and walls survive, with the topmost one's material, so roofs and
+/// grass keep their color.
+fn downsample(grid: &VoxelGrid) -> VoxelGrid {
+    let size = (grid.size() + 1) / 2;
+    let mut coarse = VoxelGrid::new(size);
+    for z in 0..size.z as i32 {
+        for y in 0..size.y as i32 {
+            for x in 0..size.x as i32 {
+                let at = IVec3::new(x, y, z) * 2;
+                let (mut filled, mut top) = (0, AIR);
+                for dy in (0..2).rev() {
+                    for dz in 0..2 {
+                        for dx in 0..2 {
+                            let id = grid.get(at + IVec3::new(dx, dy, dz));
+                            if id != AIR {
+                                filled += 1;
+                                if top == AIR {
+                                    top = id;
+                                }
+                            }
+                        }
+                    }
+                }
+                if filled >= 2 {
+                    coarse.set(IVec3::new(x, y, z), top);
+                }
+            }
+        }
+    }
+    coarse
 }
 
 /// Swaps in the meshes of finished tasks, with the model's lights.
@@ -296,9 +346,10 @@ fn finish_rebuilds(
     mut models: Query<(Entity, &VoxelModel, &mut Meshing, Option<&mut VoxelModelParts>, Option<&DepthBias>)>,
 ) {
     for (entity, model, mut meshing, parts, bias) in &mut models {
-        let Some(chunks) = check_ready(&mut meshing.0) else {
+        let Some(chunks) = check_ready(&mut meshing.task) else {
             continue;
         };
+        let coarse = meshing.coarse;
         commands.entity(entity).remove::<Meshing>();
         for e in parts.map(|mut p| std::mem::take(&mut p.0)).unwrap_or_default() {
             commands.entity(e).despawn();
@@ -306,6 +357,7 @@ fn finish_rebuilds(
 
         let bias = bias.map_or(0.0, |b| b.0);
         let offset = -model.pivot * model.voxel_size;
+        let voxel = if coarse { model.voxel_size * 2.0 } else { model.voxel_size };
         let mut spawned = Vec::with_capacity(chunks.len() + model.lights.len());
         for chunk in chunks {
             let surface = &model.palette.surfaces[chunk.surface];
@@ -314,8 +366,7 @@ fn finish_rebuilds(
                 VoxelChunk,
                 Mesh3d(meshes.add(chunk.mesh)),
                 MeshMaterial3d(shared.get(&mut materials, surface, bias)),
-                Transform::from_translation(offset + chunk.origin.as_vec3() * model.voxel_size)
-                    .with_scale(Vec3::splat(model.voxel_size)),
+                Transform::from_translation(offset + chunk.origin.as_vec3() * voxel).with_scale(Vec3::splat(voxel)),
                 ChildOf(entity),
             ));
             if surface.is_transparent() {
@@ -323,7 +374,8 @@ fn finish_rebuilds(
             }
             spawned.push(e.id());
         }
-        for light in &model.lights {
+        let lights = if coarse { &[][..] } else { &model.lights[..] };
+        for light in lights {
             spawned.push(
                 commands
                     .spawn((
@@ -399,6 +451,42 @@ mod tests {
         app.world_mut().entity_mut(entity).remove::<Dormant>();
         settle(&mut app, entity);
         assert_eq!(parts(&app, entity), 1);
+    }
+
+    #[test]
+    fn coarse_models_have_fewer_faces_and_no_lights() {
+        let mut app = app();
+        let mut big = model();
+        big.grid = VoxelGrid::new(UVec3::splat(16));
+        for z in 0..16 {
+            for y in 0..16 {
+                for x in 0..16 {
+                    if (x + y + z) % 5 != 0 {
+                        big.grid.set(IVec3::new(x, y, z), 1);
+                    }
+                }
+            }
+        }
+        big.lights.push(ModelLight { position: Vec3::ONE, color: Color::WHITE, intensity: 1.0, range: 1.0 });
+        let entity = app.world_mut().spawn(big).id();
+        settle(&mut app, entity);
+        let faces = |app: &App| {
+            let meshes = app.world().resource::<Assets<Mesh>>();
+            let parts = &app.world().get::<VoxelModelParts>(entity).unwrap().0;
+            let faces: usize = parts
+                .iter()
+                .filter_map(|e| app.world().get::<Mesh3d>(*e))
+                .map(|m| meshes.get(&m.0).unwrap().indices().unwrap().len() / 6)
+                .sum();
+            (faces, parts.len())
+        };
+        let (fine, fine_parts) = faces(&app);
+        app.world_mut().entity_mut(entity).insert(Coarse);
+        settle(&mut app, entity);
+        let (coarse, coarse_parts) = faces(&app);
+        assert!(coarse * 3 < fine, "{coarse} coarse faces vs {fine}");
+        // The light is gone; the one chunk mesh stays.
+        assert_eq!((fine_parts, coarse_parts), (2, 1));
     }
 
     #[test]

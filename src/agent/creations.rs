@@ -13,7 +13,7 @@ use cubewish_rules::{
 
 use super::spec::{BuildSpec, BuildStats, VOXEL_SIZE, compile};
 use crate::{
-    voxel::{DepthBias, Dormant, ModelData, VoxelModel},
+    voxel::{Coarse, DepthBias, Dormant, ModelData, VoxelModel},
     world::{CHUNK, ChunkLoader, SolidModel, VoxelWorld, ledger::Ledger, lod::VIEW_DISTANCE, terrain::{self, is_solid}},
 };
 
@@ -529,28 +529,38 @@ pub fn placement_for_hit(world: &VoxelWorld, point: Vec3, normal: Vec3, size: Ve
     Some(at)
 }
 
+/// Builds this close (plus their own size) are drawn in full detail; farther ones
+/// at half resolution, which their small voxels hide at that distance.
+const DETAIL_DISTANCE: f32 = 40.0;
+
 /// Builds out of view go [`Dormant`] (no meshes or lights) and wake as the hero comes
-/// near, like terrain chunks, so drawing them costs what is in view, not the whole
-/// world. The margin keeps a build at the edge from flickering in and out.
+/// near, like terrain chunks, and far ones are drawn [`Coarse`], so drawing them costs
+/// what is in view, and less the farther it is. Margins keep a build at an edge from
+/// switching back and forth.
 pub fn stream_creations(
     mut commands: Commands,
     loaders: Query<&GlobalTransform, With<ChunkLoader>>,
-    builds: Query<(Entity, &Transform, &Creation, Has<Dormant>), Without<DraftMarker>>,
+    builds: Query<(Entity, &Transform, &Creation, Has<Dormant>, Has<Coarse>), Without<DraftMarker>>,
 ) {
-    let view = VIEW_DISTANCE;
     // Terrain voxels, which are bigger than a build's.
     let margin = (2 * CHUNK) as f32 * terrain::VOXEL_SIZE;
-    for (entity, transform, creation, dormant) in &builds {
+    for (entity, transform, creation, dormant, coarse) in &builds {
         let distance = loaders
             .iter()
             .map(|l| (l.translation() - transform.translation).xz().length())
             .fold(f32::INFINITY, f32::min);
         // However the build sits around its origin, it's within its diagonal of it.
-        let reach = view + creation.size.length();
-        if dormant && distance <= reach {
-            commands.entity(entity).remove::<Dormant>();
-        } else if !dormant && distance > reach + margin {
-            commands.entity(entity).insert(Dormant);
+        let size = creation.size.length();
+        let mut e = commands.entity(entity);
+        if dormant && distance <= VIEW_DISTANCE + size {
+            e.remove::<Dormant>();
+        } else if !dormant && distance > VIEW_DISTANCE + size + margin {
+            e.insert(Dormant);
+        }
+        if coarse && distance <= DETAIL_DISTANCE + size {
+            e.remove::<Coarse>();
+        } else if !coarse && distance > DETAIL_DISTANCE + size + margin / 2.0 {
+            e.insert(Coarse);
         }
     }
 }
@@ -576,5 +586,9 @@ mod stream_tests {
         assert!(world.get::<Dormant>(near).is_none());
         assert!(world.get::<Dormant>(edge).is_none());
         assert!(world.get::<Dormant>(draft).is_none());
+        // Far ones are coarse, near ones full detail.
+        assert!(world.get::<Coarse>(far).is_some());
+        assert!(world.get::<Coarse>(near).is_none());
+        assert!(world.get::<Coarse>(edge).is_some());
     }
 }
