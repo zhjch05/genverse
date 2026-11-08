@@ -274,6 +274,25 @@ impl VoxelWorld {
         (self.loaded.len(), self.pending.len())
     }
 
+    /// How many of the chunks within view of `pos` are loaded, out of how many there are.
+    #[cfg_attr(target_arch = "wasm32", allow(dead_code))]
+    pub fn view_loaded(&self, pos: Vec3) -> (usize, usize) {
+        let center = chunk_of(Self::voxel_at(pos));
+        let (mut loaded, mut total) = (0, 0);
+        for dz in -VIEW_RADIUS..=VIEW_RADIUS {
+            for dx in -VIEW_RADIUS..=VIEW_RADIUS {
+                if dx * dx + dz * dz > VIEW_RADIUS * VIEW_RADIUS {
+                    continue;
+                }
+                for cy in 0..VERTICAL_CHUNKS {
+                    total += 1;
+                    loaded += self.loaded.contains_key(&IVec3::new(center.x + dx, cy, center.z + dz)) as usize;
+                }
+            }
+        }
+        (loaded, total)
+    }
+
     pub fn column_loaded(&self, pos: Vec3) -> bool {
         let c = chunk_of(Self::voxel_at(pos));
         (0..VERTICAL_CHUNKS).all(|y| self.loaded.contains_key(&c.with_y(y)))

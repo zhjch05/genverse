@@ -8,7 +8,7 @@ use std::collections::VecDeque;
 use bevy::{prelude::*, window::PrimaryWindow};
 use bevy_egui::{EguiContexts, egui, input::EguiWantsInput};
 
-use super::{prefs, theme};
+use super::{loading::Loading, prefs, theme};
 use crate::{
     player::{InputBlocked, Player, PointerOverUi},
     graphics::Graphics,
@@ -68,14 +68,21 @@ impl Fps {
     }
 }
 
-/// F3 shows and hides it, like Minecraft's debug screen; it measures either way.
-pub fn track_frames(keys: Res<ButtonInput<KeyCode>>, blocked: Res<InputBlocked>, time: Res<Time<Real>>, mut fps: ResMut<Fps>) {
+/// F3 shows and hides it, like Minecraft's debug screen; it measures either way, from
+/// the end of the loading screen.
+pub fn track_frames(
+    keys: Res<ButtonInput<KeyCode>>,
+    blocked: Res<InputBlocked>,
+    time: Res<Time<Real>>,
+    loading: Res<Loading>,
+    mut fps: ResMut<Fps>,
+) {
     if !blocked.0 && keys.just_pressed(KeyCode::F3) {
         fps.open = !fps.open;
         prefs::set("fps", fps.open);
     }
     let ms = time.delta_secs() * 1000.0;
-    if ms <= 0.0 {
+    if ms <= 0.0 || !loading.is_done() {
         return;
     }
     if fps.frames.len() == FRAMES {
