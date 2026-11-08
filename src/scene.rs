@@ -19,7 +19,7 @@ use bevy::{
 
 use crate::{
     player::FollowCamera,
-    world::{CHUNK, VIEW_RADIUS, terrain::VOXEL_SIZE},
+    world::lod::VIEW_DISTANCE,
 };
 
 pub struct ScenePlugin;
@@ -68,8 +68,8 @@ fn setup(mut commands: Commands, mut media: ResMut<Assets<ScatteringMedium>>) {
         Transform::from_rotation(Quat::from_euler(EulerRot::YXZ, PI * 0.35, -0.75, 0.0)),
     ));
 
-    // Fade the terrain out just before the streaming edge.
-    let view = (VIEW_RADIUS * CHUNK) as f32 * VOXEL_SIZE;
+    // Haze over the coarse terrain, fading it out just before the streaming edge.
+    let view = VIEW_DISTANCE;
     commands.spawn((
         Name::new("Camera"),
         Camera3d::default(),
@@ -81,7 +81,7 @@ fn setup(mut commands: Commands, mut media: ResMut<Assets<ScatteringMedium>>) {
             directional_light_color: Color::srgba(1.0, 0.9, 0.7, 0.3),
             directional_light_exponent: 20.0,
             falloff: FogFalloff::Linear {
-                start: view * 0.45,
+                start: view * 0.3,
                 end: view * 0.98,
             },
         },

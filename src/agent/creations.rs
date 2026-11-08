@@ -14,7 +14,7 @@ use cubewish_rules::{
 use super::spec::{BuildSpec, BuildStats, VOXEL_SIZE, compile};
 use crate::{
     voxel::{DepthBias, Dormant, ModelData, VoxelModel},
-    world::{CHUNK, ChunkLoader, SolidModel, VIEW_RADIUS, VoxelWorld, ledger::Ledger, terrain::{self, is_solid}},
+    world::{CHUNK, ChunkLoader, SolidModel, VoxelWorld, ledger::Ledger, lod::VIEW_DISTANCE, terrain::{self, is_solid}},
 };
 
 pub struct Draft {
@@ -537,8 +537,8 @@ pub fn stream_creations(
     loaders: Query<&GlobalTransform, With<ChunkLoader>>,
     builds: Query<(Entity, &Transform, &Creation, Has<Dormant>), Without<DraftMarker>>,
 ) {
+    let view = VIEW_DISTANCE;
     // Terrain voxels, which are bigger than a build's.
-    let view = (VIEW_RADIUS * CHUNK) as f32 * terrain::VOXEL_SIZE;
     let margin = (2 * CHUNK) as f32 * terrain::VOXEL_SIZE;
     for (entity, transform, creation, dormant) in &builds {
         let distance = loaders
@@ -567,8 +567,8 @@ mod stream_tests {
         let size = Vec3::splat(4.0);
         let far = app.world_mut().spawn((Creation { size }, Transform::from_xyz(200.0, 0.0, 0.0))).id();
         let near = app.world_mut().spawn((Creation { size }, Transform::from_xyz(10.0, 0.0, 0.0), Dormant)).id();
-        // Just past the view, inside the margin: stays as it is either way.
-        let edge = app.world_mut().spawn((Creation { size }, Transform::from_xyz(62.0, 0.0, 0.0))).id();
+        // Just past the view, inside the margin: stays as it is.
+        let edge = app.world_mut().spawn((Creation { size }, Transform::from_xyz(VIEW_DISTANCE + 10.0, 0.0, 0.0))).id();
         let draft = app.world_mut().spawn((Creation { size }, DraftMarker, Transform::from_xyz(300.0, 0.0, 0.0))).id();
         app.update();
         let world = app.world();
