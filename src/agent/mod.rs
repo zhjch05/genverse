@@ -54,7 +54,7 @@ use cubewish_rules::{
     settings::{LandMode, WorldRules},
 };
 use creations::{
-    Adjust, Creation, Creations, DraftMarker, Undone, load_creations, outline_creations, placement_for_hit,
+    Adjust, Creation, Creations, DraftMarker, Undone, load_creations, outline_creations, placement_for_hit, stream_creations,
 };
 use landscape::{
     AreaGizmos, Landscape, ParcelOverlay, PreviewError, draw_parcels, configure_area_gizmos, describe_stats, land_summary, draw_area, highlight_area, select_area,
@@ -101,6 +101,7 @@ impl Plugin for AgentPlugin {
                 (
                     block_game_input,
                     center_view,
+                    stream_creations,
                     (online::sync_online, lan::update_lan, update_build_site, answer_tool_calls, poll_agent).chain(),
                     (presence::send_presence, presence::move_avatars, presence::draw_peers, history::toggle_history, (loading::track_loading, fps::track_frames).chain()),
                     auto_prompt,

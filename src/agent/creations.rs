@@ -13,8 +13,8 @@ use cubewish_rules::{
 
 use super::spec::{BuildSpec, BuildStats, VOXEL_SIZE, compile};
 use crate::{
-    voxel::{DepthBias, ModelData, VoxelModel},
-    world::{SolidModel, VoxelWorld, ledger::Ledger, terrain::is_solid},
+    voxel::{DepthBias, Dormant, ModelData, VoxelModel},
+    world::{CHUNK, ChunkLoader, SolidModel, VIEW_RADIUS, VoxelWorld, ledger::Ledger, terrain::{self, is_solid}},
 };
 
 pub struct Draft {
@@ -438,7 +438,9 @@ pub fn load_creations(mut commands: Commands, mut creations: ResMut<Creations>, 
         // Saved specs are re-validated, so tightened limits apply to old builds too.
         match compile(&c.spec, &BuildLimits::ACCEPTED) {
             Ok(build) => {
+                // Asleep until the hero comes near; see `stream_creations`.
                 let entity = spawn_placed(&mut commands, &build.model, c);
+                commands.entity(entity).insert(Dormant);
                 creations.placed.push((entity, c.clone()));
             }
             Err(errors) => warn!("skipping saved creation {:?}: {}", c.name, errors.join("; ")),
@@ -525,4 +527,54 @@ pub fn placement_for_hit(world: &VoxelWorld, point: Vec3, normal: Vec3, size: Ve
     at.x = (at.x / VOXEL_SIZE).round() * VOXEL_SIZE;
     at.z = (at.z / VOXEL_SIZE).round() * VOXEL_SIZE;
     Some(at)
+}
+
+/// Builds out of view go [`Dormant`] (no meshes or lights) and wake as the hero comes
+/// near, like terrain chunks, so drawing them costs what is in view, not the whole
+/// world. The margin keeps a build at the edge from flickering in and out.
+pub fn stream_creations(
+    mut commands: Commands,
+    loaders: Query<&GlobalTransform, With<ChunkLoader>>,
+    builds: Query<(Entity, &Transform, &Creation, Has<Dormant>), Without<DraftMarker>>,
+) {
+    // Terrain voxels, which are bigger than a build's.
+    let view = (VIEW_RADIUS * CHUNK) as f32 * terrain::VOXEL_SIZE;
+    let margin = (2 * CHUNK) as f32 * terrain::VOXEL_SIZE;
+    for (entity, transform, creation, dormant) in &builds {
+        let distance = loaders
+            .iter()
+            .map(|l| (l.translation() - transform.translation).xz().length())
+            .fold(f32::INFINITY, f32::min);
+        // However the build sits around its origin, it's within its diagonal of it.
+        let reach = view + creation.size.length();
+        if dormant && distance <= reach {
+            commands.entity(entity).remove::<Dormant>();
+        } else if !dormant && distance > reach + margin {
+            commands.entity(entity).insert(Dormant);
+        }
+    }
+}
+
+#[cfg(test)]
+mod stream_tests {
+    use super::*;
+
+    #[test]
+    fn far_builds_sleep_and_near_ones_wake() {
+        let mut app = App::new();
+        app.add_systems(Update, stream_creations);
+        app.world_mut().spawn((ChunkLoader, GlobalTransform::default()));
+        let size = Vec3::splat(4.0);
+        let far = app.world_mut().spawn((Creation { size }, Transform::from_xyz(200.0, 0.0, 0.0))).id();
+        let near = app.world_mut().spawn((Creation { size }, Transform::from_xyz(10.0, 0.0, 0.0), Dormant)).id();
+        // Just past the view, inside the margin: stays as it is either way.
+        let edge = app.world_mut().spawn((Creation { size }, Transform::from_xyz(62.0, 0.0, 0.0))).id();
+        let draft = app.world_mut().spawn((Creation { size }, DraftMarker, Transform::from_xyz(300.0, 0.0, 0.0))).id();
+        app.update();
+        let world = app.world();
+        assert!(world.get::<Dormant>(far).is_some());
+        assert!(world.get::<Dormant>(near).is_none());
+        assert!(world.get::<Dormant>(edge).is_none());
+        assert!(world.get::<Dormant>(draft).is_none());
+    }
 }

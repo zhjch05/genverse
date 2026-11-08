@@ -4,8 +4,12 @@
 //! - When that asset loads (or changes on disk) the entity gets a [`VoxelModel`],
 //!   the editable runtime data: grid, palette, scale.
 //! - Whenever [`VoxelModel`] changes, its chunk meshes and lights are rebuilt as children.
+//!   Meshing runs on the async compute pool; the old children stay until the new ones
+//!   are ready, so a change never flashes a hole.
+//! - A [`Dormant`] model keeps its data but no meshes or lights, for builds out of view.
 //!
-//! Gameplay code can mutate `VoxelModel::grid` directly and the change shows up next frame.
+//! Gameplay code can mutate `VoxelModel::grid` directly and the change shows up a frame
+//! or two later.
 
 pub mod asset;
 pub mod mesher;
@@ -17,10 +21,11 @@ use bevy::{
     light::NotShadowCaster,
     mesh::MeshVertexBufferLayoutRef,
     pbr::{ExtendedMaterial, MaterialExtension, MaterialExtensionKey, MaterialExtensionPipeline},
-    platform::collections::HashSet,
+    platform::collections::{HashMap, HashSet},
     prelude::*,
     render::render_resource::{AsBindGroup, RenderPipelineDescriptor, SpecializedMeshPipelineError},
     shader::{ShaderDefVal, ShaderRef},
+    tasks::{AsyncComputeTaskPool, Task, futures::check_ready},
 };
 
 pub use asset::VoxelModelAsset;
@@ -121,7 +126,8 @@ impl Plugin for VoxelPlugin {
         app.add_plugins(MaterialPlugin::<VoxelMaterial>::default())
             .init_asset::<VoxelModelAsset>()
             .init_asset_loader::<asset::VoxelModelLoader>()
-            .add_systems(Update, (sync_from_asset, rebuild_models).chain());
+            .init_resource::<SharedMaterials>()
+            .add_systems(Update, (sync_from_asset, put_to_sleep, start_rebuilds, finish_rebuilds).chain());
     }
 }
 
@@ -194,6 +200,38 @@ pub struct DepthBias(pub f32);
 #[derive(Component, Default)]
 struct VoxelModelParts(Vec<Entity>);
 
+/// A model's meshes being built in the background. Replacing it (the model changed
+/// again) or removing it drops the task, which cancels it.
+#[derive(Component)]
+pub struct Meshing(Task<Vec<mesher::ChunkMesh>>);
+
+/// Keeps a model as data only: no meshes or lights, so it costs nothing to draw. Its
+/// grid still answers collision and selection. Removing it builds the meshes again.
+#[derive(Component)]
+pub struct Dormant;
+
+/// One material per distinct surface and depth bias, shared by every model that uses
+/// it, so their chunks draw in the same batches. Kept for the whole session; a world
+/// holds only so many distinct surfaces.
+#[derive(Resource, Default)]
+struct SharedMaterials(HashMap<[u32; 9], Handle<VoxelMaterial>>);
+
+impl SharedMaterials {
+    fn get(&mut self, materials: &mut Assets<VoxelMaterial>, surface: &Surface, bias: f32) -> Handle<VoxelMaterial> {
+        let e = surface.emissive;
+        let key = [surface.roughness, surface.metallic, surface.reflectance, e.red, e.green, e.blue, e.alpha, surface.alpha, bias]
+            .map(f32::to_bits);
+        self.0
+            .entry(key)
+            .or_insert_with(|| {
+                let mut material = surface.to_material();
+                material.base.depth_bias = bias;
+                materials.add(material)
+            })
+            .clone()
+    }
+}
+
 /// Marks a generated chunk mesh.
 #[derive(Component)]
 pub struct VoxelChunk;
@@ -221,44 +259,61 @@ fn sync_from_asset(
     }
 }
 
-fn rebuild_models(
+/// Drops the meshes and lights of models that just went dormant.
+fn put_to_sleep(mut commands: Commands, mut models: Query<(Entity, Option<&mut VoxelModelParts>), Added<Dormant>>) {
+    for (entity, parts) in &mut models {
+        for e in parts.map(|mut p| std::mem::take(&mut p.0)).unwrap_or_default() {
+            commands.entity(e).despawn();
+        }
+        commands.entity(entity).remove::<Meshing>();
+    }
+}
+
+/// Starts meshing every changed model, and every model that just woke up.
+fn start_rebuilds(
+    mut commands: Commands,
+    mut woken: RemovedComponents<Dormant>,
+    changed: Query<Entity, (Changed<VoxelModel>, Without<Dormant>)>,
+    models: Query<&VoxelModel, Without<Dormant>>,
+) {
+    let woken: HashSet<Entity> = woken.read().collect();
+    for entity in changed.iter().chain(woken.into_iter()) {
+        let Ok(model) = models.get(entity) else {
+            continue;
+        };
+        let (grid, palette) = (model.grid.clone(), model.palette.clone());
+        let task = AsyncComputeTaskPool::get().spawn(async move { mesher::mesh_grid(&grid, &palette) });
+        commands.entity(entity).try_insert(Meshing(task));
+    }
+}
+
+/// Swaps in the meshes of finished tasks, with the model's lights.
+fn finish_rebuilds(
     mut commands: Commands,
     mut meshes: ResMut<Assets<Mesh>>,
     mut materials: ResMut<Assets<VoxelMaterial>>,
-    mut models: Query<
-        (Entity, &VoxelModel, Option<&mut VoxelModelParts>, Option<&DepthBias>),
-        Changed<VoxelModel>,
-    >,
+    mut shared: ResMut<SharedMaterials>,
+    mut models: Query<(Entity, &VoxelModel, &mut Meshing, Option<&mut VoxelModelParts>, Option<&DepthBias>)>,
 ) {
-    for (entity, model, parts, bias) in &mut models {
-        let started = bevy::platform::time::Instant::now();
-        let old = parts.map(|mut p| std::mem::take(&mut p.0)).unwrap_or_default();
-        for e in old {
+    for (entity, model, mut meshing, parts, bias) in &mut models {
+        let Some(chunks) = check_ready(&mut meshing.0) else {
+            continue;
+        };
+        commands.entity(entity).remove::<Meshing>();
+        for e in parts.map(|mut p| std::mem::take(&mut p.0)).unwrap_or_default() {
             commands.entity(e).despawn();
         }
 
-        let surface_materials: Vec<_> = model
-            .palette
-            .surfaces
-            .iter()
-            .map(|s| {
-                let mut material = s.to_material();
-                material.base.depth_bias = bias.map_or(0.0, |b| b.0);
-                materials.add(material)
-            })
-            .collect();
+        let bias = bias.map_or(0.0, |b| b.0);
         let offset = -model.pivot * model.voxel_size;
-        let chunks = mesher::mesh_grid(&model.grid, &model.palette);
-        let chunk_count = chunks.len();
-
-        let mut spawned = Vec::with_capacity(chunk_count + model.lights.len());
+        let mut spawned = Vec::with_capacity(chunks.len() + model.lights.len());
         for chunk in chunks {
             let surface = &model.palette.surfaces[chunk.surface];
             let mut e = commands.spawn((
                 Name::new(format!("Voxel chunk {} ({})", chunk.origin, surface.name)),
                 VoxelChunk,
                 Mesh3d(meshes.add(chunk.mesh)),
-                MeshMaterial3d(surface_materials[chunk.surface].clone()),
+                MeshMaterial3d(shared.get(&mut materials, surface, bias)),
                 Transform::from_translation(offset + chunk.origin.as_vec3() * model.voxel_size)
                     .with_scale(Vec3::splat(model.voxel_size)),
                 ChildOf(entity),
@@ -290,9 +345,69 @@ fn rebuild_models(
             );
         }
         commands.entity(entity).insert(VoxelModelParts(spawned));
-        info!(
-            "rebuilt voxel model {entity}: {chunk_count} chunk meshes in {:.0?}",
-            started.elapsed()
-        );
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn app() -> App {
+        let mut app = App::new();
+        app.add_plugins(MinimalPlugins)
+            .init_resource::<Assets<Mesh>>()
+            .init_resource::<Assets<VoxelMaterial>>()
+            .init_resource::<SharedMaterials>()
+            .add_systems(Update, (put_to_sleep, start_rebuilds, finish_rebuilds).chain());
+        app
+    }
+
+    fn model() -> VoxelModel {
+        let mut grid = VoxelGrid::new(UVec3::splat(4));
+        grid.set(IVec3::ONE, 1);
+        let palette = crate::world::terrain::palette();
+        VoxelModel { grid, palette: Arc::new(palette), voxel_size: 0.25, pivot: Vec3::ZERO, lights: Vec::new() }
+    }
+
+    /// Runs frames until the background meshing is done.
+    fn settle(app: &mut App, entity: Entity) {
+        for _ in 0..1000 {
+            app.update();
+            if app.world().get::<Meshing>(entity).is_none() {
+                return;
+            }
+            std::thread::yield_now();
+        }
+        panic!("meshing never finished");
+    }
+
+    fn parts(app: &App, entity: Entity) -> usize {
+        app.world().get::<VoxelModelParts>(entity).map_or(0, |p| p.0.len())
+    }
+
+    #[test]
+    fn meshes_in_the_background_and_sleeps() {
+        let mut app = app();
+        let entity = app.world_mut().spawn(model()).id();
+        settle(&mut app, entity);
+        assert_eq!(parts(&app, entity), 1);
+
+        app.world_mut().entity_mut(entity).insert(Dormant);
+        app.update();
+        assert_eq!(parts(&app, entity), 0);
+
+        app.world_mut().entity_mut(entity).remove::<Dormant>();
+        settle(&mut app, entity);
+        assert_eq!(parts(&app, entity), 1);
+    }
+
+    #[test]
+    fn models_share_materials() {
+        let mut app = app();
+        let a = app.world_mut().spawn(model()).id();
+        let b = app.world_mut().spawn(model()).id();
+        settle(&mut app, a);
+        settle(&mut app, b);
+        assert_eq!(app.world().resource::<Assets<VoxelMaterial>>().len(), 1);
     }
 }

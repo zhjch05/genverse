@@ -8,7 +8,7 @@ use bevy::prelude::*;
 use bevy_egui::{EguiContexts, egui};
 
 use super::theme;
-use crate::{player::Player, world::VoxelWorld};
+use crate::{player::Player, voxel::Meshing, world::VoxelWorld};
 
 /// How long the screen takes to fade out, in seconds.
 const FADE: f32 = 0.4;
@@ -40,6 +40,7 @@ pub fn track_loading(
     time: Res<Time<Real>>,
     world: Res<VoxelWorld>,
     player: Query<(&Player, &Transform)>,
+    meshing: Query<(), With<Meshing>>,
     mut loading: ResMut<Loading>,
 ) {
     if loading.is_done() {
@@ -51,7 +52,8 @@ pub fn track_loading(
     let now = time.elapsed_secs();
     loading.chunks = world.view_loaded(transform.translation);
     let (loaded, total) = loading.chunks;
-    if loaded < total || !player.has_landed() {
+    // Builds in view (and the hero) mesh in the background too.
+    if loaded < total || !player.has_landed() || !meshing.is_empty() {
         return;
     }
     let since = *loading.settling_since.get_or_insert(now);
