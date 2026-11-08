@@ -5,7 +5,7 @@ use cubewish_rules::{
     log::{Action, Provenance, WorldLog, replay},
     logic::{
         EntityId, Intent, Scope,
-        data::{DefSpec, GameSpec, ScriptSpec},
+        data::{DefSpec, GameSpec, ModelSpec, ScriptSpec},
     },
 };
 
@@ -15,8 +15,25 @@ fn sokoban() -> GameSpec {
         title: "Sokoban".into(),
         defs: vec![DefSpec { name: "board".into(), kind: "fixture".into(), title: "Sokoban board".into(), ..Default::default() }],
         scripts: vec![ScriptSpec { name: "main.luau".into(), source: include_str!("sokoban.luau").into() }],
+        models: models(),
     }
 }
+
+/// The voxel models the pieces look like.
+pub fn models() -> Vec<ModelSpec> {
+    let model = |name: &str, json: &str| ModelSpec { name: name.into(), build: serde_json::from_str(json).unwrap() };
+    vec![
+        model("floor", r##"{"name":"Floor","size":[64,1,48],"palette":[{"name":"sand","hex":"#d8c8a8","material":"matte"}],
+            "shapes":[{"kind":"box","color":"sand","from":[0,0,0],"to":[64,1,48],"radius":null,"wobble":null}]}"##),
+        model("wall", r##"{"name":"Wall","size":[8,8,8],"palette":[{"name":"stone","hex":"#8a857e","material":"matte"}],
+            "shapes":[{"kind":"box","color":"stone","from":[0,0,0],"to":[8,8,8],"radius":null,"wobble":0.15}]}"##),
+        model("box", r##"{"name":"Box","size":[6,6,6],"palette":[{"name":"wood","hex":"#b07a45","material":"matte"}],
+            "shapes":[{"kind":"box","color":"wood","from":[0,0,0],"to":[6,6,6],"radius":null,"wobble":null}]}"##),
+        model("target", r##"{"name":"Target","size":[6,1,6],"palette":[{"name":"mark","hex":"#e5534b","material":"glow"}],
+            "shapes":[{"kind":"box","color":"mark","from":[0,0,0],"to":[6,1,6],"radius":null,"wobble":null}]}"##),
+    ]
+}
+
 
 fn by(player: &str, at: u64) -> Provenance {
     Provenance::new(player, player, None, None, at)
@@ -66,4 +83,21 @@ fn sokoban_plays_through_the_log() {
     let again: WorldLog = serde_json::from_str(&serde_json::to_string(&log).unwrap()).unwrap();
     let positions = |log: &WorldLog| replay(log).logic.state.entities().map(|(id, e)| (id, e.position)).collect::<Vec<_>>();
     assert_eq!(positions(&log), positions(&again));
+}
+
+#[test]
+fn trials_show_what_a_package_does() {
+    let package = sokoban().to_package(1);
+    let steps: Vec<String> = ["place board", "enter", "east", "east", "jump"].iter().map(|s| s.to_string()).collect();
+    let report = cubewish_rules::logic::trial::play(&package, &steps);
+    println!("{report}");
+    // The board, 24 walls, 2 targets and 2 boxes.
+    assert!(report.contains("1. place board: ok, 29 change(s)"), "{report}");
+    assert!(report.contains("4. east: ok"), "{report}");
+    assert!(report.contains("5. jump: REFUSED"), "{report}");
+    assert!(report.contains("  w...@b.w"), "the pushed box shows on the map:\n{report}");
+    let mut broken = sokoban();
+    broken.scripts[0].source = "function on_place(ev) spawn(ev.pos, { look = { model = 'barrel' } }) end".into();
+    let report = cubewish_rules::logic::trial::play(&broken.to_package(1), &steps[..1]);
+    assert!(report.contains("REFUSED") && report.contains("models (box, floor, target, wall)"), "{report}");
 }

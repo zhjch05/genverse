@@ -4,8 +4,9 @@
 //!
 //! A few components belong to the engine, which acts on them, and only an entity's own
 //! package sets them:
-//! - `look`: how it's drawn, `{"size": [w, h, d], "color": "#rrggbb", "glow": false}`
-//!   (meters, standing on its position).
+//! - `look`: how it's drawn, `{"model": "crate", "turn": 0}`: one of its package's voxel
+//!   models (see [`super::Package::models`]), standing on its position, turned by
+//!   quarter turns. Nothing else draws game pieces, so they all share the world's style.
 //! - `label`: a name shown over it when a player is near.
 //! - `zone`: `{"size": [w, d]}`, a rectangle centered on it. A player who walks in hands
 //!   their movement keys to its package (as [`super::Intent::Key`]) instead of walking.
@@ -26,6 +27,13 @@ use super::{Scope, package::split_name};
 pub const MAX_COMPONENT_BYTES: usize = 4096;
 /// The most of one item a player may carry.
 pub const MAX_ITEMS: u32 = 9999;
+/// Entities stand on the build voxel grid (12.5 cm), like builds.
+pub const GRID: f32 = crate::build::VOXEL_SIZE;
+
+/// The grid point nearest `p`.
+pub fn snap(p: [f32; 3]) -> [f32; 3] {
+    p.map(|v| (v / GRID).round() * GRID)
+}
 
 /// Named by the change that spawned it and its place among that change's spawns, so
 /// undoing an earlier change never renames a later one's entities.
@@ -71,15 +79,16 @@ pub enum Effect {
 pub const RESERVED: [&str; 4] = ["look", "label", "zone", "pawn"];
 
 /// Checks an engine component's value, phrased for the agent that wrote it.
-fn check_reserved(name: &str, value: &Value) -> Result<(), String> {
+fn check_reserved(name: &str, value: &Value, grants: &Grants) -> Result<(), String> {
     let sizes = |key: &str, n: usize, max: f64| {
         let list = value[key].as_array().filter(|a| a.len() == n);
         list.is_some_and(|a| a.iter().all(|v| v.as_f64().is_some_and(|v| v > 0.0 && v <= max)))
     };
     let ok = match name {
         "look" => {
-            let color = value["color"].as_str().is_some_and(|c| c.len() == 7 && c.starts_with('#') && c[1..].chars().all(|c| c.is_ascii_hexdigit()));
-            sizes("size", 3, 16.0) && color && (value["glow"].is_null() || value["glow"].is_boolean())
+            let model = value["model"].as_str().is_some_and(|m| grants.models.iter().any(|g| g == m));
+            let turn = value["turn"].is_null() || value["turn"].as_u64().is_some_and(|t| t < 4);
+            model && turn
         }
         "label" => value.as_str().is_some_and(|l| l.chars().count() <= 60),
         "zone" => sizes("size", 2, 128.0),
@@ -90,7 +99,10 @@ fn check_reserved(name: &str, value: &Value) -> Result<(), String> {
         Ok(())
     } else {
         Err(match name {
-            "look" => "\"look\" is {\"size\": [w, h, d] (meters, 0-16), \"color\": \"#rrggbb\", \"glow\": true/false}".into(),
+            "look" => format!(
+                "\"look\" is {{\"model\": one of the package's models ({}), \"turn\": 0-3}}",
+                if grants.models.is_empty() { "it has none".to_string() } else { grants.models.join(", ") }
+            ),
             "label" => "\"label\" is text of up to 60 characters".into(),
             "zone" => "\"zone\" is {\"size\": [w, d]} (meters, 0-128)".into(),
             _ => "\"pawn\" is a player id".into(),
@@ -106,6 +118,12 @@ pub struct Grants {
     pub spawn: bool,
     pub scope: Scope,
     pub max_entities: u32,
+    /// Its voxel models, which its entities' `look` may name.
+    pub models: Vec<String>,
+    /// Every entity it makes must be drawn: a `look`, unless it's a `pawn` (the hero
+    /// shows those). True for scripted packages; the simple farming kinds draw
+    /// themselves.
+    pub drawn: bool,
 }
 
 impl Grants {
@@ -284,9 +302,15 @@ impl Batch<'_> {
                 if count + 1 > grants.max_entities as i64 {
                     return Err(format!("{} already has {count} entities; this world allows {}", grants.package, grants.max_entities));
                 }
+                if grants.drawn && !components.contains_key("look") && !components.contains_key("pawn") {
+                    return Err(format!(
+                        "every piece needs a look: {{model = ...}}, one of the package's models ({})",
+                        if grants.models.is_empty() { "it has none yet; add some".to_string() } else { grants.models.join(", ") }
+                    ));
+                }
                 for (name, value) in components {
                     if RESERVED.contains(&name.as_str()) {
-                        check_reserved(name, value)?;
+                        check_reserved(name, value, grants)?;
                     } else {
                         grants.writable(name)?;
                     }
@@ -295,7 +319,7 @@ impl Batch<'_> {
                 let id = EntityId { change: self.change, n: self.spawned };
                 self.spawned += 1;
                 *self.counts.entry(grants.package.clone()).or_default() += 1;
-                let e = Entity { package: grants.package.clone(), position: *position, components: components.clone() };
+                let e = Entity { package: grants.package.clone(), position: snap(*position), components: components.clone() };
                 self.touched.insert(id, Some(e));
                 Ok(Some(id))
             }
@@ -311,7 +335,7 @@ impl Batch<'_> {
                 own(grants, &e)?;
                 grants.inside(e.position)?;
                 grants.inside(*position)?;
-                e.position = *position;
+                e.position = snap(*position);
                 self.touched.insert(*id, Some(e));
                 Ok(None)
             }
@@ -319,7 +343,7 @@ impl Batch<'_> {
                 let mut e = entity(self, *id)?;
                 if RESERVED.contains(&component.as_str()) {
                     own(grants, &e)?;
-                    check_reserved(component, value)?;
+                    check_reserved(component, value, grants)?;
                 } else {
                     grants.writable(component)?;
                 }
@@ -333,6 +357,9 @@ impl Batch<'_> {
                 let mut e = entity(self, *id)?;
                 if RESERVED.contains(&component.as_str()) {
                     own(grants, &e)?;
+                    if component == "look" && grants.drawn && !e.components.contains_key("pawn") {
+                        return Err("every piece needs a look; set another one instead of removing it".into());
+                    }
                 } else {
                     grants.writable(component)?;
                 }
@@ -392,7 +419,7 @@ mod tests {
     use super::*;
 
     fn grants(package: &str, scope: Scope) -> Grants {
-        Grants { package: package.into(), write: Vec::new(), spawn: true, scope, max_entities: 2 }
+        Grants { package: package.into(), write: Vec::new(), spawn: true, scope, max_entities: 2, models: vec!["crate".into()], drawn: false }
     }
 
     fn spawn(x: f32) -> Effect {
@@ -473,12 +500,12 @@ mod tests {
     fn engine_components_are_checked_and_owned() {
         let mut world = GameState::default();
         let game = grants("game", Scope::World);
-        let look = json!({ "size": [1, 1, 1], "color": "#8a6a4a" });
+        let look = json!({ "model": "crate" });
         let mut batch = world.batch(1, "a", 3);
         let spawn = Effect::Spawn { position: [0.0; 3], components: BTreeMap::from([("look".into(), look), ("label".into(), json!("Box"))]) };
         let id = batch.apply(&game, &spawn).unwrap().unwrap();
-        let bad = Effect::Set { entity: id, component: "look".into(), value: json!({ "size": [1, 1], "color": "red" }) };
-        assert!(batch.apply(&game, &bad).unwrap_err().contains("\"look\" is"));
+        let bad = Effect::Set { entity: id, component: "look".into(), value: json!({ "model": "barrel" }) };
+        assert!(batch.apply(&game, &bad).unwrap_err().contains("one of the package's models (crate)"));
         // Another package can't restyle it, even with permission to write game's data.
         let mut other = grants("other", Scope::World);
         other.write.push("game".into());

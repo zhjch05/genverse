@@ -11,7 +11,7 @@ use cubewish_rules::{
     log::{Action, BuildState, Provenance, signing_bytes},
     logic::{
         EntityId, Intent, Package, Scope,
-        data::{DefSpec, GameSpec, ScriptSpec},
+        data::{DefSpec, GameSpec, ModelSpec, ScriptSpec},
     },
 };
 use cubewish_server::{ServerConfig, start};
@@ -184,8 +184,25 @@ fn sokoban() -> GameSpec {
         title: "Sokoban".into(),
         defs: vec![DefSpec { name: "board".into(), kind: "fixture".into(), title: "Sokoban board".into(), ..Default::default() }],
         scripts: vec![ScriptSpec { name: "main.luau".into(), source: include_str!("../../rules/tests/sokoban.luau").into() }],
+        models: models(),
     }
 }
+
+/// The voxel models the pieces look like (as in the rules crate's test).
+fn models() -> Vec<ModelSpec> {
+    let model = |name: &str, json: &str| ModelSpec { name: name.into(), build: serde_json::from_str(json).unwrap() };
+    vec![
+        model("floor", r##"{"name":"Floor","size":[64,1,48],"palette":[{"name":"sand","hex":"#d8c8a8","material":"matte"}],
+            "shapes":[{"kind":"box","color":"sand","from":[0,0,0],"to":[64,1,48],"radius":null,"wobble":null}]}"##),
+        model("wall", r##"{"name":"Wall","size":[8,8,8],"palette":[{"name":"stone","hex":"#8a857e","material":"matte"}],
+            "shapes":[{"kind":"box","color":"stone","from":[0,0,0],"to":[8,8,8],"radius":null,"wobble":0.15}]}"##),
+        model("box", r##"{"name":"Box","size":[6,6,6],"palette":[{"name":"wood","hex":"#b07a45","material":"matte"}],
+            "shapes":[{"kind":"box","color":"wood","from":[0,0,0],"to":[6,6,6],"radius":null,"wobble":null}]}"##),
+        model("target", r##"{"name":"Target","size":[6,1,6],"palette":[{"name":"mark","hex":"#e5534b","material":"glow"}],
+            "shapes":[{"kind":"box","color":"mark","from":[0,0,0],"to":[6,1,6],"radius":null,"wobble":null}]}"##),
+    ]
+}
+
 
 #[test]
 fn packages_travel_with_the_change_that_installs_them() {

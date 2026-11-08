@@ -13,6 +13,7 @@ pub mod data;
 pub mod entity;
 pub mod package;
 pub mod script;
+pub mod trial;
 
 use std::{collections::BTreeMap, sync::Arc};
 
@@ -319,5 +320,7 @@ pub fn grants(package: &Package, install: &Install, rules: &LogicRules) -> Grant
         spawn: perms.contains(&Permission::Spawn),
         scope: install.scope.clone(),
         max_entities: rules.max_entities,
+        models: package.models.keys().cloned().collect(),
+        drawn: !package.scripts.is_empty(),
     }
 }

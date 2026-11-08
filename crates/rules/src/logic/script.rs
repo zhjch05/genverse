@@ -305,15 +305,27 @@ mod tests {
     use super::*;
     use crate::logic::{EntityId, GameState, Intent, Manifest, Permission, Scope, WorldTime};
 
+    /// A package with one script and a crate model.
     fn package(source: &str) -> Package {
         let manifest = Manifest { name: "game".into(), version: 1, title: "Game".into(), permissions: vec![Permission::Spawn], depends: Vec::new() };
-        Package { manifest, defs: BTreeMap::new(), scripts: BTreeMap::from([("main.luau".into(), source.into())]) }
+        let crate_model = serde_json::from_str(
+            r##"{"name":"Crate","size":[8,8,8],"palette":[{"name":"wood","hex":"#b07a45","material":"matte"}],
+                "shapes":[{"kind":"box","color":"wood","from":[0,0,0],"to":[8,8,8],"radius":null,"wobble":null}]}"##,
+        )
+        .unwrap();
+        Package {
+            manifest,
+            defs: BTreeMap::new(),
+            scripts: BTreeMap::from([("main.luau".into(), source.into())]),
+            models: BTreeMap::from([("crate".into(), crate_model)]),
+        }
     }
 
     fn act(state: &mut GameState, package: &Package, intent: Intent) -> Result<Vec<(String, String)>, String> {
         let time = WorldTime { day: 0, year: 0, season: 0, day_of_season: 0, time_of_day: 0.0 };
         let event = Event { change: 9, player: "p", intent: &intent, time, seed: 1 };
-        let grants = Grants { package: "game".into(), write: Vec::new(), spawn: true, scope: Scope::World, max_entities: 100 };
+        let models = package.models.keys().cloned().collect();
+        let grants = Grants { package: "game".into(), write: Vec::new(), spawn: true, scope: Scope::World, max_entities: 100, models, drawn: true };
         let mut batch = state.batch(9, "p", 256);
         run(package, &event, &mut batch, &grants)?;
         let done = batch.finish();
@@ -327,18 +339,22 @@ mod tests {
         let p = package(
             r##"
             function on_place(ev)
-              local id = spawn(ev.pos, { box = { n = 1 }, look = { size = {1, 1, 1}, color = "#aa7744" } })
+              local id = spawn(ev.pos, { box = { n = 1 }, look = { model = "crate" } })
               set(id, "box", { n = get(id).c.box.n + 1 })   -- sees its own change
               notify(ev.player, "placed " .. ev.item .. " #" .. #find("box"))
             end
             "##,
         );
         let mut state = GameState::default();
-        let notes = act(&mut state, &p, Intent::Place { item: "game:crate".into(), position: [1.0, 2.0, 3.0] }).unwrap();
+        let notes = act(&mut state, &p, Intent::Place { item: "game:crate".into(), position: [1.0, 2.04, 3.0] }).unwrap();
         assert_eq!(notes, vec![("p".to_string(), "placed crate #1".to_string())]);
         let e = state.get(EntityId { change: 9, n: 0 }).unwrap();
         assert_eq!(e.components["game:box"]["n"], 2.0);
+        // Snapped to the build voxel grid.
         assert_eq!(e.position, [1.0, 2.0, 3.0]);
+        let unknown = package("function on_place(ev) spawn(ev.pos, { look = { model = 'barrel' } }) end");
+        let place = Intent::Place { item: "game:x".into(), position: [0.0; 3] };
+        assert!(act(&mut state, &unknown, place).unwrap_err().contains("models (crate)"));
     }
 
     #[test]
@@ -348,13 +364,14 @@ mod tests {
         let error = |source: &str, state: &mut GameState| act(state, &package(source), place()).unwrap_err();
         assert!(error("function on_place() while true do end end", &mut state).contains("ran too long"));
         assert!(error("function on_place() set('1.0', 'other:x', 1) end", &mut state).contains("doesn't exist"));
-        assert!(error("function on_place(ev) spawn(ev.pos, { ['other:x'] = 1 }) end", &mut state).contains("belongs to other"));
+        assert!(error("function on_place(ev) spawn(ev.pos, { look = { model = 'crate' }, ['other:x'] = 1 }) end", &mut state).contains("belongs to other"));
+        assert!(error("function on_place(ev) spawn(ev.pos, { box = true }) end", &mut state).contains("every piece needs a look"));
         // No OS, files or printing: those names don't exist.
         for source in ["function on_place() os.exit() end", "function on_place() io.open('x') end", "function on_place() print('hi') end"] {
             assert!(error(source, &mut state).contains("nil"), "{source}");
         }
         // A failed action changes nothing.
-        assert!(error("function on_place(ev) spawn(ev.pos, {}); error('nope') end", &mut state).contains("nope"));
+        assert!(error("function on_place(ev) spawn(ev.pos, { pawn = 'p' }); error('nope') end", &mut state).contains("nope"));
         assert!(state.is_empty());
         // Random numbers come from the action's seed: the same every time.
         let roll = package("function on_place(ev) notify('p', tostring(random_int(1, 1000000))) end");

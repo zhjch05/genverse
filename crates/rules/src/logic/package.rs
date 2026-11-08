@@ -9,10 +9,13 @@ use std::collections::BTreeMap;
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 
+use crate::build::{BuildLimits, BuildSpec, compile};
+
 /// The most a package may weigh, as JSON.
 pub const MAX_PACKAGE_BYTES: usize = 512 * 1024;
 pub const MAX_DEFS: usize = 2000;
 pub const MAX_SCRIPTS: usize = 64;
+pub const MAX_MODELS: usize = 64;
 
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 pub struct Package {
@@ -20,9 +23,14 @@ pub struct Package {
     /// Content definitions by name ("farm:turnip"): see [`super::data::Def`].
     #[serde(default)]
     pub defs: BTreeMap<String, serde_json::Value>,
-    /// Script sources by file name ("watering.luau"). Kept, not run yet.
+    /// Script sources by file name ("main.luau"): see [`super::script`].
     #[serde(default)]
     pub scripts: BTreeMap<String, String>,
+    /// Voxel models by local name ("crate"), in the same format and under the same
+    /// limits as builds, so everything in a world shares one style. Entities show one
+    /// with their `look`.
+    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    pub models: BTreeMap<String, BuildSpec>,
 }
 
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
@@ -125,6 +133,17 @@ impl Package {
         }
         errors.extend(super::data::check(self));
         errors.extend(super::script::check(self));
+        if self.models.len() > MAX_MODELS {
+            errors.push(format!("{} models; the most is {MAX_MODELS}", self.models.len()));
+        }
+        for (name, spec) in &self.models {
+            if split_name(&format!("{}:{name}", m.name)).is_none() || name.contains(':') {
+                errors.push(format!("model \"{name}\" needs a lowercase name (letters, digits, _)"));
+            }
+            if let Err(problems) = compile(spec, &BuildLimits::default()) {
+                errors.push(format!("model \"{name}\": {}", problems.join("; ")));
+            }
+        }
         if self.scripts.len() > MAX_SCRIPTS {
             errors.push(format!("{} scripts; the most is {MAX_SCRIPTS}", self.scripts.len()));
         }
@@ -168,6 +187,7 @@ pub(crate) mod tests {
                 permissions: vec![Permission::Spawn],
                 depends: Vec::new(),
             },
+            models: BTreeMap::new(),
             defs: BTreeMap::from([
                 ("farm:turnip_seed".into(), serde_json::json!({ "kind": "item", "title": "Turnip seeds" })),
                 ("farm:turnip".into(), serde_json::json!({ "kind": "item", "title": "Turnip" })),

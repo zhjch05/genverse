@@ -50,10 +50,16 @@ empty world and ask for a game:
 CUBEWISH_WORLD=sokoban cargo run   # a named world in saves/worlds/sokoban/, flat and empty
 ```
 
-Then press `T`: "make a basic Sokoban game". The agent answers with a *package*: definitions
-plus Luau scripts. The game checks it and installs it for the whole world, and it's live at
-once (`crates/rules/src/logic`, design in `docs/game-logic.md`). Only admins change a world's
-games; everyone plays them.
+Then press `T`: "make a basic Sokoban game". The agent answers with a *package*: definitions,
+voxel models and Luau scripts. Before answering, it plays the game itself in an empty test
+world with the `test_game` tool (steps like `place board`, `enter`, `east`), which reports what
+each step did plus a map of the pieces, and fixes what fails. The game then checks the package
+and installs it for the whole world, live (`crates/rules/src/logic`, design in
+`docs/game-logic.md`). Only admins change a world's games; everyone plays them.
+
+- **One style:** game pieces can only be drawn as the package's voxel models, written in the
+  same format, compiled by the same code and held to the same limits as builds. They're drawn
+  the way builds are, and every piece stands on the 12.5 cm build voxel grid.
 
 - **Put it down:** the package's *fixtures* (a game board) appear in the game bar above the
   hints. Pick one, click the ground, and its script builds it.
@@ -70,7 +76,8 @@ games; everyone plays them.
   random number generator, and limits on steps, memory and changes. Through a small API
   (`get`, `find`, `spawn`, `move`, `set`, `notify`, ...) they change only their own entities
   and items, and every change is checked as it happens. The engine draws entities from their
-  `look`, names them with `label`, and acts on `zone` and `pawn`.
+  `look` (one of the package's models), names them with `label`, and acts on `zone` and
+  `pawn`.
 - **The log is still the truth:** installs and every move are changes in the log, so games
   replay like the voxels do, across restarts, undo and servers. The server runs the same
   scripts, and a package travels with the change that installs it.

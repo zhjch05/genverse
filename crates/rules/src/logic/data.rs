@@ -152,6 +152,15 @@ pub struct GameSpec {
     pub defs: Vec<DefSpec>,
     #[serde(default)]
     pub scripts: Vec<ScriptSpec>,
+    #[serde(default)]
+    pub models: Vec<ModelSpec>,
+}
+
+/// A voxel model the package's entities can look like.
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+pub struct ModelSpec {
+    pub name: String,
+    pub build: crate::build::BuildSpec,
 }
 
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
@@ -201,7 +210,8 @@ impl GameSpec {
         let manifest =
             Manifest { name: ns.clone(), version, title: self.title.clone(), permissions: vec![Permission::Spawn], depends: Vec::new() };
         let scripts = self.scripts.iter().map(|s| (s.name.clone(), s.source.clone())).collect();
-        Package { manifest, defs, scripts }
+        let models = self.models.iter().map(|m| (m.name.clone(), m.build.clone())).collect();
+        Package { manifest, defs, scripts, models }
     }
 
     /// The other way, to show an agent what's installed so it can change it.
@@ -237,7 +247,8 @@ impl GameSpec {
             })
             .collect();
         let scripts = package.scripts.iter().map(|(name, source)| ScriptSpec { name: name.clone(), source: source.clone() }).collect();
-        Self { name: ns.into(), title: package.manifest.title.clone(), defs, scripts }
+        let models = package.models.iter().map(|(name, build)| ModelSpec { name: name.clone(), build: build.clone() }).collect();
+        Self { name: ns.into(), title: package.manifest.title.clone(), defs, scripts, models }
     }
 }
 
@@ -345,6 +356,7 @@ pub(crate) mod tests {
         let stack = |item: &str, count| Some(Stack { item: item.into(), count });
         GameSpec {
             scripts: Vec::new(),
+            models: Vec::new(),
             name: "farm".into(),
             title: "Turnip farm".into(),
             defs: vec![

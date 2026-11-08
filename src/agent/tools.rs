@@ -1,4 +1,5 @@
-//! Read-only world tools for agents, served over [`mcp`](super::mcp).
+//! Read-only world tools for agents, served over [`mcp`](super::mcp), and `test_game`,
+//! which plays a game package in a world of its own.
 //!
 //! Everything is expressed in the *build frame* the agent designs in: build voxels
 //! (12.5 cm), origin at the build site's ground, +Y up, z = 0 the front row facing the
@@ -9,7 +10,11 @@ use std::fmt::Write;
 use bevy::prelude::*;
 use serde_json::{Value, json};
 
-use cubewish_rules::{build::BuildLimits, settings::WorldRules};
+use cubewish_rules::{
+    build::BuildLimits,
+    logic::{data::GameSpec, trial},
+    settings::WorldRules,
+};
 
 use super::{
     creations::{Creations, SavedCreation, anchor_in_front},
@@ -111,7 +116,35 @@ pub fn definitions(rules: &WorldRules) -> Value {
                 "required": ["build"],
             },
         },
+        {
+            "name": "test_game",
+            "description": "Play a game package in an empty flat test world, as a player, before answering: it is \
+                checked and installed as your answer would be, then each step runs through the real rules. Returns \
+                what each step did (changes, messages, refusals and script errors) and a map and list of the \
+                pieces afterwards. Steps: \"place <fixture>\" (puts it down; each 32 m apart), a key (\"enter\", \
+                \"north\", \"south\", \"east\", \"west\", \"action\", \"reset\", \"leave\"; sent to the zone \
+                the tester's pawn or last placement is in), or \"interact\" (the nearest labeled piece). Use it to \
+                play your game through, including winning, and fix what fails.",
+            "inputSchema": {
+                "type": "object",
+                "properties": {
+                    "game": { "type": "object", "description": "Same shape as the \"game\" in your answer." },
+                    "steps": { "type": "array", "items": { "type": "string" }, "maxItems": 300 },
+                },
+                "required": ["game", "steps"],
+            },
+        },
     ])
+}
+
+/// Plays a game package through some steps in a world of its own.
+fn test_game(args: &Value) -> Result<String, String> {
+    let spec: GameSpec =
+        serde_json::from_value(args["game"].clone()).map_err(|e| format!("game doesn't match the schema: {e}"))?;
+    let steps: Vec<String> = serde_json::from_value(args["steps"].clone()).map_err(|e| format!("steps must be strings: {e}"))?;
+    let report = trial::play(&spec.to_package(1), &steps[..steps.len().min(300)]);
+    info!("test_game ({} steps):\n{report}", steps.len());
+    Ok(report)
 }
 
 /// Keeps the build site current while no request is running: the draft or selected
@@ -167,6 +200,7 @@ pub fn answer_tool_calls(
             "get_build_spec" => ctx.spec(&args),
             "check_build" => ctx.check(&args),
             "sample_terrain" => sample_terrain(&world, &landscape, &args),
+            "test_game" => test_game(&args),
             other => Err(format!("unknown tool {other}")),
         };
         info!("agent tool {name}: {}", if result.is_ok() { "ok" } else { "error" });

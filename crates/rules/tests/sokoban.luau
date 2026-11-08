@@ -43,7 +43,7 @@ function on_place(ev)
     board = { origin = ev.pos },
     zone = { size = { W, H } },
     label = "Sokoban",
-    look = { size = { W, 0.05, H }, color = "#d8c8a8" },
+    look = { model = "floor" },
   })
   local board = get(board_id)
   for row = 1, H do
@@ -51,11 +51,11 @@ function on_place(ev)
       local c = cell(col, row)
       local p = at(board, col, row)
       if c == "#" then
-        spawn(p, { wall = true, look = { size = { 1, 1, 1 }, color = "#6f6b66" } })
+        spawn(p, { wall = true, look = { model = "wall" } })
       elseif c == "." then
-        spawn(p, { target = true, look = { size = { 0.8, 0.08, 0.8 }, color = "#e5534b" } })
+        spawn(p, { target = true, look = { model = "target" } })
       elseif c == "$" then
-        spawn(p, { box = { board = board_id, col = col, row = row, start = { col, row } }, look = { size = { 0.8, 0.8, 0.8 }, color = "#b07a45" } })
+        spawn(p, { box = { board = board_id, col = col, row = row, start = { col, row } }, look = { model = "box" } })
       end
     end
   end

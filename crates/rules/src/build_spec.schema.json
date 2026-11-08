@@ -399,7 +399,8 @@
         "name",
         "title",
         "defs",
-        "scripts"
+        "scripts",
+        "models"
       ],
       "properties": {
         "name": {
@@ -422,6 +423,13 @@
             "$ref": "#/$defs/game_script"
           },
           "description": "Luau scripts with the game's rules (empty for data-only packages)."
+        },
+        "models": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/game_model"
+          },
+          "description": "The voxel models the game's pieces look like, in the same format as \"build\"."
         }
       }
     },
@@ -547,6 +555,23 @@
         "source": {
           "type": "string",
           "description": "Luau source defining handlers like on_place and on_key."
+        }
+      }
+    },
+    "game_model": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "name",
+        "build"
+      ],
+      "properties": {
+        "name": {
+          "type": "string",
+          "description": "Lowercase local name, e.g. \"crate\"; pieces show it with look = {model = \"crate\"}."
+        },
+        "build": {
+          "$ref": "#/$defs/build"
         }
       }
     }

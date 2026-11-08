@@ -2,10 +2,12 @@
 
 Status: 2026-11-08. Built: the kernel and log (phase 1), data packages (phase 2), and
 server-side Luau scripts with permissions and limits (phase 3), plus engine components
-for games (`look`, `label`, `zone`, `pawn`). Changed from this proposal: a game's rules apply
+for games (`look`, `label`, `zone`, `pawn`). Pieces are drawn only as their
+package's voxel models, built like builds, and agents test packages in a throwaway
+world (`trial`, the `test_game` tool) before answering. Changed from this proposal: a game's rules apply
 to the whole world, and only admins change them; an intent goes only to the package that
 owns its item or entity; scripts change the world through a checked batch as they run,
-rather than returning a list of intents. Not built yet: the test fork, per-tick events,
+rather than returning a list of intents. Not built yet: per-tick events,
 and the game master agent.
 
 ## Goal

@@ -1,8 +1,9 @@
 //! Playing the games installed in the world (`cubewish_rules::logic`).
 //!
-//! - **Pieces:** every entity the game rules keep is drawn from its `look` (a block of a
-//!   size and color), or from its definition (crops grow, sources are crates). Pieces
-//!   with a `label` show it when you're within 10 m; the one in reach says E uses it.
+//! - **Pieces:** every entity the game rules keep is drawn from its `look`: one of its
+//!   package's voxel models, drawn like a build (the simple farming kinds, which have
+//!   none, are plain boxes). Pieces with a `label` show it when you're within 10 m; the
+//!   one in reach says E uses it.
 //! - **The game bar** above the hints lists what you can put down: the fixtures (a game
 //!   board) and sources the installed packages define, and the seeds you carry. Pick one,
 //!   then click the ground (Esc or right-click puts it away). It also shows the day.
@@ -26,33 +27,26 @@ use std::collections::HashMap;
 
 use bevy::{prelude::*, window::PrimaryWindow};
 use bevy_egui::{EguiContexts, egui};
-use cubewish_rules::logic::{
-    Entity as Piece, EntityId, Intent, Logic, Package,
-    data::{self, Def},
+use std::f32::consts::FRAC_PI_2;
+
+use cubewish_rules::{
+    build::{BuildLimits, compile},
+    logic::{
+        Entity as Piece, EntityId, Intent, Logic, Package,
+        data::{self, Def},
+        trial::{self, pawn_of},
+    },
 };
-use serde_json::Value;
 
 use super::{Chat, Role, creations::Creations, cursor_ray, landscape::Landscape, theme};
 use crate::{
     player::{FollowCamera, InputBlocked, Pawned, Player, PointerOverUi},
+    voxel::{DepthBias, ModelData, VoxelModel},
     world::{
         VoxelWorld,
         ledger::{Acted, Ledger},
     },
 };
-
-/// Pieces float this far over where they stand, so a slab laid on the ground doesn't
-/// flicker against it.
-const LIFT: f32 = 0.02;
-/// Blocks are drawn this much wider than their size, so neighbors (a row of wall tiles)
-/// overlap instead of meeting edge to edge, where hairline cracks let what's behind
-/// sparkle through as the camera moves.
-const OVERLAP: f32 = 0.01;
-/// Slabs (floors, mats, targets) thinner than this are drawn this much narrower
-/// instead, so their edges tuck behind a wall standing on them rather than sharing its
-/// face and flickering against it.
-const SLAB: f32 = 0.2;
-const INSET: f32 = 0.02;
 
 /// How close the hero must be to use a piece, in meters.
 const REACH: f32 = 2.5;
@@ -81,6 +75,7 @@ pub struct Play {
     toast: Option<(String, f32)>,
     /// The pieces in the world and how each looks.
     pieces: HashMap<EntityId, (Entity, Look)>,
+    models: Models,
 }
 
 impl Play {
@@ -90,10 +85,11 @@ impl Play {
 }
 
 /// How a piece is drawn.
-#[derive(Clone, Copy, PartialEq)]
+#[derive(Clone, PartialEq)]
 enum Look {
-    /// From its `look`: size in meters, sRGB color, glowing.
-    Block { size: [f32; 3], color: [u8; 3], glow: bool },
+    /// One of its package's voxel models (by package hash and name), turned by quarter
+    /// turns.
+    Model { package: String, model: String, turn: u8 },
     Crop { stage: usize, stages: usize, ripe: bool },
     Source,
     /// Nothing to draw (a pawn: the hero shows it).
@@ -103,44 +99,48 @@ enum Look {
 }
 
 impl Look {
-    /// Size in meters, color, and glow; none for nothing to draw.
-    fn shape(self) -> Option<(Vec3, Color, bool)> {
+    /// For the simple farming kinds, which have no models: a box's size and color.
+    fn block(&self) -> Option<(Vec3, Color)> {
         Some(match self {
-            Look::Block { size, color: [r, g, b], glow } => (Vec3::from_array(size), Color::srgb_u8(r, g, b), glow),
-            Look::Crop { ripe: true, .. } => (Vec3::new(0.4, 0.45, 0.4), Color::srgb(0.95, 0.72, 0.25), false),
+            Look::Crop { ripe: true, .. } => (Vec3::new(0.4, 0.45, 0.4), Color::srgb(0.95, 0.72, 0.25)),
             Look::Crop { stage, stages, .. } => {
-                let grown = (stage as f32 + 1.0) / (stages as f32 + 1.0);
-                (Vec3::new(0.15 + 0.2 * grown, 0.1 + 0.3 * grown, 0.15 + 0.2 * grown), Color::srgb(0.35, 0.7, 0.3), false)
+                let grown = (*stage as f32 + 1.0) / (*stages as f32 + 1.0);
+                (Vec3::new(0.15 + 0.2 * grown, 0.1 + 0.3 * grown, 0.15 + 0.2 * grown), Color::srgb(0.35, 0.7, 0.3))
             }
-            Look::Source => (Vec3::splat(0.6), Color::srgb(0.55, 0.38, 0.22), false),
-            Look::Dormant => (Vec3::splat(0.2), Color::srgb(0.5, 0.5, 0.5), false),
-            Look::Hidden => return None,
+            Look::Source => (Vec3::splat(0.6), Color::srgb(0.55, 0.38, 0.22)),
+            Look::Dormant => (Vec3::splat(0.2), Color::srgb(0.5, 0.5, 0.5)),
+            Look::Model { .. } | Look::Hidden => return None,
         })
-    }
-
-    fn height(self) -> f32 {
-        self.shape().map_or(0.0, |(size, _, _)| size.y)
     }
 }
 
-/// The size a block is drawn at: see [`OVERLAP`] and [`SLAB`].
-fn drawn_size(size: Vec3) -> Vec3 {
-    let wider = if size.y < SLAB { -INSET } else { OVERLAP };
-    let grown = size + Vec3::new(wider, 0.0, wider);
-    grown.max(size * 0.5)
+/// Compiled voxel models, by package hash and model name (none if it doesn't compile).
+#[derive(Default)]
+struct Models(HashMap<(String, String), Option<ModelData>>);
+
+impl Models {
+    fn get(&mut self, logic: &Logic, package: &str, model: &str) -> Option<&ModelData> {
+        self.0
+            .entry((package.to_string(), model.to_string()))
+            .or_insert_with(|| {
+                let spec = logic.packages.get(package)?.models.get(model)?;
+                compile(spec, &BuildLimits::ACCEPTED).map(|b| b.model).ok()
+            })
+            .as_ref()
+    }
+
+    /// How tall a piece stands, in meters.
+    fn height(&mut self, logic: &Logic, look: &Look) -> f32 {
+        match look {
+            Look::Model { package, model, .. } => self.get(logic, package, model).map_or(0.0, |m| m.grid.size().y as f32 * m.voxel_size),
+            other => other.block().map_or(0.0, |(size, _)| size.y),
+        }
+    }
 }
 
 /// Package `package`, if it's installed.
 fn package_of<'a>(logic: &'a Logic, package: &str) -> Option<&'a Package> {
     logic.installed.get(package).and_then(|i| logic.package(i))
-}
-
-fn block_look(value: &Value) -> Option<Look> {
-    let size = value["size"].as_array()?;
-    let size = [size.first()?.as_f64()? as f32, size.get(1)?.as_f64()? as f32, size.get(2)?.as_f64()? as f32];
-    let hex = value["color"].as_str()?.strip_prefix('#')?;
-    let byte = |i: usize| u8::from_str_radix(hex.get(i..i + 2)?, 16).ok();
-    Some(Look::Block { size, color: [byte(0)?, byte(2)?, byte(4)?], glow: value["glow"].as_bool().unwrap_or(false) })
 }
 
 /// How a piece looks and what it's called, from its components and today's date.
@@ -149,8 +149,11 @@ fn describe(logic: &Logic, e: &Piece, today: u64) -> (Look, Option<String>) {
     let Some(package) = package_of(logic, &e.package) else {
         return (Look::Dormant, Some(format!("{} (not installed)", e.package)));
     };
-    if let Some(look) = e.components.get("look").and_then(block_look) {
-        return (look, label);
+    if let Some(look) = e.components.get("look") {
+        let installed = logic.installed.get(&e.package).map(|i| i.package.hash.clone()).unwrap_or_default();
+        let model = look["model"].as_str().unwrap_or_default().to_string();
+        let turn = look["turn"].as_u64().unwrap_or(0).min(3) as u8;
+        return (Look::Model { package: installed, model, turn }, label);
     }
     let defs = data::defs(package);
     for (component, value) in &e.components {
@@ -172,8 +175,9 @@ fn now() -> u64 {
     std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map_or(0, |d| d.as_secs())
 }
 
-/// Keeps a block in the world for each of the game's entities, redrawn when it changes
-/// (and every couple of seconds, for crops that grow with the date).
+/// Keeps a piece in the world for each of the game's entities: its voxel model, drawn
+/// like a build, moved when it moves and rebuilt when its look changes (and every couple
+/// of seconds, for crops that grow with the date).
 pub fn sync_pieces(
     mut commands: Commands,
     time: Res<Time>,
@@ -190,33 +194,42 @@ pub fn sync_pieces(
     *seen = (ledger.version, now_s);
     let logic = &ledger.logic;
     let today = ledger.rules.logic.clock.at(now()).day;
+    let play = &mut *play;
     let mut keep = HashMap::new();
     for (id, e) in logic.state.entities() {
         let (look, _) = describe(logic, e, today);
-        let at = Vec3::from_array(e.position) + Vec3::Y * (look.height() / 2.0 + LIFT);
+        let turn = if let Look::Model { turn, .. } = look { turn } else { 0 };
+        let mut transform = Transform::from_translation(Vec3::from_array(e.position)).with_rotation(Quat::from_rotation_y(turn as f32 * FRAC_PI_2));
         if let Some((entity, old)) = play.pieces.remove(&id) {
             if old == look {
-                commands.entity(entity).insert(Transform::from_translation(at));
+                if let Some((size, _)) = look.block() {
+                    transform.translation.y += size.y / 2.0;
+                }
+                commands.entity(entity).insert(transform);
                 keep.insert(id, (entity, look));
                 continue;
             }
             commands.entity(entity).despawn();
         }
-        let mut entity = commands.spawn((Transform::from_translation(at), Visibility::default(), Name::new("Game piece")));
-        if let Some((size, color, glow)) = look.shape() {
-            // A faint glow sets pieces apart from the ground's own tufts and rocks.
-            let emissive = color.to_linear() * if glow { 2.0 } else { 0.15 };
-            entity.insert((
-                Mesh3d(meshes.add(Cuboid::from_size(drawn_size(size)))),
-                MeshMaterial3d(materials.add(StandardMaterial {
-                    base_color: color,
-                    emissive,
-                    perceptual_roughness: 0.6,
-                    depth_bias: 8.0,
-                    ..default()
-                })),
-            ));
+        let mut entity = commands.spawn((Visibility::default(), Name::new("Game piece")));
+        match &look {
+            Look::Model { package, model, .. } => {
+                if let Some(data) = play.models.get(logic, package, model) {
+                    // Pieces stand on the ground, so their faces often meet it, as builds' do.
+                    entity.insert((VoxelModel::from(data), DepthBias(500.0)));
+                }
+            }
+            other => {
+                if let Some((size, color)) = other.block() {
+                    transform.translation.y += size.y / 2.0;
+                    entity.insert((
+                        Mesh3d(meshes.add(Cuboid::from_size(size))),
+                        MeshMaterial3d(materials.add(StandardMaterial { base_color: color, perceptual_roughness: 0.8, ..default() })),
+                    ));
+                }
+            }
         }
+        entity.insert(transform);
         keep.insert(id, (entity.id(), look));
     }
     for (_, (entity, _)) in play.pieces.drain() {
@@ -277,25 +290,14 @@ pub fn use_pieces(
     report(result, &ledger, &mut play, &mut chat, time.elapsed_secs());
 }
 
-/// The zone at `at`, if any: a rectangle centered on its entity.
-fn zone_at(logic: &Logic, at: Vec3) -> Option<EntityId> {
-    logic.state.entities().find_map(|(id, e)| {
-        let size = e.components.get("zone")?["size"].as_array()?;
-        let half = Vec2::new(size.first()?.as_f64()? as f32, size.get(1)?.as_f64()? as f32) / 2.0;
-        let d = (at.xz() - Vec2::new(e.position[0], e.position[2])).abs();
-        (d.x <= half.x && d.y <= half.y).then_some(id)
-    })
-}
-
 /// Where the local player's pawn stands, if a game has given them one.
 fn my_pawn(ledger: &Ledger) -> Option<Vec3> {
-    let me = ledger.profile.id.as_str();
-    ledger
-        .logic
-        .state
-        .entities()
-        .find(|(_, e)| e.components.get("pawn").and_then(Value::as_str) == Some(me))
-        .map(|(_, e)| Vec3::from_array(e.position))
+    pawn_of(&ledger.logic.state, &ledger.profile.id).map(Vec3::from_array)
+}
+
+/// The zone at `at`, if any.
+fn zone_at(logic: &Logic, at: Vec3) -> Option<EntityId> {
+    trial::zone_at(&logic.state, at.to_array())
 }
 
 /// The key's world direction, turned so W is away from the camera.
@@ -524,7 +526,7 @@ pub fn game_bar(
         let mut shown: Vec<Vec2> = Vec::new();
         for (_, _, id, e) in nearby {
             let (look, Some(label)) = describe(logic, e, today.day) else { continue };
-            let top = Vec3::from_array(e.position) + Vec3::Y * (look.height() + 0.3);
+            let top = Vec3::from_array(e.position) + Vec3::Y * (play.models.height(logic, &look) + 0.3);
             // Only pieces in front of the camera.
             if (top - eye.translation()).dot(*eye.forward()) <= 0.0 {
                 continue;

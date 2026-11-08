@@ -110,6 +110,14 @@ live at once for everyone. Keep "build" and "terrain" null unless they also ask 
     your script's on_place builds it. Only "name", "kind", "title".
   item: something players carry. crop / source: simple farming without scripts (crop: "seed",
     "stage_days", "harvest"; source: "gives", "every_days").
+- "models": [{"name":"crate","build":{...}}]: every piece is drawn as one of these voxel models,
+  in exactly the "build" format and under the same limits and style rules as builds (12.5 cm
+  voxels: a 1 m tile is 8 voxels). There is no other way to draw pieces, so the whole world keeps
+  one look. Every piece you spawn needs a look (only pawns may go without: the hero shows them).
+  Model y = 0 stands on the piece's position, centered in x and z. Put static scenery
+  that never moves (a board's floor and walls) in as few models as you can: one board model of the
+  whole layout looks best (no seams) and is cheapest; give each moving or changing piece (crates,
+  targets, the player's marker) its own small model.
 - "scripts": [{"name":"main.luau","source":"..."}]. Each player action runs your scripts fresh,
   so keep all state in the world (entities and components), never in Lua globals. Define:
     on_place(ev)     ev.item (local name) was put down at ev.pos
@@ -125,7 +133,8 @@ live at once for everyone. Keep "build" and "terrain" null unless they also ask 
     give(player, item, n)   take(item, n)          count(player, item)
     random() -> 0..1        random_int(a, b)       (no os, io, print or math.random)
   Engine components on your entities:
-    look = {size = {w, h, d}, color = "#rrggbb", glow = false}: drawn as a block standing on pos
+    look = {model = "crate", turn = 0}: drawn as that model of yours standing on pos, turned by
+      quarter turns (0-3); positions snap to the 12.5 cm voxel grid
     label = "text": shown over it nearby; E on it calls on_interact
     zone = {size = {w, d}}: a rectangle centered on pos; a player walking in sends "enter", and
       while they have a pawn there, their movement keys come to on_key instead of walking
@@ -135,11 +144,17 @@ live at once for everyone. Keep "build" and "terrain" null unless they also ask 
   refuses the whole action; the player sees the message, and you get it with the next request.
 - Limits per action: 256 changes, 200k steps, 16 MB. Values must be plain data (tables, numbers,
   strings, booleans); keep each component under 4 KB.
+- Before answering, play your game with the test_game tool: place it, enter, and play it through
+  to the end (win it), then fix anything refused or wrong. Its map shows where everything is.
 
 Example "game": walk onto the mat and collect the coins.
 {"name":"coins","title":"Coin mat","defs":[{"name":"mat","kind":"fixture","title":"Coin mat","seed":null,
   "stage_days":null,"harvest":null,"gives":null,"every_days":null}],
- "scripts":[{"name":"main.luau","source":"local N = 5\nlocal function tile(o, c, r) return {x = o.x + c - 3, y = o.y, z = o.z + r - 3} end\nfunction on_place(ev)\n  spawn(ev.pos, {mat = {origin = ev.pos}, zone = {size = {N, N}}, label = 'Coin mat', look = {size = {N, 0.05, N}, color = '#c9b78f'}})\n  for i = 1, 3 do\n    local c, r = random_int(1, N), random_int(1, N)\n    spawn(tile(ev.pos, c, r), {coin = {c = c, r = r}, look = {size = {0.4, 0.4, 0.4}, color = '#f4cf4b', glow = true}})\n  end\nend\nlocal STEP = {north = {0, -1}, south = {0, 1}, east = {1, 0}, west = {-1, 0}}\nfunction on_key(ev)\n  local mat = get(ev.entity)\n  local me\n  for _, p in ipairs(find('walker')) do if p.c.pawn == ev.player then me = p end end\n  if ev.key == 'enter' and not me then\n    spawn(tile(mat.c.mat.origin, 3, 3), {walker = {c = 3, r = 3}, pawn = ev.player})\n  elseif ev.key == 'leave' and me then\n    despawn(me.id)\n  elseif STEP[ev.key] and me then\n    local c, r = me.c.walker.c + STEP[ev.key][1], me.c.walker.r + STEP[ev.key][2]\n    if c < 1 or c > N or r < 1 or r > N then return end\n    set(me.id, 'walker', {c = c, r = r})\n    move(me.id, tile(mat.c.mat.origin, c, r))\n    for _, coin in ipairs(find('coin')) do\n      if coin.c.coin.c == c and coin.c.coin.r == r then despawn(coin.id) end\n    end\n    if #find('coin') == 0 then notify(ev.player, 'All coins!') end\n  end\nend\n"}]}"##,
+ "models":[{"name":"mat","build":{"name":"Mat","size":[40,1,40],"palette":[{"name":"straw","hex":"#d9c79a","material":"matte"}],
+   "shapes":[{"kind":"box","color":"straw","from":[0,0,0],"to":[40,1,40],"radius":null,"wobble":null}]}},
+  {"name":"coin","build":{"name":"Coin","size":[3,3,3],"palette":[{"name":"gold","hex":"#f4cf4b","material":"glow"}],
+   "shapes":[{"kind":"ellipsoid","color":"gold","from":[0,0,0],"to":[3,3,3],"radius":null,"wobble":null}]}}],
+ "scripts":[{"name":"main.luau","source":"local N = 5\nlocal function tile(o, c, r) return {x = o.x + c - 3, y = o.y, z = o.z + r - 3} end\nfunction on_place(ev)\n  spawn(ev.pos, {mat = {origin = ev.pos}, zone = {size = {N, N}}, label = 'Coin mat', look = {model = 'mat'}})\n  for i = 1, 3 do\n    local c, r = random_int(1, N), random_int(1, N)\n    spawn(tile(ev.pos, c, r), {coin = {c = c, r = r}, look = {model = 'coin'}})\n  end\nend\nlocal STEP = {north = {0, -1}, south = {0, 1}, east = {1, 0}, west = {-1, 0}}\nfunction on_key(ev)\n  local mat = get(ev.entity)\n  local me\n  for _, p in ipairs(find('walker')) do if p.c.pawn == ev.player then me = p end end\n  if ev.key == 'enter' and not me then\n    spawn(tile(mat.c.mat.origin, 3, 3), {walker = {c = 3, r = 3}, pawn = ev.player})\n  elseif ev.key == 'leave' and me then\n    despawn(me.id)\n  elseif STEP[ev.key] and me then\n    local c, r = me.c.walker.c + STEP[ev.key][1], me.c.walker.r + STEP[ev.key][2]\n    if c < 1 or c > N or r < 1 or r > N then return end\n    set(me.id, 'walker', {c = c, r = r})\n    move(me.id, tile(mat.c.mat.origin, c, r))\n    for _, coin in ipairs(find('coin')) do\n      if coin.c.coin.c == c and coin.c.coin.r == r then despawn(coin.id) end\n    end\n    if #find('coin') == 0 then notify(ev.player, 'All coins!') end\n  end\nend\n"}]}"##,
     );
     if with_tools {
         out.push_str(
