@@ -307,9 +307,16 @@ fn game_context(ledger: &Ledger, errors: &[String]) -> Option<String> {
         .filter_map(|i| logic.package(i))
         .map(|p| serde_json::to_string(&GameSpec::from_package(p)).unwrap_or_default())
         .collect();
-    let here = worlds::current_title(ledger);
-    let names: Vec<String> = crate::world::ledger::list_worlds().iter().map(|w| w.title().to_string()).filter(|n| *n != here).collect();
-    let mut out = format!("The player's other worlds (for portals): {}.", if names.is_empty() { "none yet".into() } else { names.join(", ") });
+    let names: Vec<String> = match &ledger.online {
+        Some(online) => online.game.as_ref().map(|g| g.worlds().into_iter().map(|(n, _)| n).collect()).unwrap_or_default(),
+        None => crate::world::ledger::list_worlds().into_iter().map(|w| w.name).collect(),
+    };
+    let here = ledger.online.as_ref().and_then(|o| o.world.clone()).unwrap_or_else(crate::world::ledger::world_name);
+    let names: Vec<String> = names.into_iter().filter(|n| *n != here).collect();
+    let mut out = format!(
+        "The other worlds of this game (for portals, by name; another game of the player's is \"game/world\"): {}.",
+        if names.is_empty() { "none yet".into() } else { names.join(", ") }
+    );
     if specs.is_empty() {
         return Some(out);
     }

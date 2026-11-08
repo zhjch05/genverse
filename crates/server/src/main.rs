@@ -1,6 +1,7 @@
-//! `cubewish-server [--port 7878] [--data server-data] [--flat]`: runs a world others can
-//! join with `CUBEWISH_SERVER=host:port cargo run`. `--flat` makes a new world flat and
-//! empty; players join it from a named (flat) world: `CUBEWISH_WORLD=<name>`.
+//! `cubewish-server [--port 7878] [--data server-data] [--flat]`: hosts a game, every
+//! world in it, for others to join with `CUBEWISH_SERVER=host:port cargo run`. `--flat`
+//! makes a new game's first world flat and empty. A local game can be served as it is:
+//! `--data saves/games/<game>`.
 
 use std::path::PathBuf;
 

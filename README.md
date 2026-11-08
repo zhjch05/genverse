@@ -47,7 +47,7 @@ Cubewish has a small game engine that admins program by talking to their agent. 
 empty world and ask for a game:
 
 ```sh
-CUBEWISH_WORLD=sokoban cargo run   # a named world in saves/worlds/sokoban/, flat and empty
+CUBEWISH_WORLD=sokoban cargo run   # a world of your game, flat and empty if it's new
 ```
 
 Then press `T`: "make a basic Sokoban game". The agent answers with a *package*: definitions,
@@ -88,8 +88,8 @@ and installs it for the whole world, live (`crates/rules/src/logic`, design in
   scripts, and a package travels with the change that installs it.
 - `/packages` lists the world's games; admins can `/uninstall <name>` one (its pieces stay,
   asleep).
-- A dedicated server makes a flat world with `--flat`. Players join it from a named world
-  (`CUBEWISH_WORLD=x CUBEWISH_SERVER=host cargo run`).
+- A dedicated server's first world is flat with `--flat` (`CUBEWISH_SERVER=host cargo run`
+  joins it; the ground follows whichever world you're in).
 - Script a run: `CUBEWISH_WORLD=s CUBEWISH_PROMPT="make Sokoban" CUBEWISH_PLAY="place; enter;
   east; east" cargo run`. It waits for the agent, puts the first fixture down, then sends keys.
 
@@ -145,13 +145,18 @@ world back exactly as it was at that save, for everyone, game state included. No
 deleted: loading a later save, or reverting the load, brings the later changes back.
 `/fork <save> <world>` starts a new world of your own from a save, leaving this one as it is.
 
-**Worlds** (`O`, or the globe button): every world you have, Home first. Enter one, make a new
-one (flat and empty, or a natural landscape of its own), fork one from a save, or move one to
-`saves/trash/`. The window also has the world's saves, its portals, and servers to join or
-host. Ask the agent for **a portal** ("a stone arch, a portal to sokoban") and it builds one
-linked to that world; walk up to it and press E. Any build can be linked from the window, or
-with `/portal <world|host:port>` while it's selected. `/worlds`, `/world <name>` and
-`/newworld <name> [flat|natural]` do the same from the chat. Design: `docs/worlds.md`.
+**Games and worlds** (`O`, or the globe button): a *game* is what you host or join; it holds
+*worlds*, each with its own ground and its own log. Your worlds live in the game `local`
+(`saves/games/local/`; the first run moves the old ones there, Home becoming `home`). The Game
+window lists the game's worlds (Enter; admins make new ones, flat or natural, and remove them
+to `saves/trash/`), its saves (save every world at once, or this world; load; fork into a new
+world), this world's portals, and your other games and servers (new game, join, host). Hosting
+shares every world of the game; each player is in one world at a time and sees only the people
+and changes there. Ask the agent for **a portal** ("a stone arch, a portal to sokoban") and it
+builds one linked to that world; walk up to it and press E. Portals lead to a world of this game
+(`sokoban`, works for everyone in it), another of your games (`game/world`), or a server
+(`host:port`). Chat: `/worlds`, `/world`, `/newworld`, `/games`, `/game`, `/newgame`,
+`/savegame`, `/loadgame`, `/portal`. Design: `docs/worlds.md`.
 
 ## Playing together
 
@@ -167,7 +172,9 @@ Two ways to host:
   ```
 
   It's a small program with no graphics (only the rules and protocol crates), so it runs on any
-  machine with a terminal. Its whole world is `server-data/world.jsonl`; back that file up (`snapshot.json` only speeds up loading).
+  machine with a terminal. Its whole game is `server-data/`: `game.json` and each world's
+  `worlds/<name>/world.jsonl`; back those up (`snapshot.json` files only speed up loading). A
+  `server-data/world.jsonl` from before games becomes the world `main`.
 
 **On the same network, nobody types an address.** A hosting game announces itself to the
 local network (a small UDP broadcast on port 7877, once a second: world name, host name, port,

@@ -673,7 +673,7 @@ pub fn script_play(
     // Through the portal the hero stands at.
     if step == "portal" {
         let to = travel.near().cloned();
-        match to.map(|to| travel.portal(&to)) {
+        match to.map(|to| travel.portal(&to, &ledger)) {
             Some(Ok(())) => info!("CUBEWISH_PLAY portal: going"),
             Some(Err(why)) => info!("CUBEWISH_PLAY portal: {why}"),
             None => info!("CUBEWISH_PLAY portal: not at a portal (hero at {}, {} portals)", hero.translation, ledger.portals.len()),

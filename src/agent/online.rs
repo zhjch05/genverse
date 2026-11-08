@@ -40,7 +40,7 @@ pub fn host(ledger: &mut Ledger) -> String {
         return "Already online; only your local world can be hosted.".into();
     }
     let config = cubewish_server::ServerConfig {
-        data_dir: crate::world::ledger::world_dir().into(),
+        data_dir: crate::world::ledger::game_dir().into(),
         port: cubewish_net::DEFAULT_PORT,
         seed: ledger.log.seed,
         flat: ledger.log.flat,
@@ -66,7 +66,7 @@ pub fn leave(ledger: &mut Ledger, travel: &mut super::worlds::Travel) -> String 
     if ledger.hosting.is_some() {
         return "You're hosting this world; it closes when you quit.".into();
     }
-    travel.next = Some(super::worlds::Trip::Local(crate::world::ledger::world_name()));
+    travel.next = Some(super::worlds::Trip::Local { game: crate::world::ledger::game_name(), world: crate::world::ledger::world_name() });
     String::new()
 }
 
@@ -94,10 +94,11 @@ pub fn sync_online(
     mut chat: ResMut<Chat>,
     mut peers: ResMut<Peers>,
     assets: Res<AssetServer>,
-    (mut loading, mut play, mut heroes): (
+    (mut loading, mut play, mut heroes, mut worlds_window): (
         ResMut<super::loading::Loading>,
         ResMut<super::game::Play>,
         Query<(&mut Transform, &mut crate::player::Player)>,
+        ResMut<super::worlds::WorldsWindow>,
     ),
 ) {
     let Some(online) = &ledger.online else {
@@ -149,20 +150,33 @@ pub fn sync_online(
             ClientEvent::Message(ToClient::Chunks { chunks }) => {
                 heal(&mut ledger, &mut world, chunks);
             }
-            ClientEvent::Message(ToClient::Welcome { log, snapshot }) => {
+            ClientEvent::Message(ToClient::Welcome { game, world: name, log, snapshot }) => {
                 peers.clear(&mut commands);
-                // Other ground: start over on it, as when going to another world.
-                let other_ground = log.terrain() != world.terrain;
+                let Some(online) = &mut ledger.online else { continue };
+                // A reconnect lands in the game's first world: back to where we were.
+                if let Some(wanted) = online.world.clone().filter(|w| *w != name && game.world(w).is_some()) {
+                    online.game = Some(game);
+                    online.client.send(cubewish_net::ToServer::Enter { world: wanted });
+                    continue;
+                }
+                let moved = online.shown.is_some() && online.shown.as_deref() != Some(name.as_str());
+                online.game = Some(game);
+                online.world = Some(name.clone());
+                online.shown = Some(name.clone());
+                online.attempts = 0;
+                let from_portal = online.arriving_from.take();
+                // Other ground, or another world: start over on it.
+                let fresh = moved || log.terrain() != world.terrain;
                 ledger.log = log;
                 // After a reconnect: our changes in flight either made it into the log
-                // (find them by signature) or were lost with the connection.
+                // (find them by signature) or were lost with the connection. In another
+                // world, they're lost either way.
                 let l = &mut *ledger;
                 if let Some(online) = &mut l.online {
-                    online.attempts = 0;
                     let pending: Vec<(u64, String)> = online.pending.drain().collect();
                     let mut lost = 0;
                     for (request, sig) in pending {
-                        match l.log.changes.iter().find(|c| c.sig.as_deref() == Some(sig.as_str())) {
+                        match l.log.changes.iter().find(|c| c.sig.as_deref() == Some(sig.as_str())).filter(|_| !moved) {
                             Some(change) => {
                                 online.committed.insert(request, change.id);
                             }
@@ -178,28 +192,43 @@ pub fn sync_online(
                     }
                 }
                 let full = replay_from(&ledger.log, snapshot.as_ref());
-                if other_ground {
+                if fresh {
                     world.reset(&mut commands, ledger.log.terrain(), full.edits.iter().map(|(p, id)| (*p, *id)));
-                    play.leave_world();
-                    if let Ok((mut transform, mut player)) = heroes.single_mut() {
-                        transform.translation = crate::player::spawn_point(ledger.log.terrain(), IVec2::ZERO);
-                        player.arrive();
-                    }
-                    loading.restart(&ledger.online.as_ref().map(|o| o.addr.clone()).unwrap_or_default());
                 } else {
                     world.replace_edits(full.edits.iter().map(|(p, id)| (*p, *id)));
                 }
                 creations.resync(&mut commands, &full.builds);
                 landscape.forget_history();
                 ledger.adopt(&full);
+                if fresh {
+                    play.leave_world();
+                    let spot = from_portal
+                        .and_then(|from| super::worlds::arrival(&ledger, &from))
+                        .unwrap_or_else(|| crate::player::spawn_point(ledger.log.terrain(), IVec2::ZERO));
+                    if let Ok((mut transform, mut player)) = heroes.single_mut() {
+                        transform.translation = spot;
+                        player.arrive();
+                    }
+                    loading.restart(&name);
+                }
+                worlds_window.refresh();
                 let addr = ledger.online.as_ref().map(|o| o.addr.clone()).unwrap_or_default();
                 chat.say(
                     Role::System,
-                    format!("Joined {addr}: {} changes, {} builds.", ledger.log.changes.len(), full.builds.len()),
+                    format!("In {name} on {addr}: {} changes, {} builds.", ledger.log.changes.len(), full.builds.len()),
                 );
                 if let Some(online) = &mut ledger.online {
                     online.state = Some(full);
                 }
+            }
+            ClientEvent::Message(ToClient::Game { game, request }) => {
+                let Some(online) = &mut ledger.online else { continue };
+                // The request is set only for whoever proposed the change.
+                if request.is_some() && let Some(reply) = super::worlds::game_reply(game.changes.last().map(|c| &c.action)) {
+                    chat.say(Role::System, reply);
+                }
+                online.game = Some(game);
+                worlds_window.refresh();
             }
             ClientEvent::Message(ToClient::Committed { change, request, prints, package }) => {
                 if let Some(package) = package {

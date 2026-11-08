@@ -1,87 +1,101 @@
-# Many worlds, and portals between them
+# Games, worlds, and portals between them
 
-Status: 2026-11-08. Built as described, except where marked *later*.
+Status: 2026-11-08. Built: games with many worlds, locally and hosted; game-level admins
+and saves; portals within a game and to other games. *Later* marks what isn't built.
 
 ## Goal
 
-A player keeps many worlds: a home world, a Sokoban world, a fork of last week's
-campaign. They move between them from a Worlds window, and through **portals**: voxel
-art in the world (a stone arch, a glowing door) that an agent builds on request, which
-takes whoever walks through it to another world. All of it keeps the rules so far:
-each world is its own log, and the log is the truth.
+A player keeps many places: a home, a Sokoban room, a fork of last week's campaign. A
+**game** is what they host, join and invite people to; it holds **worlds**, the places
+inside it, each with its own ground. They move between worlds through portals: voxel art
+an agent builds on request. Everything keeps the rule so far: each log is the truth.
 
-## What a world is
+## Game and world
 
-- A folder: `saves/` for **Home** (the world from before named worlds), and
-  `saves/worlds/<name>/` for the rest. Each holds `world.jsonl` (the log) and
-  `snapshot.json` (a cache).
-- Its ground: a seed and whether it's flat. New worlds pick: **Flat** (empty, for games
-  and building) or **Natural** (a fresh landscape, a new seed).
-- A server is a world too, at an address. Joining one is entering a world that lives
-  elsewhere.
+| | Game | World |
+|---|---|---|
+| What it is | What you host or join: one address, one set of players | One place in a game, with its own ground |
+| Owns | Players and roles (admins), which worlds exist, game saves | Ground (seed, flat or natural), voxel edits, builds, land, game pieces and timers |
+| Log | `game.jsonl`: worlds made and removed, admins, saves | `world.jsonl`, as before |
+
+Other games split it the same way: Roblox experiences hold places, a Minecraft server
+holds dimensions, a CK3 campaign is saved as one thing.
+
+- **One log per world plus a game log**, not one big log: worlds stay independent, so a
+  busy world never slows another's loading or joining, and a server could later run
+  each on its own thread or machine.
+- **Admins are the game's.** A world's log takes its admins from the game when it loads.
+- **Single player is an unhosted game.** Hosting it shares all its worlds at once.
+
+On disk, `saves/games/<game>/game.jsonl` and `saves/games/<game>/worlds/<world>/`
+(`world.jsonl`, `snapshot.json`). The first run moves the worlds from before into a game
+called `local` (Home becomes its world `home`); nothing is deleted. A server's data
+directory is one game the same way (a `world.jsonl` from before becomes its world
+`main`). `CUBEWISH_GAME` and `CUBEWISH_WORLD` pick where to start.
+
+## The game log
+
+```rust
+GameAction::CreateWorld { name, seed, flat }
+GameAction::RemoveWorld { name }      // moved to saves/trash, never deleted
+GameAction::SetAdmins { admins }
+GameAction::Save { name, worlds }     // world name → its last change: a save of everything
+```
+
+Saving the game bookmarks every world at once, like a strategy game's save. Loading it
+is a `Restore` in each world's log (each one undoable), as loading a world's save is.
 
 ## Entering a world
 
-One path for every way in (the Worlds window, `/world`, a portal, joining or leaving a
-server):
+One path for every way in (the window, `/world`, a portal, joining or leaving a
+server): the world left behind is saved, the new one loads, the ground resets to its
+seed, and the hero lands at its spawn, or by a portal leading back, behind the loading
+screen. On a server, entering a world asks the server for it; the server sends that
+world's log and snapshot, and from then on only that world's changes and the people in
+it.
 
-1. The world you leave is saved: its log is already on disk, and its snapshot is
-   written now, so coming back loads fast.
-2. The new world's log and snapshot load ([`ledger`](../src/world/ledger.rs)).
-3. The voxel world resets to the new ground: every chunk goes, and the terrain changes
-   to the new seed and flatness. Chunks stream in around the hero as at startup.
-   (Before this, a server with different ground couldn't be joined.)
-4. Builds, game pieces and land follow the new log. Games you were playing end.
-5. The hero goes to the new world's spawn, or, arriving through a portal, next to a
-   portal there that leads back. The loading screen covers it until the ground is in.
+## Hosting a game
 
-You can't leave a world you're hosting (others are in it); it closes when you quit.
+One server, one game, one address. Each player is in one world at a time:
+
+- `ToServer::Enter { world }` moves them; the server answers with that world's
+  `Welcome` (log, snapshot) and the game (its worlds and admins).
+- Proposals apply to the world the player is in. Commits go to the players in that
+  world; presence too. Game changes (a new world) go to everyone.
+- Admins make worlds on the server from the window or `/newworld`.
+- Timers run in every world, near the players in it.
 
 ## Portals
 
-A portal is a placed build linked to a world:
-
 ```rust
-Action::SetPortal { build: u64, to: Option<PortalTo> } // None unlinks it
-enum PortalTo { World { name }, Server { addr } }
+enum PortalTo {
+    World { name },          // a world in this game: works for everyone in it
+    Game { game, world },    // another local game (single player)
+    Server { addr },         // another hosted game
+}
 ```
 
-- **In the log** like everything else, so they replay, undo and travel to other
-  players. A separate action rather than a field on the build: moving or revising the
-  build keeps its link, and removing the build removes it.
-- **Who:** whoever may change the build (its land's owner, or anyone on open land).
-- **Making one:** ask the agent ("a stone arch that's a portal to sokoban"). Its answer
-  can carry `portal: {to}` beside the build; it gets the list of your worlds to pick
-  from, and builds an opening to walk through. Or select any build and link it from the
-  Worlds window.
-- **Using one:** walk up to it. A label shows where it leads ("→ sokoban"); E goes.
-  The game's own E (a game piece in reach) comes first.
-- **In multiplayer:** a portal to a server address works for everyone. A portal to a
-  local world name works for players who have a world of that name; others see "that
-  world is on someone else's computer". *Later:* one server hosting many worlds, so a
-  shared world's portals lead to worlds everyone shares.
+- **In the log** (`Action::SetPortal { build, to }`), so links replay, undo and travel to
+  other players; moving or revising the build keeps its link, removing it removes it.
+- **Who:** whoever may change the build.
+- **Making one:** ask the agent ("a stone arch that's a portal to sokoban"); it's told
+  this game's worlds. Or link any build from the window, or `/portal <world>`.
+- **Using one:** walk up to it; a card says where it leads; E goes.
 
-## The Worlds window (O, or the globe button)
+## The Game window (O, or the globe button)
 
-Four tabs:
-
-- **Worlds:** every local world as a row: name, ground (flat or natural), how many
-  changes, when last played. The current one is marked. Enter, Fork (from one of its
-  saves), and Move to trash (to `saves/trash/`, never deleted outright; confirm first).
-  At the top: a new world (name, Flat or Natural, Create and enter), and Back to the
-  world you came from.
-- **Saves:** this world's saves, newest first, with who and when, marked if later than
-  the world as it is. Save now (name), Load (admins), Fork into a new world (name).
-- **Portals:** this world's portals: build, where it leads, how far. Go (travel there
-  now), Unlink. Link the selected build to a world (pick one) or a server (address).
-- **Servers:** join an address (recent ones remembered), host this world, leave.
-
-Chat commands do the same: `/worlds`, `/world <name>`, `/newworld <name> [flat|natural]`,
-`/portal <world|host:port>` (links the selected build), `/save`, `/saves`, `/load`,
-`/fork`.
+- The game: its name, local or hosted (address, who's on), and Back.
+- **Worlds:** this game's worlds (ground, changes, last played), Enter, New (Flat or
+  Natural), Fork from a save, Move to trash.
+- **Saves:** game saves (every world) and this world's saves: Save, Load (admins),
+  Fork.
+- **Portals:** this world's portals: Go, Unlink, link the selected build.
+- **Games:** your local games (Enter, New) and servers (Join; recent ones remembered);
+  Host this game; Leave.
 
 ## Later
 
-- One server, many worlds, with portals among them and a shared world list.
-- Renaming worlds, world thumbnails, and per-world settings in the window.
-- Carrying items between worlds (each world's games keep their own inventories now).
+- Inventories that follow a player between worlds (game-level items, handed over in
+  the game log), and game packages installed once per game with each world choosing
+  which run. Today both stay per world.
+- Each world on its own thread or machine; renaming worlds and games; thumbnails.

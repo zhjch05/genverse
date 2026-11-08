@@ -43,31 +43,40 @@ use crate::{
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(tag = "kind", rename_all = "snake_case")]
 pub enum PortalTo {
-    /// A world on the player's computer, by name ("home" is the first world).
+    /// A world in the same game: everyone in the game can go.
     World { name: String },
-    /// A server, `host:port`.
+    /// A world in another of the player's local games.
+    Game { game: String, world: String },
+    /// Another hosted game, `host:port`.
     Server { addr: String },
 }
 
 impl PortalTo {
-    /// "sokoban", or a server address: a world name has no `:`.
+    /// "sokoban" (a world in this game), "game/world" (another local game), or a
+    /// server's `host:port`.
     pub fn parse(text: &str) -> Result<Self, String> {
         let text = text.trim();
         if text.is_empty() || text.len() > 100 {
-            return Err("a portal leads to a world name or a host:port".into());
+            return Err("a portal leads to a world, game/world, or host:port".into());
         }
         if text.contains(':') {
             return Ok(PortalTo::Server { addr: text.into() });
         }
-        if !text.chars().all(|c| c.is_ascii_alphanumeric() || c == '-' || c == '_') {
-            return Err(format!("\"{text}\" isn't a world name (letters, digits, - and _)"));
+        let name = |part: &str| {
+            crate::game::clean_name(part).filter(|n| n.eq_ignore_ascii_case(part.trim())).ok_or(format!("\"{part}\" isn't a name (letters, digits, - and _)"))
+        };
+        match text.split_once('/') {
+            Some((game, world)) => Ok(PortalTo::Game { game: name(game)?, world: name(world)? }),
+            None => Ok(PortalTo::World { name: name(text)? }),
         }
-        Ok(PortalTo::World { name: text.to_lowercase() })
     }
 
-    pub fn label(&self) -> &str {
+    /// Where it leads, as [`Self::parse`] reads it.
+    pub fn label(&self) -> String {
         match self {
-            PortalTo::World { name } | PortalTo::Server { addr: name } => name,
+            PortalTo::World { name } => name.clone(),
+            PortalTo::Game { game, world } => format!("{game}/{world}"),
+            PortalTo::Server { addr } => addr.clone(),
         }
     }
 }
@@ -697,7 +706,7 @@ impl Replay {
                 self.land.authorize(&by.player, &parcels_of(placed))?;
                 match to {
                     Some(to) => {
-                        PortalTo::parse(to.label())?;
+                        PortalTo::parse(&to.label())?;
                         self.portals.insert(*build, to.clone());
                     }
                     None => {

@@ -1,6 +1,9 @@
 //! The wire protocol between Cubewish clients and a server.
 //!
-//! The server holds the world's change log and is the only one who orders changes.
+//! A server hosts one game: its worlds, each with its own change log, and the game's
+//! own log (which worlds there are, who runs it). Each player is in one world at a
+//! time and hears only that world's changes and people, plus the game's changes.
+//! The server holds the logs and is the only one who orders changes.
 //! A client proposes a change (signed by its player); the server checks it against
 //! the rules, appends it, and sends it to everyone, or tells the proposer why not.
 //! Later changes win, like Figma's multiplayer: no merging, just one order.
@@ -23,6 +26,7 @@ use std::{
 };
 
 use cubewish_rules::{
+    game::{GameAction, GameLog},
     log::{Action, Change, Provenance, RULES_VERSION, Snapshot, WorldLog},
     logic::Package,
     sculpt::Area,
@@ -30,7 +34,7 @@ use cubewish_rules::{
 use serde::{Deserialize, Serialize};
 
 /// Bumped when the protocol changes incompatibly.
-pub const VERSION: u32 = 5;
+pub const VERSION: u32 = 6;
 pub const DEFAULT_PORT: u16 = 7878;
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
@@ -52,6 +56,10 @@ pub enum ToServer {
         #[serde(default, skip_serializing_if = "Option::is_none")]
         package: Option<Package>,
     },
+    /// Goes to another world of the game; the server answers with its welcome.
+    Enter { world: String },
+    /// A change to the game itself (a new world, a game save), signed like a change.
+    ProposeGame { request: u64, by: Provenance, action: GameAction, sig: String },
     /// Where the player is and what they're doing, for others to see. Not kept.
     Presence(Presence),
     /// The edits in these chunks, because ours disagree with the server's fingerprints.
@@ -90,8 +98,11 @@ pub struct Presence {
 pub enum ToClient {
     /// Sent on connect; the client signs `nonce` to prove who it is.
     Challenge { version: u32, rules: u32, nonce: String },
-    /// The world so far, with a snapshot of its voxels to replay from when there is one.
-    Welcome { log: WorldLog, snapshot: Option<Snapshot> },
+    /// The world the player is in so far (named `world` in `game`), with a snapshot to
+    /// replay from when there is one. Sent on joining and on entering another world.
+    Welcome { game: GameLog, world: String, log: WorldLog, snapshot: Option<Snapshot> },
+    /// The game changed (a world made or removed, a save): for everyone in it.
+    Game { game: GameLog, request: Option<u64> },
     /// A change the server accepted, for everyone. `request` is set only for the player
     /// who proposed it. `prints` fingerprints the chunks it changed, as the server has
     /// them, so players can check theirs.

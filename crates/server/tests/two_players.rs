@@ -169,7 +169,7 @@ fn two_players_share_one_ordered_world() {
     let again = start(ServerConfig { data_dir: dir.clone(), port: 0, seed: 1337, flat: false }).unwrap();
     let dee = Player::join(&again.addr.to_string(), 4, "Dee");
     drop(dee);
-    let saved = cubewish_rules::store::LogFile::open(&dir).unwrap().1.unwrap();
+    let saved = cubewish_rules::store::LogFile::open(&dir.join("worlds/main")).unwrap().1.unwrap();
     assert_eq!(saved.changes.len(), 3);
     assert!(saved.changes.iter().all(|c| c.verified()));
     assert!(saved.changes.iter().all(|c| c.by.prompt.is_none()));
@@ -250,7 +250,7 @@ fn packages_travel_with_the_change_that_installs_them() {
     // A newcomer gets the package in the log.
     let cy = Player::join(&addr, 3, "Cy");
     drop((ada, bo, cy));
-    let saved = cubewish_rules::store::LogFile::open(&dir).unwrap().1.unwrap();
+    let saved = cubewish_rules::store::LogFile::open(&dir.join("worlds/main")).unwrap().1.unwrap();
     assert!(saved.packages.contains_key(&reference.hash));
     let state = cubewish_rules::log::replay(&saved);
     assert!(state.problems.is_empty(), "{:?}", state.problems);
@@ -313,7 +313,7 @@ fn the_server_runs_timers() {
     bo.propose(2, Action::Timers { package: "bell".into(), until: 0, effects: Vec::new() });
     assert!(matches!(bo.next(), ToClient::Rejected { why, .. } if why.contains("only the world")));
     drop((ada, bo));
-    let saved = cubewish_rules::store::LogFile::open(&dir).unwrap().1.unwrap();
+    let saved = cubewish_rules::store::LogFile::open(&dir.join("worlds/main")).unwrap().1.unwrap();
     let state = cubewish_rules::log::replay(&saved);
     assert!(state.problems.is_empty(), "{:?}", state.problems);
     assert!(state.logic.state.entities().any(|(_, e)| e.components["label"] == "Rang"));
@@ -350,8 +350,66 @@ fn saves_load_for_everyone() {
     committed(&ada);
     committed(&bo);
     drop((ada, bo));
-    let saved = cubewish_rules::store::LogFile::open(&dir).unwrap().1.unwrap();
+    let saved = cubewish_rules::store::LogFile::open(&dir.join("worlds/main")).unwrap().1.unwrap();
     let state = cubewish_rules::log::replay(&saved);
     assert_eq!(state.builds.keys().copied().collect::<Vec<_>>(), vec![1]);
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+#[test]
+fn a_game_hosts_many_worlds() {
+    use cubewish_rules::game::{GameAction, signing_bytes as game_bytes};
+    let dir = std::env::temp_dir().join(format!("cubewish-game-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&dir);
+    let server = start(ServerConfig { data_dir: dir.clone(), port: 0, seed: 1337, flat: true }).unwrap();
+    let addr = server.addr.to_string();
+    let ada = Player::join(&addr, 1, "Ada");
+    let bo = Player::join(&addr, 2, "Bo");
+    let game_change = |p: &Player, request: u64, action: GameAction| {
+        let now = SystemTime::now().duration_since(UNIX_EPOCH).unwrap().as_secs();
+        let by = Provenance::new(&p.key.player_id(), p.name, None, None, now);
+        let sig = p.key.sign(&game_bytes(&by, &action));
+        p.client.send(ToServer::ProposeGame { request, by, action, sig });
+    };
+    let arena = || GameAction::CreateWorld { name: "arena".into(), seed: 7, flat: true };
+    // Only the game's admins make worlds (Ada, the first to join).
+    game_change(&bo, 1, arena());
+    assert!(matches!(bo.next(), ToClient::Rejected { why, .. } if why.contains("admins")));
+    game_change(&ada, 1, arena());
+    // Everyone hears about the new world; Ada's answer carries her request.
+    assert!(matches!(ada.next(), ToClient::Game { request: Some(1), game } if game.world("arena").is_some()));
+    assert!(matches!(bo.next(), ToClient::Game { request: None, .. }));
+
+    // Bo goes to the arena: its welcome, and Ada (in main) hears he's gone.
+    bo.client.send(ToServer::Enter { world: "arena".into() });
+    match bo.next() {
+        ToClient::Welcome { world, log, .. } => {
+            assert_eq!(world, "arena");
+            assert_eq!(log.seed, 7);
+        }
+        other => panic!("{other:?}"),
+    }
+    assert!(matches!(ada.next(), ToClient::Gone { player } if player == bo.key.player_id()));
+    // Ada builds in main; Bo, in the arena, doesn't hear it.
+    ada.propose(2, lamp(1, 4.0, 4.0));
+    assert!(matches!(ada.next(), ToClient::Committed { request: Some(2), .. }));
+    bo.propose(2, lamp(1, 60.0, 60.0));
+    assert!(matches!(bo.next(), ToClient::Committed { request: Some(2), .. }));
+    // A game save covers every world; the server fills in where each one is.
+    game_change(&bo, 3, GameAction::Save { name: "both".into(), worlds: Default::default() });
+    match bo.next() {
+        ToClient::Game { request: Some(3), game } => {
+            let (_, _, worlds) = game.saves().last().unwrap();
+            assert_eq!(worlds.len(), 2);
+            assert!(worlds.values().all(|last| *last == 1));
+        }
+        other => panic!("{other:?}"),
+    }
+    drop((ada, bo));
+    // Each world keeps its own log.
+    for world in ["main", "arena"] {
+        let log = cubewish_rules::store::LogFile::open(&dir.join("worlds").join(world)).unwrap().1.unwrap();
+        assert_eq!(cubewish_rules::log::replay(&log).builds.len(), 1, "{world}");
+    }
     let _ = std::fs::remove_dir_all(&dir);
 }

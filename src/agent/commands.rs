@@ -24,6 +24,8 @@ use cubewish_rules::{
     settings::{LandMode, Look, RateLimits},
 };
 
+use cubewish_rules::game::GameAction;
+
 use super::{
     creations::Creations,
     landscape::Landscape,
@@ -55,23 +57,29 @@ const fn command(name: &'static str, args: &'static str, about: &'static str, ad
 }
 
 /// Every command, in the order they're suggested. `/play` is the panel's own.
-pub const COMMANDS: [Command; 24] = [
+pub const COMMANDS: [Command; 30] = [
     command("history", "[n]", "The latest changes, with ids", false),
     command("revert", "<id>", "Undo one of your changes", false),
     command("rules", "", "This world's rules", false),
     command("verify", "", "Check every change is signed by its player", false),
     command("play", "", "Join a world on your network, or open this one", false),
-    command("host", "", "Open this world to others", false),
-    command("join", "<host[:port]>", "Play on another world", false),
-    command("leave", "", "Back to your local world", false),
+    command("host", "", "Open this game, every world in it, to others", false),
+    command("join", "<host[:port]>", "Play in a hosted game", false),
+    command("leave", "", "Back to your own game", false),
     command("packages", "", "The game rules in this world", false),
     command("save", "<name>", "Bookmark the world as it is now", false),
     command("saves", "", "The saves you can load or fork", false),
     command("fork", "<save> <world>", "Start a new world of your own from a save", false),
-    command("worlds", "", "Your worlds (O opens the Worlds window)", false),
-    command("world", "<name>", "Go to one of your worlds", false),
-    command("newworld", "<name> [flat|natural]", "Make a new world and go there", false),
-    command("portal", "<world|host:port> | off", "Make the selected build a portal", false),
+    command("worlds", "", "This game's worlds (O opens the Game window)", false),
+    command("world", "<name>", "Go to another world of this game", false),
+    command("games", "", "Your games on this computer", false),
+    command("game", "<name>", "Go to another of your games", false),
+    command("newgame", "<name> [flat|natural]", "Make a new game and go there", false),
+    command("savegame", "<name>", "Save every world of the game at once", false),
+    command("portal", "<world|game/world|host:port> | off", "Make the selected build a portal", false),
+    command("newworld", "<name> [flat|natural]", "Make a new world in this game", true),
+    command("removeworld", "<name>", "Take a world out of this game (to the trash)", true),
+    command("loadgame", "<name>", "Put every world back to a game save", true),
     command("load", "<name>", "Put the world back to a save, for everyone", true),
     command("rollback", "<player>", "Undo everything a player did", true),
     command("restore", "<id>", "Put the world back to right after a change", true),
@@ -113,7 +121,7 @@ pub fn run(text: &str, cx: &mut Context) -> String {
                 format!("{} of {} changes aren't signed by their authors: {}", bad.len(), changes.len(), bad.join(", "))
             }
         }
-        "revert" | "rollback" | "restore" | "load" | "host" | "join" | "leave" | "world" | "newworld" if busy => {
+        "revert" | "rollback" | "restore" | "load" | "host" | "join" | "leave" | "world" | "game" | "newgame" | "loadgame" if busy => {
             "Keep or discard your draft first.".into()
         }
         "save" => save(cx.ledger, &args.join(" ")),
@@ -129,38 +137,52 @@ pub fn run(text: &str, cx: &mut Context) -> String {
         },
         "leave" => super::online::leave(cx.ledger, cx.travel),
         "worlds" => worlds(cx.ledger),
-        "world" => match args.first() {
-            Some(name) if name.eq_ignore_ascii_case("home") => {
-                cx.travel.next = Some(Trip::Local(None));
+        "world" => match args.first().and_then(|n| crate::world::ledger::clean_name(n)) {
+            Some(name) if cx.ledger.is_online() => {
+                cx.travel.next = Some(Trip::Remote { world: name });
                 String::new()
             }
-            Some(name) => match crate::world::ledger::clean_name(name) {
-                Some(name) => {
-                    cx.travel.next = Some(Trip::Local(Some(name)));
-                    String::new()
-                }
-                None => "Usage: /world <name> (see /worlds)".into(),
-            },
+            Some(name) => {
+                cx.travel.next = Some(Trip::Local { game: crate::world::ledger::game_name(), world: name });
+                String::new()
+            }
             None => worlds(cx.ledger),
         },
-        "newworld" => {
-            let flat = !matches!(args.get(1).copied(), Some("natural"));
-            let seed = if flat { crate::world::SEED } else { std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map_or(1, |d| d.subsec_nanos()) };
-            match args.first().map(|n| crate::world::ledger::create_world(n, flat, seed)) {
-                Some(Ok(name)) => {
-                    cx.travel.next = Some(Trip::Local(Some(name)));
+        "games" => games(),
+        "game" => match args.first().and_then(|n| crate::world::ledger::clean_name(n)) {
+            Some(game) => match crate::world::ledger::read_game(&game).start() {
+                Some(world) => {
+                    cx.travel.next = Some(Trip::Local { game, world });
                     String::new()
                 }
-                Some(Err(why)) => why,
-                None => "Usage: /newworld <name> [flat|natural]".into(),
-            }
-        }
+                None => format!("There's no game \"{game}\". {}", games()),
+            },
+            None => games(),
+        },
+        "newgame" => match args.first() {
+            Some(name) => new_game(cx.ledger, cx.travel, name, !matches!(args.get(1).copied(), Some("natural"))),
+            None => "Usage: /newgame <name> [flat|natural]".into(),
+        },
+        "savegame" if !args.is_empty() => save_game(cx.ledger, &args.join(" ")),
+        "savegame" => "Usage: /savegame <name>: saves every world of the game at once".into(),
         "portal" => portal(cx, &args.join(" ")),
         "revert" => match args.first().and_then(|n| n.parse::<u64>().ok()) {
             Some(id) => revert(cx, id),
             None => "Usage: /revert <change id> (see /history)".into(),
         },
-        "rollback" | "restore" | "load" | "land" | "rate" | "bevel" | "uninstall" if !admin => "Only admins can do that.".into(),
+        "rollback" | "restore" | "load" | "land" | "rate" | "bevel" | "uninstall" | "newworld" | "removeworld" | "loadgame" if !admin => {
+            "Only admins can do that.".into()
+        }
+        "newworld" => match args.first() {
+            Some(name) => new_world(cx.ledger, cx.travel, name, !matches!(args.get(1).copied(), Some("natural"))),
+            None => "Usage: /newworld <name> [flat|natural]".into(),
+        },
+        "removeworld" => match args.first() {
+            Some(name) => remove_world(cx.ledger, name),
+            None => "Usage: /removeworld <name>".into(),
+        },
+        "loadgame" if !args.is_empty() => load_game(cx.ledger, &args.join(" ")),
+        "loadgame" => "Usage: /loadgame <name>".into(),
         "load" => match cx.ledger.log.save_named(&args.join(" ")).map(|c| c.id) {
             Some(id) if !args.is_empty() => restore(cx, id),
             _ => format!("Usage: /load <name>. {}", saves(cx.ledger)),
@@ -292,14 +314,17 @@ pub fn restore(cx: &mut Context, id: u64) -> String {
     format!("Loaded {what}: {n} later change(s) no longer count; {undo}.")
 }
 
-/// The local worlds, for the chat.
+/// This game's worlds, for the chat.
 fn worlds(ledger: &Ledger) -> String {
     let here = super::worlds::current_title(ledger);
-    let list: Vec<String> = crate::world::ledger::list_worlds()
-        .iter()
-        .map(|w| format!("{}{} ({}, {} changes)", w.title(), if w.title() == here { " ← here" } else { "" }, if w.flat { "flat" } else { "natural" }, w.changes))
-        .collect();
-    format!("Worlds: {}. /world <name> goes; O opens the Worlds window.", list.join(" · "))
+    let list: Vec<String> = match &ledger.online {
+        Some(online) => online.game.as_ref().map(|g| g.worlds().into_iter().map(|(n, _)| n).collect()).unwrap_or_default(),
+        None => crate::world::ledger::list_worlds()
+            .into_iter()
+            .map(|w| format!("{} ({}, {} changes)", w.name, if w.flat { "flat" } else { "natural" }, w.changes))
+            .collect(),
+    };
+    format!("You're in {here}. Worlds: {}. /world <name> goes; O opens the Game window.", list.join(" · "))
 }
 
 /// Makes the selected build a portal to `to` (`off` unlinks it).
@@ -355,25 +380,101 @@ fn saves(ledger: &Ledger) -> String {
 
 /// Starts a new local world from a save: the log up to it, with the local player made an
 /// admin there too.
-pub fn fork(ledger: &Ledger, save: &str, world: &str) -> String {
+pub fn fork(ledger: &mut Ledger, save: &str, world: &str) -> String {
     let Some(at) = ledger.log.save_named(save).map(|c| c.id) else {
         return format!("There's no save \"{save}\". {}", saves(ledger));
     };
-    let clean: String = world.chars().filter(|c| c.is_ascii_alphanumeric() || *c == '-' || *c == '_').collect();
-    if clean.is_empty() || clean != world {
-        return "A world's name is letters, digits, - and _.".into();
+    if ledger.is_online() {
+        return "Forking makes a world on this computer; do it in your own game.".into();
     }
-    let mut log = ledger.log.fork(at);
-    if !log.is_admin(&ledger.profile.id) {
-        log.admins.push(ledger.profile.id.clone());
-    }
-    match crate::world::ledger::write_world(&clean, &log) {
-        Ok(()) => format!(
-            "Started world \"{clean}\" from \"{save}\" ({} changes); this world carries on as it is. Enter it from the Worlds window (O) or with /world {clean}.",
-            log.changes.len()
-        ),
+    let log = ledger.log.fork(at);
+    let n = log.changes.len();
+    match ledger.create_world(world, (log.seed, log.flat), Some(log)) {
+        Ok(name) => format!("Started the world {name} from \"{save}\" ({n} changes); this one carries on as it is. /world {name} goes there."),
         Err(why) => why,
     }
+}
+
+/// Makes a world in this game (on a server, asks it to) and, locally, goes there.
+pub fn new_world(ledger: &mut Ledger, travel: &mut Travel, name: &str, flat: bool) -> String {
+    let seed = super::worlds::fresh_seed(flat);
+    if ledger.is_online() {
+        let Some(name) = crate::world::ledger::clean_name(name) else { return "A world's name is letters, digits, - and _.".into() };
+        return match ledger.propose_game(GameAction::CreateWorld { name: name.clone(), seed, flat }) {
+            Ok(_) => format!("Asking the server to make {name}…"),
+            Err(why) => why,
+        };
+    }
+    match ledger.create_world(name, (seed, flat), None) {
+        Ok(name) => {
+            travel.next = Some(Trip::Local { game: crate::world::ledger::game_name(), world: name });
+            String::new()
+        }
+        Err(why) => why,
+    }
+}
+
+/// Takes a world out of this game; its files go to the trash.
+pub fn remove_world(ledger: &mut Ledger, name: &str) -> String {
+    if ledger.is_online() {
+        return match ledger.propose_game(GameAction::RemoveWorld { name: name.into() }) {
+            Ok(_) => format!("Asking the server to remove {name}…"),
+            Err(why) => why,
+        };
+    }
+    match ledger.remove_world(name) {
+        Ok(()) => format!("Removed {name}; its files are in saves/trash."),
+        Err(why) => why,
+    }
+}
+
+/// Saves every world of the game at once.
+pub fn save_game(ledger: &mut Ledger, name: &str) -> String {
+    if ledger.is_online() {
+        // The server fills in where each world is.
+        let action = GameAction::Save { name: name.trim().into(), worlds: Default::default() };
+        return match ledger.propose_game(action) {
+            Ok(_) => "Saving the game…".into(),
+            Err(why) => why,
+        };
+    }
+    match ledger.save_game(name) {
+        Ok(n) => format!("Saved the game as \"{}\" ({n} worlds).", name.trim()),
+        Err(why) => why,
+    }
+}
+
+/// Puts every world of the game back to a game save.
+pub fn load_game(ledger: &mut Ledger, name: &str) -> String {
+    if ledger.is_online() {
+        return "Load a game save on the computer hosting it, for now; on a server, load each world's save.".into();
+    }
+    match ledger.load_game(name) {
+        Ok(n) => format!("Loaded the game save \"{}\": {n} world(s) went back. Each can be undone in its history.", name.trim()),
+        Err(why) => why,
+    }
+}
+
+/// Makes a new local game and goes there.
+pub fn new_game(ledger: &Ledger, travel: &mut Travel, name: &str, flat: bool) -> String {
+    let by = cubewish_rules::log::Provenance::new(&ledger.profile.id, &ledger.profile.name, None, None, 0);
+    match crate::world::ledger::create_game(name, flat, super::worlds::fresh_seed(flat), &by) {
+        Ok(game) => {
+            travel.next = Some(Trip::Local { game, world: "main".into() });
+            String::new()
+        }
+        Err(why) => why,
+    }
+}
+
+/// The local games, for the chat.
+fn games() -> String {
+    let here = crate::world::ledger::game_name();
+    let list: Vec<String> = crate::world::ledger::list_games()
+        .iter()
+        .map(|g| format!("{}{} ({} worlds)", g.name, if g.name == here { " ← here" } else { "" }, g.worlds))
+        .collect();
+    format!("Games: {}. /game <name> goes; /newgame <name> makes one.", list.join(" · "))
 }
 
 /// Makes the world (voxels and builds) match the change log again.

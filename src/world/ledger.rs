@@ -1,13 +1,18 @@
 //! The world's change log in the game ([`cubewish_rules::log`]): loading it, recording
 //! changes with who made them, and saving.
 //!
-//! On desktop the log is `saves/world.jsonl`, append-only ([`cubewish_rules::store`]):
-//! a change is saved by writing just that change. Replaying it is the truth;
-//! `saves/snapshot.json` holds the voxels and games as of some change, so loading
-//! replays only what came after (it's ignored when it no longer fits the log). Changes
-//! made here are applied on top of the current state, never by replaying everything. `CUBEWISH_WORLD=name` plays another world, kept in
-//! `saves/worlds/<name>/`; a new one there starts flat and empty. Saves from before the log are migrated once (the old files are
-//! kept as `.bak`). The local player is `saves/profile.json`: a name and a secret key
+//! Worlds belong to games (`docs/worlds.md`): `saves/games/<game>/game.json` says which
+//! worlds the game has and who runs it, and each world keeps its log in
+//! `saves/games/<game>/worlds/<world>/world.jsonl`, append-only
+//! ([`cubewish_rules::store`]): a change is saved by writing just that change.
+//! Replaying it is the truth; `snapshot.json` beside it holds the voxels and games as of
+//! some change, so loading replays only what came after (it's ignored when it no longer
+//! fits the log). Changes made here are applied on top of the current state, never by
+//! replaying everything. `CUBEWISH_GAME` and `CUBEWISH_WORLD` pick where to start (the
+//! game `local` and its first world by default; a world named there that the game
+//! doesn't have is made, flat and empty). Saves from before games move into `local`
+//! once, and saves from before the log are migrated (the old files are kept as
+//! `.bak`). The local player is `saves/profile.json`: a name and a secret key
 //! whose public half is the player's id, and every change is signed with it. The
 //! world's first player is its admin. `CUBEWISH_AS=Name` plays as a different
 //! (non-admin) player for this run, to try the rules from someone else's side.
@@ -34,72 +39,187 @@ use cubewish_rules::{
     rate::Rates,
     settings::WorldRules,
     log::{Action, BuildState, PortalTo, Provenance, Replay, Snapshot, WorldLog, replay_from, replay_land, signing_bytes},
+    game::{GameAction, GameLog},
     logic::{Clockwork, Intent, Logic, Package, Scope},
 };
 use serde::{Deserialize, Serialize};
 
 use crate::voxel::VoxelId;
 
-/// The world being played, once chosen: `None` inside is Home.
-static CURRENT: std::sync::RwLock<Option<Option<String>>> = std::sync::RwLock::new(None);
+/// The game and world being played, once chosen.
+static CURRENT: std::sync::RwLock<Option<(String, String)>> = std::sync::RwLock::new(None);
 
-/// A world name as kept on disk: lowercase letters, digits, - and _.
-pub fn clean_name(name: &str) -> Option<String> {
-    let name: String = name.trim().to_lowercase().chars().filter(|c| c.is_ascii_alphanumeric() || *c == '-' || *c == '_').collect();
-    (!name.is_empty() && name.len() <= 40 && name != "home" && name != "trash").then_some(name)
-}
+pub use cubewish_rules::game::clean_name;
 
-/// The named world being played, or `None` for Home. It starts as `CUBEWISH_WORLD`.
-pub fn world_name() -> Option<String> {
-    if let Some(current) = CURRENT.read().ok().and_then(|c| c.clone()) {
-        return current;
+/// Where games are kept.
+const GAMES: &str = "saves/games";
+
+/// The game and world being played. At first they're `CUBEWISH_GAME` (or `local`) and
+/// `CUBEWISH_WORLD` (or the game's first world); saves from before games move into
+/// `local` then.
+pub fn place() -> (String, String) {
+    if let Some(place) = CURRENT.read().ok().and_then(|c| c.clone()) {
+        return place;
     }
-    std::env::var("CUBEWISH_WORLD").ok().and_then(|n| clean_name(&n))
+    #[cfg(not(target_arch = "wasm32"))]
+    migrate_layout();
+    let game = std::env::var("CUBEWISH_GAME").ok().and_then(|n| clean_name(&n)).unwrap_or("local".into());
+    let log = read_game(&game);
+    let world = std::env::var("CUBEWISH_WORLD")
+        .ok()
+        .and_then(|n| clean_name(&n))
+        .or_else(|| log.start())
+        .unwrap_or("main".into());
+    // A world named at start that the game doesn't have yet is made, flat and empty.
+    #[cfg(not(target_arch = "wasm32"))]
+    if log.world(&world).is_none() {
+        let mut log = log;
+        let by = Provenance::new("local", "local", None, None, now());
+        let _ = log.push(by, GameAction::CreateWorld { name: world.clone(), seed: crate::world::SEED, flat: true });
+        write_game(&game, &log);
+    }
+    set_place(&game, &world);
+    (game, world)
 }
 
-/// Switches which world [`world_dir`] means (`None`: Home).
-pub fn set_world(name: Option<String>) {
+pub fn game_name() -> String {
+    place().0
+}
+
+pub fn world_name() -> String {
+    place().1
+}
+
+/// Switches which game and world [`world_dir`] means.
+pub fn set_place(game: &str, world: &str) {
     if let Ok(mut current) = CURRENT.write() {
-        *current = Some(name);
+        *current = Some((game.to_string(), world.to_string()));
     }
 }
 
-/// A local world, for lists.
+fn game_dir_of(game: &str) -> std::path::PathBuf {
+    std::path::Path::new(GAMES).join(game)
+}
+
+/// Where the current world's log and caches are kept.
+pub fn world_dir() -> String {
+    let (game, world) = place();
+    game_dir_of(&game).join("worlds").join(world).to_string_lossy().into()
+}
+
+/// The current game's own directory (`game.json`, and `worlds/`): what hosting serves.
+pub fn game_dir() -> String {
+    game_dir_of(&game_name()).to_string_lossy().into()
+}
+
+/// `game`'s log (an empty one if it has none yet).
+#[cfg(not(target_arch = "wasm32"))]
+pub fn read_game(game: &str) -> GameLog {
+    match cubewish_rules::store::read_game(&game_dir_of(game)) {
+        Ok(Some(log)) => log,
+        Ok(None) => GameLog::new(game),
+        Err(e) => {
+            error!("couldn't read game {game}: {e}");
+            GameLog::new(game)
+        }
+    }
+}
+
+#[cfg(target_arch = "wasm32")]
+pub fn read_game(game: &str) -> GameLog {
+    let mut log = GameLog::new(game);
+    let by = Provenance::new("local", "local", None, None, 0);
+    let _ = log.push(by, GameAction::CreateWorld { name: "home".into(), seed: crate::world::SEED, flat: false });
+    log
+}
+
+#[cfg(not(target_arch = "wasm32"))]
+fn write_game(game: &str, log: &GameLog) {
+    if let Err(e) = cubewish_rules::store::write_game(&game_dir_of(game), log) {
+        error!("couldn't save game {game}: {e}");
+    }
+}
+
+#[cfg(target_arch = "wasm32")]
+fn write_game(_game: &str, _log: &GameLog) {}
+
+/// Moves saves from before games into the game `local`, once: Home (the files in
+/// `saves/`) becomes its world `home`, and each `saves/worlds/<name>` its world
+/// `<name>`. Nothing is deleted.
+#[cfg(not(target_arch = "wasm32"))]
+fn migrate_layout() {
+    use std::path::Path;
+    if Path::new(GAMES).exists() {
+        return;
+    }
+    let local = game_dir_of("local");
+    let mut game = GameLog::new("local");
+    let (profile, _, _) = load_profile();
+    let by = || Provenance::new(&profile.id, &profile.name, None, None, now());
+    let home = local.join("worlds").join("home");
+    let _ = std::fs::create_dir_all(&home);
+    let old_home = ["world.jsonl", "world.json", "world.json.bak", "snapshot.json"].iter().any(|f| Path::new("saves").join(f).exists());
+    if old_home {
+        for file in ["world.jsonl", "world.json", "world.json.bak", "snapshot.json", "world_edits.json"] {
+            let from = Path::new("saves").join(file);
+            if from.exists() {
+                let _ = std::fs::rename(&from, home.join(file));
+            }
+        }
+    } else {
+        // Saves from before the log, or a first run: Home starts from them.
+        let cache = read_json::<SavedEdits>(OLD_EDITS).filter(|c| c.seed == crate::world::SEED);
+        let log = migrate(crate::world::SEED, cache);
+        if let Ok((mut file, _)) = cubewish_rules::store::LogFile::open(&home) {
+            let _ = file.rewrite(&log);
+        }
+    }
+    let home_log = cubewish_rules::store::LogFile::open(&home).ok().and_then(|(_, log)| log);
+    let admins = home_log.as_ref().map(|l| l.admins.clone()).filter(|a| !a.is_empty()).unwrap_or(vec![profile.id.clone()]);
+    let _ = game.push(by(), GameAction::SetAdmins { admins });
+    let (seed, flat) = home_log.map_or((crate::world::SEED, false), |l| (l.seed, l.flat));
+    let _ = game.push(by(), GameAction::CreateWorld { name: "home".into(), seed, flat });
+    for entry in std::fs::read_dir("saves/worlds").into_iter().flatten().flatten() {
+        let name = entry.file_name().to_string_lossy().to_string();
+        let Some(clean) = clean_name(&name).filter(|c| *c == name && *c != "home") else { continue };
+        let to = local.join("worlds").join(&clean);
+        if std::fs::rename(entry.path(), &to).is_err() {
+            continue;
+        }
+        let Some(summary) = cubewish_rules::store::summary(&to) else { continue };
+        let _ = game.push(by(), GameAction::CreateWorld { name: clean, seed: summary.seed, flat: summary.flat });
+    }
+    let _ = std::fs::remove_dir("saves/worlds");
+    write_game("local", &game);
+    info!("moved your worlds into the game \"local\" ({} worlds)", game.worlds().len());
+}
+
+/// A world in the current game, for lists.
 #[derive(Clone, Debug)]
 pub struct WorldInfo {
-    /// `None` for Home.
-    pub name: Option<String>,
+    pub name: String,
     pub flat: bool,
     pub changes: usize,
     pub modified: Option<std::time::SystemTime>,
 }
 
-impl WorldInfo {
-    pub fn title(&self) -> &str {
-        self.name.as_deref().unwrap_or("home")
-    }
-}
-
-/// Every local world: Home first, then the named ones, most recently played first.
+/// The current game's worlds, in the order they were made.
 #[cfg(not(target_arch = "wasm32"))]
 pub fn list_worlds() -> Vec<WorldInfo> {
-    use cubewish_rules::store::summary;
-    let info = |name: Option<String>, dir: &std::path::Path| {
-        summary(dir).map(|s| WorldInfo { name, flat: s.flat, changes: s.changes, modified: s.modified })
-    };
-    let home = info(None, std::path::Path::new("saves")).unwrap_or(WorldInfo { name: None, flat: false, changes: 0, modified: None });
-    let mut named: Vec<WorldInfo> = std::fs::read_dir("saves/worlds")
+    let game = game_name();
+    read_game(&game)
+        .worlds()
         .into_iter()
-        .flatten()
-        .flatten()
-        .filter(|e| e.path().is_dir())
-        .filter_map(|e| {
-            let name = e.file_name().to_string_lossy().to_string();
-            clean_name(&name).filter(|n| *n == name).and_then(|n| info(Some(n), &e.path()))
+        .map(|(name, ground)| {
+            let summary = cubewish_rules::store::summary(&game_dir_of(&game).join("worlds").join(&name));
+            WorldInfo {
+                flat: ground.flat,
+                changes: summary.as_ref().map_or(0, |s| s.changes),
+                modified: summary.and_then(|s| s.modified),
+                name,
+            }
         })
-        .collect();
-    named.sort_by_key(|w| std::cmp::Reverse(w.modified));
-    std::iter::once(home).chain(named).collect()
+        .collect()
 }
 
 #[cfg(target_arch = "wasm32")]
@@ -107,55 +227,59 @@ pub fn list_worlds() -> Vec<WorldInfo> {
     Vec::new()
 }
 
-/// Makes a new named world: flat and empty, or a natural landscape from `seed`.
-pub fn create_world(name: &str, flat: bool, seed: u32) -> Result<String, String> {
-    let name = clean_name(name).ok_or("A world's name is letters, digits, - and _ (not \"home\").")?;
-    write_world(&name, &WorldLog { flat, ..WorldLog::new(seed) })?;
+/// A local game, for lists.
+#[derive(Clone, Debug)]
+pub struct GameInfo {
+    pub name: String,
+    pub worlds: usize,
+    pub modified: Option<std::time::SystemTime>,
+}
+
+/// The local games, most recently changed first.
+#[cfg(not(target_arch = "wasm32"))]
+pub fn list_games() -> Vec<GameInfo> {
+    let mut games: Vec<GameInfo> = std::fs::read_dir(GAMES)
+        .into_iter()
+        .flatten()
+        .flatten()
+        .filter_map(|e| {
+            let name = e.file_name().to_string_lossy().to_string();
+            let log = cubewish_rules::store::read_game(&e.path()).ok().flatten()?;
+            let modified = std::fs::metadata(e.path().join("game.json")).and_then(|m| m.modified()).ok();
+            Some(GameInfo { name, worlds: log.worlds().len(), modified })
+        })
+        .collect();
+    games.sort_by_key(|g| std::cmp::Reverse(g.modified));
+    games
+}
+
+#[cfg(target_arch = "wasm32")]
+pub fn list_games() -> Vec<GameInfo> {
+    Vec::new()
+}
+
+/// Makes a new local game with one world, `main`, run by `admin`. Returns its name.
+#[cfg(not(target_arch = "wasm32"))]
+pub fn create_game(name: &str, flat: bool, seed: u32, admin: &Provenance) -> Result<String, String> {
+    let name = clean_name(name).ok_or("A game's name is letters, digits, - and _.")?;
+    if game_dir_of(&name).exists() {
+        return Err(format!("There's already a game called \"{name}\"."));
+    }
+    let mut game = GameLog::new(&name);
+    game.push(admin.clone(), GameAction::SetAdmins { admins: vec![admin.player.clone()] })?;
+    game.push(admin.clone(), GameAction::CreateWorld { name: "main".into(), seed, flat })?;
+    write_game(&name, &game);
     Ok(name)
 }
 
-/// Moves a named world to `saves/trash/`, never deleting it.
-#[cfg(not(target_arch = "wasm32"))]
-pub fn trash_world(name: &str) -> Result<(), String> {
-    if world_name().as_deref() == Some(name) {
-        return Err("You're in that world; go to another one first.".into());
-    }
-    let at = now();
-    std::fs::create_dir_all("saves/trash").map_err(|e| e.to_string())?;
-    std::fs::rename(format!("saves/worlds/{name}"), format!("saves/trash/{name}-{at}")).map_err(|e| e.to_string())
-}
-
 #[cfg(target_arch = "wasm32")]
-pub fn trash_world(_name: &str) -> Result<(), String> {
-    Err("Worlds can't be changed on the web yet.".into())
-}
-
-/// Where this world's log and caches are kept.
-pub fn world_dir() -> String {
-    world_name().map_or("saves".into(), |name| format!("saves/worlds/{name}"))
-}
-
-/// Writes `log` as a new named world (`saves/worlds/<name>/`), unless there is one.
-#[cfg(not(target_arch = "wasm32"))]
-pub fn write_world(name: &str, log: &WorldLog) -> Result<(), String> {
-    let dir = std::path::PathBuf::from(format!("saves/worlds/{name}"));
-    if dir.exists() {
-        return Err(format!("There's already a world called \"{name}\"."));
-    }
-    let (mut file, _) = cubewish_rules::store::LogFile::open(&dir).map_err(|e| e.to_string())?;
-    file.rewrite(log).map_err(|e| format!("Couldn't write {}: {e}", dir.display()))
-}
-
-#[cfg(target_arch = "wasm32")]
-pub fn write_world(_name: &str, _log: &WorldLog) -> Result<(), String> {
-    Err("Worlds can't be saved on the web yet.".into())
+pub fn create_game(_name: &str, _flat: bool, _seed: u32, _admin: &Provenance) -> Result<String, String> {
+    Err("Games can't be saved on the web yet.".into())
 }
 
 /// The voxel cache from before snapshots, read only to migrate saves from before the log.
 #[cfg(not(target_arch = "wasm32"))]
-fn cache_path() -> String {
-    format!("{}/world_edits.json", world_dir())
-}
+const OLD_EDITS: &str = "saves/world_edits.json";
 
 #[cfg(not(target_arch = "wasm32"))]
 fn snapshot_path() -> String {
@@ -243,6 +367,14 @@ pub struct Online {
     pub closed: Option<String>,
     /// Failed reconnects in a row, for backing off.
     pub attempts: u32,
+    /// The game the server hosts, once it has welcomed us.
+    pub game: Option<GameLog>,
+    /// The world we're in (or asked to go to) in that game.
+    pub world: Option<String>,
+    /// The world we're shown, once its welcome came.
+    pub shown: Option<String>,
+    /// Coming from this world through a portal: arrive by a portal back to it.
+    pub arriving_from: Option<String>,
 }
 
 /// Online, changes are known by request number until the server commits them; these
@@ -393,6 +525,140 @@ impl Ledger {
         let me = &self.profile.id;
         self.heard.extend(run.notes.into_iter().filter(|(to, _)| to == me).map(|(_, t)| t));
         run.errors
+    }
+
+    /// Adds a world to this (local) game: flat and empty, or natural from `seed`, or
+    /// starting from `log` (a fork). Returns its name.
+    pub fn create_world(&mut self, name: &str, ground: (u32, bool), log: Option<WorldLog>) -> Result<String, String> {
+        let name = clean_name(name).ok_or("A world's name is letters, digits, - and _.")?;
+        let game = game_name();
+        let mut game_log = read_game(&game);
+        let (seed, flat) = log.as_ref().map_or(ground, |l| (l.seed, l.flat));
+        let by = Provenance::new(&self.profile.id, &self.profile.name, None, None, now());
+        game_log.push(by, GameAction::CreateWorld { name: name.clone(), seed, flat })?;
+        #[cfg(not(target_arch = "wasm32"))]
+        {
+            let dir = game_dir_of(&game).join("worlds").join(&name);
+            if dir.exists() {
+                return Err(format!("There's a folder for \"{name}\" already ({}).", dir.display()));
+            }
+            let log = log.unwrap_or(WorldLog { flat, ..WorldLog::new(seed) });
+            let (mut file, _) = cubewish_rules::store::LogFile::open(&dir).map_err(|e| e.to_string())?;
+            file.rewrite(&log).map_err(|e| format!("Couldn't write {}: {e}", dir.display()))?;
+        }
+        write_game(&game, &game_log);
+        Ok(name)
+    }
+
+    /// Takes a world out of this (local) game; its files move to `saves/trash/`.
+    pub fn remove_world(&mut self, name: &str) -> Result<(), String> {
+        if world_name() == name {
+            return Err("You're in that world; go to another one first.".into());
+        }
+        let game = game_name();
+        let mut game_log = read_game(&game);
+        let by = Provenance::new(&self.profile.id, &self.profile.name, None, None, now());
+        game_log.push(by, GameAction::RemoveWorld { name: name.into() })?;
+        #[cfg(not(target_arch = "wasm32"))]
+        {
+            let trash = std::path::Path::new("saves/trash");
+            std::fs::create_dir_all(trash).map_err(|e| e.to_string())?;
+            let from = game_dir_of(&game).join("worlds").join(name);
+            std::fs::rename(&from, trash.join(format!("{game}-{name}-{}", now()))).map_err(|e| e.to_string())?;
+        }
+        write_game(&game, &game_log);
+        Ok(())
+    }
+
+    /// Saves every world of this (local) game at once.
+    pub fn save_game(&mut self, name: &str) -> Result<usize, String> {
+        let game = game_name();
+        let mut game_log = read_game(&game);
+        #[cfg(not(target_arch = "wasm32"))]
+        let worlds: BTreeMap<String, u64> = game_log
+            .worlds()
+            .into_iter()
+            .map(|(world, _)| {
+                // Change ids count up from 1, so the last is how many there are.
+                let last = if world == world_name() {
+                    self.log.changes.last().map_or(0, |c| c.id)
+                } else {
+                    cubewish_rules::store::summary(&game_dir_of(&game).join("worlds").join(&world)).map_or(0, |s| s.changes as u64)
+                };
+                (world, last)
+            })
+            .collect();
+        #[cfg(target_arch = "wasm32")]
+        let worlds = BTreeMap::new();
+        let n = worlds.len();
+        let by = Provenance::new(&self.profile.id, &self.profile.name, None, None, now());
+        game_log.push(by, GameAction::Save { name: name.trim().into(), worlds })?;
+        write_game(&game, &game_log);
+        Ok(n)
+    }
+
+    /// Loads a game save: every world goes back to how it was then (admins). The current
+    /// world's restore is recorded like any change; the others' are written to their
+    /// logs, for when they're entered next.
+    pub fn load_game(&mut self, name: &str) -> Result<usize, String> {
+        if !self.is_admin() {
+            return Err("Only admins load saves.".into());
+        }
+        let game = game_name();
+        let game_log = read_game(&game);
+        let (_, _, worlds) = game_log.saves().rev().find(|(_, n, _)| n.eq_ignore_ascii_case(name)).ok_or(format!("There's no game save \"{name}\"."))?;
+        let mut n = 0;
+        for (world, to) in worlds {
+            if *world == world_name() {
+                if self.log.changes.last().map_or(0, |c| c.id) > *to {
+                    self.record(None, None, Action::Restore { to: *to });
+                    n += 1;
+                }
+                continue;
+            }
+            #[cfg(not(target_arch = "wasm32"))]
+            {
+                let dir = game_dir_of(&game).join("worlds").join(world);
+                let Ok((mut file, Some(mut log))) = cubewish_rules::store::LogFile::open(&dir) else { continue };
+                if log.changes.last().map_or(0, |c| c.id) <= *to {
+                    continue;
+                }
+                let by = Provenance::new(&self.profile.id, &self.profile.name, None, None, now());
+                log.push_signed(by, Action::Restore { to: *to }, &self.key);
+                let _ = std::fs::remove_file(dir.join("snapshot.json"));
+                file.sync(&log).map_err(|e| e.to_string())?;
+                n += 1;
+            }
+        }
+        Ok(n)
+    }
+
+    /// Online, goes to another world of the server's game; its welcome follows.
+    /// `from_portal` is the world left through a portal, to arrive by one leading back.
+    #[cfg(not(target_arch = "wasm32"))]
+    pub fn enter_remote(&mut self, world: &str, from_portal: Option<String>) -> Result<(), String> {
+        let online = self.online.as_mut().ok_or("not online")?;
+        let game = online.game.as_ref().ok_or("the server hasn't welcomed us yet")?;
+        if game.world(world).is_none() {
+            return Err(format!("There's no world \"{world}\" in {}.", game.name));
+        }
+        online.world = Some(world.to_string());
+        online.arriving_from = from_portal;
+        online.client.send(cubewish_net::ToServer::Enter { world: world.to_string() });
+        Ok(())
+    }
+
+    /// Online, asks the server to change its game (admins make worlds; anyone saves).
+    /// Returns the request number; the game comes back changed, or a refusal.
+    #[cfg(not(target_arch = "wasm32"))]
+    pub fn propose_game(&mut self, action: GameAction) -> Result<u64, String> {
+        let by = Provenance::new(&self.profile.id, &self.profile.name, None, None, now());
+        let sig = self.key.sign(&cubewish_rules::game::signing_bytes(&by, &action));
+        let online = self.online.as_mut().ok_or("not online")?;
+        let request = online.next_request;
+        online.next_request += 1;
+        online.client.send(cubewish_net::ToServer::ProposeGame { request, by, action, sig });
+        Ok(request)
     }
 
     /// The change id a reference from [`Self::record`] stands for: itself offline,
@@ -616,10 +882,17 @@ fn load_with(seed: u32, join: bool) -> (Ledger, HashMap<IVec3, VoxelId>) {
     // The local world is upgraded along with the profile even when playing online, so
     // it never names a player id the profile no longer has.
     let (mut log, mut file, snapshot) = load_log(seed);
-    // The world's first player runs it.
-    let mut changed = log.admins.is_empty();
+    // The game's admins run every world in it; a new game's first player runs it.
+    let game = game_name();
+    let mut game_log = read_game(&game);
+    if game_log.admins().is_empty() {
+        let by = Provenance::new(&profile.id, &profile.name, None, None, now());
+        let _ = game_log.push(by, GameAction::SetAdmins { admins: vec![profile.id.clone()] });
+        write_game(&game, &game_log);
+    }
+    let mut changed = log.admins != game_log.admins();
     if changed {
-        log.admins.push(profile.id.clone());
+        log.admins = game_log.admins();
     }
     // Upgrading to keys: the old id becomes the key everywhere, and the player's own
     // unsigned changes get signed.
@@ -648,8 +921,7 @@ fn load_with(seed: u32, join: bool) -> (Ledger, HashMap<IVec3, VoxelId>) {
     if join && let Some(online) = connect(&profile, &key) {
         // The server sends the world once we've logged in; until then, just the seed.
         let (profile, key) = guest().unwrap_or((profile, key));
-        // Named worlds are flat, so they can join flat servers.
-        let mut ledger = empty(WorldLog { flat: world_name().is_some(), ..WorldLog::new(seed) }, profile, key);
+        let mut ledger = empty(WorldLog::new(seed), profile, key);
         ledger.online = Some(online);
         return (ledger, HashMap::new());
     }
@@ -725,6 +997,10 @@ fn connect_to(addr: &str, profile: &Profile, key: &Keypair) -> Result<Online, St
         committed: HashMap::new(),
         closed: None,
         attempts: 0,
+        game: None,
+        world: None,
+        shown: None,
+        arriving_from: None,
     })
 }
 
@@ -793,20 +1069,13 @@ fn load_log(seed: u32) -> (WorldLog, Option<cubewish_rules::store::LogFile>, Opt
         }
     };
     let log = match log {
-        // Named worlds have their own ground; Home was always made from `seed`.
-        Some(log) if log.seed == seed || world_name().is_some() => log,
-        Some(log) => {
-            warn!("ignoring {}: it was made for seed {}, not {seed}", file.path().display(), log.seed);
-            return (WorldLog::new(seed), None, None);
-        }
-        // A new named world is an empty, flat one.
-        None if world_name().is_some() => {
-            info!("made a new flat world in {dir}");
-            WorldLog { flat: true, ..WorldLog::new(seed) }
-        }
+        Some(log) => log,
+        // A world the game just made starts on the ground it was given.
         None => {
-            let cache: Option<SavedEdits> = read_json(&cache_path());
-            migrate(seed, cache.filter(|c| c.seed == seed))
+            let ground = read_game(&game_name()).world(&world_name());
+            let (seed, flat) = ground.map_or((seed, true), |g| (g.seed, g.flat));
+            info!("made world {} in {dir}", world_name());
+            WorldLog { flat, ..WorldLog::new(seed) }
         }
     };
     if !file.path().exists()

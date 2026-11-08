@@ -138,6 +138,24 @@ impl LogFile {
     }
 }
 
+/// The game kept in `dir` (`game.json`), if there is one.
+pub fn read_game(dir: &Path) -> io::Result<Option<crate::game::GameLog>> {
+    match fs::read_to_string(dir.join("game.json")) {
+        Ok(text) => serde_json::from_str(&text).map(Some).map_err(io::Error::other),
+        Err(e) if e.kind() == io::ErrorKind::NotFound => Ok(None),
+        Err(e) => Err(e),
+    }
+}
+
+/// Saves `game` in `dir`, replacing the file at once. Games change rarely (a world made,
+/// a save), so the whole file is written each time.
+pub fn write_game(dir: &Path, game: &crate::game::GameLog) -> io::Result<()> {
+    fs::create_dir_all(dir)?;
+    let tmp = dir.join("game.json.tmp");
+    fs::write(&tmp, serde_json::to_string_pretty(game).map_err(io::Error::other)?)?;
+    fs::rename(&tmp, dir.join("game.json"))
+}
+
 /// A world at a glance, for lists: read without loading its changes.
 #[derive(Clone, Debug, PartialEq)]
 pub struct Summary {
