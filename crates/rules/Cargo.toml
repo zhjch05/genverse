@@ -2,14 +2,16 @@
 name = "cubewish_rules"
 version = "0.1.0"
 edition = "2024"
-description = "Cubewish's world rules: voxel models, terrain, terrain changes, build specs, and their limits. No rendering, so a server can share them."
+description = "Cubewish's world rules: voxel models, terrain, terrain changes, build specs, game packages, and their limits. No rendering, so a server can share them."
 
 [dependencies]
 bevy_math = "0.20"
 bevy_color = "0.20"
-serde = { version = "1", features = ["derive"] }
+serde = { version = "1", features = ["derive", "rc"] }
 serde_json = "1"
 ed25519-dalek = "2"
+# Package hashes.
+sha2 = "0.10"
 
 [lints.clippy]
 too_many_arguments = "allow"

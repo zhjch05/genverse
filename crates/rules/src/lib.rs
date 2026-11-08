@@ -11,6 +11,7 @@ pub mod build;
 pub mod identity;
 pub mod land;
 pub mod log;
+pub mod logic;
 pub mod rate;
 pub mod sculpt;
 pub mod settings;

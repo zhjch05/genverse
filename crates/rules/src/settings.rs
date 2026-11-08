@@ -6,7 +6,7 @@
 
 use serde::{Deserialize, Serialize};
 
-use crate::{budget::BudgetLimits, build::BuildLimits, land::Spawn, sculpt::TerrainLimits};
+use crate::{budget::BudgetLimits, build::BuildLimits, land::Spawn, logic::LogicRules, sculpt::TerrainLimits};
 
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
@@ -57,6 +57,10 @@ pub struct WorldRules {
     /// Left out while it's the default, so rules signed before it existed still verify.
     #[serde(skip_serializing_if = "Look::is_default")]
     pub look: Look,
+    /// Who may install game packages, the world clock, and packages' limits. Left out
+    /// while it's the default, like `look`.
+    #[serde(skip_serializing_if = "LogicRules::is_default")]
+    pub logic: LogicRules,
 }
 
 #[cfg(test)]
@@ -67,7 +71,7 @@ mod tests {
     fn default_look_leaves_signed_rules_unchanged() {
         // Rules signed before `look` existed must serialize to the same bytes.
         let json = serde_json::to_string(&WorldRules::default()).unwrap();
-        assert!(!json.contains("look"));
+        assert!(!json.contains("look") && !json.contains("logic"));
         let rules = WorldRules { look: Look { bevel: 0.12 }, ..Default::default() };
         let back: WorldRules = serde_json::from_str(&serde_json::to_string(&rules).unwrap()).unwrap();
         assert_eq!(back.look.bevel, 0.12);

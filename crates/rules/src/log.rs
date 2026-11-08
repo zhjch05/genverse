@@ -13,7 +13,10 @@
 //! land, limits, budgets and rate limits. So a log can't hold anything its authors
 //! weren't allowed to do, and ownership and budgets fall out of the log too.
 
-use std::collections::{BTreeMap, HashMap, HashSet};
+use std::{
+    collections::{BTreeMap, HashMap, HashSet},
+    sync::Arc,
+};
 
 use bevy_math::{IVec2, IVec3, UVec3, Vec3};
 use serde::{Deserialize, Serialize};
@@ -23,6 +26,7 @@ use crate::{
     build::BuildSpec,
     identity::{Keypair, verify},
     land::{Land, area_parcels, build_parcels},
+    logic::{Intent, Logic, Package, PackageRef, Runtime, Scope},
     rate::Rates,
     sculpt::{self, Area, Columns, TerrainSpec},
     settings::WorldRules,
@@ -101,6 +105,12 @@ pub enum Action {
     SetRules { rules: WorldRules },
     /// Voxel edits made before the log existed (hand edits), as `[x, y, z, block]`.
     LegacyVoxels { edits: Vec<[i32; 4]> },
+    /// Installs a game package from [`WorldLog::packages`], or replaces the installed
+    /// version (an upgrade, or going back to an older one).
+    InstallPackage { package: PackageRef, scope: Scope },
+    UninstallPackage { name: String },
+    /// A player doing something the installed packages respond to.
+    Intent { intent: Intent },
 }
 
 impl Action {
@@ -117,6 +127,16 @@ impl Action {
             Action::Rollback { changes, note } => format!("rolled back {} change(s): {note}", changes.len()),
             Action::SetRules { .. } => "changed the world's rules".into(),
             Action::LegacyVoxels { edits } => format!("old hand edits ({} voxels)", edits.len()),
+            Action::InstallPackage { package, scope: Scope::World } => {
+                format!("installed {} v{} everywhere", package.name, package.version)
+            }
+            Action::InstallPackage { package, scope } => {
+                format!("installed {} v{} on {} parcel(s)", package.name, package.version, scope.parcels().len())
+            }
+            Action::UninstallPackage { name } => format!("uninstalled {name}"),
+            Action::Intent { intent: Intent::Interact { .. } } => "interacted".into(),
+            Action::Intent { intent: Intent::UseItem { item, .. } } => format!("used {item}"),
+            Action::Intent { intent: Intent::Place { item, .. } } => format!("placed {item}"),
         }
     }
 }
@@ -157,11 +177,29 @@ pub struct WorldLog {
     #[serde(default)]
     pub rules: WorldRules,
     pub changes: Vec<Change>,
+    /// Game packages, by hash: everything an [`Action::InstallPackage`] may name.
+    /// Packages that were never installed are harmless; they just wait.
+    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    pub packages: BTreeMap<String, Arc<Package>>,
 }
 
 impl WorldLog {
     pub fn new(seed: u32) -> Self {
-        Self { seed, rules_version: RULES_VERSION, admins: Vec::new(), rules: WorldRules::default(), changes: Vec::new() }
+        Self {
+            seed,
+            rules_version: RULES_VERSION,
+            admins: Vec::new(),
+            rules: WorldRules::default(),
+            changes: Vec::new(),
+            packages: BTreeMap::new(),
+        }
+    }
+
+    /// Keeps `package` so changes can install it. Returns its hash.
+    pub fn add_package(&mut self, package: Package) -> String {
+        let hash = package.hash();
+        self.packages.entry(hash.clone()).or_insert_with(|| Arc::new(package));
+        hash
     }
 
     /// Appends a change and returns its id.
@@ -260,6 +298,8 @@ pub struct Replay {
     pub budgets: Budgets,
     /// What each placed build costs, and whom it's charged to.
     pub footprints: HashMap<u64, Footprint>,
+    /// Game packages, entities, and what's installed where.
+    pub logic: Logic,
     /// Changes that no longer apply (refused by the land rules, or by tightened
     /// limits), with why.
     pub problems: Vec<String>,
@@ -276,12 +316,18 @@ pub fn terrain_footprint(player: &str, changed: usize) -> Footprint {
 
 /// Rebuilds everything: builds, land, budgets, and voxel edits.
 pub fn replay(log: &WorldLog) -> Replay {
-    walk(log, true)
+    walk(log, true, None)
+}
+
+/// Like [`replay`], with `runtime` answering intents, so the game's entities come back
+/// too.
+pub fn replay_with(log: &WorldLog, runtime: Arc<dyn Runtime>) -> Replay {
+    walk(log, true, Some(runtime))
 }
 
 /// Builds and land only, skipping the voxel work: cheap enough to redo after every change.
 pub fn replay_land(log: &WorldLog) -> Replay {
-    walk(log, false)
+    walk(log, false, None)
 }
 
 /// The world's voxels as of some change, so replay (on a server restart, or a player
@@ -377,8 +423,9 @@ pub fn replay_from(log: &WorldLog, snapshot: Option<&Snapshot>) -> Replay {
     out
 }
 
-fn walk(log: &WorldLog, voxels: bool) -> Replay {
+fn walk(log: &WorldLog, voxels: bool, runtime: Option<Arc<dyn Runtime>>) -> Replay {
     let mut out = Replay::new(log);
+    out.logic.runtime = runtime;
     for change in log.effective() {
         if let Err(why) = out.apply(change, voxels) {
             out.problems.push(format!("change {} by {}: {why}", change.id, change.by.player_name));
@@ -392,7 +439,8 @@ impl Replay {
     pub fn new(log: &WorldLog) -> Self {
         let rules = log.rules.clone();
         let land = Land::new(log.admins.clone(), rules.spawn.clone(), rules.land);
-        Self { seed: log.seed, admins: log.admins.clone(), land, rules, ..Default::default() }
+        let logic = Logic { packages: log.packages.clone(), ..Default::default() };
+        Self { seed: log.seed, admins: log.admins.clone(), land, rules, logic, ..Default::default() }
     }
 
     /// Applies one change on top of the current state, or says why the rules refuse it
@@ -407,7 +455,10 @@ impl Replay {
         let cost = match &change.action {
             Action::PlaceBuild(b) | Action::UpdateBuild(b) => Some(build_usage(&b.spec).voxels),
             Action::Terrain { changed, .. } => Some(*changed),
-            Action::RemoveBuild { .. } | Action::ClaimParcels { .. } => Some(0),
+            Action::RemoveBuild { .. }
+            | Action::ClaimParcels { .. }
+            | Action::InstallPackage { .. }
+            | Action::UninstallPackage { .. } => Some(0),
             _ => None,
         };
         if let Some(cost) = cost.filter(|_| !admin) {
@@ -480,6 +531,15 @@ impl Replay {
                 self.rules = rules.clone();
             }
             Action::SetRules { .. } => return Err("only admins change the rules".into()),
+            Action::InstallPackage { package, scope } => {
+                let claims = self.land.authorize(&by.player, &scope.parcels())?;
+                self.logic.install(&by.player, admin, &self.rules.logic, package, scope)?;
+                self.land.claim(&by.player, &by.player_name, &claims);
+            }
+            Action::UninstallPackage { name } => self.logic.uninstall(&by.player, admin, &self.rules.logic, name)?,
+            Action::Intent { intent } => {
+                self.logic.act(change.id, &by.player, by.at, self.seed, &self.rules.logic, intent)?;
+            }
             Action::Revert { .. } | Action::Rollback { .. } => {}
         }
         // A change that went through counts toward its author's rate.
@@ -515,7 +575,10 @@ pub fn ground_columns(terrain: Terrain, area: Area, edits: &HashMap<IVec3, Voxel
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::sculpt::{OpArea, TerrainOp};
+    use crate::{
+        logic::{Effect, Entities, EntityId, Event, LogicMode, package::tests::farm},
+        sculpt::{OpArea, TerrainOp},
+    };
 
     fn by(player: &str) -> Provenance {
         Provenance::new(player, player, Some("Claude Code"), Some("a pond"), 0)
@@ -735,5 +798,130 @@ mod tests {
                 }
             }
         }
+    }
+
+    /// Plants `farm:seed`s as crops dated by the world clock, and waters crops when
+    /// they're interacted with: rules a package would carry, written by hand.
+    struct Farmer;
+
+    impl Runtime for Farmer {
+        fn handle(&self, package: &Package, event: &Event, entities: &Entities) -> Result<Vec<Effect>, String> {
+            assert_eq!(package.manifest.name, "farm");
+            Ok(match event.intent {
+                Intent::Place { item, position } if item == "farm:seed" => vec![Effect::Spawn {
+                    position: *position,
+                    components: [("farm:crop".to_string(), serde_json::json!({ "planted": event.time.day }))].into(),
+                }],
+                Intent::Interact { entity } if entities.get(*entity).is_some() => vec![Effect::Set {
+                    entity: *entity,
+                    component: "farm:watered".into(),
+                    value: true.into(),
+                }],
+                _ => Vec::new(),
+            })
+        }
+    }
+
+    fn install(log: &mut WorldLog, scope: Scope) -> Action {
+        let hash = log.add_package(farm(1));
+        Action::InstallPackage { package: PackageRef { name: "farm".into(), version: 1, hash }, scope }
+    }
+
+    fn here() -> Scope {
+        Scope::Parcels { parcels: vec![[20, 20]] }
+    }
+
+    /// Inside parcel (20, 20): 8 m per parcel.
+    const PLOT: [f32; 3] = [163.0, 10.0, 163.0];
+
+    #[test]
+    fn packages_install_and_answer_intents_through_replay() {
+        let mut log = WorldLog::new(1337);
+        log.rules.logic.clock.day_seconds = 100;
+        let install = install(&mut log, here());
+        log.push(at("a", 0), install);
+        let seed = Action::Intent { intent: Intent::Place { item: "farm:seed".into(), position: PLOT } };
+        let planted = log.push(at("a", 250), seed.clone());
+        let crop = EntityId { change: planted, n: 0 };
+        log.push(at("b", 300), Action::Intent { intent: Intent::Interact { entity: crop } });
+        // Outside where it's installed, no package answers the seed.
+        log.push(at("a", 310), Action::Intent { intent: Intent::Place { item: "farm:seed".into(), position: [0.0; 3] } });
+
+        let state = replay_with(&log, Arc::new(Farmer));
+        assert!(state.problems.is_empty(), "{:?}", state.problems);
+        let e = state.logic.entities.get(crop).expect("planted");
+        assert_eq!(e.components["farm:crop"]["planted"], 2);
+        assert_eq!(e.components["farm:watered"], true);
+        assert_eq!(state.logic.entities.len(), 1);
+
+        // The log survives JSON, packages and all, and replays the same.
+        let reloaded: WorldLog = serde_json::from_str(&serde_json::to_string(&log).unwrap()).unwrap();
+        assert_eq!(reloaded.hash(), log.hash());
+        let again = replay_with(&reloaded, Arc::new(Farmer));
+        assert_eq!(again.logic.entities.get(crop), Some(e));
+
+        // Without a runtime the intents are kept but nothing happens.
+        assert!(replay(&log).logic.entities.is_empty());
+
+        // Undoing the install undoes what it would have done.
+        log.push(at("a", 400), Action::Revert { change: 1 });
+        let undone = replay_with(&log, Arc::new(Farmer));
+        assert!(undone.logic.installed.is_empty() && undone.logic.entities.is_empty());
+    }
+
+    #[test]
+    fn installs_follow_land_and_the_logic_mode() {
+        let mut log = WorldLog::new(1337);
+        log.admins = vec!["admin".into()];
+        let everywhere = install(&mut log, Scope::World);
+        log.push(at("a", 0), everywhere.clone());
+        log.push(at("admin", 0), everywhere.clone());
+        // Someone else can't replace it, but its installer could.
+        let mine = install(&mut log, here());
+        log.push(at("b", 1), mine.clone());
+        let state = replay(&log);
+        assert_eq!(state.problems.len(), 2, "{:?}", state.problems);
+        assert!(state.problems[0].contains("only an admin") && state.problems[1].contains("someone else"));
+        assert_eq!(state.logic.installed["farm"].scope, Scope::World);
+
+        // Parcels mode: installing on free land claims it, like building there would.
+        let mut log = WorldLog::new(1337);
+        log.rules.land = crate::settings::LandMode::Parcels;
+        log.add_package(farm(1));
+        log.push(at("a", 0), mine.clone());
+        log.push(at("b", 1), Action::UninstallPackage { name: "farm".into() });
+        let state = replay(&log);
+        assert_eq!(state.land.parcels.get(&IVec2::new(20, 20)).map(|p| p.owner.as_str()), Some("a"), "{:?}", state.problems);
+        assert!(state.problems[0].contains("someone else"), "{:?}", state.problems);
+
+        // A locked world refuses everyone, admins included, until the rules change.
+        let mut log = WorldLog::new(1337);
+        log.admins = vec!["admin".into()];
+        log.rules.logic.mode = LogicMode::Locked;
+        log.add_package(farm(1));
+        log.push(at("admin", 0), mine.clone());
+        let mut open = log.rules.clone();
+        open.logic.mode = LogicMode::AdminOnly;
+        log.push(at("admin", 1), Action::SetRules { rules: open });
+        log.push(at("a", 2), mine.clone());
+        log.push(at("admin", 3), mine);
+        let state = replay(&log);
+        assert_eq!(state.problems.len(), 2, "{:?}", state.problems);
+        assert!(state.problems[0].contains("locked") && state.problems[1].contains("only admins"));
+        assert_eq!(state.logic.installed["farm"].by, "admin");
+    }
+
+    #[test]
+    fn packages_must_be_uploaded_and_match() {
+        let mut log = WorldLog::new(1337);
+        let Action::InstallPackage { mut package, scope } = install(&mut log, here()) else { unreachable!() };
+        package.version = 2;
+        log.push(at("a", 0), Action::InstallPackage { package: package.clone(), scope: scope.clone() });
+        package.hash = "00".into();
+        log.push(at("a", 0), Action::InstallPackage { package, scope });
+        let problems = replay(&log).problems;
+        assert!(problems[0].contains("doesn't match") && problems[1].contains("wasn't uploaded"), "{problems:?}");
+        // A log with no packages serializes as it did before packages existed.
+        assert!(!serde_json::to_string(&WorldLog::new(1)).unwrap().contains("packages"));
     }
 }
