@@ -6,7 +6,7 @@ use bevy_math::prelude::*;
 
 use crate::voxel::{
     AIR, Palette, PaletteEntry, Surface, VoxelGrid, VoxelId,
-    noise::{fbm, hash01, value},
+    noise::{ValueGrid, fbm, fbm_xz, hash01, value, value_xz},
 };
 
 /// World voxels are 25 cm: fine enough to read as "HD", coarse enough to build with.
@@ -108,16 +108,16 @@ const TREE_REACH: i32 = 14;
 impl Terrain {
     /// Height of the top solid voxel in column `(x, z)`.
     pub fn height(&self, x: i32, z: i32) -> i32 {
-        let p = Vec3::new(x as f32, 0.0, z as f32);
-        let continent = fbm(p / 260.0, self.seed);
-        let hills = fbm(p / 70.0, self.seed + 10);
-        let ridges = 1.0 - (fbm(p / 110.0, self.seed + 20) * 2.0 - 1.0).abs();
+        let p = Vec2::new(x as f32, z as f32);
+        let continent = fbm_xz(p / 260.0, self.seed);
+        let hills = fbm_xz(p / 70.0, self.seed + 10);
+        let ridges = 1.0 - (fbm_xz(p / 110.0, self.seed + 20) * 2.0 - 1.0).abs();
         let mountain = ((continent - 0.45) * 2.5).clamp(0.0, 1.0);
         let h = 22.0
             + continent * 26.0
             + (hills - 0.5) * 22.0
             + ridges.powi(3) * mountain * 48.0
-            + (value(p / 9.0, self.seed + 30) - 0.5) * 3.0;
+            + (value_xz(p / 9.0, self.seed + 30) - 0.5) * 3.0;
         (h.round() as i32).clamp(2, WORLD_HEIGHT - 24)
     }
 
@@ -132,7 +132,12 @@ impl Terrain {
             .collect();
         let height = |x: i32, z: i32| heights[((z - min.z) * size.x as i32 + (x - min.x)) as usize];
 
-        // Terrain columns.
+        // Terrain columns, with the noise that picks their blocks laid out over the part
+        // of the grid they reach.
+        let top = heights.iter().max().map_or(min.y, |h| (h + 1).clamp(min.y, max.y));
+        let reach = IVec3::new(size.x as i32, top - min.y, size.z as i32);
+        let patches = ValueGrid::new(min, reach, 5.0, self.seed + 40);
+        let stones = ValueGrid::new(min, reach, 4.0, self.seed + 42);
         for z in min.z..max.z {
             for x in min.x..max.x {
                 let h = height(x, z);
@@ -141,17 +146,17 @@ impl Terrain {
                 for y in min.y..max.y.min(h + 1).max(min.y) {
                     let p = IVec3::new(x, y, z);
                     let depth = h - y;
-                    let patch = value(p.as_vec3() / 5.0, self.seed + 40);
+                    let patch = || patches.get(local(p));
                     let id = if depth == 0 && h > 78 {
                         block::SNOW
                     } else if beach && depth < 4 {
-                        pick(block::SAND, patch)
+                        pick(block::SAND, patch())
                     } else if depth == 0 {
                         pick(block::GRASS, fbm(p.as_vec3() / 12.0, self.seed + 41) * 1.4 - 0.2)
                     } else if depth < 4 {
-                        pick(block::DIRT, patch)
+                        pick(block::DIRT, patch())
                     } else {
-                        pick(block::STONE, value(p.as_vec3() / 4.0, self.seed + 42))
+                        pick(block::STONE, stones.get(local(p)))
                     };
                     grid.set(local(p), id);
                 }
@@ -193,7 +198,7 @@ impl Terrain {
     fn place_tree(&self, grid: &mut VoxelGrid, min: IVec3, cell: IVec2) {
         let key = IVec3::new(cell.x, 0, cell.y);
         // Groves and open meadows rather than uniform forest.
-        let grove = fbm(Vec3::new(cell.x as f32, 0.0, cell.y as f32) / 6.0, self.seed + 59);
+        let grove = fbm_xz(cell.as_vec2() / 6.0, self.seed + 59);
         if hash01(key, self.seed + 60) > (grove - 0.35) * 1.4 {
             return;
         }
@@ -242,8 +247,13 @@ impl Terrain {
                     for px in lo.x..=hi.x {
                         let p = IVec3::new(px, py, pz);
                         let q = p.as_vec3() + 0.5;
+                        // The wobble is within ±0.35, so past that it can't reach.
+                        let reach = ((q - center) / radii).length();
+                        if reach > 1.35 {
+                            continue;
+                        }
                         let wobble = (fbm(q / 3.0, self.seed + 66) - 0.5) * 0.7;
-                        if ((q - center) / radii).length() > 1.0 + wobble {
+                        if reach > 1.0 + wobble {
                             continue;
                         }
                         let shade = fbm(q / 4.0, self.seed + 67) + (q.y - center.y) / radii.y * 0.3;

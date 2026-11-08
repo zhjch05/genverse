@@ -58,28 +58,28 @@ pub fn wanted(d2: i32, now: Option<Lod>) -> Option<Lod> {
     }
 }
 
-/// One coarse voxel from the 2x2x2 world voxels it covers: solid when most of them
-/// are, taking the topmost solid's material so grass stays on top; trunks stay
-/// connected from two bark voxels; water when solids and water make a majority.
-fn merge(fine: &VoxelGrid, at: IVec3) -> VoxelId {
+const SOLID: u8 = 1;
+const BARK: u8 = 2;
+const WATER: u8 = 4;
+
+/// One coarse voxel from the 2x2x2 world voxels it covers, top layer first, as kinds
+/// from `kinds`: solid when most of them are, taking the topmost solid's material so
+/// grass stays on top; trunks stay connected from two bark voxels; water when solids
+/// and water make a majority.
+fn merge(fine: [VoxelId; 8], kinds: &[u8; 256]) -> VoxelId {
     let (mut solid, mut bark, mut water, mut top) = (0, 0, 0, AIR);
-    // Top layer first, so the first solid seen is the topmost.
-    for y in (0..COARSE).rev() {
-        for z in 0..COARSE {
-            for x in 0..COARSE {
-                let id = fine.get(at + IVec3::new(x, y, z));
-                if is_solid(id) {
-                    solid += 1;
-                    if top == AIR {
-                        top = id;
-                    }
-                    if block::BARK.contains(&id) {
-                        bark += 1;
-                    }
-                } else if id == block::WATER {
-                    water += 1;
-                }
+    for id in fine {
+        let kind = kinds[id as usize];
+        if kind & SOLID != 0 {
+            solid += 1;
+            if top == AIR {
+                top = id;
             }
+            if kind & BARK != 0 {
+                bark += 1;
+            }
+        } else if kind & WATER != 0 {
+            water += 1;
         }
     }
     let half = COARSE * COARSE * COARSE / 2;
@@ -96,13 +96,32 @@ fn merge(fine: &VoxelGrid, at: IVec3) -> VoxelId {
 
 /// Merges a grid of world voxels into one of coarse voxels, `COARSE` times smaller.
 fn downsample(fine: &VoxelGrid) -> VoxelGrid {
+    let kinds: [u8; 256] = std::array::from_fn(|id| {
+        let id = id as VoxelId;
+        if is_solid(id) {
+            SOLID | if block::BARK.contains(&id) { BARK } else { 0 }
+        } else if id == block::WATER {
+            WATER
+        } else {
+            0
+        }
+    });
+    let cells = fine.cells();
+    let (sx, sy) = (fine.size().x as usize, (fine.size().x * fine.size().y) as usize);
     let size = fine.size() / COARSE as u32;
     let mut coarse = VoxelGrid::new(size);
-    for z in 0..size.z as i32 {
-        for y in 0..size.y as i32 {
-            for x in 0..size.x as i32 {
-                let p = IVec3::new(x, y, z);
-                coarse.set(p, merge(fine, p * COARSE));
+    for z in 0..size.z as usize {
+        for y in 0..size.y as usize {
+            for x in 0..size.x as usize {
+                let i = 2 * x + 2 * y * sx + 2 * z * sy;
+                // Top layer first, so the first solid seen is the topmost.
+                let (lo, hi) = (i, i + sx);
+                let at = |j: usize| cells[j];
+                let ids = [
+                    at(hi), at(hi + 1), at(hi + sy), at(hi + sy + 1),
+                    at(lo), at(lo + 1), at(lo + sy), at(lo + sy + 1),
+                ];
+                coarse.set(IVec3::new(x as i32, y as i32, z as i32), merge(ids, &kinds));
             }
         }
     }
@@ -155,13 +174,13 @@ mod tests {
             }
         }
         fine.set(IVec3::new(0, 1, 0), block::GRASS[0]);
-        assert_eq!(merge(&fine, IVec3::ZERO), block::GRASS[0]);
+        assert_eq!(downsample(&fine).get(IVec3::ZERO), block::GRASS[0]);
 
         // A trunk clipping one corner column still shows.
         let mut trunk = VoxelGrid::new(UVec3::splat(2));
         trunk.set(IVec3::new(1, 0, 1), block::BARK[1]);
         trunk.set(IVec3::new(1, 1, 1), block::BARK[1]);
-        assert_eq!(merge(&trunk, IVec3::ZERO), block::BARK[0]);
+        assert_eq!(downsample(&trunk).get(IVec3::ZERO), block::BARK[0]);
 
         // A seabed voxel under water is water; a lone flower is air.
         let mut sea = VoxelGrid::new(UVec3::splat(2));
@@ -171,10 +190,10 @@ mod tests {
             }
         }
         sea.set(IVec3::ZERO, block::SAND[0]);
-        assert_eq!(merge(&sea, IVec3::ZERO), block::WATER);
+        assert_eq!(downsample(&sea).get(IVec3::ZERO), block::WATER);
         let mut flower = VoxelGrid::new(UVec3::splat(2));
         flower.set(IVec3::ZERO, block::FLOWERS[0]);
-        assert_eq!(merge(&flower, IVec3::ZERO), AIR);
+        assert_eq!(downsample(&flower).get(IVec3::ZERO), AIR);
     }
 
     #[test]

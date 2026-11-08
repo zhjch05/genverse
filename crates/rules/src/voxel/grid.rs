@@ -26,6 +26,11 @@ impl VoxelGrid {
         self.size
     }
 
+    /// Every cell, in the grid's layout.
+    pub fn cells(&self) -> &[VoxelId] {
+        &self.cells
+    }
+
     pub fn contains(&self, p: IVec3) -> bool {
         p.cmpge(IVec3::ZERO).all() && p.cmplt(self.size.as_ivec3()).all()
     }

@@ -10,7 +10,7 @@ use serde::Deserialize;
 
 use super::{
     grid::{AIR, VoxelGrid, VoxelId},
-    noise::{fbm, hash01},
+    noise::{fbm, fbm_xz, hash01},
     palette::{Palette, PaletteEntry, Surface},
 };
 
@@ -385,7 +385,7 @@ fn apply_op(grid: &mut VoxelGrid, palette: &Palette, op: &OpDef) -> Result<(), S
             for z in (c.y as i32 - reach)..=(c.y as i32 + reach) {
                 for x in (c.x as i32 - reach)..=(c.x as i32 + reach) {
                     let xz = Vec2::new(x as f32 + 0.5, z as f32 + 0.5);
-                    let n2 = |s: f32, k: u32| fbm(Vec3::new(xz.x / s, 0.0, xz.y / s), seed + k);
+                    let n2 = |s: f32, k: u32| fbm_xz(xz / s, seed + k);
                     let edge = xz.distance(c) / radius + (n2(18.0, 0) - 0.5) * 0.35;
                     if edge >= 1.0 {
                         continue;
