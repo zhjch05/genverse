@@ -10,14 +10,24 @@
 //!
 //! The engine's own timers (`~walk:2.0`, see [`super::walk`]) run here too, on the
 //! ground the host knows, and are recorded like the package's.
+//!
+//! It's also where games see players: the host says who's in the world and where, and
+//! each run the clockwork tells packages what changed since the last ([`Seen`]): who came
+//! (`on_join`) or left (`on_leave`), who walked into or out of a piece's `region`
+//! (`on_enter`, `on_exit`). Positions never go in the log; only what a game did about them
+//! does, like a timer's. What it has seen lives only in memory, so after a restart
+//! everyone there is greeted again.
 
-use std::{collections::HashMap, sync::Arc};
+use std::{
+    collections::{BTreeSet, HashMap, HashSet},
+    sync::Arc,
+};
 
 use super::{
-    Effect, Event, GameState, Logic, LogicRules, Rules, Timer, Trigger,
-    entity::WAKE_RADIUS,
+    Effect, EntityId, Event, GameState, Logic, LogicRules, Rules, Timer, Trigger,
+    entity::{Entity, WAKE_RADIUS},
     grants,
-    walk::{Engine, Ground},
+    walk::{Engine, Ground, Heard, position_at},
 };
 use crate::log::fnv1a;
 
@@ -48,6 +58,38 @@ pub struct Clockwork {
     since: u64,
     /// Sleeping (and held back) timers: when they last ran, by package and name.
     held: HashMap<(String, String), u64>,
+    /// Who each package has seen come into the world.
+    here: HashSet<(String, String)>,
+    /// Who's inside each region, by its package and piece.
+    inside: HashMap<(String, EntityId), BTreeSet<String>>,
+}
+
+/// Something that happened to a player, as the host saw it.
+#[derive(Clone, Debug, PartialEq)]
+pub enum Seen {
+    Join(String),
+    Leave(String),
+    Enter(EntityId, String),
+    Exit(EntityId, String),
+}
+
+/// Whether `at` is inside `e`'s region, as it stands at `now`.
+fn in_region(e: &Entity, at: [f32; 3], now: u64) -> bool {
+    let Some(region) = e.components.get("region") else { return false };
+    let c = position_at(e, now as f64);
+    let (dx, dy, dz) = (at[0] - c[0], at[1] - c[1], at[2] - c[2]);
+    // Regions reach a little above and below: a player on a step is still in.
+    if dy.abs() > 4.0 {
+        return false;
+    }
+    match (region["radius"].as_f64(), region["size"].as_array()) {
+        (Some(r), _) => dx * dx + dz * dz <= (r * r) as f32,
+        (None, Some(size)) => {
+            let (w, d) = (size[0].as_f64().unwrap_or(0.0) as f32, size.get(1).and_then(|v| v.as_f64()).unwrap_or(0.0) as f32);
+            dx.abs() <= w / 2.0 && dz.abs() <= d / 2.0
+        }
+        _ => false,
+    }
 }
 
 fn distance2(a: [f32; 3], b: [f32; 3]) -> f32 {
@@ -66,7 +108,7 @@ impl Clockwork {
     /// Starting after `since` (Unix seconds): what [`Logic::timers_until`] says, after a
     /// load.
     pub fn new(since: u64) -> Self {
-        Self { since, held: HashMap::new() }
+        Self { since, ..Default::default() }
     }
 
     pub fn since(&self) -> u64 {
@@ -115,9 +157,13 @@ impl Clockwork {
         now: u64,
         world_seed: u32,
         rules: &LogicRules,
-        players: &[[f32; 3]],
+        players: &[(String, [f32; 3])],
+        seen: &[Seen],
     ) -> Fired {
         let mut out = Fired::default();
+        let positions: Vec<[f32; 3]> = players.iter().map(|(_, p)| *p).collect();
+        let players_at = players;
+        let players = positions.as_slice();
         let Some(install) = logic.installed.get(package) else { return out };
         let Some(found) = logic.package(install) else { return out };
         let runtime = logic.runtime.clone().unwrap_or_else(|| Arc::new(Rules));
@@ -137,6 +183,22 @@ impl Clockwork {
         }
         due.truncate(MAX_FIRED);
         let mut batch = logic.state.batch(change, "", rules.max_effects);
+        // What players did first: they came, left, walked into regions.
+        for (i, what) in seen.iter().enumerate() {
+            let (player, trigger) = match what {
+                Seen::Join(p) => (p, Trigger::Join),
+                Seen::Leave(p) => (p, Trigger::Leave),
+                Seen::Enter(entity, p) => (p, Trigger::Enter { entity: *entity }),
+                Seen::Exit(entity, p) => (p, Trigger::Exit { entity: *entity }),
+            };
+            let seed = fnv1a(format!("{world_seed}/{change}/{package}/seen/{i}").as_bytes());
+            let event = Event { change, player, trigger, time: rules.clock.at(now), at: now, seed };
+            let mark = batch.mark();
+            if let Err(why) = runtime.handle(found, &event, &mut batch, &grants) {
+                batch.rollback(mark);
+                out.errors.push(format!("{package}: {}: {why}", handler_of(what)));
+            }
+        }
         for (_, name, timer, n) in &due {
             self.held.remove(&(package.to_string(), name.clone()));
             if timer.every.is_none() {
@@ -147,15 +209,18 @@ impl Clockwork {
             // its package.
             if let Some(engine) = name.strip_prefix('~') {
                 let mark = batch.mark();
-                let mut cx = Engine { batch: &mut batch, grants: &grants, ground, rules, now, seed };
+                let mut cx = Engine { batch: &mut batch, grants: &grants, ground, rules, now, seed, players: players_at };
                 match cx.fire(engine) {
-                    Ok(Some(arrived)) => {
-                        let trigger = Trigger::Arrive { entity: arrived.entity, stuck: arrived.stuck };
-                        let event = Event { change, player: "", trigger, time: rules.clock.at(now), at: now, seed };
+                    Ok(Some(heard)) => {
+                        let (player, trigger, handler) = match &heard {
+                            Heard::Arrived { entity, stuck } => ("", Trigger::Arrive { entity: *entity, stuck: *stuck }, "on_arrive"),
+                            Heard::Caught { entity, player } => (player.as_str(), Trigger::Catch { entity: *entity }, "on_catch"),
+                        };
+                        let event = Event { change, player, trigger, time: rules.clock.at(now), at: now, seed };
                         let mark = batch.mark();
                         if let Err(why) = runtime.handle(found, &event, &mut batch, &grants) {
                             batch.rollback(mark);
-                            out.errors.push(format!("{package}: on_arrive: {why}"));
+                            out.errors.push(format!("{package}: {handler}: {why}"));
                         }
                     }
                     Ok(None) => {}
@@ -191,22 +256,37 @@ impl Clockwork {
                 self.held.entry(key).or_insert(since);
             }
         }
-        let live: std::collections::HashSet<(&str, &str)> = logic.state.timers().map(|(p, n, _)| (p, n)).collect();
+        let live: HashSet<(&str, &str)> = logic.state.timers().map(|(p, n, _)| (p, n)).collect();
         self.held.retain(|(p, n), _| live.contains(&(p.as_str(), n.as_str())));
+        // Regions whose piece is gone, and packages that are gone, forget who they saw.
+        self.inside.retain(|(p, id), _| logic.state.get(*id).is_some_and(|e| &e.package == p && e.components.contains_key("region")));
+        self.here.retain(|(p, _)| logic.installed.contains_key(p));
         self.since = self.since.max(now);
     }
 
     /// Fires every package's due timers up to `now`, one package at a time, and has
     /// `host` record and apply what each one's did (as an
     /// [`crate::log::Action::Timers`] by the world), so the next sees it.
-    pub fn run(&mut self, host: &mut dyn TimerHost, now: u64, world_seed: u32, rules: &LogicRules, players: &[[f32; 3]]) -> Run {
+    pub fn run(&mut self, host: &mut dyn TimerHost, now: u64, world_seed: u32, rules: &LogicRules, players: &[(String, [f32; 3])]) -> Run {
         let mut out = Run::default();
-        if now <= self.since && self.held.is_empty() {
+        let positions: Vec<[f32; 3]> = players.iter().map(|(_, p)| *p).collect();
+        let mut packages: BTreeSet<String> = self.due(host.logic(), now, &positions).into_iter().collect();
+        let mut seen: HashMap<String, Vec<Seen>> = HashMap::new();
+        for package in host.logic().installed.keys() {
+            let saw = self.watch(host.logic(), package, players, now);
+            if !saw.is_empty() {
+                packages.insert(package.clone());
+                seen.insert(package.clone(), saw);
+            }
+        }
+        if packages.is_empty() && now <= self.since && self.held.is_empty() {
             return out;
         }
-        for package in self.due(host.logic(), now, players) {
+        for package in packages {
+            let saw = seen.remove(&package).unwrap_or_default();
             let change = host.next_change();
-            let fired = self.fire(host.logic(), &*host, &package, change, now, world_seed, rules, players);
+            let fired = self.fire(host.logic(), &*host, &package, change, now, world_seed, rules, players, &saw);
+            self.note(&package, &saw);
             out.errors.extend(fired.errors.iter().cloned());
             if !fired.worth_recording() {
                 continue;
@@ -219,8 +299,66 @@ impl Clockwork {
                 Err(why) => out.errors.push(format!("{package}: {why}")),
             }
         }
-        self.finish(host.logic(), now, players);
+        self.finish(host.logic(), now, &positions);
         out
+    }
+
+    /// What `package` hasn't heard yet: who came and left, who walked into or out of its
+    /// regions.
+    pub fn watch(&self, logic: &Logic, package: &str, players: &[(String, [f32; 3])], now: u64) -> Vec<Seen> {
+        let mut out = Vec::new();
+        for (player, _) in players {
+            if !self.here.contains(&(package.to_string(), player.clone())) {
+                out.push(Seen::Join(player.clone()));
+            }
+        }
+        for (p, player) in &self.here {
+            if p == package && !players.iter().any(|(q, _)| q == player) {
+                out.push(Seen::Leave(player.clone()));
+            }
+        }
+        let empty = BTreeSet::new();
+        for (id, e) in logic.state.entities().filter(|(_, e)| e.package == package && e.components.contains_key("region")) {
+            let was = self.inside.get(&(package.to_string(), id)).unwrap_or(&empty);
+            for (player, at) in players {
+                let now_in = in_region(e, *at, now);
+                if now_in && !was.contains(player) {
+                    out.push(Seen::Enter(id, player.clone()));
+                }
+                if !now_in && was.contains(player) {
+                    out.push(Seen::Exit(id, player.clone()));
+                }
+            }
+            for player in was {
+                if !players.iter().any(|(q, _)| q == player) {
+                    out.push(Seen::Exit(id, player.clone()));
+                }
+            }
+        }
+        out.sort_by_key(|s| matches!(s, Seen::Leave(_) | Seen::Exit(..)));
+        out
+    }
+
+    /// `package` has heard about `seen`.
+    pub fn note(&mut self, package: &str, seen: &[Seen]) {
+        for what in seen {
+            match what {
+                Seen::Join(p) => {
+                    self.here.insert((package.to_string(), p.clone()));
+                }
+                Seen::Leave(p) => {
+                    self.here.remove(&(package.to_string(), p.clone()));
+                }
+                Seen::Enter(id, p) => {
+                    self.inside.entry((package.to_string(), *id)).or_default().insert(p.clone());
+                }
+                Seen::Exit(id, p) => {
+                    if let Some(inside) = self.inside.get_mut(&(package.to_string(), *id)) {
+                        inside.remove(p);
+                    }
+                }
+            }
+        }
     }
 }
 
@@ -243,4 +381,13 @@ pub struct Run {
     /// Messages for players: who, and what.
     pub notes: Vec<(String, String)>,
     pub errors: Vec<String>,
+}
+
+fn handler_of(seen: &Seen) -> &'static str {
+    match seen {
+        Seen::Join(_) => "on_join",
+        Seen::Leave(_) => "on_leave",
+        Seen::Enter(..) => "on_enter",
+        Seen::Exit(..) => "on_exit",
+    }
 }

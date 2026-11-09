@@ -119,15 +119,17 @@ pub fn definitions(rules: &WorldRules) -> Value {
         {
             "name": "test_game",
             "description": "Play a game package in an empty flat test world, as a player, before answering: it is \
-                checked and installed as your answer would be, then each step runs through the real rules. Returns \
-                what each step did (changes, messages, refusals and script errors) and a map and list of the \
-                pieces afterwards. Steps: \"place <fixture>\" (puts it down; each 32 m apart), a key (\"enter\", \
-                \"north\", \"south\", \"east\", \"west\", \"action\", \"reset\", \"leave\"; sent to the zone \
-                the tester's pawn or last placement is in), \"interact\" (the nearest labeled piece) or \"interact <label or model>\" (the nearest \
-                one of those), \"wait \
-                <seconds>\" (time passes and timers go off; every step takes a second), \"choose <choice id>\" \
-                (a pick in the open panel) or \"close\". Use it to \
-                play your game through, including winning, and fix what fails.",
+                checked and installed as your answer would be (on_start runs), the tester comes in at the spawn point \
+                (on_join), then each step runs through the real rules. Returns what each step did (changes, messages, \
+                regions entered, refusals and script errors), where the tester ends up, and a map and list of the \
+                pieces afterwards. Steps: \"go <x> <z>\" (the tester walks there, in meters: regions and chasers \
+                notice), \"hit <label or model>\" (attacks the nearest one: on_hit), \"interact\" or \"interact \
+                <label or model>\" (E on the nearest labeled piece, or the nearest of those), \"wait <seconds>\" (time \
+                passes: timers, walks, chases and spawners run; pieces more than 64 m from the tester sleep), \
+                \"choose <choice id>\" (a pick in the open panel), \"close\", \"place <fixture>\" (puts it down, \
+                each 32 m apart; the tester stands there after), or a key (\"enter\", \"north\", \"south\", \"east\", \
+                \"west\", \"action\", \"reset\", \"leave\"; sent to the zone the tester is in). Every step takes a \
+                second. Use it to play your game through as a player would, winning and losing, and fix what fails.",
             "inputSchema": {
                 "type": "object",
                 "properties": {
@@ -140,12 +142,32 @@ pub fn definitions(rules: &WorldRules) -> Value {
     ])
 }
 
-/// Plays a game package through some steps in a world of its own.
-fn test_game(args: &Value) -> Result<String, String> {
-    let spec: GameSpec =
+/// Plays a change to the world's game logic (on top of what the world runs under that
+/// name) through some steps, on a copy of the world as it is now: its pieces, timers and
+/// players' things, its ground, the tester starting where the player stands. So a new
+/// version's migration runs on the real state before anyone else sees it.
+fn test_game(args: &Value, ledger: &Ledger, world: &VoxelWorld, hero: Option<Vec3>) -> Result<String, String> {
+    let change: GameSpec =
         serde_json::from_value(args["game"].clone()).map_err(|e| format!("game doesn't match the schema: {e}"))?;
     let steps: Vec<String> = serde_json::from_value(args["steps"].clone()).map_err(|e| format!("steps must be strings: {e}"))?;
-    let report = trial::play(&spec.to_package(1), &steps[..steps.len().min(300)]);
+    let logic = &ledger.logic;
+    let base = logic.installed.get(&change.name).and_then(|i| logic.package(i)).map(GameSpec::from_package);
+    let spec = change.onto(base.as_ref());
+    let version = logic.installed.get(&spec.name).map_or(1, |i| i.package.version + 1);
+    let now = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map_or(0, |d| d.as_secs());
+    let copy = hero.map(|at| trial::Copy {
+        logic: logic.clone(),
+        rules: ledger.rules.logic,
+        at: at.to_array(),
+        now,
+        next_change: ledger.log.changes.last().map_or(1, |c| c.id + 1),
+        ground: world,
+    });
+    let report = trial::play_in(&spec.to_package(version), &steps[..steps.len().min(300)], copy);
+    let report = match &base {
+        Some(_) => format!("Tested your change on top of the world's \"{}\" ({}).\n{report}", spec.name, change.change_summary(base.as_ref())),
+        None => report,
+    };
     info!("test_game ({} steps):\n{report}", steps.len());
     Ok(report)
 }
@@ -203,7 +225,7 @@ pub fn answer_tool_calls(
             "get_build_spec" => ctx.spec(&args),
             "check_build" => ctx.check(&args),
             "sample_terrain" => sample_terrain(&world, &landscape, &args),
-            "test_game" => test_game(&args),
+            "test_game" => test_game(&args, &ledger, &world, players.single().ok().map(|t| t.translation)),
             other => Err(format!("unknown tool {other}")),
         };
         info!("agent tool {name}: {}", if result.is_ok() { "ok" } else { "error" });

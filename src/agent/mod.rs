@@ -114,7 +114,7 @@ impl Plugin for AgentPlugin {
                     (online::sync_online, lan::update_lan, update_build_site, answer_tool_calls, poll_agent).chain(),
                     (presence::send_presence, presence::move_avatars, presence::draw_peers, history::toggle_history, (loading::track_loading, fps::track_frames).chain()),
                     auto_prompt,
-                    (game::script_play.after(auto_prompt), game::run_timers, game::play_zones, game::sync_pieces, game::walk_pieces, game::use_pieces, worlds::use_portals, hud::draw_game_world, history::follow_ledger)
+                    (game::script_play.after(auto_prompt), game::run_timers, game::play_zones, game::sync_pieces, game::walk_pieces, game::follow_teleports, game::use_pieces, worlds::use_portals, hud::draw_game_world, history::follow_ledger)
                         .chain(),
                     worlds::toggle_worlds,
                     (game::place_held, shortcuts, select_area, follow_cursor, check_clearance, click_in_world, outline_creations, draw_area, highlight_area, draw_parcels)
@@ -260,6 +260,7 @@ impl Chat {
         tools: Option<&McpServer>,
         ledger: &Ledger,
         area: Option<String>,
+        here: Option<String>,
     ) {
         let rules = &ledger.rules;
         let text = self.input.trim().to_string();
@@ -276,11 +277,62 @@ impl Chat {
             .collect();
         let history = &turns[turns.len().saturating_sub(HISTORY)..];
         let draft = creations.draft.as_ref().map(|d| &d.spec);
-        let game = game_context(ledger, &self.script_errors);
+        let game = game_context(ledger, &self.script_errors).map(|g| match &here {
+            Some(here) => format!("{here}\n{g}"),
+            None => g,
+        });
         let request = prompt::request(history, draft, area.as_deref(), game.as_deref(), &text);
+        // `CUBEWISH_SHOW_REQUEST=1` logs what the agent is told, to see the world through its eyes.
+        if std::env::var("CUBEWISH_SHOW_REQUEST").is_ok() {
+            info!("request to the agent:\n{request}");
+        }
         self.say(Role::Player, text.clone());
         self.start(tools, rules, self.provider, text, request, 0, restore);
     }
+}
+
+/// Where the player stands, in the world's own meters, and the ground around them: so
+/// "next to me" and "20 m east" become positions a game can use (its scripts hold them),
+/// without anything to put down first.
+fn here_context(world: &VoxelWorld, terrain: cubewish_rules::terrain::Terrain, hero: Vec3, camera: Option<&GlobalTransform>) -> String {
+    use cubewish_rules::logic::Ground;
+    const STEP_M: f32 = 4.0;
+    const REACH: i32 = 6;
+    let facing = camera.map(|c| c.forward().xz()).filter(|f| f.length() > 0.1).map_or("north", |f| {
+        if f.x.abs() > f.y.abs() { if f.x > 0.0 { "east (+x)" } else { "west (-x)" } } else if f.y > 0.0 { "south (+z)" } else { "north (-z)" }
+    });
+    let column = |m: f32| (m / crate::world::terrain::VOXEL_SIZE).floor() as i32;
+    let step = (STEP_M / crate::world::terrain::VOXEL_SIZE) as i32;
+    let min = [column(hero.x) - REACH * step, column(hero.z) - REACH * step];
+    let n = 2 * REACH + 1;
+    // Where a piece stands in a column: the loaded ground (edits and all), or where it
+    // isn't loaded yet, the world's own terrain (exact where nobody has changed it).
+    let stand = |x: i32, z: i32| -> Option<f32> {
+        let y = match world.heights([x, z], 1, [1, 1]) {
+            Some(h) => h[0]?,
+            None => {
+                let h = terrain.height(x, z);
+                if !terrain.flat && h < cubewish_rules::terrain::SEA_LEVEL {
+                    return None;
+                }
+                h
+            }
+        };
+        Some((y + 1) as f32 * crate::world::terrain::VOXEL_SIZE)
+    };
+    let feet = stand(column(hero.x), column(hero.z)).unwrap_or(hero.y);
+    let mut out = format!(
+        "The player stands at x={:.1}, y={feet:.2}, z={:.1} (meters; y is the ground they stand on), facing {facing}. \
+         Where pieces stand around them (y in meters, every {STEP_M} m; rows north to south, columns west to east; ~ water):\n",
+        hero.x, hero.z
+    );
+    out.push_str(&format!("  z \\ x: {}\n", (0..n).map(|i| format!("{:.0}", hero.x + (i - REACH) as f32 * STEP_M)).collect::<Vec<_>>().join(" ")));
+    for j in 0..n {
+        let row: Vec<String> =
+            (0..n).map(|i| stand(min[0] + i * step, min[1] + j * step).map_or("~".into(), |y| format!("{y:.2}"))).collect();
+        out.push_str(&format!("  {:.0}: {}\n", hero.z + (j - REACH) as f32 * STEP_M, row.join(" ")));
+    }
+    out
 }
 
 /// What the agent is told about the selected area, if this message is about land.
@@ -298,15 +350,31 @@ fn area_context(
     landscape.context(world, ledger, player, camera.map(|c| *c.forward()))
 }
 
-/// The world's game rules, so the agent changes them instead of starting over, and the
-/// errors their scripts hit lately, so "fix it" is enough.
+/// The world's game logic as it is, so each request adds to it: every package's
+/// definitions and script files in full, its models by name (the agent sends one again
+/// only to change it); and the errors its scripts hit lately, so "fix it" is enough.
 fn game_context(ledger: &Ledger, errors: &[String]) -> Option<String> {
     let logic = &ledger.logic;
     let specs: Vec<String> = logic
         .installed
         .values()
         .filter_map(|i| logic.package(i))
-        .map(|p| serde_json::to_string(&GameSpec::from_package(p)).unwrap_or_default())
+        .map(|p| {
+            let spec = GameSpec::from_package(p);
+            let models: Vec<String> = spec.models.iter().map(|m| format!("{} ({})", m.name, m.build.size.iter().map(|v| v.to_string()).collect::<Vec<_>>().join("×"))).collect();
+            let mut text = format!(
+                "Package \"{}\" (\"{}\", v{}):\n- defs: {}\n- models: {}\n",
+                spec.name,
+                spec.title,
+                p.manifest.version,
+                serde_json::to_string(&spec.defs).unwrap_or_default(),
+                if models.is_empty() { "none".into() } else { models.join(", ") }
+            );
+            for script in &spec.scripts {
+                text.push_str(&format!("- script {}:\n{}\n", script.name, script.source));
+            }
+            text
+        })
         .collect();
     let names: Vec<String> = match &ledger.online {
         Some(online) => online.game.as_ref().map(|g| g.worlds().into_iter().map(|(n, _)| n).collect()).unwrap_or_default(),
@@ -319,9 +387,14 @@ fn game_context(ledger: &Ledger, errors: &[String]) -> Option<String> {
         if names.is_empty() { "none yet".into() } else { names.join(", ") }
     );
     if specs.is_empty() {
+        out.push_str("\nThe world has no game logic yet: a \"game\" you send starts it (name it \"world\").");
         return Some(out);
     }
-    out.push_str(&format!("\nGame rules in this world (answer \"game\" with the same name to change one):\n{}", specs.join("\n")));
+    out.push_str(&format!(
+        "\nThe world's game logic, as it runs now. Your \"game\" changes it: send only what's new or different \
+         (same package name; files, defs and models by name), and list what to take out in \"remove\".\n{}",
+        specs.join("\n")
+    ));
     if !errors.is_empty() {
         out.push_str(&format!("\nRecent errors from these scripts while players played:\n- {}", errors.join("\n- ")));
     }
@@ -346,6 +419,7 @@ fn auto_prompt(
     mut commands: Commands,
     tools: Option<Res<McpServer>>,
     mut sent: Local<bool>,
+    mut queue: Local<Vec<String>>,
     mut chat: ResMut<Chat>,
     mut creations: ResMut<Creations>,
     mut landscape: ResMut<Landscape>,
@@ -359,7 +433,18 @@ fn auto_prompt(
     let Ok((player, hero)) = players.single() else {
         return;
     };
-    if *sent || !player.has_landed() {
+    // `CUBEWISH_PROMPT="first || second || third"`: each once the agent has answered the
+    // one before, like a player who keeps asking.
+    if *sent {
+        if chat.pending.is_none() && !queue.is_empty() {
+            chat.input = queue.remove(0);
+            let area = area_context(&creations, &landscape, &world, &ledger, Some(hero.translation), cameras.single().ok());
+            let here = here_context(&world, ledger.log.terrain(), hero.translation, cameras.single().ok());
+            chat.send(&mut creations, &mut commands, tools.as_deref(), &ledger, area, Some(here));
+        }
+        return;
+    }
+    if !player.has_landed() {
         return;
     }
     *sent = true;
@@ -395,14 +480,20 @@ fn auto_prompt(
             }
             return;
         }
-        chat.input = text;
+        let mut prompts: Vec<String> = text.split("||").map(|p| p.trim().to_string()).filter(|p| !p.is_empty()).collect();
+        if prompts.is_empty() {
+            return;
+        }
+        chat.input = prompts.remove(0);
+        *queue = prompts;
         if let Some(why) = land_refusal(&creations, &landscape, &ledger) {
             chat.input.clear();
             chat.say(Role::System, why);
             return;
         }
         let area = area_context(&creations, &landscape, &world, &ledger, Some(hero.translation), cameras.single().ok());
-        chat.send(&mut creations, &mut commands, tools.as_deref(), &ledger, area);
+        let here = here_context(&world, ledger.log.terrain(), hero.translation, cameras.single().ok());
+        chat.send(&mut creations, &mut commands, tools.as_deref(), &ledger, area, Some(here));
     }
 }
 
@@ -542,8 +633,12 @@ fn poll_agent(
             },
         }
     }
-    if let Some(game) = answer.game {
+    if let Some(change) = answer.game {
         let provider = pending.provider.label();
+        // A change to what the world runs: it adds to it, by name.
+        let base = ledger.logic.installed.get(&change.name).and_then(|i| ledger.logic.package(i)).map(GameSpec::from_package);
+        let summary = change.change_summary(base.as_ref());
+        let game = change.onto(base.as_ref());
         let version = ledger.logic.installed.get(&game.name).map_or(1, |i| i.package.version + 1);
         let package = game.to_package(version);
         match package.check() {
@@ -555,21 +650,26 @@ fn poll_agent(
                 repairing = true;
             }
             Err(errors) => chat.say(Role::System, format!("⚠ Game rules rejected:\n• {}", errors.join("\n• "))),
-            // Live: it replaces the running version at once, for everyone.
-            Ok(()) => match ledger.install(package, Scope::World, Some(provider), Some(&pending.prompt)) {
-                Ok(_) if version > 1 => {
-                    chat.script_errors.clear();
-                    chat.say(Role::System, format!("Updated \"{}\" to v{version}; it's live.", game.title));
+            // Live: the next version, at once, for everyone. The world is saved just before,
+            // so loading that goes back to how it was, data and all.
+            Ok(()) => {
+                let before = (version > 1).then(|| format!("before {} v{version}", game.name).chars().take(40).collect::<String>());
+                if let Some(name) = &before {
+                    ledger.record(None, None, cubewish_rules::log::Action::Save { name: name.clone() });
+                    ledger.keep_saves(&world.edit_list());
                 }
-                Ok(_) => {
-                    chat.script_errors.clear();
-                    chat.say(
-                        Role::System,
-                        format!("Installed \"{}\" in this world. Pick it from the game bar above the hints, then click the ground.", game.title),
-                    );
+                match (ledger.install(package, Scope::World, Some(provider), Some(&pending.prompt)), before) {
+                    (Ok(_), Some(before)) => {
+                        chat.script_errors.clear();
+                        chat.say(Role::System, format!("\"{}\" v{version} is live: {summary}. (Saved \"{before}\" first: /load it to go back.)", game.title));
+                    }
+                    (Ok(_), None) => {
+                        chat.script_errors.clear();
+                        chat.say(Role::System, format!("\"{}\" is live in this world: {summary}.", game.title));
+                    }
+                    (Err(why), _) => chat.say(Role::System, format!("⚠ Couldn't install \"{}\": {why}.", game.title)),
                 }
-                Err(why) => chat.say(Role::System, format!("⚠ Couldn't install \"{}\": {why}.", game.title)),
-            },
+            }
         }
     }
     let portal = match answer.portal.as_deref().map(cubewish_rules::log::PortalTo::parse) {
@@ -1008,6 +1108,7 @@ fn shortcut_hints(
         }
         None if play.near.is_some() => &[
             ("E", "use"),
+            ("F", "hit"),
             ("T", "describe a build"),
             ("G", "reshape the ground"),
             ("Click", "select a build"),
@@ -1993,7 +2094,8 @@ fn chat_panel(
             } else {
                 let player = players.single().ok().map(|t| t.translation);
                 let area = area_context(&creations, &landscape, &world, &ledger, player, cameras.single().ok());
-                chat.send(&mut creations, &mut commands, tools.as_deref(), &ledger, area);
+                let here = player.map(|p| here_context(&world, ledger.log.terrain(), p, cameras.single().ok()));
+                chat.send(&mut creations, &mut commands, tools.as_deref(), &ledger, area, here);
             }
         }
         Some(Action::KeepTerrain) => keep_terrain(&mut landscape, &mut world, &mut ledger, &mut chat),

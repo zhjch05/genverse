@@ -3,7 +3,9 @@
 //! - **Pieces:** every entity the game rules keep is drawn from its `look`: one of its
 //!   package's voxel models, drawn like a build (the simple farming kinds, which have
 //!   none, are plain boxes). Pieces with a `label` show it when you're within 10 m; the
-//!   one in reach says E uses it.
+//!   one in reach says E uses it, and F attacks it (`on_hit`).
+//! - The hero goes where games send them: a teleport, and on coming into a world, the
+//!   game's spawn point.
 //! - **The game bar** above the hints lists what you can put down: the fixtures (a game
 //!   board) and sources the installed packages define, and the seeds you carry. Pick one,
 //!   then click the ground (Esc or right-click puts it away). It also shows the day.
@@ -317,7 +319,8 @@ pub fn run_timers(
     let now_s = time.elapsed_secs();
     if now_s - *last >= 0.5 {
         *last = now_s;
-        let players: Vec<[f32; 3]> = heroes.iter().map(|t| t.translation.to_array()).collect();
+        let me = ledger.profile.id.clone();
+        let players: Vec<(String, [f32; 3])> = heroes.iter().map(|t| (me.clone(), t.translation.to_array())).collect();
         for why in ledger.run_timers(&players, &*world) {
             report(Err(format!("script error: {why}")), &ledger, &mut play, &mut chat, now_s);
         }
@@ -353,12 +356,42 @@ pub fn use_pieces(
         .min_by(|a, b| a.1.total_cmp(&b.1))
         .map(|(id, _)| id);
     let busy = creations.draft.is_some() || landscape.selecting || landscape.draft.is_some() || play.playing.is_some();
-    if blocked.0 || busy || !keys.just_pressed(KeyCode::KeyE) {
+    if blocked.0 || busy {
         return;
     }
     let Some(entity) = play.near else { return };
-    let result = ledger.act(Intent::Interact { entity });
+    let intent = if keys.just_pressed(KeyCode::KeyE) {
+        Intent::Interact { entity }
+    } else if keys.just_pressed(KeyCode::KeyF) {
+        Intent::Hit { entity }
+    } else {
+        return;
+    };
+    let result = ledger.act(intent);
     report(result, &ledger, &mut play, &mut chat, time.elapsed_secs());
+}
+
+/// Puts the hero where games send them: each teleport once, and on coming into a world,
+/// the game's spawn point.
+pub fn follow_teleports(ledger: Res<Ledger>, mut seen: Local<(String, u64)>, mut heroes: Query<(&mut Transform, &mut Player)>) {
+    let state = &ledger.logic.state;
+    let me = &ledger.profile.id;
+    let world = super::worlds::current_title(&ledger);
+    let mut to = None;
+    if seen.0 != world {
+        // Just arrived: earlier teleports are history; the game's spawn point isn't.
+        seen.0 = world;
+        seen.1 = state.teleport(me).map_or(0, |t| t.change);
+        to = state.teleport("*").map(|t| t.position);
+    } else if let Some(t) = state.teleport(me).filter(|t| t.change > seen.1) {
+        seen.1 = t.change;
+        to = Some(t.position);
+    }
+    let Some(to) = to else { return };
+    if let Ok((mut transform, mut player)) = heroes.single_mut() {
+        transform.translation = Vec3::from_array(to) + Vec3::Y * 0.05;
+        player.arrive();
+    }
 }
 
 /// Where the local player's pawn stands, if a game has given them one.
@@ -623,7 +656,7 @@ pub fn game_bar(
                     if near {
                         frame.fill(p.overlay).show(ui, |ui| {
                             ui.add(egui::Label::new(egui::RichText::new(label).color(p.strong)).extend());
-                            ui.add(egui::Label::new(egui::RichText::new("E to use").color(p.muted).small()).extend());
+                            ui.add(egui::Label::new(egui::RichText::new("E to use · F to hit").color(p.muted).small()).extend());
                         });
                     } else {
                         frame.fill(p.overlay.gamma_multiply(0.6)).show(ui, |ui| {
@@ -687,12 +720,12 @@ pub fn script_play(
     mut ledger: ResMut<Ledger>,
     mut play: ResMut<Play>,
     mut chat: ResMut<Chat>,
-    heroes: Query<(&Player, &Transform)>,
+    mut heroes: Query<(&mut Player, &mut Transform)>,
     mut travel: ResMut<super::worlds::Travel>,
     mut steps: Local<Option<(Vec<String>, f32, usize)>>,
 ) {
     let now_s = time.elapsed_secs();
-    let Ok((player, hero)) = heroes.single() else { return };
+    let Ok((mut player, mut hero)) = heroes.single_mut() else { return };
     if chat.pending.is_some() {
         return;
     }
@@ -710,6 +743,24 @@ pub fn script_play(
     }
     *next = now_s + 0.5;
     let mut step = list.remove(0);
+    // Time for the world to happen.
+    if let Some(seconds) = step.strip_prefix("wait ").and_then(|s| s.trim().parse::<f32>().ok()) {
+        *next = now_s + seconds;
+        return;
+    }
+    // The hero steps to x, z: regions and chasers notice.
+    if let Some(to) = step.strip_prefix("go ") {
+        let xz: Vec<f32> = to.split_whitespace().filter_map(|v| v.parse().ok()).collect();
+        if let [x, z] = xz[..] {
+            let down = Ray3d::new(Vec3::new(x, 60.0, z), Dir3::NEG_Y);
+            if let Some(hit) = world.raycast(down, 120.0) {
+                hero.translation = down.get_point(hit.distance) + Vec3::Y * 0.05;
+                player.arrive();
+            }
+            info!("CUBEWISH_PLAY {step}: hero at {}", hero.translation);
+        }
+        return;
+    }
     // Through the portal the hero stands at.
     if step == "portal" {
         let to = travel.near().cloned();
@@ -732,6 +783,11 @@ pub fn script_play(
         match play.near {
             Some(entity) => ledger.act(Intent::Interact { entity }),
             None => Err("nothing to use".into()),
+        }
+    } else if step == "hit" {
+        match play.near {
+            Some(entity) => ledger.act(Intent::Hit { entity }),
+            None => Err("nothing in reach to hit".into()),
         }
     } else if cubewish_rules::logic::KEYS.contains(&step.as_str()) {
         match zone_at(&ledger.logic, my_pawn(&ledger).unwrap_or(hero.translation)) {

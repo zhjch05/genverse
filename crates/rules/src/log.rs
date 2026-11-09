@@ -244,6 +244,7 @@ impl Action {
             Action::Intent { intent: Intent::Key { key, .. } } => format!("pressed {key}"),
             Action::Intent { intent: Intent::Choose { choice: Some(choice) } } => format!("chose {choice}"),
             Action::Intent { intent: Intent::Choose { choice: None } } => "closed a panel".into(),
+            Action::Intent { intent: Intent::Hit { .. } } => "attacked".into(),
             Action::Timers { package, effects, .. } => format!("{package}'s timers ({} change(s))", effects.len()),
             Action::Save { name } => format!("saved \"{name}\""),
             Action::Depart { to, items, .. } => format!("left for {to} carrying {} kind(s) of item", items.len()),
@@ -812,6 +813,14 @@ impl Replay {
         if let Some(cost) = cost.filter(|_| !admin) {
             self.rates.check(&self.rules.rates, &by.player, by.at, cost)?;
         }
+        // A game that is the world keeps players playing, not building.
+        let builds = matches!(
+            change.action,
+            Action::PlaceBuild(_) | Action::UpdateBuild(_) | Action::RemoveBuild { .. } | Action::Terrain { .. } | Action::ClaimParcels { .. }
+        );
+        if builds && !admin && !self.logic.building_allowed() {
+            return Err("this world is a game right now: only admins build here".into());
+        }
         let mut made = Vec::new();
         match &change.action {
             Action::PlaceBuild(b) if self.builds.contains_key(&b.build) => {
@@ -902,6 +911,39 @@ impl Replay {
                 let claims = self.land.authorize(&by.player, &scope.parcels())?;
                 let from = self.logic.installed.get(&package.name).cloned();
                 self.logic.install(&by.player, admin, &self.rules.logic, package, scope)?;
+                // New to the world, or a new version: the game sets it up (`on_start`,
+                // with `ev.upgrade` for a new version, which keeps what's there).
+                let upgrade = from.as_ref().filter(|f| f.package != *package).map(|old| {
+                    let old = self.logic.packages.get(&old.package.hash);
+                    let new = self.logic.packages.get(&package.hash);
+                    match (old, new) {
+                        (Some(old), Some(new)) => crate::logic::Upgrade::between(old, new),
+                        _ => crate::logic::Upgrade::default(),
+                    }
+                });
+                if from.is_none() || upgrade.is_some() {
+                    let start = self
+                        .logic
+                        .prepare_start(change.id, &by.player, by.at, self.seed, &self.rules.logic, &package.name, upgrade.as_ref())
+                        .and_then(|prepared| {
+                            let world = self.apply_world(&prepared.installer, &prepared.world, voxels)?;
+                            Ok((prepared, world))
+                        });
+                    match start {
+                        Ok((prepared, world)) => {
+                            made = world;
+                            self.last_world = Some((prepared.installer.clone(), prepared.world.clone()));
+                            self.logic.commit(prepared);
+                        }
+                        Err(why) => {
+                            match &from {
+                                Some(old) => self.logic.installed.insert(package.name.clone(), old.clone()),
+                                None => self.logic.installed.remove(&package.name),
+                            };
+                            return Err(format!("{}'s on_start: {why}", package.name));
+                        }
+                    }
+                }
                 self.land.claim(&by.player, &by.player_name, &claims);
                 let to = self.logic.installed.get(&package.name).cloned();
                 self.remember(change.id, &by.player, false, vec![Op::Install { name: package.name.clone(), from, to }]);

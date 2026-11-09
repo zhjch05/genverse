@@ -412,38 +412,83 @@
         "title",
         "defs",
         "scripts",
-        "models"
+        "models",
+        "remove",
+        "rename"
       ],
       "properties": {
         "name": {
           "type": "string",
-          "description": "The package's id, also the prefix of everything in it: 2-32 lowercase letters, digits or _, e.g. \"farm\". Reuse the installed package's name to change it."
+          "description": "The world's game package (from the request; reuse it so your change adds to it). Only for a world without one: 2-32 lowercase letters, digits or _, e.g. \"world\"."
         },
         "title": {
           "type": "string",
-          "description": "What players see, e.g. \"Turnip farm\"."
+          "description": "What players see, e.g. \"Wolf Valley\" (empty keeps the current title)."
         },
         "defs": {
           "type": "array",
           "items": {
             "$ref": "#/$defs/game_def"
-          }
+          },
+          "description": "Definitions to add or replace (by name); [] for none."
         },
         "scripts": {
           "type": "array",
           "items": {
             "$ref": "#/$defs/game_script"
           },
-          "description": "Luau scripts with the game's rules (empty for data-only packages)."
+          "description": "Script files to add or replace (by file name), each a feature with its own handlers; [] for none."
         },
         "models": {
           "type": "array",
           "items": {
             "$ref": "#/$defs/game_model"
           },
-          "description": "The voxel models the game's pieces look like, in the same format as \"build\"."
+          "description": "Models to add or replace (by name), in the same format as \"build\"; [] for none."
+        },
+        "remove": {
+          "anyOf": [
+            {
+              "type": "null"
+            },
+            {
+              "type": "array",
+              "items": {
+                "type": "string"
+              }
+            }
+          ],
+          "description": "Names of defs, script files or models to take out (a removed script file's pieces go with it); null for none."
+        },
+        "rename": {
+          "anyOf": [
+            {
+              "type": "null"
+            },
+            {
+              "type": "array",
+              "items": {
+                "type": "object",
+                "additionalProperties": false,
+                "required": [
+                  "from",
+                  "to"
+                ],
+                "properties": {
+                  "from": {
+                    "type": "string"
+                  },
+                  "to": {
+                    "type": "string"
+                  }
+                }
+              }
+            }
+          ],
+          "description": "Script files to rename ({from, to}): their pieces and timers follow (send the file under its new name only if it changes too); null for none."
         }
-      }
+      },
+      "description": "A change to the world's game logic: what you send replaces what's there by name (defs, script files, models), names in \"remove\" are taken out, and everything else stays."
     },
     "game_def": {
       "type": "object",

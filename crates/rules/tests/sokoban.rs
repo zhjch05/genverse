@@ -11,6 +11,7 @@ use cubewish_rules::{
 
 fn sokoban() -> GameSpec {
     GameSpec {
+        remove: None, rename: None,
         name: "sokoban".into(),
         title: "Sokoban".into(),
         defs: vec![DefSpec { name: "board".into(), kind: "fixture".into(), title: "Sokoban board".into(), ..Default::default() }],

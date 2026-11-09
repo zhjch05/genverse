@@ -179,6 +179,7 @@ fn two_players_share_one_ordered_world() {
 /// The rules crate's Sokoban test script, as a package.
 fn sokoban() -> GameSpec {
     GameSpec {
+        remove: None, rename: None,
         name: "sokoban".into(),
         title: "Sokoban".into(),
         defs: vec![DefSpec { name: "board".into(), kind: "fixture".into(), title: "Sokoban board".into(), ..Default::default() }],
@@ -282,6 +283,7 @@ fn the_server_runs_timers() {
     "#;
     let models = sokoban().models;
     let bell = GameSpec {
+        remove: None, rename: None,
         name: "bell".into(),
         title: "Bell".into(),
         defs: vec![DefSpec { name: "bell".into(), kind: "fixture".into(), title: "Bell".into(), ..Default::default() }],
@@ -460,7 +462,7 @@ fn items_and_rules_follow_the_game() {
             ..Default::default()
         };
         let seed = DefSpec { name: "seed".into(), kind: "item".into(), title: "Seeds".into(), ..Default::default() };
-        GameSpec { name: "farm".into(), title: "Farm".into(), defs: vec![bin, seed], scripts: Vec::new(), models: Vec::new() }.to_package(version)
+        GameSpec { remove: None, rename: None, name: "farm".into(), title: "Farm".into(), defs: vec![bin, seed], scripts: Vec::new(), models: Vec::new() }.to_package(version)
     };
 
     // Ada installs the farm in main and the game keeps it.

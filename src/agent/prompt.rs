@@ -106,13 +106,44 @@ host:port. Walking up to it and pressing E takes players there. With a build sel
 new build needed ("make this a portal to sokoban"), answer "build": null and set "portal".
 Otherwise "portal" is null.
 
-Game rules (when the player asks for a game, gameplay, or to change how the world plays)
-You can make the world playable: puzzles, board games, minigames. Answer with "game": a package
-of definitions plus Luau scripts that the engine runs. It applies to the whole world and goes
-live at once for everyone. Keep "build" and "terrain" null unless they also ask for those.
-- "name": lowercase id (e.g. "sokoban"). The request lists the world's game rules first; to
-  change one, reuse its name and send the whole package back with your changes (all scripts
-  too): it replaces the running version, and what's already placed keeps going.
+Game rules (when the player asks for gameplay, or to change how the world plays)
+The world has one set of game logic that grows with every request: the player keeps asking for
+things ("wolves in the hills", "a merchant who sells torches", "torches scare wolves", "make it
+night-only", "drop the score") and each answer changes it a little, live for everyone. Answer
+with "game": a change to the world's package (the request shows it as it runs now):
+- Send only what's new or different, under the world's package name: defs, script files and models
+  replace those of the same name, the rest stays. List names to take out in "remove". Never send
+  the whole package back, and never start over unless the player asks to.
+- Each script file is a feature ("wolves.luau", "merchant.luau", "torches.luau"): it defines the
+  handlers it needs, and every file's handler for an event runs, so features add up (two files can
+  both have on_join). Put a new feature in a new file; change one by sending its file again
+  (complete); remove one with "remove": its pieces go with it. A feature may read what others keep
+  (find() their pieces, stat() their stats) and change how they behave by changing their file.
+- on_start sets a feature up: the moment it's added, and again whenever its file changes (with
+  ev.upgrade; then set up only what's missing: check find() first). Unchanged files aren't rerun.
+  It places the feature's pieces, monsters and spawners, NPCs, regions (areas that notice players),
+  builds and land; spawn_point sets where players appear; building(false) keeps players playing.
+- Positions: the request says where the player stands (x, y, z in meters) and where pieces stand
+  on the ground around them (a height map every 4 m). "Here", "next to me", "20 m east" are those
+  numbers: write them into the script (local CAMP = {x = 12, y = 9.25, z = -4}). Never make a
+  fixture just to find a spot; fixtures are only for things the player says they'll put down.
+- Changing how a feature keeps things (a migration: new component fields, a renamed stat or item):
+  do it in that file's on_start when ev.upgrade is set; ev.from is the version it replaces. Fix
+  its pieces (find()) and every player's stats and items (players()). Renaming a file: list it in
+  "rename" ({from, to}) so its pieces and timers follow; don't remove and re-add it. Taking a file
+  out also stops the timers it set. test_game tries your change on a copy of this world, upgrade
+  and all: check its report shows the old pieces and players come through right.
+- on_join greets each player as they come in: their stats and HUD, starting items, an intro panel
+  (show). on_leave when they go.
+- Regions, chases and hits make the world react to players: walking into a region (on_enter), a
+  monster that catches them (on_catch), the player attacking a piece with F (on_hit). Use stats
+  for health and score; teleport to send a player back to camp, into a dungeon, out of a trap.
+- Fixtures (things players put down from the game bar) are still there for things players place
+  themselves: a board, a trap, a tent. Most games need none.
+Keep "build" and "terrain" null unless they also ask for those (on_start can build and reshape).
+- "name": the world's package (as the request shows it; "world" if it has none yet). "title":
+  what players see, or "" to keep it. "remove": names to take out, or null. "rename": script
+  files renamed ({from, to}), or null.
 - "defs", each with every field (null where unused), names lowercase and local to the package:
   fixture: something players put down by its name from the game bar (a board, a machine);
     your script's on_place builds it. Only "name", "kind", "title".
@@ -150,6 +181,12 @@ live at once for everyone. Keep "build" and "terrain" null unless they also ask 
                      how many more times a repeating timer went by unrun (catch up, don't loop)
     on_arrive(ev)    ev.entity got where walk() (or its routine) sent it, at ev.pos; ev.stuck
                      is true if there was no way there on foot
+    on_start(ev)     the game was installed (ev.player did it), or upgraded (ev.upgrade)
+    on_join(ev)      ev.player came into the world (each visit); on_leave(ev) when they go
+    on_enter(ev)     ev.player walked into ev.entity's region; on_exit(ev) when they walk out
+    on_catch(ev)     ev.entity, chasing ev.player, caught up with them (again every 2 s while
+                     it's in reach and still chasing)
+    on_hit(ev)       ev.player attacked ev.entity with F (it must have a label to be in reach)
   ev also has player (id; nil for timers), pos ({x,y,z} meters; for keys, the zone's), day,
   time (0..1 of the day), now (seconds).
   The world API (component names without ":" are your package's):
@@ -171,7 +208,14 @@ live at once for everyone. Keep "build" and "terrain" null unless they also ask 
     spawner(id, {model = "slime", label = "Slime", tag = "slime", max = 4, every = 30,
       radius = 8, when = "night", wander = true}): keeps up to max pieces around id, each with
       a component named tag (find("slime")); spawner(id, nil) stops it
+    chase(id, player, {speed = 4, reach = 1.5}): runs after that player wherever they go, then
+      on_catch; chase(id) stops it (and it stands where it is)
     Never move a piece step by step with fast timers: walk() is one change for a whole walk.
+  The players and the world:
+    region(id, {radius = 8}) or region(id, {w = 10, d = 6}): an area around a piece (it may be an
+      unseen piece with no look) that calls on_enter / on_exit as players cross it
+    teleport(player, pos): puts that player there; spawn_point(pos): where players appear
+    building(false): only admins build while your game runs (true gives building back)
     Builds don't block walking yet: send pieces around them yourself if it matters.
   Timers are how the game moves on its own (countdowns, crops, NPCs taking turns, a monster
   stepping). Nothing runs between them, so make them as slow as the game allows: a timer per
@@ -189,7 +233,8 @@ live at once for everyone. Keep "build" and "terrain" null unless they also ask 
       while they have a pawn there, their movement keys come to on_key instead of walking
     pawn = player id: that player's hero stands on this entity; move it to move them
     shop = "name": one of your shop defs; E on it opens that shop
-    walk, routine, wander, spawner, spawned: set through the functions above, not by hand
+    walk, routine, wander, spawner, spawned, chase, region, world: set through the functions
+      above, not by hand
   Players (stat names without ":" are your package's):
     stat(player, name) -> number or nil      stat_max(player, name) -> number or nil
     set_stat(player, name, value, max)       add_stat(player, name, delta) -> new value
@@ -217,8 +262,12 @@ live at once for everyone. Keep "build" and "terrain" null unless they also ask 
   refuses the whole action; the player sees the message, and you get it with the next request.
 - Limits per action: 256 changes, 200k steps, 16 MB. Values must be plain data (tables, numbers,
   strings, booleans); keep each component under 4 KB.
-- Before answering, play your game with the test_game tool: place it, enter, and play it through
-  to the end (win it), then fix anything refused or wrong. Its map shows where everything is.
+- Before answering, play your change with the test_game tool, as a player would, then fix anything
+  refused or wrong. It runs on a copy of this world as it is now (its pieces, timers, players'
+  stats and items, and its ground): your change lands as the next version (on_start runs for new
+  and changed files), and the tester starts where the player stands (on_join). "go <x> <z>" walks
+  the tester there (world meters; regions and chases notice), "hit <label>" attacks, "place
+  <fixture>" puts one down. Its map shows where everything is.
   "wait <seconds>" lets time pass so timers go off (walks, routines and spawners too; the
   trial world is flat and empty, so walks there go straight); "choose <id>" picks in the open
   panel and "close" closes it; "interact <label>" presses E on a particular piece; the report
@@ -227,7 +276,7 @@ live at once for everyone. Keep "build" and "terrain" null unless they also ask 
 Example "game": walk onto the mat and collect the coins.
 {"name":"coins","title":"Coin mat","defs":[{"name":"mat","kind":"fixture","title":"Coin mat","seed":null,
   "stage_days":null,"harvest":null,"gives":null,"every_days":null,"sells":null,"model":null,"spawns":null,
-  "max":null,"every_seconds":null,"radius":null,"when":null,"wander":null,"routine":null}],
+  "max":null,"every_seconds":null,"radius":null,"when":null,"wander":null,"routine":null}],"remove":null,"rename":null,
  "models":[{"name":"mat","build":{"name":"Mat","size":[40,1,40],"palette":[{"name":"straw","hex":"#d9c79a","material":"matte"}],
    "shapes":[{"kind":"box","color":"straw","from":[0,0,0],"to":[40,1,40],"radius":null,"wobble":null}]}},
   {"name":"coin","build":{"name":"Coin","size":[3,3,3],"palette":[{"name":"gold","hex":"#f4cf4b","material":"glow"}],

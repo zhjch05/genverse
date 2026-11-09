@@ -7,6 +7,11 @@
 //! which checks it as it happens, so a script sees its own changes and hears at once
 //! when it isn't allowed something.
 //!
+//! A package's script files are its features (`wolves.luau`, `merchant.luau`): each
+//! defines the handlers it needs, and every file's handler for an event runs, in file
+//! order, so features add up instead of replacing each other. Pieces a file spawns carry
+//! `feature = "<file>"`: taking the file out of the package takes them out too.
+//!
 //! A script defines handlers, each called with the event:
 //!
 //! ```lua
@@ -21,6 +26,14 @@
 //!                               -- (its id) that the package showed them
 //! function on_arrive(ev) end    -- ev.entity got where walk() sent it (or where its
 //!                               -- routine said), at ev.pos; ev.stuck: no way there
+//! function on_start(ev) end     -- installed: set the world up (ev.player installed it);
+//!                               -- again on each new version, with ev.upgrade
+//! function on_join(ev) end      -- ev.player came into the world (each visit)
+//! function on_leave(ev) end     -- ev.player left it
+//! function on_enter(ev) end     -- ev.player walked into ev.entity's region, at ev.pos
+//! function on_exit(ev) end      -- ev.player walked out of it
+//! function on_catch(ev) end     -- ev.entity, chasing ev.player, caught up with them
+//! function on_hit(ev) end       -- ev.player attacked ev.entity (F)
 //! ```
 //!
 //! `ev` also has `player` (nil for timers), `pos` (`{x, y, z}` in meters), `day` and
@@ -72,6 +85,20 @@
 //!
 //! `get(id).pos` is where a walking piece is now; `get(id).walking` says whether it is.
 //!
+//! Changing how a feature keeps things (a migration) happens in its `on_start` when the
+//! new version lands: `ev.upgrade`, `ev.from` (the version it replaces), `find()` for its
+//! pieces and `players()` for everyone the world keeps stats or items for.
+//!
+//! The world as the game ([`super::entity`]'s `region` and `world`):
+//!
+//! ```lua
+//! region(id, {radius = 8})  or  region(id, {w = 10, d = 6})   -- on_enter / on_exit; nil stops
+//! chase(id, player, {speed = 2.5, reach = 1.5})   -- runs after them; on_catch; chase(id) stops
+//! teleport(player, pos)     -- puts their hero there (a respawn, a trap, a door)
+//! spawn_point(pos)          -- where players appear when they come into the world
+//! building(false)           -- only admins build or reshape land while this game runs
+//! ```
+//!
 //! Timers are how a game moves on its own (crops, countdowns, NPC turns). Nothing runs
 //! between them, so a quiet game costs nothing; each timer that does something becomes
 //! one change in the log.
@@ -117,13 +144,20 @@ pub fn run(package: &Package, event: &Event, world: &mut Batch, grants: &Grants)
     vm::run(package, event, world, grants).map_err(|e| format!("script error: {}", first_lines(&e.to_string())))
 }
 
+/// The handlers a script file may define.
+#[cfg(not(target_arch = "wasm32"))]
+const HANDLERS: [&str; 14] = [
+    "on_place", "on_interact", "on_use", "on_key", "on_timer", "on_choose", "on_arrive", "on_start", "on_join", "on_leave", "on_enter",
+    "on_exit", "on_catch", "on_hit",
+];
+
 #[cfg(not(target_arch = "wasm32"))]
 mod vm {
     use std::{cell::RefCell, collections::BTreeMap, rc::Rc};
 
     use mlua::{Error, Function, Lua, LuaOptions, LuaSerdeExt, StdLib, Table, Value, VmState};
 
-    use super::{MAX_MEMORY, MAX_STEPS};
+    use super::{HANDLERS, MAX_MEMORY, MAX_STEPS};
     use crate::logic::{
         Batch, Effect, Event, Grants, Intent, Package, Trigger,
         entity::{EntityId, MIN_WAIT, RESERVED},
@@ -199,6 +233,8 @@ mod vm {
         };
         let world = RefCell::new(world);
         let rng = RefCell::new(event.seed);
+        // The file whose handler is running: what it spawns is its feature's.
+        let feature = RefCell::new(String::new());
 
         let entity_table = |lua: &Lua, id: EntityId, world: &Batch| -> mlua::Result<Value> {
             let Some(e) = world.get(id) else { return Ok(Value::Nil) };
@@ -245,6 +281,10 @@ mod vm {
                             let value: serde_json::Value = lua.from_value(value)?;
                             map.insert(full(&name), value);
                         }
+                    }
+                    let file = feature.borrow().clone();
+                    if !file.is_empty() {
+                        map.entry("feature".to_string()).or_insert(file.into());
                     }
                     let id = apply(Effect::Spawn { position: pos_of(&pos)?, components: map })?;
                     Ok(id.map(id_text))
@@ -408,7 +448,9 @@ mod vm {
                 let seconds = seconds.round() as u64;
                 let data: serde_json::Value = lua.from_value(data)?;
                 let near = near.as_deref().map(parse_id).transpose()?;
-                let effect = Effect::Schedule { name, due: event.at + seconds, every: every.then_some(seconds), data, near };
+                let file = feature.borrow().clone();
+                let feature = (!file.is_empty()).then_some(file);
+                let effect = Effect::Schedule { name, due: event.at + seconds, every: every.then_some(seconds), data, near, feature };
                 apply(effect).map(|_| ())
             };
             globals.set(
@@ -424,6 +466,7 @@ mod vm {
                 })?,
             )?;
             globals.set("cancel", scope.create_function(|_, name: String| apply(Effect::Cancel { name }).map(|_| ()))?)?;
+            globals.set("players", scope.create_function(|_, ()| Ok(world.borrow().players()))?)?;
             let all = |effects: Vec<Effect>| effects.into_iter().try_for_each(|e| apply(e).map(|_| ()));
             let staged = &world;
             globals.set(
@@ -487,6 +530,82 @@ mod vm {
                 })?,
             )?;
             globals.set(
+                "teleport",
+                scope.create_function(move |_, (player, pos): (String, Table)| {
+                    apply(Effect::Teleport { player, position: pos_of(&pos)? }).map(|_| ())
+                })?,
+            )?;
+            globals.set(
+                "spawn_point",
+                scope.create_function(move |_, pos: Table| apply(Effect::Teleport { player: "*".into(), position: pos_of(&pos)? }).map(|_| ()))?,
+            )?;
+            globals.set(
+                "region",
+                scope.create_function(move |lua, (id, spec): (String, Option<Table>)| {
+                    let id = parse_id(&id)?;
+                    let Some(spec) = spec else {
+                        return apply(Effect::Remove { entity: id, component: "region".into() }).map(|_| ());
+                    };
+                    let spec: serde_json::Value = lua.from_value(Value::Table(spec))?;
+                    let value = match (spec["radius"].as_f64(), spec["w"].as_f64(), spec["d"].as_f64()) {
+                        (Some(r), _, _) => serde_json::json!({ "radius": r }),
+                        (None, Some(w), Some(d)) => serde_json::json!({ "size": [w, d] }),
+                        _ => return Err(fail("region: {radius = r} or {w = width, d = depth}")),
+                    };
+                    apply(Effect::Set { entity: id, component: "region".into(), value }).map(|_| ())
+                })?,
+            )?;
+            globals.set(
+                "chase",
+                scope.create_function(move |lua, (id, player, spec): (String, Option<String>, Option<Table>)| {
+                    let id = parse_id(&id)?;
+                    let value = match player {
+                        None => None,
+                        Some(player) => {
+                            let mut value = match spec {
+                                Some(spec) => lua.from_value(Value::Table(spec))?,
+                                None => serde_json::json!({}),
+                            };
+                            value["player"] = player.into();
+                            for (key, default) in [("speed", 2.5), ("reach", 1.5)] {
+                                if value[key].is_null() {
+                                    value[key] = default.into();
+                                }
+                            }
+                            Some(value)
+                        }
+                    };
+                    let mut effects = crate::logic::walk::start_effects(id, "chase", value.clone(), event.at);
+                    if value.is_none() {
+                        let e = staged.borrow().get(id).cloned();
+                        if let Some(e) = e {
+                            effects.extend(crate::logic::walk::stop_effects(id, &e, event.at));
+                        }
+                    }
+                    all(effects)
+                })?,
+            )?;
+            globals.set(
+                "building",
+                scope.create_function(move |_, allowed: bool| {
+                    // The game's rules for the world live on a piece of its own, unseen.
+                    let world = staged.borrow();
+                    let mine = world
+                        .ids()
+                        .into_iter()
+                        .find(|id| world.get(*id).is_some_and(|e| e.package == grants.package && e.components.contains_key("world")));
+                    drop(world);
+                    let value = serde_json::json!({ "building": allowed });
+                    match mine {
+                        Some(id) => apply(Effect::Set { entity: id, component: "world".into(), value }).map(|_| ()),
+                        None => {
+                            let components = [("world".to_string(), value)].into();
+                            apply(Effect::Spawn { position: [0.0, 0.0, 0.0], components }).map(|_| ())
+                        }
+                    }
+                })?,
+            )?;
+            globals.set(
                 "spawner",
                 scope.create_function(move |lua, (id, spec): (String, Option<Table>)| {
                     let id = parse_id(&id)?;
@@ -512,8 +631,16 @@ mod vm {
                 })?,
             )?;
 
+            // Each file's handlers, kept apart so every feature hears every event.
+            let mut handlers: Vec<(&str, &str, Function)> = Vec::new();
             for (file, source) in &package.scripts {
                 lua.load(source.as_str()).set_name(file.as_str()).exec()?;
+                for name in HANDLERS {
+                    if let Some(f) = globals.get::<Option<Function>>(name)? {
+                        handlers.push((file.as_str(), name, f));
+                        globals.set(name, Value::Nil)?;
+                    }
+                }
             }
             let ev = lua.create_table()?;
             if !event.player.is_empty() {
@@ -524,6 +651,30 @@ mod vm {
             ev.set("time", event.time.time_of_day)?;
             let at = |id: &EntityId| staged.borrow().get(*id).map(|e| e.position);
             let handler = match event.trigger {
+                Trigger::Start { upgrade, from, .. } => {
+                    ev.set("upgrade", upgrade)?;
+                    if let Some(from) = from {
+                        ev.set("from", from)?;
+                    }
+                    "on_start"
+                }
+                Trigger::Join => "on_join",
+                Trigger::Leave => "on_leave",
+                Trigger::Enter { entity } | Trigger::Exit { entity } | Trigger::Catch { entity } => {
+                    ev.set("entity", id_text(entity))?;
+                    if let Some(p) = at(&entity) {
+                        ev.set("pos", pos_table(&lua, p)?)?;
+                    }
+                    match event.trigger {
+                        Trigger::Enter { .. } => "on_enter",
+                        Trigger::Exit { .. } => "on_exit",
+                        _ => "on_catch",
+                    }
+                }
+                Trigger::Intent(Intent::Hit { entity }) => {
+                    ev.set("entity", id_text(*entity))?;
+                    "on_hit"
+                }
                 Trigger::Arrive { entity, stuck } => {
                     ev.set("entity", id_text(entity))?;
                     ev.set("stuck", stuck)?;
@@ -575,8 +726,17 @@ mod vm {
                 ev.set("pos", pos_table(&lua, p)?)?;
             }
             ev.set("kind", handler.trim_start_matches("on_"))?;
-            if let Some(f) = globals.get::<Option<Function>>(handler)? {
-                f.call::<()>(ev)?;
+            // A new version starts only the files that are new or changed.
+            let only = match event.trigger {
+                Trigger::Start { only, .. } => only,
+                _ => None,
+            };
+            for (file, name, f) in &handlers {
+                if *name != handler || only.is_some_and(|only| !only.iter().any(|o| o == file)) {
+                    continue;
+                }
+                *feature.borrow_mut() = file.to_string();
+                f.call::<()>(&ev)?;
             }
             Ok(())
         })
@@ -592,7 +752,7 @@ mod tests {
 
     /// A package with one script and a crate model.
     fn package(source: &str) -> Package {
-        let manifest = Manifest { name: "game".into(), version: 1, title: "Game".into(), permissions: vec![Permission::Spawn], depends: Vec::new() };
+        let manifest = Manifest { name: "game".into(), version: 1, title: "Game".into(), permissions: vec![Permission::Spawn], depends: Vec::new() , renamed: Default::default()};
         let crate_model = serde_json::from_str(
             r##"{"name":"Crate","size":[8,8,8],"palette":[{"name":"wood","hex":"#b07a45","material":"matte"}],
                 "shapes":[{"kind":"box","color":"wood","from":[0,0,0],"to":[8,8,8],"radius":null,"wobble":null}]}"##,

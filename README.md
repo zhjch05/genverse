@@ -83,6 +83,13 @@ and installs it for the whole world, live (`crates/rules/src/logic`, design in
   and items, and every change is checked as it happens. The engine draws entities from their
   `look` (one of the package's models), names them with `label`, and acts on `zone` and
   `pawn`.
+- **One world, many requests:** the world's game logic grows with each request ("wolves in
+  the hills", "a merchant", "torches scare wolves"): the agent sends only what changes, each
+  script file is a feature whose handlers all run, and taking a file out takes its pieces.
+- **The world is the game:** installing a game runs its `on_start`, which sets the world up
+  (pieces, monsters, regions, the spawn point) and can stop players building. Games see
+  players come and go (`on_join`, `on_leave`) and walk into regions (`on_enter`), chase them
+  (`on_catch`), teleport them, and answer F (`on_hit`), with health and score as stats.
 - **Pieces that move on their own:** `walk`, daily `routine`s, `wander` and `spawner`s (also
   as data: `spawner` and `npc` definitions). The engine finds the way over the ground and
   records the whole walk as one change; games show the piece walking along it. Like timers,

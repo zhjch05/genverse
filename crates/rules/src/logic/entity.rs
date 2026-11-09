@@ -14,8 +14,15 @@
 //!   moves its players by moving their pawns.
 //! - `shop`: one of its package's shop definitions (`"general"`): E on it opens the shop,
 //!   and buying there needs no script.
-//! - `walk`, `routine`, `wander`, `spawner`: pieces that move on their own, and pieces
-//!   that make more (see [`super::walk`]); `spawned` names the spawner a piece came from.
+//! - `walk`, `routine`, `wander`, `spawner`, `chase`: pieces that move on their own, and
+//!   pieces that make more (see [`super::walk`]); `spawned` names the spawner a piece
+//!   came from.
+//! - `region`: `{"radius": r}` or `{"size": [w, d]}` around it: players walking in and out
+//!   tell its package (`on_enter`, `on_exit`). It needs no look.
+//! - `world`: `{"building": false}`: while a piece with it stands, only admins build and
+//!   reshape land; the world is the game. It needs no look.
+//! - `feature`: the script file that spawned it (set for it): taking that file out of
+//!   the package takes the piece out too.
 //!
 //! Players have state of their own too, also kept by package: **stats** (`game:hp`,
 //! numbers kept between 0 and a maximum when they have one), **HUD widgets** pinned to
@@ -101,6 +108,9 @@ pub enum Effect {
         data: Value,
         #[serde(default, skip_serializing_if = "Option::is_none")]
         near: Option<EntityId>,
+        /// The script file that set it: taking that file out cancels it.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        feature: Option<String>,
     },
     /// Stops one of the package's timers, if it has it.
     Cancel { name: String },
@@ -123,6 +133,16 @@ pub enum Effect {
     Unbuild { build: u64 },
     /// Reshapes land with the world's terrain operations.
     Terrain { area: Area, spec: TerrainSpec },
+    /// Puts a player's hero at `position` (a respawn, a trapdoor, a portal of the game's).
+    /// For `"*"`, it's where players appear when they come into the world.
+    Teleport { player: String, position: [f32; 3] },
+}
+
+/// Where a game last put a player, and in which change (so a game shows each move once).
+#[derive(Clone, Copy, Debug, PartialEq, Serialize, Deserialize)]
+pub struct Teleport {
+    pub position: [f32; 3],
+    pub change: u64,
 }
 
 /// A number a player has (hit points, gold, hunger).
@@ -199,6 +219,9 @@ pub struct Timer {
     /// timers sleep while nobody is there, and catch up when someone comes.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub near: Option<EntityId>,
+    /// The script file that set it, if one did.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub feature: Option<String>,
 }
 
 /// How near a player must be for a timer anchored to an entity to run, in meters.
@@ -240,7 +263,8 @@ impl Timer {
 }
 
 /// Components the engine itself reads.
-pub const RESERVED: [&str; 10] = ["look", "label", "zone", "pawn", "shop", "walk", "routine", "wander", "spawner", "spawned"];
+pub const RESERVED: [&str; 14] =
+    ["look", "label", "zone", "pawn", "shop", "walk", "routine", "wander", "spawner", "spawned", "chase", "region", "world", "feature"];
 
 /// Checks an engine component's value, phrased for the agent that wrote it.
 fn check_reserved(name: &str, value: &Value, grants: &Grants) -> Result<(), String> {
@@ -259,7 +283,10 @@ fn check_reserved(name: &str, value: &Value, grants: &Grants) -> Result<(), Stri
         "pawn" => value.as_str().is_some_and(|p| !p.is_empty() && p.len() <= 128),
         "shop" => value.as_str().is_some_and(|s| !s.is_empty() && s.len() <= 64),
         "spawned" => value.as_str().is_some_and(|s| s.len() <= 32),
-        "walk" | "routine" | "wander" => return super::walk::check(name, value),
+        "feature" => value.as_str().is_some_and(|s| s.len() <= 64),
+        "walk" | "routine" | "wander" | "chase" => return super::walk::check(name, value),
+        "region" => value["radius"].as_f64().is_some_and(|r| r > 0.0 && r <= 64.0) || sizes("size", 2, 128.0),
+        "world" => value.as_object().is_some_and(|o| o.keys().all(|k| k == "building")) && !value["building"].is_null(),
         "spawner" => {
             super::walk::check(name, value)?;
             let model = value["model"].as_str().unwrap_or_default();
@@ -282,6 +309,8 @@ fn check_reserved(name: &str, value: &Value, grants: &Grants) -> Result<(), Stri
             "zone" => "\"zone\" is {\"size\": [w, d]} (meters, 0-128)".into(),
             "shop" => "\"shop\" is the name of one of the package's shops".into(),
             "spawned" => "\"spawned\" is the id of the spawner a piece came from".into(),
+            "region" => "\"region\" is {\"radius\": 0-64 m} or {\"size\": [w, d]} (meters, 0-128)".into(),
+            "world" => "\"world\" is {\"building\": true or false}".into(),
             _ => "\"pawn\" is a player id".into(),
         })
     }
@@ -351,6 +380,8 @@ pub struct GameState {
     panels: BTreeMap<String, Panel>,
     /// Builds packages placed, and which package.
     builds: BTreeMap<u64, String>,
+    /// Where games last put each player (`"*"`: where players appear).
+    teleports: BTreeMap<String, Teleport>,
 }
 
 /// [`GameState`] as saved in snapshots: JSON maps need string keys.
@@ -369,6 +400,8 @@ struct SavedState {
     panels: BTreeMap<String, Panel>,
     #[serde(default)]
     builds: Vec<(u64, String)>,
+    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    teleports: BTreeMap<String, Teleport>,
 }
 
 impl From<GameState> for SavedState {
@@ -381,6 +414,7 @@ impl From<GameState> for SavedState {
             hud: state.hud,
             panels: state.panels,
             builds: state.builds.into_iter().collect(),
+            teleports: state.teleports,
         }
     }
 }
@@ -400,6 +434,7 @@ impl From<SavedState> for GameState {
             hud: saved.hud,
             panels: saved.panels,
             builds: saved.builds.into_iter().collect(),
+            teleports: saved.teleports,
         }
     }
 }
@@ -453,6 +488,22 @@ impl GameState {
     /// The panel `player` has open.
     pub fn panel(&self, player: &str) -> Option<&Panel> {
         self.panels.get(player)
+    }
+
+    /// Every player the world keeps something for: items, stats, a HUD, a panel, a
+    /// teleport. For games that change how they keep players' things (a migration).
+    pub fn players(&self) -> Vec<String> {
+        let mut out: std::collections::BTreeSet<&String> = self.items.keys().collect();
+        out.extend(self.stats.keys());
+        out.extend(self.hud.keys().filter(|p| *p != "*"));
+        out.extend(self.panels.keys());
+        out.extend(self.teleports.keys().filter(|p| *p != "*"));
+        out.into_iter().cloned().collect()
+    }
+
+    /// Where a game last put `player` (`"*"`: where players appear), and when.
+    pub fn teleport(&self, player: &str) -> Option<Teleport> {
+        self.teleports.get(player).copied()
     }
 
     /// The package that placed build `id`, if a package did.
@@ -560,6 +611,7 @@ impl GameState {
             builds: BTreeMap::new(),
             built: 0,
             last_build: None,
+            teleports: BTreeMap::new(),
         }
     }
 
@@ -617,6 +669,7 @@ impl GameState {
                 None => self.builds.remove(&id),
             };
         }
+        self.teleports.extend(done.teleports);
     }
 }
 
@@ -649,6 +702,7 @@ pub struct Batch<'a> {
     built: u64,
     /// The id of the build the last [`Effect::Build`] placed.
     pub last_build: Option<u64>,
+    teleports: BTreeMap<String, Teleport>,
 }
 
 /// A point in a batch to go back to, if what follows fails ([`Batch::rollback`]).
@@ -666,6 +720,7 @@ pub struct Mark {
     panels: BTreeMap<String, Option<Panel>>,
     builds: BTreeMap<u64, Option<String>>,
     built: u64,
+    teleports: BTreeMap<String, Teleport>,
 }
 
 /// What a batch changes, to [`GameState::commit`].
@@ -678,6 +733,7 @@ pub struct Done {
     hud: BTreeMap<(String, String), Option<Widget>>,
     panels: BTreeMap<String, Option<Panel>>,
     builds: BTreeMap<u64, Option<String>>,
+    teleports: BTreeMap<String, Teleport>,
     /// Messages for players: who, and what.
     pub notes: Vec<(String, String)>,
     /// What it does to the world's voxels, in order ([`Effect::Build`],
@@ -708,6 +764,14 @@ impl Batch<'_> {
         ids
     }
 
+    /// Every player the world keeps something for, as staged.
+    pub fn players(&self) -> Vec<String> {
+        let mut out: std::collections::BTreeSet<String> = self.base.players().into_iter().collect();
+        out.extend(self.items.keys().map(|(p, _)| p.clone()));
+        out.extend(self.stats.keys().map(|(p, _)| p.clone()));
+        out.into_iter().collect()
+    }
+
     /// Where the batch is now, to [`Self::rollback`] to.
     pub fn mark(&self) -> Mark {
         Mark {
@@ -724,6 +788,7 @@ impl Batch<'_> {
             panels: self.panels.clone(),
             builds: self.builds.clone(),
             built: self.built,
+            teleports: self.teleports.clone(),
         }
     }
 
@@ -742,6 +807,7 @@ impl Batch<'_> {
         self.panels = mark.panels;
         self.builds = mark.builds;
         self.built = mark.built;
+        self.teleports = mark.teleports;
     }
 
     /// One of a player's stats, as staged.
@@ -802,8 +868,9 @@ impl Batch<'_> {
                 if count + 1 > grants.max_entities as i64 {
                     return Err(format!("{} already has {count} entities; this world allows {}", grants.package, grants.max_entities));
                 }
-                // A spawner shows as a marker of its own.
-                if grants.drawn && !components.contains_key("look") && !components.contains_key("pawn") && !components.contains_key("spawner") {
+                // A spawner shows as a marker of its own; a region or the world's rules aren't seen.
+                let unseen = ["pawn", "spawner", "region", "world"].iter().any(|c| components.contains_key(*c));
+                if grants.drawn && !components.contains_key("look") && !unseen {
                     return Err(format!(
                         "every piece needs a look: {{model = ...}}, one of the package's models ({})",
                         if grants.models.is_empty() { "it has none yet; add some".to_string() } else { grants.models.join(", ") }
@@ -889,7 +956,7 @@ impl Batch<'_> {
                 self.notes.push((player.clone(), text.chars().take(200).collect()));
                 Ok(None)
             }
-            Effect::Schedule { name, due, every, data, near } => {
+            Effect::Schedule { name, due, every, data, near, feature } => {
                 if name.is_empty() || name.chars().count() > 64 {
                     return Err("a timer's name is 1 to 64 characters".into());
                 }
@@ -904,7 +971,7 @@ impl Batch<'_> {
                 if let Some(id) = near {
                     entity(self, *id)?;
                 }
-                self.timers.insert(key, Some(Timer { due: *due, every: *every, data: data.clone(), near: *near }));
+                self.timers.insert(key, Some(Timer { due: *due, every: *every, data: data.clone(), near: *near, feature: feature.clone() }));
                 Ok(None)
             }
             Effect::Cancel { name } => {
@@ -993,6 +1060,14 @@ impl Batch<'_> {
                 self.builds.insert(*build, None);
                 Ok(None)
             }
+            Effect::Teleport { player, position } => {
+                if player.is_empty() || !position.iter().all(|v| v.is_finite()) {
+                    return Err("teleport takes a player (or \"*\") and a place".into());
+                }
+                grants.inside(*position)?;
+                self.teleports.insert(player.clone(), Teleport { position: *position, change: self.change });
+                Ok(None)
+            }
             Effect::Terrain { area, .. } => {
                 if !grants.build {
                     return Err(format!("{} may not reshape land (it needs the build permission)", grants.package));
@@ -1042,6 +1117,7 @@ impl Batch<'_> {
             hud: self.hud,
             panels: self.panels,
             builds: self.builds,
+            teleports: self.teleports,
             notes: self.notes,
             world,
         }
@@ -1150,9 +1226,9 @@ mod tests {
 
     #[test]
     fn timers_go_off_once_per_span() {
-        let once = Timer { due: 10, every: None, data: Value::Null, near: None };
+        let once = Timer { due: 10, every: None, data: Value::Null, near: None, feature: None };
         assert_eq!((once.fires(5, 9), once.fires(5, 10), once.fires(10, 20)), (None, Some((10, 1)), Some((10, 1))));
-        let every = Timer { due: 10, every: Some(3), data: Value::Null, near: None };
+        let every = Timer { due: 10, every: Some(3), data: Value::Null, near: None, feature: None };
         // 10, 13, 16, 19: by 20, all four, folded into the last.
         assert_eq!(every.fires(0, 20), Some((19, 4)));
         assert_eq!(every.fires(10, 15), Some((13, 1)));
@@ -1161,14 +1237,14 @@ mod tests {
         let world = GameState::default();
         let mut batch = world.batch(1, "a", 1000);
         let game = grants("game", Scope::World);
-        let schedule = |name: String| Effect::Schedule { name, due: 5, every: None, data: Value::Null, near: None };
+        let schedule = |name: String| Effect::Schedule { name, due: 5, every: None, data: Value::Null, near: None, feature: None };
         for n in 0..MAX_TIMERS {
             batch.apply(&game, &schedule(n.to_string())).unwrap();
         }
         assert!(batch.apply(&game, &schedule("more".into())).unwrap_err().contains("timers waiting"));
         // Replacing one is fine.
         batch.apply(&game, &schedule("0".into())).unwrap();
-        let fast = Effect::Schedule { name: "0".into(), due: 5, every: Some(0), data: Value::Null, near: None };
+        let fast = Effect::Schedule { name: "0".into(), due: 5, every: Some(0), data: Value::Null, near: None, feature: None };
         assert!(batch.apply(&game, &fast).is_err());
     }
 

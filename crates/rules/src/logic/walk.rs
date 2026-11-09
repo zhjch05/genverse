@@ -14,6 +14,8 @@
 //! - `routine`: `[{"at": 0.0-1.0 of the day, "to": [x, y, z]}, ...]`: where to be when.
 //! - `wander`: `{"home": [x, y, z], "radius": m, "speed": m/s, "pause": s}`.
 //! - `spawner`: `{"model", "label", "tag", "max", "every", "radius", "when", "wander"}`.
+//! - `chase`: `{"player", "speed", "reach"}`: every couple of seconds it heads for where
+//!   that player is now, and its package's `on_catch` runs when it's within reach.
 //!
 //! Paths follow the ground the host knows ([`Ground`]): around water and up steps no
 //! taller than [`CLIMB`]. Builds don't block them yet.
@@ -44,6 +46,8 @@ pub const MAX_POINTS: usize = 48;
 pub const MAX_STOPS: usize = 12;
 /// The most pieces one spawner keeps around.
 pub const MAX_SPAWNED: u64 = 32;
+/// How often a chaser looks for its player again, in seconds.
+pub const CHASE_EVERY: u64 = 2;
 /// Terrain columns per path cell (half a meter).
 const CELL: i32 = 2;
 /// How far around the walk the path may stray, in meters.
@@ -244,7 +248,7 @@ pub fn walk_effects(id: EntityId, to: [f32; 3], speed: Option<f32>, at: u64) -> 
     vec![
         Effect::Set { entity: id, component: "walk".into(), value: json!({ "to": to, "speed": speed }) },
         // A second on: the clock may have run up to `at` already.
-        Effect::Schedule { name: timer("walk", id), due: at + 1, every: None, data: Value::Null, near: Some(id) },
+        Effect::Schedule { name: timer("walk", id), due: at + 1, every: None, data: Value::Null, near: Some(id), feature: None },
     ]
 }
 
@@ -273,10 +277,14 @@ pub fn start_effects(id: EntityId, name: &str, value: Option<Value>, at: u64) ->
     };
     match value {
         Some(value) => {
-            let every = (name == "spawner").then(|| value["every"].as_u64().unwrap_or(60).max(1));
+            let every = match name {
+                "spawner" => Some(value["every"].as_u64().unwrap_or(60).max(1)),
+                "chase" => Some(CHASE_EVERY),
+                _ => None,
+            };
             vec![
                 Effect::Set { entity: id, component: name.into(), value },
-                Effect::Schedule { name: timer(kind, id), due: at + 1, every, data: Value::Null, near: Some(id) },
+                Effect::Schedule { name: timer(kind, id), due: at + 1, every, data: Value::Null, near: Some(id), feature: None },
             ]
         }
         None => vec![Effect::Remove { entity: id, component: name.into() }, Effect::Cancel { name: timer(kind, id) }],
@@ -310,6 +318,7 @@ pub fn check(name: &str, value: &Value) -> Result<(), String> {
                 && stops.iter().all(|s| s["at"].as_f64().is_some_and(|t| (0.0..1.0).contains(&t)) && point(&s["to"]).is_some())
         }),
         "wander" => point(&value["home"]).is_some() && num("radius", 1.0..=32.0) && num("speed", 0.2..=12.0) && num("pause", 0.0..=3600.0),
+        "chase" => value["player"].as_str().is_some_and(|p| !p.is_empty()) && num("speed", 0.2..=12.0) && num("reach", 0.5..=16.0),
         "spawner" => {
             value["model"].as_str().is_some()
                 && num("max", 1.0..=MAX_SPAWNED as f64)
@@ -326,6 +335,7 @@ pub fn check(name: &str, value: &Value) -> Result<(), String> {
         "walk" => format!("\"walk\" is {{\"to\": [x, y, z], \"speed\": {}-{} m/s}}; use walk(id, pos, speed)", SPEEDS.start(), SPEEDS.end()),
         "routine" => format!("a routine is 1 to {MAX_STOPS} stops {{at = \"8:00\", to = pos}}"),
         "wander" => "\"wander\" is {home = pos, radius = 1-32 m, speed = 0.2-12 m/s, pause = 0-3600 s}".into(),
+        "chase" => "chase(id, player, {speed = 0.2-12 m/s, reach = 0.5-16 m})".into(),
         _ => format!(
             "a spawner is {{model = one of the package's models, max = 1-{MAX_SPAWNED}, every = 5-86400 s, radius = 1-32 m, when = \"any\"|\"day\"|\"night\"}}"
         ),
@@ -340,13 +350,16 @@ pub(super) struct Engine<'a, 'b> {
     pub rules: &'a LogicRules,
     pub now: u64,
     pub seed: u64,
+    /// Who's in the world, and where.
+    pub players: &'a [(String, [f32; 3])],
 }
 
-/// A piece reached the end of its walk (`stuck`: it couldn't find the way), for its
-/// package's `on_arrive`.
-pub(super) struct Arrived {
-    pub entity: EntityId,
-    pub stuck: bool,
+/// What an engine timer tells the piece's package.
+pub(super) enum Heard {
+    /// It reached the end of its walk (`stuck`: it couldn't find the way): `on_arrive`.
+    Arrived { entity: EntityId, stuck: bool },
+    /// It caught up with the player it chases: `on_catch`.
+    Caught { entity: EntityId, player: String },
 }
 
 impl Engine<'_, '_> {
@@ -360,7 +373,7 @@ impl Engine<'_, '_> {
     }
 
     /// Runs the engine's timer `name` (`~walk:2.0`, without the `~`).
-    pub fn fire(&mut self, name: &str) -> Result<Option<Arrived>, String> {
+    pub fn fire(&mut self, name: &str) -> Result<Option<Heard>, String> {
         let Some((kind, id)) = name.split_once(':') else { return Ok(None) };
         let id = id.split_once('.').and_then(|(c, n)| Some(EntityId { change: c.parse().ok()?, n: n.parse().ok()? }));
         let Some(id) = id else { return Ok(None) };
@@ -375,12 +388,13 @@ impl Engine<'_, '_> {
             "plan" => self.plan(id, &e).map(|_| None),
             "wander" => self.wander(id, &e).map(|_| None),
             "spawn" => self.spawn(id, &e).map(|_| None),
+            "chase" => self.chase(id, &e),
             _ => Ok(None),
         }
     }
 
     /// Finds the way for a walk asked for, and sets off.
-    fn set_off(&mut self, id: EntityId, e: &Entity) -> Result<Option<Arrived>, String> {
+    fn set_off(&mut self, id: EntityId, e: &Entity) -> Result<Option<Heard>, String> {
         let Some(walk) = e.components.get("walk") else { return Ok(None) };
         let (Some(to), speed) = (point(&walk["to"]), walk["speed"].as_f64().unwrap_or(DEFAULT_SPEED as f64) as f32) else {
             return Ok(None);
@@ -389,7 +403,7 @@ impl Engine<'_, '_> {
             Ok(()) => Ok(None),
             Err(_) => {
                 self.apply(Effect::Remove { entity: id, component: "walk".into() })?;
-                Ok(Some(Arrived { entity: id, stuck: true }))
+                Ok(Some(Heard::Arrived { entity: id, stuck: true }))
             }
         }
     }
@@ -406,20 +420,24 @@ impl Engine<'_, '_> {
         let takes = (length(&path) / speed).ceil().max(1.0) as u64;
         let walk = json!({ "to": snap(to), "speed": speed, "path": path.iter().map(|p| snap(*p)).collect::<Vec<_>>(), "start": start });
         self.apply(Effect::Set { entity: id, component: "walk".into(), value: walk })?;
-        self.apply(Effect::Schedule { name: timer("arrive", id), due: start + takes, every: None, data: Value::Null, near: Some(id) })?;
+        self.apply(Effect::Schedule { name: timer("arrive", id), due: start + takes, every: None, data: Value::Null, near: Some(id), feature: None })?;
         Ok(())
     }
 
     /// A walk is over: the piece stands at its end. A wanderer sets off again after its
     /// pause; anyone else's package hears about it.
-    fn arrive(&mut self, id: EntityId, e: &Entity) -> Result<Option<Arrived>, String> {
+    fn arrive(&mut self, id: EntityId, e: &Entity) -> Result<Option<Heard>, String> {
         let Some(walk) = e.components.get("walk") else { return Ok(None) };
         let end = points(&walk["path"]).and_then(|p| p.last().copied()).unwrap_or(e.position);
         self.apply(Effect::Move { entity: id, position: end })?;
         let wander = e.components.get("wander").cloned();
         let Some(wander) = wander.filter(|_| !e.components.contains_key("routine") || walk["wandering"].as_bool() == Some(true)) else {
             self.apply(Effect::Remove { entity: id, component: "walk".into() })?;
-            return Ok(Some(Arrived { entity: id, stuck: false }));
+            // A chaser's walks are the engine's business, not its package's.
+            if e.components.contains_key("chase") {
+                return Ok(None);
+            }
+            return Ok(Some(Heard::Arrived { entity: id, stuck: false }));
         };
         let mut e = e.clone();
         e.position = end;
@@ -450,6 +468,34 @@ impl Engine<'_, '_> {
         Err("nowhere to wander".into())
     }
 
+    /// A chaser's turn: caught up, or off again toward where its player is now.
+    fn chase(&mut self, id: EntityId, e: &Entity) -> Result<Option<Heard>, String> {
+        let Some(chase) = e.components.get("chase") else { return Ok(None) };
+        let Some(player) = chase["player"].as_str() else { return Ok(None) };
+        // Gone from the world: it waits where it is.
+        let Some((_, target)) = self.players.iter().find(|(p, _)| p == player) else { return Ok(None) };
+        let here = position_at(e, self.now as f64);
+        let reach = chase["reach"].as_f64().unwrap_or(1.5) as f32;
+        let distance = ((here[0] - target[0]).powi(2) + (here[2] - target[2]).powi(2)).sqrt();
+        if distance <= reach {
+            for effect in stop_effects(id, e, self.now) {
+                if !matches!(effect, Effect::Cancel { .. }) {
+                    self.apply(effect)?;
+                }
+            }
+            return Ok(Some(Heard::Caught { entity: id, player: player.to_string() }));
+        }
+        // Still heading close enough to where they are: keep going.
+        let heading = e.components.get("walk").and_then(|w| point(&w["to"]));
+        if heading.is_some_and(|to| flat_distance(to, *target) < reach) {
+            return Ok(None);
+        }
+        let speed = chase["speed"].as_f64().unwrap_or(2.5) as f32;
+        // Too far, or no way there: it gives up this time and looks again.
+        let _ = self.go(id, e, *target, speed, 0);
+        Ok(None)
+    }
+
     /// Starts wandering, unless it's on its way somewhere.
     fn wander(&mut self, id: EntityId, e: &Entity) -> Result<(), String> {
         let Some(wander) = e.components.get("wander").cloned() else { return Ok(()) };
@@ -470,7 +516,7 @@ impl Engine<'_, '_> {
         let current = stops.iter().rev().find(|s| s.0 <= now).copied().unwrap_or(last);
         let next = stops.iter().find(|s| s.0 > now).map_or(first.0 + 1.0, |s| s.0);
         let wait = ((next - now) * day).ceil().max(1.0) as u64;
-        self.apply(Effect::Schedule { name: timer("plan", id), due: self.now + wait, every: None, data: Value::Null, near: Some(id) })?;
+        self.apply(Effect::Schedule { name: timer("plan", id), due: self.now + wait, every: None, data: Value::Null, near: Some(id), feature: None })?;
         let here = position_at(e, self.now as f64);
         if flat_distance(here, current.1) > 0.5 {
             let speed = e.components.get("wander").and_then(|w| w["speed"].as_f64()).unwrap_or(DEFAULT_SPEED as f64) as f32;
@@ -514,6 +560,9 @@ impl Engine<'_, '_> {
         let mut components = serde_json::Map::new();
         components.insert("look".into(), json!({ "model": spawner["model"] }));
         components.insert("spawned".into(), me);
+        if let Some(feature) = e.components.get("feature") {
+            components.insert("feature".into(), feature.clone());
+        }
         if let Some(label) = spawner["label"].as_str().filter(|l| !l.is_empty()) {
             components.insert("label".into(), label.into());
         }
@@ -528,7 +577,7 @@ impl Engine<'_, '_> {
         let components = components.into_iter().collect();
         let Some(new) = self.apply(Effect::Spawn { position: at, components })? else { return Ok(()) };
         if wanders {
-            self.apply(Effect::Schedule { name: timer("wander", new), due: self.now + 1, every: None, data: Value::Null, near: Some(new) })?;
+            self.apply(Effect::Schedule { name: timer("wander", new), due: self.now + 1, every: None, data: Value::Null, near: Some(new), feature: None })?;
         }
         Ok(())
     }

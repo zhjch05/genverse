@@ -244,7 +244,10 @@ pub fn undo(cx: &mut Context, id: u64) -> String {
         return format!("There's no change {id}.");
     };
     let what = change.action.describe();
+    let upgrade = matches!(&change.action, Action::InstallPackage { package, .. } if package.version > 1);
     match cx.ledger.undo(id) {
+        // The old version is back; what the new one did to the world stays.
+        Ok(()) if upgrade => format!("Undid change {id} ({what}). What it changed in the world stays: /load the save made before it to go fully back."),
         Ok(()) => format!("Undid change {id} ({what})."),
         Err(why) => why,
     }

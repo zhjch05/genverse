@@ -271,6 +271,19 @@ pub struct GameSpec {
     pub scripts: Vec<ScriptSpec>,
     #[serde(default)]
     pub models: Vec<ModelSpec>,
+    /// Names of defs, script files and models a change takes out ([`Self::onto`]).
+    #[serde(default)]
+    pub remove: Option<Vec<String>>,
+    /// Script files a change renames: their pieces and timers follow.
+    #[serde(default)]
+    pub rename: Option<Vec<Rename>>,
+}
+
+/// A script file's new name.
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+pub struct Rename {
+    pub from: String,
+    pub to: String,
 }
 
 /// A voxel model the package's entities can look like.
@@ -370,7 +383,8 @@ impl GameSpec {
             .collect();
         // Agents' packages may place builds and reshape land, within the installer's budget.
         let permissions = vec![Permission::Spawn, Permission::Build];
-        let manifest = Manifest { name: ns.clone(), version, title: self.title.clone(), permissions, depends: Vec::new() };
+        let renamed = self.rename.iter().flatten().map(|r| (r.from.clone(), r.to.clone())).collect();
+        let manifest = Manifest { name: ns.clone(), version, title: self.title.clone(), permissions, depends: Vec::new(), renamed };
         let scripts = self.scripts.iter().map(|s| (s.name.clone(), s.source.clone())).collect();
         let models = self.models.iter().map(|m| (m.name.clone(), m.build.clone())).collect();
         Package { manifest, defs, scripts, models }
@@ -439,7 +453,61 @@ impl GameSpec {
             .collect();
         let scripts = package.scripts.iter().map(|(name, source)| ScriptSpec { name: name.clone(), source: source.clone() }).collect();
         let models = package.models.iter().map(|(name, build)| ModelSpec { name: name.clone(), build: build.clone() }).collect();
-        Self { name: ns.into(), title: package.manifest.title.clone(), defs, scripts, models }
+        Self { name: ns.into(), title: package.manifest.title.clone(), defs, scripts, models, remove: None, rename: None }
+    }
+
+    /// This change on top of `base` (what the world runs under the same name, if
+    /// anything): what it sends replaces what's there by name, what it lists in `remove`
+    /// goes, and the rest stays. So each request adds to the world's game logic.
+    pub fn onto(&self, base: Option<&GameSpec>) -> GameSpec {
+        let Some(base) = base else {
+            // Nothing to keep a title from: the name will do.
+            let title = if self.title.trim().is_empty() { self.name.clone() } else { self.title.clone() };
+            return GameSpec { remove: None, rename: None, title, ..self.clone() };
+        };
+        let gone = |name: &str| self.remove.iter().flatten().any(|r| r == name);
+        let mut out = base.clone();
+        out.remove = None;
+        // A renamed file keeps its source unless the change sends it anew.
+        out.rename = self.rename.clone();
+        for r in self.rename.iter().flatten() {
+            if let Some(old) = out.scripts.iter_mut().find(|s| s.name == r.from) {
+                old.name = r.to.clone();
+            }
+        }
+        if !self.title.trim().is_empty() {
+            out.title = self.title.clone();
+        }
+        out.defs.retain(|d| !gone(&d.name) && !self.defs.iter().any(|n| n.name == d.name));
+        out.defs.extend(self.defs.iter().cloned());
+        out.scripts.retain(|s| !gone(&s.name) && !self.scripts.iter().any(|n| n.name == s.name));
+        out.scripts.extend(self.scripts.iter().cloned());
+        out.scripts.sort_by(|a, b| a.name.cmp(&b.name));
+        out.models.retain(|m| !gone(&m.name) && !self.models.iter().any(|n| n.name == m.name));
+        out.models.extend(self.models.iter().cloned());
+        out
+    }
+
+    /// What this change does to `base`, in a few words: "added wolves.luau, changed
+    /// merchant.luau, removed torch".
+    pub fn change_summary(&self, base: Option<&GameSpec>) -> String {
+        let mut added = Vec::new();
+        let mut changed = Vec::new();
+        let had = |name: &str| {
+            base.is_some_and(|b| b.defs.iter().any(|d| d.name == name) || b.scripts.iter().any(|s| s.name == name) || b.models.iter().any(|m| m.name == name))
+        };
+        let names = self.scripts.iter().map(|s| &s.name).chain(self.defs.iter().map(|d| &d.name)).chain(self.models.iter().map(|m| &m.name));
+        for name in names {
+            if had(name) { changed.push(name.clone()) } else { added.push(name.clone()) }
+        }
+        let removed: Vec<String> = self.remove.iter().flatten().filter(|n| had(n)).cloned().collect();
+        let mut parts: Vec<String> = self.rename.iter().flatten().map(|r| format!("renamed {} to {}", r.from, r.to)).collect();
+        for (what, list) in [("added", added), ("changed", changed), ("removed", removed)] {
+            if !list.is_empty() {
+                parts.push(format!("{what} {}", list.join(", ")));
+            }
+        }
+        if parts.is_empty() { "no changes".into() } else { parts.join("; ") }
     }
 }
 
@@ -587,7 +655,7 @@ impl DataRules {
                 }
                 Ok(Vec::new())
             }
-            Intent::UseItem { .. } | Intent::Key { .. } => Ok(Vec::new()),
+            Intent::UseItem { .. } | Intent::Key { .. } | Intent::Hit { .. } => Ok(Vec::new()),
         }
     }
 }
@@ -604,6 +672,7 @@ pub(crate) mod tests {
         GameSpec {
             scripts: Vec::new(),
             models: Vec::new(),
+            remove: None, rename: None,
             name: "farm".into(),
             title: "Turnip farm".into(),
             defs: vec![

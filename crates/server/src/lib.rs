@@ -104,6 +104,8 @@ struct Place {
     clock: Clockwork,
     /// Changes timers made since they were last sent.
     fresh: Vec<Change>,
+    /// Who was in it, and where, when timers last ran.
+    players: Vec<(String, [f32; 3])>,
 }
 
 /// Pieces walk on the world as the server has it.
@@ -311,7 +313,7 @@ impl Server {
             }
             println!("world {name}: {} changes, {} builds", log.changes.len(), state.builds.len());
             let clock = Clockwork::new(state.logic.timers_until);
-            self.places.insert(name.to_string(), Place { file, log, state, snapshot, snapshot_path, clock, fresh: Vec::new() });
+            self.places.insert(name.to_string(), Place { file, log, state, snapshot, snapshot_path, clock, fresh: Vec::new(), players: Vec::new() });
             // Nobody is in it yet, so the changes need sending to no one.
             let _ = self.sync_packages(name);
         }
@@ -359,12 +361,13 @@ impl Server {
     fn run_timers(&mut self, now: u64) {
         let names: Vec<String> = self.places.keys().cloned().collect();
         for name in names {
-            // Where its players are: timers anchored to game pieces run only near someone.
-            let players: Vec<[f32; 3]> = self
+            // Who's in it and where: games see them come, go and walk into regions, and
+            // timers anchored to game pieces run only near someone.
+            let players: Vec<(String, [f32; 3])> = self
                 .conns
                 .values()
-                .filter(|c| c.player.is_some() && c.world.as_deref() == Some(name.as_str()))
-                .filter_map(|c| c.presence.as_ref().map(|p| p.position))
+                .filter(|c| c.world.as_deref() == Some(name.as_str()))
+                .filter_map(|c| Some((c.player.as_ref()?.0.clone(), c.presence.as_ref()?.position)))
                 .collect();
             let Some(place) = self.places.get_mut(&name) else { continue };
             for change in place.run_timers(now, &players) {
@@ -671,7 +674,8 @@ impl Place {
 
     /// Fires the timers due by `now` and commits what each package's did; returns the
     /// changes, to send.
-    fn run_timers(&mut self, now: u64, players: &[[f32; 3]]) -> Vec<Change> {
+    fn run_timers(&mut self, now: u64, players: &[(String, [f32; 3])]) -> Vec<Change> {
+        self.players = players.to_vec();
         let mut clock = std::mem::take(&mut self.clock);
         let (seed, rules) = (self.log.seed, self.state.rules.logic);
         let run = clock.run(self, now, seed, &rules, players);
@@ -696,8 +700,9 @@ impl Place {
             return Err("only the world runs timers".into());
         }
         // Whatever was due goes off first, so the change lands on the world as it is now.
-        // Nobody's position is known here, so only timers not anchored to a piece run.
-        let mut changes = self.run_timers(now(), &[]);
+        // With players where they were when timers last ran.
+        let players = std::mem::take(&mut self.players);
+        let mut changes = self.run_timers(now(), &players);
         if by.player != player {
             return Err("you can only make changes as yourself".into());
         }

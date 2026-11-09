@@ -27,6 +27,7 @@ fn model(name: &str, size: [i64; 3]) -> ModelSpec {
 
 fn game(name: &str, defs: Vec<DefSpec>, script: Option<&str>, models: Vec<ModelSpec>) -> GameSpec {
     GameSpec {
+        remove: None, rename: None,
         name: name.into(),
         title: name.into(),
         defs,

@@ -45,6 +45,10 @@ pub struct Manifest {
     /// Packages that must be installed first.
     #[serde(default)]
     pub depends: Vec<String>,
+    /// Script files this version renamed, old name to new: their pieces and timers
+    /// follow ([`super::Upgrade`]).
+    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    pub renamed: BTreeMap<String, String>,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
@@ -188,7 +192,7 @@ pub(crate) mod tests {
                 version,
                 title: "Farming".into(),
                 permissions: vec![Permission::Spawn],
-                depends: Vec::new(),
+                depends: Vec::new(), renamed: Default::default(),
             },
             models: BTreeMap::new(),
             defs: BTreeMap::from([

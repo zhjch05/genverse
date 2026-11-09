@@ -23,7 +23,7 @@ use bevy_math::{IVec2, Vec2};
 use serde::{Deserialize, Serialize};
 
 pub use clock::{ClockRules, WorldTime};
-pub use clockwork::{Clockwork, Fired, Run, TimerHost};
+pub use clockwork::{Clockwork, Fired, Run, Seen, TimerHost};
 pub use walk::{Ground, NoGround};
 pub use data::{Def, DataRules};
 pub use entity::{Batch, Choice, Effect, Entity, EntityId, GameState, Grants, Panel, PanelSpec, Stat, Timer, Widget};
@@ -131,6 +131,8 @@ pub enum Intent {
         #[serde(default)]
         choice: Option<String>,
     },
+    /// The player attacks a piece in reach (F): its package's `on_hit`.
+    Hit { entity: EntityId },
 }
 
 /// What [`Intent::Key`] may carry: directions are the world's (north is -z).
@@ -141,7 +143,7 @@ impl Intent {
     pub fn position(&self, state: &GameState) -> Result<[f32; 3], String> {
         match self {
             Intent::Key { key, .. } if !KEYS.contains(&key.as_str()) => Err(format!("\"{key}\" isn't a key games get")),
-            Intent::Interact { entity } | Intent::UseItem { target: entity, .. } | Intent::Key { entity, .. } => state
+            Intent::Interact { entity } | Intent::UseItem { target: entity, .. } | Intent::Key { entity, .. } | Intent::Hit { entity } => state
                 .get(*entity)
                 .map(|e| e.position)
                 .ok_or(format!("entity {}.{} doesn't exist", entity.change, entity.n)),
@@ -156,7 +158,7 @@ impl Intent {
     pub fn package(&self, state: &GameState) -> Option<String> {
         match self {
             Intent::Place { item, .. } => package::split_name(item).map(|(ns, _)| ns.to_string()),
-            Intent::Interact { entity } | Intent::UseItem { target: entity, .. } | Intent::Key { entity, .. } => {
+            Intent::Interact { entity } | Intent::UseItem { target: entity, .. } | Intent::Key { entity, .. } | Intent::Hit { entity } => {
                 state.get(*entity).map(|e| e.package.clone())
             }
             // Its package is the open panel's: see [`Logic::prepare`].
@@ -175,6 +177,46 @@ pub enum Trigger<'a> {
     Timer { name: &'a str, data: &'a serde_json::Value, missed: u64 },
     /// One of its pieces got where it was walking (`stuck`: it found no way there).
     Arrive { entity: EntityId, stuck: bool },
+    /// It was just installed in the world (or a new version of it was: `upgrade`): it
+    /// sets the world up. `only`: the script files to start (a new version starts its
+    /// new and changed files); all of them if `None`.
+    Start { upgrade: bool, only: Option<&'a [String]>, from: Option<u32> },
+    /// [`Event::player`] came into the world, or left it.
+    Join,
+    Leave,
+    /// [`Event::player`] walked into the `region` of one of its pieces, or out of it.
+    Enter { entity: EntityId },
+    Exit { entity: EntityId },
+    /// One of its pieces chasing [`Event::player`] caught up with them.
+    Catch { entity: EntityId },
+}
+
+/// What a new version of a package changed in its scripts: the files new or changed (to
+/// start), those taken out (their pieces and timers go), and those renamed (their pieces
+/// and timers follow), from version `from`.
+#[derive(Clone, Debug, Default)]
+pub struct Upgrade {
+    pub from: u32,
+    pub changed: Vec<String>,
+    pub removed: Vec<String>,
+    /// Old file name, new file name.
+    pub renamed: Vec<(String, String)>,
+}
+
+impl Upgrade {
+    /// From `old` to `new`.
+    pub fn between(old: &Package, new: &Package) -> Self {
+        let renamed: Vec<(String, String)> = new
+            .manifest
+            .renamed
+            .iter()
+            .filter(|(o, n)| old.scripts.contains_key(*o) && new.scripts.contains_key(*n))
+            .map(|(o, n)| (o.clone(), n.clone()))
+            .collect();
+        let changed = new.scripts.iter().filter(|(f, s)| old.scripts.get(*f) != Some(s)).map(|(f, _)| f.clone()).collect();
+        let removed = old.scripts.keys().filter(|f| !new.scripts.contains_key(*f) && !renamed.iter().any(|(o, _)| o == *f)).cloned().collect();
+        Self { from: old.manifest.version, changed, removed, renamed }
+    }
 }
 
 /// What a package's rules are asked about.
@@ -483,6 +525,55 @@ impl Logic {
         Ok(self.commit(prepared).notes)
     }
 
+    /// What `name`'s `on_start` does as it's installed by `player` (or upgraded),
+    /// checked, without doing it: it sets the world up (pieces, spawners, builds, where
+    /// players appear).
+    #[allow(clippy::too_many_arguments)]
+    pub fn prepare_start(
+        &self,
+        change: u64,
+        player: &str,
+        at: u64,
+        world_seed: u32,
+        rules: &LogicRules,
+        name: &str,
+        upgrade: Option<&Upgrade>,
+    ) -> Result<Prepared, String> {
+        let install = self.installed.get(name).ok_or(format!("{name} isn't installed"))?;
+        let package = self.package(install).ok_or(format!("package {name} is missing"))?;
+        let grants = grants(package, install, rules);
+        let mut batch = self.state.batch(change, player, rules.max_effects);
+        // Features taken out take their pieces and timers with them; renamed ones keep them.
+        if let Some(upgrade) = upgrade {
+            let feature_of = |e: &Entity| e.components.get("feature").and_then(|f| f.as_str()).map(str::to_string);
+            let pieces: Vec<(EntityId, String)> =
+                self.state.entities().filter(|(_, e)| e.package == name).filter_map(|(id, e)| feature_of(e).map(|f| (id, f))).collect();
+            for (id, feature) in pieces {
+                if upgrade.removed.contains(&feature) {
+                    batch.apply(&grants, &Effect::Despawn { entity: id })?;
+                } else if let Some((_, new)) = upgrade.renamed.iter().find(|(old, _)| *old == feature) {
+                    batch.apply(&grants, &Effect::Set { entity: id, component: "feature".into(), value: new.clone().into() })?;
+                }
+            }
+            let timers: Vec<(String, Timer)> = self.state.timers_of(name).map(|(n, t)| (n.to_string(), t.clone())).collect();
+            for (timer, t) in timers {
+                let Some(feature) = &t.feature else { continue };
+                if upgrade.removed.contains(feature) {
+                    batch.apply(&grants, &Effect::Cancel { name: timer })?;
+                } else if let Some((_, new)) = upgrade.renamed.iter().find(|(old, _)| old == feature) {
+                    let again = Effect::Schedule { name: timer, due: t.due, every: t.every, data: t.data, near: t.near, feature: Some(new.clone()) };
+                    batch.apply(&grants, &again)?;
+                }
+            }
+        }
+        let runtime = self.runtime.clone().unwrap_or_else(|| Arc::new(Rules));
+        let seed = fnv1a(format!("{world_seed}/{change}/{name}/start").as_bytes());
+        let trigger = Trigger::Start { upgrade: upgrade.is_some(), only: upgrade.map(|u| u.changed.as_slice()), from: upgrade.map(|u| u.from) };
+        let event = Event { change, player, trigger, time: rules.clock.at(at), at, seed };
+        runtime.handle(package, &event, &mut batch, &grants)?;
+        Ok(self.prepared(batch, package, install, None))
+    }
+
     /// What `package`'s timers did, checked, without doing it.
     pub fn prepare_timers(&self, change: u64, package: &str, until: u64, effects: &[Effect], rules: &LogicRules) -> Result<Prepared, String> {
         let install = self.installed.get(package).ok_or(format!("{package} isn't installed"))?;
@@ -493,6 +584,12 @@ impl Logic {
             batch.apply(&grants, effect)?;
         }
         Ok(self.prepared(batch, found, install, Some(until)))
+    }
+
+    /// Whether players may build: not while an installed game says the world is its
+    /// own (a piece with `world = {building = false}`).
+    pub fn building_allowed(&self) -> bool {
+        !self.state.entities().any(|(_, e)| self.installed.contains_key(&e.package) && e.components.get("world").is_some_and(|w| w["building"] == false))
     }
 
     pub fn package(&self, install: &Install) -> Option<&Package> {

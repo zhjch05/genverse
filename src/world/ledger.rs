@@ -676,7 +676,7 @@ impl Ledger {
     /// did, as a server would. Timers anchored to game pieces run only while one of
     /// `players` (the hero) is near; pieces walk over `ground`. Returns the timers that
     /// failed (and stopped).
-    pub fn run_timers(&mut self, players: &[[f32; 3]], ground: &dyn Ground) -> Vec<String> {
+    pub fn run_timers(&mut self, players: &[(String, [f32; 3])], ground: &dyn Ground) -> Vec<String> {
         if self.is_online() || !self.is_admin() {
             return Vec::new();
         }
@@ -911,6 +911,9 @@ impl Ledger {
     /// Whether the local player may change `parcels`; returns the free ones the change
     /// would claim, or why not.
     pub fn check(&self, parcels: &[IVec2]) -> Result<Vec<IVec2>, String> {
+        if !self.is_admin() && !self.logic.building_allowed() {
+            return Err("This world is a game right now: only admins build here.".into());
+        }
         self.land.authorize(&self.profile.id, parcels)
     }
 

@@ -13,8 +13,76 @@ shops, with `Intent::Choose`), shops as data, and games changing the world's vox
 (`build`, `unbuild`, `terrain`) through the world's own rules, charged to the installer's
 land and budget, all or nothing (see [`entity`](../crates/rules/src/logic/entity.rs) and
 [testing-games.md](testing-games.md)). Also built: pieces that move on their own (walking
-with paths over the ground, daily routines, wandering, spawners; see [Movement](#movement)).
-Not built yet: migrations, preview, and the game master agent.
+with paths over the ground, daily routines, wandering, spawners; see [Movement](#movement)),
+and the world as the game ([The world is the game](#the-world-is-the-game)): games set the
+world up, see players come and go and walk into places, chase and teleport them, and can
+keep players from building. Not built yet: migrations, preview, and the game master agent.
+
+## One world, many requests
+
+A world's game logic isn't written once. Players keep asking for things, and each answer
+changes it a little:
+
+- **A change, not a package.** The agent answers with what's new or different in the
+  world's package: definitions, script files and models replace those of the same name, the
+  rest stays, and `remove` takes names out ([`GameSpec::onto`](../crates/rules/src/logic/data.rs)).
+  The result installs as the package's next version. `test_game` plays the change on top of
+  what the world runs.
+- **Script files are features.** Every file's handler for an event runs (in file order), so
+  `wolves.luau` and `merchant.luau` both answer `on_join` and `on_interact`, each for its
+  own pieces. A piece a file spawns carries `feature = "<file>"`.
+- **New versions start only what changed.** `on_start` runs for new and changed files
+  (`ev.upgrade` for a new version); unchanged files aren't set up twice. A file taken out
+  takes its pieces with it.
+- **The agent sees the world as it runs:** every script in full, definitions, and models by
+  name and size, plus recent script errors, and where the player stands with the ground
+  heights around them (world meters), so "next to me" and "20 m east" are positions its
+  scripts can hold: nothing needs putting down from the game bar first.
+
+### Migrations
+
+A new version may change how a feature keeps things (new fields on its pieces, a stat
+renamed). What makes that safe:
+
+- **All or nothing.** If any `on_start` of the new version fails, the install is refused and
+  the world keeps the old version.
+- **The migration runs where the change lands:** the changed file's `on_start`, with
+  `ev.upgrade` and `ev.from` (the version it replaces). It fixes its pieces (`find`) and every
+  player's stats and items (`players()`, everyone the world keeps something for, there or not).
+- **Tested on the real state.** `test_game` plays the change on a copy of the world as it is:
+  its pieces, timers, players' stats and items, its ground, the tester where the player
+  stands. The report says what the upgrade starts and takes out, and shows other players'
+  stats and items after it.
+- **Features own their things.** Pieces and script timers carry the file that made them:
+  taking a file out takes both; `rename` ({from, to}) moves them to the new name instead.
+- **A way back.** The world is saved ("before <package> v<N>") just before each new version;
+  undoing the install puts the old code back, and loading that save puts the data back too.
+
+## The world is the game
+
+A game isn't only something players put down. Installed, it can be the whole world:
+
+- **It sets the world up.** `on_start` runs when the package is installed (and again, with
+  `ev.upgrade`, for each new version): the map's pieces, spawners, NPCs, regions, builds and
+  land changes, the spawn point. It's part of the install change, so it replays with it,
+  and if it fails the install is refused.
+- **It sees players.** Whoever keeps the world (the server; offline, the game) tells the
+  [clockwork](../crates/rules/src/logic/clockwork.rs) who's in the world and where, each
+  time it runs. The clockwork tells each package what changed: `on_join` and `on_leave`,
+  and `on_enter` and `on_exit` for a piece's `region` (a radius or a rectangle, on a piece
+  that may be unseen). Positions never go in the log, only what games did about them,
+  recorded like timers. What it has seen lives in memory, so after a restart everyone is
+  greeted again.
+- **It acts on players.** `chase(id, player)` runs a piece after a player (re-aimed every
+  2 s, `on_catch` within reach); `teleport(player, pos)` moves a hero (each teleport is
+  shown once); `spawn_point(pos)` is where players appear; F attacks the piece in reach
+  (`Intent::Hit`, `on_hit`). Health, score and the like are stats.
+- **It owns the world's rules.** `building(false)` puts an unseen piece with
+  `world = {building = false}` in the world: while its package is installed, only admins
+  build, reshape land or claim parcels.
+
+Agents test it as a player: `test_game` installs the package (running `on_start`), brings
+the tester in at the spawn point (`on_join`), and steps include `go <x> <z>` and `hit`.
 
 ## Movement
 

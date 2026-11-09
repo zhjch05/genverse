@@ -23,7 +23,9 @@ use super::{
     spec::{AgentAnswer, SCHEMA},
 };
 
-const TIMEOUT: Duration = Duration::from_secs(300);
+/// How long one request may take. A world game is designed, built and played through
+/// with `test_game` before it's answered, which takes a while; Stop ends it sooner.
+const TIMEOUT: Duration = Duration::from_secs(900);
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Provider {

@@ -20,12 +20,66 @@ What covers what:
 | `players.rs` `games_build_with_the_installers_budget` | a script places a solid build and digs land; both are charged to whoever installed the game; removing its build; over budget, nothing changes at all (two walls, budget one); snapshots keep games' builds |
 | `players.rs` `trials_show_panels_stats_and_builds` | the agent's `test_game` report shows stats, HUD, the open panel, and builds |
 | `crates/rules/tests/timers.rs` | timers, including through the same path builds take |
-| `crates/rules/tests/walking.rs` | walks (one change, `on_arrive`), routines and spawners from data alone, sleeping while nobody is near |
+| `crates/rules/tests/features.rs` | a world's logic growing request by request: a change adds files by name, every file's handlers run, an unchanged file isn't set up again, removing a file takes its pieces and timers; migrations (`ev.from`, `players()`), renames keeping pieces and timers; `test_game` on a copy of the world |
+| `crates/rules/tests/walking.rs` | walks (one change, `on_arrive`), routines and spawners from data alone, sleeping while nobody is near; `the_world_is_the_game`: `on_start`, `on_join`, regions, chases, bites, teleport to camp, `on_hit`, building locked for players |
 | `crates/server/tests/two_players.rs` | everything above through a real server: items and stats travel between worlds, game saves |
 
 ## 2. By hand, alone (15 minutes)
 
-Start an empty world in your game (it's made flat the first time):
+### Start here: one world, many requests
+
+The world has one set of game logic that every request changes a little. Don't ask for "a
+game": ask for things, one at a time, the way you'd play with a level editor, and keep going.
+Start an empty world (made flat the first time):
+
+```sh
+CUBEWISH_WORLD=valley cargo run
+```
+
+Press `T` and send these one by one, waiting for each answer (a few minutes: the agent plays
+each change before answering). After each, the chat says what changed ("\"valley\" v3 is live:
+added merchant.luau, rock; …"), and `/packages` shows the version.
+
+1. > Let a few wolves roam the field about 20 m east of here; they chase anyone who comes close.
+
+   Walk east: wolves wander, and one runs at you when you get close.
+2. > Give players 10 health shown on screen. Wolf bites hurt, and at zero you wake up back here with full health.
+
+   The wolves are still there (not set up twice); an HP bar appears; a bite takes HP; at 0
+   you're back here.
+3. > Add a merchant next to me who sells a torch for 2 coins, and scatter a few shiny rocks around that give a coin when you press E on them.
+
+   E on rocks gives coins (shown on screen); E on the merchant opens his shop; a torch costs 2.
+   Wolves and health still work.
+4. > Wolves keep their distance from anyone carrying a torch.
+
+   With a torch, wolves stop chasing you; without one, they come.
+
+Then keep going, in your own words. Things to try, in any order:
+
+- Tweaks: "wolves are too fast", "bites hurt less at night", "the merchant should say hello".
+- Additions: "a campfire that heals you when you stand near it", "a fishing spot by the
+  pond", "a scoreboard of wolves driven off with F".
+- Rules: "players can't build while this is on", "new players start with a torch".
+- Removals: "take the wolves out": they leave, and the rest keeps working.
+- Fixes: when something errors, the chat shows it; "fix it" is enough.
+
+What to check every time:
+
+- **No game bar detour.** Things appear where you asked ("next to me", "20 m east"); the game
+  bar only shows things you asked to put down yourself.
+- **It adds, it doesn't replace.** What earlier requests made is still there and works.
+- **Migrations.** Ask for a change to something that exists ("wolves take 2 hits now"): the
+  wolves already out get it too. The chat says it saved "before … vN" first; `/load` that
+  save puts the world back, data and all.
+- **Pieces aren't set up twice** when a feature changes (the agent checks what's there).
+- **Taking a feature out** takes its pieces with it.
+- **History.** `H` lists each version as a change; quitting and starting again keeps it all.
+
+A scripted run of the same, each prompt sent when the one before is answered:
+`CUBEWISH_WORLD=valley CUBEWISH_PROMPT="first request || second request || third" cargo run`.
+
+### An inn: stats, HUD, dialogue, builds
 
 ```sh
 CUBEWISH_WORLD=inn cargo run

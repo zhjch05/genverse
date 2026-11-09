@@ -15,6 +15,7 @@ fn lamp(source: &str) -> GameSpec {
     let model = r##"{"name":"Lamp","size":[4,8,4],"palette":[{"name":"glow","hex":"#ffd27a","material":"glow"}],
         "shapes":[{"kind":"box","color":"glow","from":[0,0,0],"to":[4,8,4],"radius":null,"wobble":null}]}"##;
     GameSpec {
+        remove: None, rename: None,
         name: "lamp".into(),
         title: "Lamp".into(),
         defs: vec![DefSpec { name: "lamp".into(), kind: "fixture".into(), title: "Lamp".into(), ..Default::default() }],
@@ -121,7 +122,8 @@ fn run(clock: &mut Clockwork, log: &mut WorldLog, now: u64, players: &[[f32; 3]]
     let seed = log.seed;
     let state = replay(log);
     let mut host = Host { log, state };
-    let run = clock.run(&mut host, now, seed, &LogicRules::default(), players);
+    let players: Vec<(String, [f32; 3])> = players.iter().enumerate().map(|(i, p)| (format!("p{i}"), *p)).collect();
+    let run = clock.run(&mut host, now, seed, &LogicRules::default(), &players);
     assert!(run.errors.is_empty(), "{:?}", run.errors);
     run.notes.into_iter().map(|(_, t)| t).collect()
 }
@@ -227,7 +229,7 @@ fn a_failing_timer_stops_and_the_others_run() {
     log.push(by("admin", 100), Action::InstallPackage { package: reference, scope: Scope::World });
     log.push(by("ada", 100), Action::Intent { intent: Intent::Place { item: "lamp:lamp".into(), position: [0.0; 3] } });
     let state = replay(&log);
-    let fired = Clockwork::new(100).fire(&state.logic, &cubewish_rules::logic::NoGround, "lamp", 3, 101, 7, &LogicRules::default(), &[]);
+    let fired = Clockwork::new(100).fire(&state.logic, &cubewish_rules::logic::NoGround, "lamp", 3, 101, 7, &LogicRules::default(), &[], &[]);
     assert_eq!(fired.notes, vec![("ada".to_string(), "fine".to_string())]);
     assert_eq!(fired.errors.len(), 2, "{:?}", fired.errors);
     assert!(fired.errors[0].contains("\"broken\" stopped") && fired.errors[0].contains("oops"));
@@ -244,6 +246,6 @@ fn trials_wait_for_timers() {
     let steps: Vec<String> = ["place lamp", "wait 10"].iter().map(|s| s.to_string()).collect();
     let report = trial::play(&package, &steps);
     println!("{report}");
-    assert!(report.contains("2. wait 10: timers went off"), "{report}");
+    assert!(report.contains("2. wait 10: games acted"), "{report}");
     assert!(report.contains("\"Ring!\""), "{report}");
 }
