@@ -15,6 +15,8 @@ pub mod entity;
 pub mod package;
 pub mod script;
 pub mod solid;
+#[cfg(not(target_arch = "wasm32"))]
+pub mod frame;
 pub mod trial;
 pub mod ui;
 pub mod walk;
@@ -28,7 +30,7 @@ pub use clock::{ClockRules, WorldTime};
 pub use clockwork::{Clockwork, Fired, Run, Seen, TimerHost};
 pub use walk::{Ground, NoGround};
 pub use data::Def;
-pub use entity::{Batch, Effect, Entity, EntityId, GameState, Grants, Panel, Stat, Timer};
+pub use entity::{Batch, Body, Effect, Entity, EntityId, GameState, Grants, Launch, Panel, Stat, Timer};
 pub use ui::{PanelSpec, Ui};
 pub use package::{Manifest, Package, PackageRef, Permission};
 
@@ -137,7 +139,16 @@ pub enum Intent {
     },
     /// The player attacks a piece in reach (F): its package's `on_hit`.
     Hit { entity: EntityId },
+    /// Something a package's player script sent its own game logic (`send(name, data)`):
+    /// its `on_message`. `at` is where the player says they are.
+    Message { package: String, name: String, data: serde_json::Value, at: [f32; 3] },
+    /// A chat line a player typed that the game itself doesn't know ("/home"): the world
+    /// package's `on_chat`.
+    Chat { text: String, at: [f32; 3] },
 }
+
+/// The most a message may carry, as JSON.
+pub const MAX_MESSAGE_BYTES: usize = 2048;
 
 /// What [`Intent::Key`] may carry: directions are the world's (north is -z).
 pub const KEYS: [&str; 8] = ["north", "south", "east", "west", "action", "reset", "enter", "leave"];
@@ -155,6 +166,12 @@ impl Intent {
             Intent::Place { .. } => Err("that isn't a place".into()),
             // A panel is the player's own, wherever they are.
             Intent::Choose { .. } => Ok([0.0; 3]),
+            Intent::Message { name, data, .. } if name.is_empty() || name.len() > 64 || serde_json::to_vec(data).map_or(true, |b| b.len() > MAX_MESSAGE_BYTES) => {
+                Err(format!("send(name, data): a name up to 64 characters and data up to {MAX_MESSAGE_BYTES} bytes"))
+            }
+            Intent::Chat { text, .. } if text.trim().is_empty() || text.chars().count() > 300 => Err("a chat line is 1 to 300 characters".into()),
+            Intent::Message { at, .. } | Intent::Chat { at, .. } if at.iter().all(|v| v.is_finite()) => Ok(*at),
+            Intent::Message { .. } | Intent::Chat { .. } => Err("that isn't a place".into()),
         }
     }
 
@@ -167,6 +184,9 @@ impl Intent {
             }
             // Its package is the open panel's: see [`Logic::prepare`].
             Intent::Choose { .. } => None,
+            Intent::Message { package, .. } => Some(package.clone()),
+            // The world's own package if it has one, else the first installed.
+            Intent::Chat { .. } => None,
         }
     }
 }
@@ -193,6 +213,9 @@ pub enum Trigger<'a> {
     Exit { entity: EntityId },
     /// One of its pieces chasing [`Event::player`] caught up with them.
     Catch { entity: EntityId },
+    /// Code to run once with the package's API, for what it returns (an agent asking
+    /// about the world: [`Logic::query`]).
+    Query { code: &'a str },
 }
 
 /// What a new version of a package changed in its scripts: the files new or changed (to
@@ -323,6 +346,20 @@ pub struct Logic {
 }
 
 impl Logic {
+    /// Runs `code` with `package`'s API on the world as it is, as `player`, and returns
+    /// what it returns (as JSON) and what it would have changed. Nothing is kept: it's
+    /// for looking around, and for trying things out.
+    pub fn query(&self, package: &str, player: &str, code: &str, at: u64, rules: &LogicRules) -> Result<(serde_json::Value, u32), String> {
+        let install = self.installed.get(package).ok_or(format!("no package {package} is installed"))?;
+        let package = self.package(install).ok_or(format!("package {package} is missing"))?;
+        let grants = grants(package, install, rules);
+        let change = u64::MAX;
+        let mut batch = self.state.batch(change, player, rules.max_effects);
+        let event = Event { change, player, trigger: Trigger::Query { code }, time: rules.clock.at(at), at, seed: fnv1a(code.as_bytes()) };
+        script::run(package, &event, &mut batch, &grants)?;
+        Ok((batch.answer.take().unwrap_or(serde_json::Value::Null), batch.applied))
+    }
+
     /// Checks that `player` may install `package` over `scope` (land aside), and does it.
     pub fn install(
         &mut self,
@@ -391,7 +428,11 @@ impl Logic {
             return self.choose(change, player, at, world_seed, rules, intent, choice.as_deref());
         }
         let position = intent.position(&self.state)?;
-        let Some(install) = intent.package(&self.state).and_then(|name| self.installed.get(&name)) else {
+        let package = match intent {
+            Intent::Chat { .. } => self.installed.get("world").or_else(|| self.installed.values().next()).map(|i| i.package.name.clone()),
+            _ => intent.package(&self.state),
+        };
+        let Some(install) = package.and_then(|name| self.installed.get(&name)) else {
             return Ok(Prepared::nothing());
         };
         if !install.scope.contains(position) {

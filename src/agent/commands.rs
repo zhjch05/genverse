@@ -41,6 +41,8 @@ pub struct Context<'a> {
     pub landscape: &'a mut Landscape,
     /// Where to go next, for commands that change worlds.
     pub travel: &'a mut Travel,
+    /// Where the player stands, for game commands (`on_chat`).
+    pub at: [f32; 3],
 }
 
 /// A command, as the chat suggests it while you type.
@@ -234,6 +236,12 @@ pub fn run(text: &str, cx: &mut Context) -> String {
             cx.ledger.record(None, None, Action::SetRules { rules });
             format!("{} for everyone in this world.", bevel_line(bevel))
         }
+        // Not the game's own: the world's game logic may answer it (`on_chat`).
+        _ if !cx.ledger.logic.installed.is_empty() => match cx.ledger.act(cubewish_rules::logic::Intent::Chat { text: text.trim().to_string(), at: cx.at }) {
+            Ok(acted) if !acted.notes.is_empty() => acted.notes.join("\n"),
+            Ok(_) => format!("The game didn't answer \"{}\". {}", text.trim(), help()),
+            Err(why) => format!("⚠ {why}"),
+        },
         _ => help(),
     }
 }

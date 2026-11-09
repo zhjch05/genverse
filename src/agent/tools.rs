@@ -133,13 +133,73 @@ pub fn definitions(rules: &WorldRules) -> Value {
             "inputSchema": {
                 "type": "object",
                 "properties": {
-                    "game": { "type": "object", "description": "Same shape as the \"game\" in your answer." },
+                    "game": { "type": "object", "description": "Optional: a change in the shape of the \"game\" in your answer, \
+                        on top of the package files. Leave it out to test the files as you edited them." },
                     "steps": { "type": "array", "items": { "type": "string" }, "maxItems": 300 },
                 },
-                "required": ["game", "steps"],
+                "required": ["steps"],
+            },
+        },
+        {
+            "name": "search",
+            "description": "Finds what's in the world by meaning and place: builds, land changes, game packages and \
+                their files, labeled pieces and named places, best match first, with ids, positions (meters), what \
+                they're about and the request that made them. \"text\" is what you're looking for (\"wolves\", \
+                \"the merchant's hut\", \"bread\"); empty lists what's near. x and z (meters) rank nearer things \
+                higher; radius leaves out what's further.",
+            "inputSchema": {
+                "type": "object",
+                "properties": {
+                    "text": { "type": "string" },
+                    "x": { "type": "number" }, "z": { "type": "number" },
+                    "radius": { "type": "number", "minimum": 1 },
+                    "limit": { "type": "integer", "minimum": 1, "maximum": 100 },
+                },
+                "required": ["text"],
+            },
+        },
+        {
+            "name": "query",
+            "description": "Runs Lua against the live world with the game API (docs/game.md: get, find, near, \
+                players, stat, count, ...) and returns what the code returns, as JSON: `return #find(\"wolf\")`, \
+                `return near({x = 0, y = 9, z = 0}, 20)`. As the package \"package\" (default: world), so component \
+                and stat names without \":\" are its. Anything it would change is only reported, never kept: use it \
+                to look at what the game is doing, or to try a call out.",
+            "inputSchema": {
+                "type": "object",
+                "properties": { "code": { "type": "string" }, "package": { "type": "string" } },
+                "required": ["code"],
             },
         },
     ])
+}
+
+fn search(args: &Value, ledger: &Ledger, hero: Option<Vec3>) -> Result<String, String> {
+    let text = args["text"].as_str().unwrap_or_default();
+    let num = |key: &str| args[key].as_f64().filter(|v| v.is_finite()).map(|v| v as f32);
+    let near = match (num("x"), num("z")) {
+        (Some(x), Some(z)) => Some([x, z]),
+        _ => hero.map(|h| [h.x, h.z]),
+    };
+    let limit = args["limit"].as_u64().unwrap_or(20).clamp(1, 100) as usize;
+    let records = cubewish_rules::semantic::records(&ledger.log, &ledger.builds, &ledger.logic);
+    let found = cubewish_rules::semantic::search(&records, text, near, num("radius"), limit);
+    if found.is_empty() {
+        return Ok(format!("Nothing found for \"{text}\" (of {} things in the world).", records.len()));
+    }
+    Ok(serde_json::to_string_pretty(&found).unwrap_or_default())
+}
+
+fn query(args: &Value, ledger: &Ledger) -> Result<String, String> {
+    let code = args["code"].as_str().ok_or("query needs \"code\"")?;
+    let package = args["package"].as_str().unwrap_or("world");
+    let now = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map_or(0, |d| d.as_secs());
+    let (value, changes) = ledger.logic.query(package, &ledger.profile.id, code, now, &ledger.rules.logic)?;
+    let mut out = serde_json::to_string_pretty(&value).unwrap_or_default();
+    if changes > 0 {
+        out.push_str(&format!("\n(It would have made {changes} change(s); none were kept.)"));
+    }
+    Ok(out)
 }
 
 /// The world's ground and its builds, for a trial's walks.
@@ -163,8 +223,17 @@ impl cubewish_rules::logic::Ground for Land<'_> {
 /// players' things, its ground, the tester starting where the player stands. So a new
 /// version's migration runs on the real state before anyone else sees it.
 fn test_game(args: &Value, ledger: &Ledger, world: &VoxelWorld, hero: Option<Vec3>) -> Result<String, String> {
-    let change: GameSpec =
-        serde_json::from_value(args["game"].clone()).map_err(|e| format!("game doesn't match the schema: {e}"))?;
+    // The package files as they are on disk, with a "game" given here on top.
+    let given: Option<GameSpec> = match &args["game"] {
+        Value::Null => None,
+        game => Some(serde_json::from_value(game.clone()).map_err(|e| format!("game doesn't match the schema: {e}"))?),
+    };
+    let edited = match super::workspace::current() {
+        Some(dir) => super::workspace::changed_game(&dir, ledger)?,
+        None => None,
+    };
+    let change = super::workspace::merge(edited, given)
+        .ok_or("nothing to test: the package files are as the world runs them (edit them first), and no \"game\" was given")?;
     let steps: Vec<String> = serde_json::from_value(args["steps"].clone()).map_err(|e| format!("steps must be strings: {e}"))?;
     let logic = &ledger.logic;
     let base = logic.installed.get(&change.name).and_then(|i| logic.package(i)).map(GameSpec::from_package);
@@ -243,6 +312,8 @@ pub fn answer_tool_calls(
             "check_build" => ctx.check(&args),
             "sample_terrain" => sample_terrain(&world, &landscape, &args),
             "test_game" => test_game(&args, &ledger, &world, players.single().ok().map(|t| t.translation)),
+            "search" => search(&args, &ledger, players.single().ok().map(|t| t.translation)),
+            "query" => query(&args, &ledger),
             other => Err(format!("unknown tool {other}")),
         };
         info!("agent tool {name}: {}", if result.is_ok() { "ok" } else { "error" });

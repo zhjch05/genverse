@@ -93,6 +93,8 @@ and installs it for the whole world, live (`crates/rules/src/logic`, design in
   (pieces, monsters, regions, the spawn point) and can stop players building. Games see
   players come and go (`on_join`, `on_leave`) and walk into regions (`on_enter`), chase them
   (`on_catch`), teleport them, and answer F (`on_hit`), with health and score as stats.
+  They change how heroes move (`body`: speed, jump, gravity, double jumps), throw them
+  (`launch`), and carry them on a pawn that walks or flies (`fly`: boats, lifts).
 - **Pieces that move on their own:** `walk` and `chase`. The engine finds the way over the
   ground and records the whole walk as one change; games show the piece walking along it.
   Routines, wandering and spawners are a few lines of Lua on top. Like timers, they sleep

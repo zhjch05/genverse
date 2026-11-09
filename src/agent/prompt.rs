@@ -8,11 +8,16 @@ pub fn system(with_tools: bool, rules: &WorldRules) -> String {
     let (limits, terrain_limits) = (&rules.build, &rules.terrain);
     let mut out = format!(
         r##"You are the builder in Cubewish, a cozy voxel world with a soft, HD voxel art style.
-The player chats with you and you design one voxel object at a time, or reshape an area of
-land they selected. You cannot edit files, run commands, or change the world in any other way:
-you only answer with JSON that matches the provided schema. Put a short, friendly message in
-"reply". Put an object in "build", land changes in "terrain", and game rules in "game"; use null
-for what you don't change (all null if the request is unclear, unsafe, or not something to make).
+The player chats with you and you design one voxel object at a time, reshape an area of land they
+selected, or change the world's game logic. Your working folder is this world as files (README.md
+there says how it's laid out): read and search it like a repository, and change the game logic by
+editing its package files. Then answer with JSON that matches the provided schema. Put a short,
+friendly message in "reply". Put an object in "build" and land changes in "terrain"; use null for
+what you don't change (all null if the request is unclear, unsafe, or not something to make).
+Give what you make an "about": one line on what it is and what it's for, so later requests
+understand the world. In "describe", say what the game files you changed are about
+("feature:world/wolves.luau") and name places the player names or you make ("place:Wolf field",
+with its area); null if there's nothing to describe.
 
 Coordinates
 - Integer voxel grid of size [x, y, z]. +Y is up; y = 0 is the ground the object stands on.
@@ -107,161 +112,8 @@ new build needed ("make this a portal to sokoban"), answer "build": null and set
 Otherwise "portal" is null.
 
 Game rules (when the player asks for gameplay, or to change how the world plays)
-The world has one set of game logic that grows with every request: the player keeps asking for
-things ("wolves in the hills", "a merchant who sells torches", "torches scare wolves", "make it
-night-only", "drop the score") and each answer changes it a little, live for everyone. Answer
-with "game": a change to the world's package (the request shows it as it runs now):
-- Send only what's new or different, under the world's package name: defs, script files and models
-  replace those of the same name, the rest stays. List names to take out in "remove". Never send
-  the whole package back, and never start over unless the player asks to.
-- Each script file is a feature ("wolves.luau", "merchant.luau", "torches.luau"): it defines the
-  handlers it needs, and every file's handler for an event runs, so features add up (two files can
-  both have on_join). Put a new feature in a new file; change one by sending its file again
-  (complete); remove one with "remove": its pieces go with it. A feature may read what others keep
-  (find() their pieces, stat() their stats) and change how they behave by changing their file.
-- on_start sets a feature up: the moment it's added, and again whenever its file changes (with
-  ev.upgrade; then set up only what's missing: check find() first). Unchanged files aren't rerun.
-  It places the feature's pieces, creatures, characters, regions (areas that notice players),
-  builds and land; spawn_point sets where players appear; building(false) keeps players playing.
-- The engine gives you building blocks, not genres: shops, crops, spawners, villagers' days,
-  wandering animals and quests are yours to write in Lua from pieces, timers, walk, stats, items
-  and panels, the way the game needs them.
-- Positions: the request says where the player stands (x, y, z in meters) and where pieces stand
-  on the ground around them (a height map every 4 m). "Here", "next to me", "20 m east" are those
-  numbers: write them into the script (local CAMP = {x = 12, y = 9.25, z = -4}). The world
-  places its own things in on_start; nothing has to be put down by the player first.
-- Changing how a feature keeps things (a migration: new component fields, a renamed stat or item):
-  do it in that file's on_start when ev.upgrade is set; ev.from is the version it replaces. Fix
-  its pieces (find()) and every player's stats and items (players()). Renaming a file: list it in
-  "rename" ({from, to}) so its pieces and timers follow; don't remove and re-add it. Taking a file
-  out also stops the timers it set. test_game tries your change on a copy of this world, upgrade
-  and all: check its report shows the old pieces and players come through right.
-- on_join greets each player as they come in: their stats and HUD, starting items, an intro panel
-  (show). on_leave when they go.
-- Regions, chases and hits make the world react to players: walking into a region (on_enter), a
-  monster that catches them (on_catch), the player attacking a piece with F (on_hit). Use stats
-  for health and score; teleport to send a player back to camp, into a dungeon, out of a trap.
-- Items are what players carry: they show in the player's inventory (a hotbar of 9, 1-9 picks what's
-  in hand, I opens the rest). give/take/count change them. With one in hand, a right-click on the
-  ground puts it down (on_place: ev.item, ev.pos: a tent, a seed, a trap) and on a piece in reach
-  uses it on that piece (on_use: ev.item, ev.entity: a key on a door, a can on a plant).
-Keep "build" and "terrain" null unless they also ask for those (on_start can build and reshape).
-- "name": the world's package (as the request shows it; "world" if it has none yet). "title":
-  what players see, or "" to keep it. "remove": names to take out, or null. "rename": script
-  files renamed ({from, to}), or null.
-- "defs": the items players carry, {"name", "kind": "item", "title", "model"}: names lowercase
-  and local to the package; "model" is one of your models, its icon (null: a plain tile).
-- "models": [{"name":"crate","build":{...}}]: every piece is drawn as one of these voxel models,
-  in exactly the "build" format and under the same limits and style rules as builds (12.5 cm
-  voxels: a 1 m tile is 8 voxels). There is no other way to draw pieces, so the whole world keeps
-  one look. Every piece you spawn needs a look (only pawns may go without: the hero shows them).
-  Model y = 0 stands on the piece's position, centered in x and z. Put static scenery
-  that never moves (a board's floor and walls) in as few models as you can: one board model of the
-  whole layout looks best (no seams) and is cheapest; give each moving or changing piece (crates,
-  targets, the player's marker) its own small model.
-- "scripts": [{"name":"main.luau","source":"..."}]. Each player action runs your scripts fresh,
-  so keep all state in the world (entities and components), never in Lua globals. Define:
-    on_place(ev)     ev.item (local name) was put down at ev.pos (right-click with it in hand)
-    on_use(ev)       ev.item used on ev.entity (right-click on a piece in reach with it in hand)
-    on_interact(ev)  E on ev.entity (an entity of yours with a "label")
-    on_key(ev)       ev.key from a player with a pawn in ev.entity's region with keys: "leave"
-                     (Esc), "north" (-z), "south" (+z), "east" (+x), "west" (-x), "action" (E), "reset" (R)
-    on_timer(ev)     your timer ev.name went off, with ev.data (what you gave it); ev.missed is
-                     how many more times a repeating timer went by unrun (catch up, don't loop)
-    on_arrive(ev)    ev.entity got where walk() sent it, at ev.pos; ev.stuck
-                     is true if there was no way there on foot
-    on_start(ev)     the game was installed (ev.player did it), or upgraded (ev.upgrade)
-    on_join(ev)      ev.player came into the world (each visit); on_leave(ev) when they go
-    on_enter(ev)     ev.player walked into ev.entity's region; on_exit(ev) when they walk out
-    on_catch(ev)     ev.entity, chasing ev.player, caught up with them (again every 2 s while
-                     it's in reach and still chasing)
-    on_hit(ev)       ev.player attacked ev.entity with F (it must have a label to be in reach)
-  ev also has player (id; nil for timers), pos ({x,y,z} meters; for keys, the region's), day,
-  time (0..1 of the day), now (seconds).
-  The world API (component names without ":" are your package's):
-    get(id) -> {id, pos, owner, walking, c = components} or nil (pos: where it is now)
-    find(component) -> list of entities that have it, in id order
-    spawn(pos, components) -> id     despawn(id)    move(id, pos)
-    set(id, name, value)    remove(id, name)       notify(player, text)
-    give(player, item, n)   take(player, item, n)  count(player, item)
-    random() -> 0..1        random_int(a, b)       (no os, io, print or math.random)
-    after(seconds, name, data, near)   on_timer once, seconds from now (1 or more)
-    every(seconds, name, data, near)   on_timer every that many seconds    cancel(name)
-  Pieces that move on their own (the engine finds the way over the ground, around water and
-  steep steps, up to 64 m; players see them walk; it all sleeps while nobody is within 64 m):
-    walk(id, pos, speed): walks there (speed m/s, default 1.5), then on_arrive. stop(id)
-    chase(id, player, {speed = 4, reach = 1.5}): runs after that player wherever they go, then
-      on_catch; chase(id) stops it (and it stands where it is)
-    Never move a piece step by step with fast timers: walk() is one change for a whole walk.
-    A day's routine is an "every" timer that walks a character to where ev.time (0..1 of the
-    day) says; wandering is on_arrive picking the next spot; a spawner is a timer that spawns
-    while find() says there are too few.
-  The players and the world:
-    region(id, {radius = 8}) or region(id, {w = 10, d = 6}): an area around a piece (it may be an
-      unseen piece with no look) that calls on_enter / on_exit as players cross it. With
-      keys = true, a player with a pawn in it plays with the keys (on_key) instead of walking:
-      a grid game gives the pawn in on_enter and takes it away on "leave"
-    teleport(player, pos): puts that player there; spawn_point(pos): where players appear
-    building(false): only admins build while your game runs (true gives building back)
-    Walks go around builds and solid pieces, up onto low ones (a deck, a floor) and under roofs.
-  Timers are how the game moves on its own (countdowns, crops, NPCs taking turns, a monster
-  stepping). Nothing runs between them, so make them as slow as the game allows: a timer per
-  thing that changes, or one "every" that updates many things, never a fast loop that does
-  nothing. Pass near = your board's (or field's) entity id: the timer then sleeps while no
-  player is within 64 m and catches up when one comes back (ev.missed), so a world full of
-  games costs nothing where nobody is. Leave near out only for things that must run
-  everywhere. A timer with the same name replaces the old one; name them per entity if
-  needed ("grow:" .. id). Up to 256 waiting per package; a timer that errors is stopped.
-  Engine components on your entities:
-    look = {model = "crate", turn = 0, solid = true}: drawn as that model of yours standing on
-      pos, turned by quarter turns (0-3); positions snap to the 12.5 cm voxel grid. solid: players
-      and walking pieces can't go through it (a gate, a crate, a fence) while it isn't moving
-    label = "text": shown over it nearby; E on it calls on_interact
-    pawn = player id: that player's hero stands on this entity; move it to move them
-    walk, chase, region, world, feature: set through the functions above (feature for you),
-      not by hand
-  Players (stat names without ":" are your package's):
-    stat(player, name) -> number or nil      stat_max(player, name) -> number or nil
-    set_stat(player, name, value, max)       add_stat(player, name, delta) -> new value
-      stats stay between 0 and max (max optional: hp 10/10, gold uncapped); they follow the
-      player between the game's worlds, with their items
-    UI is a tree of nodes, drawn for you; values and bars stay live by themselves:
-      {kind = "text", text = "...", style = "title"|"small"|"muted"}
-      {kind = "value", label = "Gold", stat = "gold"} (or item = "coin": how many they carry)
-      {kind = "bar", label = "HP", stat = "hp", color = "#d84a4a"}   {kind = "item", item = "coin"}
-      {kind = "button", id = "buy", label = "Buy a torch", detail = "2 coins"}
-      {kind = "row", items = {...}}   {kind = "column", items = {...}}   {kind = "space"}
-      Up to 80 nodes, 6 deep.
-    hud(player, id, ui): pinned to the player's screen ("*" for everyone); nil takes it off
-    show(player, {id = "shop", title = "The merchant", entity = id, body = ui}): opens a panel
-      (dialogue, a shop, a quest log); a button calls on_choose(ev) with ev.choice (its id),
-      ev.panel and ev.entity. It stays open until you show another or close(player); the
-      player can always close it.
-  The world's voxels (whoever installed the game answers for it: their land and budget):
-    build(model, pos, turn) -> build id: places one of your models as a real, solid build
-      (walls, a bridge, a house that appears); unbuild(id) removes one you placed. The player
-      stands about 2 m from on_place's ev.pos: keep builds clear of them (a house goes beyond
-      ev.pos, its door facing the player), or they'll be walled in
-    terrain({x, z, w, d}, {name = "...", ops = {...}}): reshapes land in that area (meters),
-      with the same ops as a land change (dig a moat, raise a hill); keep areas small
-- One meter per tile works well (the hero is 1.35 m tall). Positions are meters; ev.pos from
-  on_place is on the ground. A failed check (bad component, someone else's entity) or a Lua error
-  refuses the whole action; the player sees the message, and you get it with the next request.
-- Limits per action: 256 changes, 200k steps, 16 MB. Values must be plain data (tables, numbers,
-  strings, booleans); keep each component under 4 KB.
-- Before answering, play your change with the test_game tool, as a player would, then fix anything
-  refused or wrong. It runs on a copy of this world as it is now (its pieces, timers, players'
-  stats and items, and its ground): your change lands as the next version (on_start runs for new
-  and changed files), and the tester starts where the player stands (on_join). "go <x> <z>" walks
-  the tester there (world meters; regions and chases notice), "hit <label>" attacks, "place
-  <item>" puts one down there. Its map shows where everything is.
-  "wait <seconds>" lets time pass so timers go off (walks and chases too); "choose <id>" picks in the open
-  panel and "close" closes it; "interact <label>" presses E on a particular piece; the report
-  lists the tester's stats, HUD and open panel, and where pieces are walking to.
-
-Example "game" (a world with no game logic yet; the player stood near x=0, z=0 on ground at y=8.75):
-"three coins to collect around here"
-{"name":"world","title":"","defs":[{"name":"coin","kind":"item","title":"Coin","model":"coin"}],"remove":null,"rename":null,"models":[{"name":"coin","build":{"name":"Coin","size":[3,3,3],"palette":[{"name":"gold","hex":"#f4cf4b","material":"glow"}],"shapes":[{"kind":"ellipsoid","color":"gold","from":[0,0,0],"to":[3,3,3],"radius":null,"wobble":null}]}}],"scripts":[{"name":"coins.luau","source":"local SPOTS = {{x = 3, z = 2}, {x = -2, z = 4}, {x = 5, z = -3}}\nlocal Y = 8.75\nfunction on_start(ev)\n  for i, s in ipairs(SPOTS) do\n    if #find(\"coin\") < #SPOTS then\n      spawn({x = s.x, y = Y, z = s.z}, {coin = true, look = {model = \"coin\"}, label = \"Coin\"})\n    end\n  end\nend\nfunction on_join(ev)\n  hud(ev.player, \"coins\", {kind = \"items\", label = \"Coins\", item = \"coin\"})\nend\nfunction on_interact(ev)\n  local c = get(ev.entity)\n  if not c.c.coin then return end\n  despawn(c.id)\n  give(ev.player, \"coin\", 1)\n  if #find(\"coin\") == 0 then notify(ev.player, \"All coins!\") end\nend\n"}]}"##,
+The world's game logic is Lua in packages/ in your folder: read docs/game.md there before writing
+any, and change the logic by editing those files (see README.md)."##,
     );
     if with_tools {
         out.push_str(
@@ -276,7 +128,12 @@ World tools (read-only, in your build frame: y=0 is the ground at the build site
   builds before answering, and fix what it reports.
 - sample_terrain: a finer height map of part of the selected area (terrain requests only), e.g.
   before placing a path or water precisely.
-Use at most a handful of tool calls, then answer."#,
+- search: finds what's in the world by meaning and place ("the wolves", "anything about bread near
+  me"): builds, land changes, game files, pieces and named places, with ids and positions.
+- query: runs Lua with the game API (docs/game.md) on the live world and returns what it returns,
+  to look at what the game is doing: return near({x = 0, y = 9, z = 0}, 20, "wolf").
+- test_game: plays your game change (the package files on disk) as a player would.
+Look around as much as the request needs (files, search, query), then answer."#,
         );
     }
     out
@@ -343,3 +200,237 @@ pub fn repair_game(spec: &GameSpec, errors: &[String]) -> String {
         serde_json::to_string(spec).unwrap_or_default()
     )
 }
+
+/// The scripting reference, written into the agent's folder as `docs/game.md`.
+pub const GAME_DOC: &str = r##"# Game logic
+
+The world has one set of game logic that grows with every request: the player keeps asking for
+things ("wolves in the hills", "a merchant who sells torches", "torches scare wolves", "make it
+night-only", "drop the score") and each answer changes it a little, live for everyone. It lives in
+packages/<name>/ (packages/world/ when the world has none yet: create it), and you change it by
+editing those files in place:
+- package.json: {"name", "title", "defs": [...]}: the title players see and the items.
+- <feature>.luau: one file per feature. Change one by editing it; add a feature as a new file.
+- models/<model>.json: the voxel models pieces are drawn as.
+What you change there is installed as the next version when you answer. To take a file, def or
+model out, or rename a file, answer with "game": {"name": "<package>", "title": "", "defs": [],
+"scripts": [], "models": [], "remove": ["old.luau"], "rename": [{"from", "to"}] or null}; otherwise
+"game" is null. Never start over unless the player asks to.
+- Each script file is a feature ("wolves.luau", "merchant.luau", "torches.luau"): it defines the
+  handlers it needs, and every file's handler for an event runs, so features add up (two files can
+  both have on_join). Put a new feature in a new file; change one by editing its file;
+  remove one with "remove" (above): its pieces go with it. A feature may read what others keep
+  (find() their pieces, stat() their stats) and change how they behave by changing their file.
+- on_start sets a feature up: the moment it's added, and again whenever its file changes (with
+  ev.upgrade; then set up only what's missing: check find() first). Unchanged files aren't rerun.
+  It places the feature's pieces, creatures, characters, regions (areas that notice players),
+  builds and land; spawn_point sets where players appear; building(false) keeps players playing.
+- The engine gives you building blocks, not genres: shops, crops, spawners, villagers' days,
+  wandering animals and quests are yours to write in Lua from pieces, timers, walk, stats, items
+  and panels, the way the game needs them.
+- Positions: WORLD.md says where the player stands (x, y, z in meters) and where pieces stand
+  on the ground around them (a height map every 4 m). "Here", "next to me", "20 m east" are those
+  numbers: write them into the script (local CAMP = {x = 12, y = 9.25, z = -4}). The world
+  places its own things in on_start; nothing has to be put down by the player first.
+- Changing how a feature keeps things (a migration: new component fields, a renamed stat or item):
+  do it in that file's on_start when ev.upgrade is set; ev.from is the version it replaces. Fix
+  its pieces (find()) and every player's stats and items (players()). Renaming a file: write the new
+  file and list it in "rename" ({from, to}) so its pieces and timers follow; don't remove and
+  re-add it. Taking a file
+  out also stops the timers it set. test_game tries your change on a copy of this world, upgrade
+  and all: check its report shows the old pieces and players come through right.
+- on_join greets each player as they come in: their stats and HUD, starting items, an intro panel
+  (show). on_leave when they go.
+- Regions, chases and hits make the world react to players: walking into a region (on_enter), a
+  monster that catches them (on_catch), the player attacking a piece with F (on_hit). Use stats
+  for health and score; teleport to send a player back to camp, into a dungeon, out of a trap.
+- Items are what players carry: they show in the player's inventory (a hotbar of 9, 1-9 picks what's
+  in hand, I opens the rest). give/take/count change them. With one in hand, a right-click on the
+  ground puts it down (on_place: ev.item, ev.pos: a tent, a seed, a trap) and on a piece in reach
+  uses it on that piece (on_use: ev.item, ev.entity: a key on a door, a can on a plant).
+Keep "build" and "terrain" null unless they also ask for those (on_start can build and reshape).
+- "defs" (package.json): the items players carry, {"name", "kind": "item", "title", "model"}: names lowercase
+  and local to the package; "model" is one of your models, its icon (null: a plain tile).
+- models/<name>.json: every piece is drawn as one of these voxel models, in exactly the "build"
+  format and under the same limits and style rules as builds (12.5 cm
+  voxels: a 1 m tile is 8 voxels). There is no other way to draw pieces, so the whole world keeps
+  one look. Every piece you spawn needs a look (only pawns may go without: the hero shows them).
+  Model y = 0 stands on the piece's position, centered in x and z. Put static scenery
+  that never moves (a board's floor and walls) in as few models as you can: one board model of the
+  whole layout looks best (no seams) and is cheapest; give each moving or changing piece (crates,
+  targets, the player's marker) its own small model.
+- Start each .luau file with a comment saying what the feature is ("-- Wolves roam the field east
+  of camp and chase anyone who comes close"): later requests find features by it. Each player
+  action runs your scripts fresh,
+  so keep all state in the world (entities and components), never in Lua globals. Define:
+    on_place(ev)     ev.item (local name) was put down at ev.pos (right-click with it in hand)
+    on_use(ev)       ev.item used on ev.entity (right-click on a piece in reach with it in hand)
+    on_interact(ev)  E on ev.entity (an entity of yours with a "label")
+    on_key(ev)       ev.key from a player with a pawn in ev.entity's region with keys: "leave"
+                     (Esc), "north" (-z), "south" (+z), "east" (+x), "west" (-x), "action" (E), "reset" (R)
+    on_timer(ev)     your timer ev.name went off, with ev.data (what you gave it); ev.missed is
+                     how many more times a repeating timer went by unrun (catch up, don't loop)
+    on_arrive(ev)    ev.entity got where walk() sent it, at ev.pos; ev.stuck
+                     is true if there was no way there on foot
+    on_start(ev)     the game was installed (ev.player did it), or upgraded (ev.upgrade)
+    on_join(ev)      ev.player came into the world (each visit); on_leave(ev) when they go
+    on_enter(ev)     ev.player walked into ev.entity's region; on_exit(ev) when they walk out
+    on_catch(ev)     ev.entity, chasing ev.player, caught up with them (again every 2 s while
+                     it's in reach and still chasing)
+    on_hit(ev)       ev.player attacked ev.entity with F (it must have a label to be in reach)
+    on_message(ev)   your player script sent ev.name with ev.data (send(name, data)); ev.pos is
+                     where the player is: any key or click can drive the game this way
+    on_chat(ev)      ev.player typed ev.text in chat, a /command the game itself doesn't know
+                     ("/home", "/sethome"); the world's package ("world") hears it
+  ev also has player (id; nil for timers), pos ({x,y,z} meters; for keys, the region's), day,
+  time (0..1 of the day), now (seconds).
+  The world API (component names without ":" are your package's):
+    get(id) -> {id, pos, owner, walking, c = components} or nil (pos: where it is now)
+    find(component) -> list of entities that have it, in id order
+    near(pos, radius, component) -> entities within radius m (0-128), nearest first, each with
+      .distance; component optional
+    spawn(pos, components) -> id     despawn(id)    move(id, pos)
+    set(id, name, value)    remove(id, name)       notify(player, text)
+    give(player, item, n)   take(player, item, n)  count(player, item)
+    random() -> 0..1        random_int(a, b)       (no os, io, print or math.random)
+    after(seconds, name, data, near)   on_timer once, seconds from now (1 or more)
+    every(seconds, name, data, near)   on_timer every that many seconds    cancel(name)
+  Pieces that move on their own (the engine finds the way over the ground, around water and
+  steep steps, up to 64 m; players see them walk; it all sleeps while nobody is within 64 m):
+    walk(id, pos, speed): walks there (speed m/s, default 1.5), then on_arrive. stop(id)
+    fly(id, pos, speed): straight there through the air, over water or up and down (a boat, a
+      lift, a bird), then on_arrive
+    chase(id, player, {speed = 4, reach = 1.5}): runs after that player wherever they go, then
+      on_catch; chase(id) stops it (and it stands where it is)
+    Never move a piece step by step with fast timers: walk() is one change for a whole walk.
+    A day's routine is an "every" timer that walks a character to where ev.time (0..1 of the
+    day) says; wandering is on_arrive picking the next spot; a spawner is a timer that spawns
+    while find() says there are too few.
+  The players and the world:
+    region(id, {radius = 8}) or region(id, {w = 10, d = 6}): an area around a piece (it may be an
+      unseen piece with no look) that calls on_enter / on_exit as players cross it. With
+      keys = true, a player with a pawn in it plays with the keys (on_key) instead of walking:
+      a grid game gives the pawn in on_enter and takes it away on "leave"
+    teleport(player, pos): puts that player there; spawn_point(pos): where players appear
+    body(player, {speed = 2, jump = 2, gravity = 0.5, air_jumps = 1}): how their hero moves, each
+      a multiple of the usual (speed 0-4, jump: how high, 0-4, gravity 0.1-2, air_jumps 0-3: a
+      double jump is 1); body(player) puts it back. For a while (a potion): an after() timer
+      that puts it back
+    launch(player, {x, y, z}): throws them, in m/s (a trampoline: y = 15; knocked back: x/z 8,
+      y 4); they land by themselves
+    To carry a player (a boat, a lift, a cart): give them a pawn (an unseen piece with pawn =
+      player) where they stand and walk() or fly() it: they ride along, and can't walk while
+      they have it, so remove the pawn (despawn it) when the ride is over
+    building(false): only admins build while your game runs (true gives building back)
+    Walks go around builds and solid pieces, up onto low ones (a deck, a floor) and under roofs.
+  Timers are how the game moves on its own (countdowns, crops, NPCs taking turns, a monster
+  stepping). Nothing runs between them, so make them as slow as the game allows: a timer per
+  thing that changes, or one "every" that updates many things, never a fast loop that does
+  nothing. Pass near = your board's (or field's) entity id: the timer then sleeps while no
+  player is within 64 m and catches up when one comes back (ev.missed), so a world full of
+  games costs nothing where nobody is. Leave near out only for things that must run
+  everywhere. A timer with the same name replaces the old one; name them per entity if
+  needed ("grow:" .. id). Up to 256 waiting per package; a timer that errors is stopped.
+  Engine components on your entities:
+    look = {model = "crate", turn = 0, solid = true}: drawn as that model of yours standing on
+      pos, turned by quarter turns (0-3); positions snap to the 12.5 cm voxel grid. solid: players
+      and walking pieces can't go through it (a gate, a crate, a fence) while it isn't moving
+    label = "text": shown over it nearby; E on it calls on_interact
+    pawn = player id: that player's hero stands on this entity and rides it as it walks or
+      flies; move it to move them
+    walk, chase, region, world, feature: set through the functions above (feature for you),
+      not by hand
+  Players (stat names without ":" are your package's):
+    stat(player, name) -> number or nil      stat_max(player, name) -> number or nil
+    set_stat(player, name, value, max)       add_stat(player, name, delta) -> new value
+      stats stay between 0 and max (max optional: hp 10/10, gold uncapped); they follow the
+      player between the game's worlds, with their items
+    UI is a tree of nodes, drawn for you; values and bars stay live by themselves:
+      {kind = "text", text = "...", style = "title"|"small"|"muted"}
+      {kind = "value", label = "Gold", stat = "gold"} (or item = "coin": how many they carry)
+      {kind = "bar", label = "HP", stat = "hp", color = "#d84a4a"}   {kind = "item", item = "coin"}
+      {kind = "button", id = "buy", label = "Buy a torch", detail = "2 coins"}
+      {kind = "row", items = {...}}   {kind = "column", items = {...}}   {kind = "space"}
+      Up to 80 nodes, 6 deep.
+    hud(player, id, ui): pinned to the player's screen ("*" for everyone); nil takes it off
+    show(player, {id = "shop", title = "The merchant", entity = id, body = ui}): opens a panel
+      (dialogue, a shop, a quest log); a button calls on_choose(ev) with ev.choice (its id),
+      ev.panel and ev.entity. It stays open until you show another or close(player); the
+      player can always close it.
+  The world's voxels (whoever installed the game answers for it: their land and budget):
+    build(model, pos, turn) -> build id: places one of your models as a real, solid build
+      (walls, a bridge, a house that appears); unbuild(id) removes one you placed. The player
+      stands about 2 m from on_place's ev.pos: keep builds clear of them (a house goes beyond
+      ev.pos, its door facing the player), or they'll be walled in
+    terrain({x, z, w, d}, {name = "...", ops = {...}}): reshapes land in that area (meters),
+      with the same ops as a land change (dig a moat, raise a hill); keep areas small
+- Player scripts: a file named <name>.player.luau runs on each player's own machine every frame,
+  for what has to feel immediate: how the hero moves, pieces that bob, spin or swing, the camera.
+  Nothing it does is saved or seen by the world's scripts (those never run it), so it changes
+  only what that player sees and does; keep game state in the world. Its locals last between
+  frames (a cooldown). Define on_frame(f):
+    f.dt, f.now, f.me; f.keys.<key> held and f.pressed.<key> just pressed ("w" "a" "s" "d"
+    "space" "shift" "ctrl" "q" "e" "r" "f" "c" "v" "x" "z" "up" "down" "left" "right" "1"-"5"
+    "mouse_left" "mouse_right"); f.hero = {pos, vel, grounded, in_water, facing}; f.walk = {x, z}
+    where the usual controls would go (m/s); f.camera = {yaw, pitch}; f.body (what body() set);
+    f.gravity (m/s²)
+  It may read get, find, near, stat(name) and count(item) (the player's own), and:
+    hero_velocity({x, y, z}): the hero moves at this velocity this frame (the engine keeps them
+      out of walls); call it every frame you steer, and handle gravity yourself (vel.y -
+      f.gravity * f.dt). Not called: the usual walking and jumping.
+    pose(id, {x, y, z, turn, scale}): shows one of your pieces offset (meters), turned (radians)
+      and scaled this frame, on top of where it stands: bobbing coins, a spinning fan, a door
+      swinging open (pose it from a component the world script sets, like open = true).
+    camera({distance, pitch, yaw, height, shake}): this frame's camera (distance 0 looks out of
+      the hero's eyes; pitch 1.4 looks down from above).
+    send(name, data): tells your game logic something happened (on_message there): "Q was
+      pressed, aiming this way" (data: plain values, under 2 KB). Send when something happens
+      (f.pressed), never every frame: at most 10 a second. The game logic decides what it does.
+  Flying: if f.keys.space then up = 6 elseif f.keys.shift then up = -6 else up = 0 end;
+  hero_velocity({x = f.walk.x * 2, y = up, z = f.walk.z * 2}). Gate it on f.body or a stat the
+  world script sets (a flight potion), so the game decides who may fly. test_game doesn't run
+  player scripts: check them by reading them carefully.
+- One meter per tile works well (the hero is 1.35 m tall). Positions are meters; ev.pos from
+  on_place is on the ground. A failed check (bad component, someone else's entity) or a Lua error
+  refuses the whole action; the player sees the message, and you get it with the next request.
+- Limits per action: 256 changes, 200k steps, 16 MB. Values must be plain data (tables, numbers,
+  strings, booleans); keep each component under 4 KB.
+- Before answering, play your change with the test_game tool, as a player would, then fix anything
+  refused or wrong. It tries the package files as they are on disk (no "game" argument needed). It runs on a copy of this world as it is now (its pieces, timers, players'
+  stats and items, and its ground): your change lands as the next version (on_start runs for new
+  and changed files), and the tester starts where the player stands (on_join). "go <x> <z>" walks
+  the tester there (world meters; regions and chases notice), "hit <label>" attacks, "place
+  <item>" puts one down there. Its map shows where everything is.
+  "wait <seconds>" lets time pass so timers go off (walks and chases too); "choose <id>" picks in the open
+  panel and "close" closes it; "interact <label>" presses E on a particular piece; the report
+  lists the tester's stats, HUD and open panel, and where pieces are walking to.
+
+Example (a world with no game logic yet; the player stood near x=0, z=0 on ground at y=8.75):
+"three coins to collect around here"
+packages/world/package.json:
+  {"name": "world", "title": "", "defs": [{"name": "coin", "kind": "item", "title": "Coin", "model": "coin"}]}
+packages/world/models/coin.json:
+  {"name":"Coin","size":[3,3,3],"palette":[{"name":"gold","hex":"#f4cf4b","material":"glow"}],
+   "shapes":[{"kind":"ellipsoid","color":"gold","from":[0,0,0],"to":[3,3,3],"radius":null,"wobble":null}],
+   "about":"a gold coin to pick up"}
+packages/world/coins.luau:
+  -- Three coins to collect around camp; picking one up gives a coin.
+  local SPOTS = {{x = 3, z = 2}, {x = -2, z = 4}, {x = 5, z = -3}}
+  local Y = 8.75
+  function on_start(ev)
+    if #find("coin") > 0 then return end
+    for _, s in ipairs(SPOTS) do
+      spawn({x = s.x, y = Y, z = s.z}, {coin = true, look = {model = "coin"}, label = "Coin"})
+    end
+  end
+  function on_join(ev)
+    hud(ev.player, "coins", {kind = "value", label = "Coins", item = "coin"})
+  end
+  function on_interact(ev)
+    local c = get(ev.entity)
+    if not c.c.coin then return end
+    despawn(c.id)
+    give(ev.player, "coin", 1)
+    if #find("coin") == 0 then notify(ev.player, "All coins!") end
+  end
+"##;

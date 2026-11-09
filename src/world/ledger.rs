@@ -652,7 +652,8 @@ impl Ledger {
         let notes = outcome.notes.into_iter().filter(|(to, _)| to == me).map(|(_, text)| text).collect();
         if outcome.effects == 0 {
             return match intent {
-                Intent::Key { .. } => Ok(Acted { gained: Vec::new(), notes }),
+                // Keys and messages a game ignores are nothing to complain about.
+                Intent::Key { .. } | Intent::Message { .. } | Intent::Chat { .. } => Ok(Acted { gained: Vec::new(), notes }),
                 Intent::Place { .. } => Err("Nothing here plays that; its game rules aren't installed (/packages)".into()),
                 _ => Err("Nothing happened.".into()),
             };

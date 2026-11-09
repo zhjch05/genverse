@@ -145,13 +145,13 @@ pub fn run(package: &Package, event: &Event, world: &mut Batch, grants: &Grants)
 
 /// The handlers a script file may define.
 #[cfg(not(target_arch = "wasm32"))]
-const HANDLERS: [&str; 14] = [
+const HANDLERS: [&str; 16] = [
     "on_place", "on_interact", "on_use", "on_key", "on_timer", "on_choose", "on_arrive", "on_start", "on_join", "on_leave", "on_enter",
-    "on_exit", "on_catch", "on_hit",
+    "on_exit", "on_catch", "on_hit", "on_message", "on_chat",
 ];
 
 #[cfg(not(target_arch = "wasm32"))]
-mod vm {
+pub(super) mod vm {
     use std::{cell::RefCell, collections::BTreeMap, rc::Rc};
 
     use mlua::{Error, Function, Lua, LuaOptions, LuaSerdeExt, StdLib, Table, Value, VmState};
@@ -162,7 +162,7 @@ mod vm {
         entity::{EntityId, MIN_WAIT, RESERVED},
     };
 
-    fn fail(text: impl Into<String>) -> Error {
+    pub(in crate::logic) fn fail(text: impl Into<String>) -> Error {
         Error::runtime(text.into())
     }
 
@@ -185,11 +185,11 @@ mod vm {
         }
     }
 
-    fn id_text(id: EntityId) -> String {
+    pub(in crate::logic) fn id_text(id: EntityId) -> String {
         format!("{}.{}", id.change, id.n)
     }
 
-    fn parse_id(text: &str) -> mlua::Result<EntityId> {
+    pub(in crate::logic) fn parse_id(text: &str) -> mlua::Result<EntityId> {
         let (change, n) = text.split_once('.').ok_or_else(|| fail(format!("\"{text}\" isn't an entity id")))?;
         match (change.parse(), n.parse()) {
             (Ok(change), Ok(n)) => Ok(EntityId { change, n }),
@@ -197,7 +197,7 @@ mod vm {
         }
     }
 
-    fn pos_table(lua: &Lua, p: [f32; 3]) -> mlua::Result<Table> {
+    pub(in crate::logic) fn pos_table(lua: &Lua, p: [f32; 3]) -> mlua::Result<Table> {
         let t = lua.create_table()?;
         t.set("x", p[0])?;
         t.set("y", p[1])?;
@@ -205,7 +205,7 @@ mod vm {
         Ok(t)
     }
 
-    fn pos_of(t: &Table) -> mlua::Result<[f32; 3]> {
+    pub(in crate::logic) fn pos_of(t: &Table) -> mlua::Result<[f32; 3]> {
         let p: [f32; 3] = [t.get("x")?, t.get("y")?, t.get("z")?];
         if p.iter().all(|v| v.is_finite()) { Ok(p) } else { Err(fail("a position needs finite x, y and z")) }
     }
@@ -482,12 +482,39 @@ mod vm {
             )?;
             globals.set("cancel", scope.create_function(|_, name: String| apply(Effect::Cancel { name }).map(|_| ()))?)?;
             globals.set("players", scope.create_function(|_, ()| Ok(world.borrow().players()))?)?;
+            globals.set(
+                "near",
+                scope.create_function(|lua, (pos, radius, component): (Table, f32, Option<String>)| {
+                    if !(radius.is_finite() && (0.0..=128.0).contains(&radius)) {
+                        return Err(fail("near(pos, radius, component): radius is 0-128 m"));
+                    }
+                    let name = component.as_deref().map(&full);
+                    let world = world.borrow();
+                    let list = lua.create_table()?;
+                    for (id, distance) in world.near(pos_of(&pos)?, radius, event.at) {
+                        let Some(e) = world.get(id) else { continue };
+                        if name.as_ref().is_some_and(|n| !e.components.contains_key(n)) {
+                            continue;
+                        }
+                        let Value::Table(t) = entity_table(lua, id, &world)? else { continue };
+                        t.set("distance", distance)?;
+                        list.push(t)?;
+                    }
+                    Ok(list)
+                })?,
+            )?;
             let all = |effects: Vec<Effect>| effects.into_iter().try_for_each(|e| apply(e).map(|_| ()));
             let staged = &world;
             globals.set(
                 "walk",
                 scope.create_function(move |_, (id, pos, speed): (String, Table, Option<f32>)| {
-                    all(crate::logic::walk::walk_effects(parse_id(&id)?, pos_of(&pos)?, speed, event.at))
+                    all(crate::logic::walk::walk_effects(parse_id(&id)?, pos_of(&pos)?, speed, false, event.at))
+                })?,
+            )?;
+            globals.set(
+                "fly",
+                scope.create_function(move |_, (id, pos, speed): (String, Table, Option<f32>)| {
+                    all(crate::logic::walk::walk_effects(parse_id(&id)?, pos_of(&pos)?, speed, true, event.at))
                 })?,
             )?;
             globals.set(
@@ -502,6 +529,24 @@ mod vm {
                 "teleport",
                 scope.create_function(move |_, (player, pos): (String, Table)| {
                     apply(Effect::Teleport { player, position: pos_of(&pos)? }).map(|_| ())
+                })?,
+            )?;
+            globals.set(
+                "body",
+                scope.create_function(move |lua, (player, spec): (String, Option<Table>)| {
+                    let body = match spec {
+                        Some(spec) => Some(lua.from_value(Value::Table(spec)).map_err(|e| {
+                            fail(format!("body(player, {{speed = 0-4, jump = 0-4, gravity = 0.1-2, air_jumps = 0-3}}): {e}"))
+                        })?),
+                        None => None,
+                    };
+                    apply(Effect::Body { player, body }).map(|_| ())
+                })?,
+            )?;
+            globals.set(
+                "launch",
+                scope.create_function(move |_, (player, velocity): (String, Table)| {
+                    apply(Effect::Launch { player, velocity: pos_of(&velocity)? }).map(|_| ())
                 })?,
             )?;
             globals.set(
@@ -589,6 +634,10 @@ mod vm {
             // Each file's handlers, kept apart so every feature hears every event.
             let mut handlers: Vec<(&str, &str, Function)> = Vec::new();
             for (file, source) in &package.scripts {
+                // Player scripts run on players' machines, not here.
+                if crate::logic::frame::is_player_script(file) {
+                    continue;
+                }
                 lua.load(source.as_str()).set_name(file.as_str()).exec()?;
                 for name in HANDLERS {
                     if let Some(f) = globals.get::<Option<Function>>(name)? {
@@ -604,6 +653,12 @@ mod vm {
             ev.set("now", event.at)?;
             ev.set("day", event.time.day)?;
             ev.set("time", event.time.time_of_day)?;
+            if let Trigger::Query { code } = event.trigger {
+                let value: Value = lua.load(code).set_name("query").call(())?;
+                let value: serde_json::Value = lua.from_value(value)?;
+                world.borrow_mut().answer = Some(value);
+                return Ok(());
+            }
             let at = |id: &EntityId| staged.borrow().get(*id).map(|e| e.position);
             let handler = match event.trigger {
                 Trigger::Start { upgrade, from, .. } => {
@@ -615,6 +670,7 @@ mod vm {
                 }
                 Trigger::Join => "on_join",
                 Trigger::Leave => "on_leave",
+                Trigger::Query { .. } => return Ok(()),
                 Trigger::Enter { entity } | Trigger::Exit { entity } | Trigger::Catch { entity } => {
                     ev.set("entity", id_text(entity))?;
                     if let Some(p) = at(&entity) {
@@ -629,6 +685,17 @@ mod vm {
                 Trigger::Intent(Intent::Hit { entity }) => {
                     ev.set("entity", id_text(*entity))?;
                     "on_hit"
+                }
+                Trigger::Intent(Intent::Message { name, data, at, .. }) => {
+                    ev.set("name", name.as_str())?;
+                    ev.set("data", lua.to_value(data)?)?;
+                    ev.set("pos", pos_table(&lua, *at)?)?;
+                    "on_message"
+                }
+                Trigger::Intent(Intent::Chat { text, at }) => {
+                    ev.set("text", text.as_str())?;
+                    ev.set("pos", pos_table(&lua, *at)?)?;
+                    "on_chat"
                 }
                 Trigger::Arrive { entity, stuck } => {
                     ev.set("entity", id_text(entity))?;
@@ -755,6 +822,21 @@ mod tests {
         let unknown = package("function on_place(ev) spawn(ev.pos, { look = { model = 'barrel' } }) end");
         let place = Intent::Place { item: "game:x".into(), position: [0.0; 3] };
         assert!(act(&mut state, &unknown, place).unwrap_err().contains("models (crate)"));
+    }
+
+    #[test]
+    fn players_send_messages_and_chat() {
+        let p = package(
+            r##"
+            function on_message(ev) notify(ev.player, ev.name .. " " .. ev.data.power .. " at " .. ev.pos.x) end
+            function on_chat(ev) notify(ev.player, "heard " .. ev.text) end
+            "##,
+        );
+        let mut state = GameState::default();
+        let fireball = Intent::Message { package: "game".into(), name: "fireball".into(), data: serde_json::json!({ "power": 3 }), at: [5.0, 9.0, 1.0] };
+        assert_eq!(act(&mut state, &p, fireball).unwrap(), vec![("p".to_string(), "fireball 3 at 5".to_string())]);
+        let chat = Intent::Chat { text: "/home".into(), at: [0.0; 3] };
+        assert_eq!(act(&mut state, &p, chat).unwrap(), vec![("p".to_string(), "heard /home".to_string())]);
     }
 
     #[test]

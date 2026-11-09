@@ -124,6 +124,60 @@ fn a_walk_is_one_change_and_ends_in_on_arrive() {
     assert_eq!(state.logic.state.timers().count(), 0);
 }
 
+/// A lift: using it makes the player quick and double-jumping, throws them, then carries
+/// them 10 m up on a pawn that flies, and puts them back to normal at the top.
+const LIFT: &str = r#"
+function on_place(ev)
+  spawn(ev.pos, { look = { model = "lift" }, label = "Lift" })
+end
+function on_interact(ev)
+  body(ev.player, {speed = 2, air_jumps = 1})
+  launch(ev.player, {x = 0, y = 15, z = 0})
+  local p = get(ev.entity).pos
+  local seat = spawn(p, { pawn = ev.player, rider = ev.player })
+  fly(seat, {x = p.x, y = p.y + 10, z = p.z}, 2)
+end
+function on_arrive(ev)
+  local rider = get(ev.entity).c.rider
+  body(rider)
+  despawn(ev.entity)
+  notify(rider, "At the top")
+end
+"#;
+
+#[test]
+fn games_change_how_players_move_and_carry_them() {
+    let game = GameSpec {
+        remove: None, rename: None,
+        name: "tower".into(),
+        title: "Tower".into(),
+        defs: vec![DefSpec { name: "lift".into(), kind: "fixture".into(), title: "Lift".into(), ..Default::default() }],
+        scripts: vec![ScriptSpec { name: "main.luau".into(), source: LIFT.into() }],
+        models: vec![model("lift")],
+    };
+    let mut log = world(&game);
+    let placed = log.push(by("ada", 100), Action::Intent { intent: Intent::Place { item: "tower:lift".into(), position: [20.0, Y, 20.0] } });
+    log.push(by("ada", 101), Action::Intent { intent: Intent::Interact { entity: EntityId { change: placed, n: 0 } } });
+    let state = replay(&log);
+    assert!(state.problems.is_empty(), "{:?}", state.problems);
+    let body = state.logic.state.body("ada");
+    assert_eq!((body.speed, body.jump, body.air_jumps), (2.0, 1.0, 1));
+    assert_eq!(state.logic.state.launch("ada").unwrap().velocity, [0.0, 15.0, 0.0]);
+    let seat = state.logic.state.entities().find(|(_, e)| e.components.contains_key("pawn")).unwrap().0;
+
+    // It flies straight up, over nothing a walk could stand on, carrying her.
+    let here = [[20.0, Y, 20.0]];
+    let mut clock = Clockwork::new(100);
+    tick(&mut clock, &mut log, 102, &here);
+    let pawn = replay(&log).logic.state.get(seat).unwrap().clone();
+    assert_eq!(position_at(&pawn, 103.5), [20.0, Y + 3.0, 20.0]);
+    let said = tick(&mut clock, &mut log, 107, &here);
+    let state = replay(&log);
+    assert!(state.problems.is_empty(), "{:?}", state.problems);
+    assert!(state.logic.state.get(seat).is_none(), "the ride is over: {said:?}");
+    assert_eq!(state.logic.state.body("ada"), Default::default(), "and she moves as usual again");
+}
+
 /// A world that is the game: it sets itself up on install, greets players, a wolf
 /// guards a clearing and chases whoever walks in, and its bite sends them back to camp.
 const NIGHT: &str = r#"
@@ -315,4 +369,32 @@ fn walks_go_around_solid_pieces() {
     let path = state.logic.state.get(walker).unwrap().components["walk"]["path"].as_array().unwrap().clone();
     let z = |p: &serde_json::Value| p[2].as_f64().unwrap() as f32;
     assert!(path.iter().any(|p| (z(p) - 20.0).abs() >= 3.0), "around the fence's end: {path:?}");
+}
+
+#[test]
+fn agents_query_the_world_without_changing_it() {
+    let game = GameSpec {
+        remove: None, rename: None,
+        name: "town".into(),
+        title: "Town".into(),
+        defs: vec![DefSpec { name: "walker".into(), kind: "fixture".into(), title: "Walker".into(), ..Default::default() }],
+        scripts: vec![ScriptSpec { name: "main.luau".into(), source: WALKER.into() }],
+        models: vec![model("walker")],
+    };
+    let mut log = world(&game);
+    for x in [20.0, 30.0, 90.0] {
+        log.push(by("ada", 100), Action::Intent { intent: Intent::Place { item: "town:walker".into(), position: [x, Y, 20.0] } });
+    }
+    let state = replay(&log);
+    let rules = LogicRules::default();
+    let ask = |code: &str| state.logic.query("town", "ada", code, 200, &rules).unwrap();
+    // The package's own names, and what's near: nearest first, with how far.
+    assert_eq!(ask("return #find('walker')").0, 3);
+    let near = ask("local n = near({x = 21, y = 9, z = 20}, 15, 'walker') return {#n, n[1].distance < n[2].distance}").0;
+    assert_eq!(near, serde_json::json!([2, true]));
+    // What it would change is counted, never kept.
+    let (_, changes) = ask("despawn(find('walker')[1].id) return nil");
+    assert_eq!(changes, 1);
+    assert_eq!(state.logic.state.len(), 3);
+    assert!(state.logic.query("town", "ada", "return near({x = 0, y = 0, z = 0}, 500)", 200, &rules).unwrap_err().contains("0-128"));
 }

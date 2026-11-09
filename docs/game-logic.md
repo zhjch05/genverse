@@ -76,7 +76,10 @@ A game isn't only something players put down. Installed, it can be the whole wor
 - **It acts on players.** `chase(id, player)` runs a piece after a player (re-aimed every
   2 s, `on_catch` within reach); `teleport(player, pos)` moves a hero (each teleport is
   shown once); `spawn_point(pos)` is where players appear; F attacks the piece in reach
-  (`Intent::Hit`, `on_hit`). Health, score and the like are stats.
+  (`Intent::Hit`, `on_hit`). Health, score and the like are stats. `body(player, {speed,
+  jump, gravity, air_jumps})` changes how a hero moves until it's put back, and
+  `launch(player, velocity)` throws one (each throw is felt once). A hero rides their pawn
+  as it walks, or flies (`fly(id, pos)`: a straight line, for boats and lifts).
 - **It owns the world's rules.** `building(false)` puts an unseen piece with
   `world = {building = false}` in the world: while its package is installed, only admins
   build, reshape land or claim parcels.

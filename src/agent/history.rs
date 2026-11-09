@@ -147,6 +147,7 @@ pub fn history_window(
         creations: &mut creations,
         landscape: &mut landscape,
         travel: &mut travel,
+        at: [0.0; 3],
     };
     let reply = match pick {
         Pick::Undo(id) => commands::undo(cx, id),

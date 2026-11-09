@@ -31,6 +31,9 @@ mod settings;
 mod theme;
 use cubewish_rules::build as spec;
 mod tools;
+mod workspace;
+#[cfg(not(target_arch = "wasm32"))]
+mod player_scripts;
 mod worlds;
 
 use std::{
@@ -116,7 +119,7 @@ impl Plugin for AgentPlugin {
                     (online::sync_online, lan::update_lan, update_build_site, answer_tool_calls, poll_agent).chain(),
                     (presence::send_presence, presence::move_avatars, presence::draw_peers, history::toggle_history, (loading::track_loading, fps::track_frames).chain()),
                     auto_prompt,
-                    (game::script_play.after(auto_prompt), game::run_timers, game::play_keys, game::sync_pieces, game::walk_pieces, game::follow_teleports, game::use_pieces, worlds::use_portals, hud::draw_game_world, history::follow_ledger)
+                    (game::script_play.after(auto_prompt), game::run_timers, game::play_keys, game::sync_pieces, game::walk_pieces, game::follow_teleports, game::follow_body, game::use_pieces, worlds::use_portals, hud::draw_game_world, history::follow_ledger)
                         .chain(),
                     worlds::toggle_worlds,
                     (inventory::sync_inventory, inventory::inventory_keys, inventory::use_held, shortcuts, select_area, follow_cursor, check_clearance, click_in_world, outline_creations, draw_area, highlight_area, draw_parcels)
@@ -131,6 +134,17 @@ impl Plugin for AgentPlugin {
             .add_systems(EguiPrimaryContextPass, (worlds::worlds_window, hud::game_hud))
             // Trips are taken last, once everything else this frame is done with the world.
             .add_systems(PostUpdate, worlds::travel);
+        // The games' player scripts: before the hero moves, after the pieces do.
+        #[cfg(not(target_arch = "wasm32"))]
+        app.insert_non_send(player_scripts::PlayerScripts::default())
+            .init_resource::<player_scripts::Poses>()
+            .add_systems(
+                Update,
+                (
+                    player_scripts::run_player_scripts.after(game::sync_pieces).before(crate::player::move_player),
+                    player_scripts::pose_pieces.after(game::walk_pieces).after(player_scripts::run_player_scripts),
+                ),
+            );
     }
 }
 
@@ -233,7 +247,7 @@ impl Chat {
         self.marker.unwrap_or_else(|| presence::default_marker(me))
     }
 
-    fn say(&mut self, role: Role, text: impl Into<String>) {
+    pub(super) fn say(&mut self, role: Role, text: impl Into<String>) {
         self.messages.push(Message { role, text: text.into(), at: Instant::now() });
     }
 
@@ -247,7 +261,7 @@ impl Chat {
         repairs: u8,
         restore: bool,
     ) {
-        let job = runner::start(provider, prompt::system(tools.is_some(), rules), request, tools);
+        let job = runner::start(provider, prompt::system(tools.is_some(), rules), request, tools, workspace::current());
         self.status = format!("{} is working…", provider.label());
         self.pending = Some(Pending { job: Mutex::new(job), provider, prompt, repairs, restore });
     }
@@ -279,10 +293,23 @@ impl Chat {
             .collect();
         let history = &turns[turns.len().saturating_sub(HISTORY)..];
         let draft = creations.draft.as_ref().map(|d| &d.spec);
-        let game = game_context(ledger, &self.script_errors).map(|g| match &here {
-            Some(here) => format!("{here}\n{g}"),
-            None => g,
-        });
+        // The world as files for the agent to look through, and edit the game in.
+        let game = match workspace::write(ledger, here.as_deref(), &self.script_errors) {
+            Ok(dir) => {
+                info!("the world's folder for the agent: {}", dir.display());
+                Some(format!(
+                    "{}Your folder is this world as files: WORLD.md has the overview, packages/ the game logic.",
+                    here.as_ref().map(|h| format!("{h}\n")).unwrap_or_default()
+                ))
+            }
+            Err(why) => {
+                warn!("couldn't write the world's folder: {why}");
+                game_context(ledger, &self.script_errors).map(|g| match &here {
+                    Some(here) => format!("{here}\n{g}"),
+                    None => g,
+                })
+            }
+        };
         let request = prompt::request(history, draft, area.as_deref(), game.as_deref(), &text);
         // `CUBEWISH_SHOW_REQUEST=1` logs what the agent is told, to see the world through its eyes.
         if std::env::var("CUBEWISH_SHOW_REQUEST").is_ok() {
@@ -477,6 +504,7 @@ fn auto_prompt(
                     creations: &mut creations,
                     landscape: &mut landscape,
                     travel: &mut travel,
+                    at: hero.translation.to_array(),
                 };
                 run_command(&mut chat, command.trim(), cx);
             }
@@ -562,7 +590,7 @@ fn poll_agent(
         while let Ok(event) = job.events.try_recv() {
             match event {
                 AgentEvent::Status(s) => status = Some(format!("{} — {s} ({}s)", pending.provider.label(), job.started.elapsed().as_secs())),
-                AgentEvent::Finished(result) => finished = Some(result),
+                AgentEvent::Finished(result) => finished = Some(*result),
             }
         }
     }
@@ -635,7 +663,17 @@ fn poll_agent(
             },
         }
     }
-    if let Some(change) = answer.game {
+    // What the agent edited in the world's folder, with what it said in "game".
+    let edited = match workspace::current().map(|dir| workspace::changed_game(&dir, &ledger)) {
+        Some(Ok(change)) => change,
+        Some(Err(why)) => {
+            chat.say(Role::System, format!("⚠ {why}"));
+            None
+        }
+        None => None,
+    };
+    let describe = answer.describe.clone().unwrap_or_default();
+    if let Some(change) = workspace::merge(edited, answer.game.map(|g| *g)) {
         let provider = pending.provider.label();
         // A change to what the world runs: it adds to it, by name.
         let base = ledger.logic.installed.get(&change.name).and_then(|i| ledger.logic.package(i)).map(GameSpec::from_package);
@@ -673,6 +711,10 @@ fn poll_agent(
                 }
             }
         }
+    }
+    // What things mean, for later requests.
+    for meaning in describe {
+        ledger.record(Some(pending.provider.label()), Some(&pending.prompt), cubewish_rules::log::Action::Describe { meaning });
     }
     let portal = match answer.portal.as_deref().map(cubewish_rules::log::PortalTo::parse) {
         Some(Ok(to)) => Some(to),
@@ -2104,6 +2146,7 @@ fn chat_panel(
                 creations: &mut creations,
                 landscape: &mut landscape,
                 travel: &mut travel,
+                at: players.single().map_or([0.0; 3], |t| t.translation.to_array()),
             };
             run_command(&mut chat, text.trim(), cx);
         }

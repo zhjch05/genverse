@@ -1,0 +1,28 @@
+# One request per line, each tried on its own in a copy of the valley world (wolves,
+# health, a merchant who sells torches, shiny rocks that give coins). `id | request`.
+dog | Add a dog next to me that follows me around wherever I go.
+bell | Put a bell by the campfire that rings at noon every day.
+fishing | Add a fishing spot by the water near here: press E there to try to catch a fish, and sometimes you get one.
+fireball | Let me throw fireballs with Q that knock wolves back.
+race | Make a race: a start line here and a finish line 40 m north, with a timer on screen and my best time remembered.
+chest | Hide a key somewhere nearby, and put a treasure chest here that only opens when I use the key on it.
+door | Give the merchant a little hut with a door that opens when I press E and closes again after 5 seconds.
+potion | The merchant also sells a speed potion that makes me run twice as fast for 30 seconds.
+rain | Make it rain at night.
+scoreboard | Show a scoreboard on screen with every player's coins, richest first.
+chickens | Add a few chickens that lay an egg every minute; pick eggs up with E and sell them to the merchant.
+pelt | When a wolf gets driven off, it drops a pelt I can pick up and sell to the merchant for 3 coins.
+sparkle | Make the shiny rocks sparkle so they're easier to spot.
+trampoline | Put a trampoline here that bounces me high into the air.
+farm | Give me a farm plot: right-click a seed onto it, it grows over 3 minutes, then I harvest it with E for wheat.
+guard | Add a guard who walks a patrol loop around the camp and says hello to players he passes.
+home | Add a /home command: /sethome remembers where I am, /home takes me back there.
+torchlight | The torch I carry should light up the area around me at night.
+boat | Add a boat at the water's edge that I can ride across.
+quest | The merchant gives me a quest to bring him 3 shiny rocks for a reward, with a quest log I can open.
+sheep | Add a few sheep that wander nearby; wolves hunt the sheep when no player is around.
+banner | When I've collected 10 coins, play a fanfare and show a big "You're rich!" banner for a few seconds.
+prices | The merchant's prices double at night.
+plate | Put a pressure plate here that opens a gate next to it while I stand on it.
+lift | Build a lift: a platform that carries me up to a lookout 10 m above the camp and back down.
+doublejump | Let me double jump.

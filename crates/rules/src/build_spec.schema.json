@@ -6,7 +6,8 @@
     "build",
     "terrain",
     "game",
-    "portal"
+    "portal",
+    "describe"
   ],
   "properties": {
     "reply": {
@@ -56,6 +57,53 @@
           "type": "string"
         }
       ]
+    },
+    "describe": {
+      "description": "What things in the world mean, for later requests to find and understand them: the game files you added or changed (\"feature:world/wolves.luau\"), the package (\"package:world\"), a build or land change by id (\"build:12\", \"land:40\"), or an area the player named or that you made (\"place:Wolf field\", with its area). Null when there's nothing to describe.",
+      "anyOf": [
+        {
+          "type": "null"
+        },
+        {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "additionalProperties": false,
+            "required": [
+              "of",
+              "name",
+              "about",
+              "area"
+            ],
+            "properties": {
+              "of": {
+                "type": "string"
+              },
+              "name": {
+                "type": "string"
+              },
+              "about": {
+                "type": "string",
+                "description": "One line on what it is and what it's for. Empty forgets it."
+              },
+              "area": {
+                "description": "For a place: its middle and size across the ground, meters [x, z, w, d]. Null otherwise.",
+                "anyOf": [
+                  {
+                    "type": "null"
+                  },
+                  {
+                    "type": "array",
+                    "items": {
+                      "type": "number"
+                    }
+                  }
+                ]
+              }
+            }
+          }
+        }
+      ]
     }
   },
   "$defs": {
@@ -66,7 +114,8 @@
         "name",
         "size",
         "palette",
-        "shapes"
+        "shapes",
+        "about"
       ],
       "properties": {
         "name": {
@@ -92,6 +141,17 @@
             "$ref": "#/$defs/shape"
           },
           "description": "Applied in order; later shapes overwrite earlier ones."
+        },
+        "about": {
+          "description": "One line on what it is and what it's for, so later requests understand the world (\"the camp's well, where the baker draws water\"). Null for a plain model.",
+          "anyOf": [
+            {
+              "type": "null"
+            },
+            {
+              "type": "string"
+            }
+          ]
         }
       }
     },
@@ -191,7 +251,8 @@
       "additionalProperties": false,
       "required": [
         "name",
-        "ops"
+        "ops",
+        "about"
       ],
       "properties": {
         "name": {
@@ -204,6 +265,17 @@
             "$ref": "#/$defs/terrain_op"
           },
           "description": "Applied in order."
+        },
+        "about": {
+          "description": "One line on what it is and what it's for, so later requests understand the world (\"the camp's well, where the baker draws water\"). Null for a plain model.",
+          "anyOf": [
+            {
+              "type": "null"
+            },
+            {
+              "type": "string"
+            }
+          ]
         }
       }
     },

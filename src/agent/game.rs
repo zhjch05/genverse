@@ -38,14 +38,13 @@ use cubewish_rules::{
         Entity as Piece, EntityId, Intent, Logic, Package,
         data,
         clockwork::keys_region_at,
-        trial::pawn_of,
         walk::{position_at, walking_at},
     },
 };
 
 use super::{Chat, Role, creations::Creations, landscape::Landscape, theme};
 use crate::{
-    player::{FollowCamera, InputBlocked, Pawned, Player},
+    player::{FollowCamera, HeroBody, InputBlocked, Pawned, Player},
     voxel::{DepthBias, ModelData, VoxelModel},
     world::{
         SolidModel, VoxelWorld,
@@ -73,7 +72,7 @@ pub struct Play {
     /// A short note at the top of the view, and when it appeared.
     toast: Option<(String, f32)>,
     /// The pieces in the world and how each looks.
-    pieces: HashMap<EntityId, (Entity, Look)>,
+    pub(super) pieces: HashMap<EntityId, (Entity, Look)>,
     models: Models,
 }
 
@@ -92,7 +91,7 @@ impl Play {
 
 /// How a piece is drawn.
 #[derive(Clone, PartialEq)]
-enum Look {
+pub(super) enum Look {
     /// One of its package's voxel models (by package hash and name), turned by quarter
     /// turns.
     Model { package: String, model: String, turn: u8 },
@@ -169,7 +168,7 @@ pub(super) fn now_exact() -> f64 {
 
 /// Where a piece stands now and how it's turned: along its walk, facing the way it
 /// goes, if it's walking.
-fn placement(e: &Piece, turn: u8, look: &Look) -> Transform {
+pub(super) fn placement(e: &Piece, turn: u8, look: &Look) -> Transform {
     let (at, yaw) = walking_at(e, now_exact()).unwrap_or((e.position, turn as f32 * FRAC_PI_2));
     let mut transform = Transform::from_translation(Vec3::from_array(at)).with_rotation(Quat::from_rotation_y(yaw));
     if let Some((size, _)) = look.block() {
@@ -372,9 +371,29 @@ pub fn follow_teleports(ledger: Res<Ledger>, mut seen: Local<(String, u64)>, mut
     }
 }
 
-/// Where the local player's pawn stands, if a game has given them one.
+/// How games have the hero move, and each throw once.
+pub fn follow_body(ledger: Res<Ledger>, mut seen: Local<(String, u64)>, mut body: ResMut<HeroBody>) {
+    let state = &ledger.logic.state;
+    let me = &ledger.profile.id;
+    let b = state.body(me);
+    (body.speed, body.jump, body.gravity, body.air_jumps) = (b.speed, b.jump, b.gravity, b.air_jumps);
+    let world = super::worlds::current_title(&ledger);
+    let last = state.launch(me).map_or(0, |l| l.change);
+    if seen.0 != world {
+        // Just arrived: earlier throws are history.
+        *seen = (world, last);
+    } else if let Some(launch) = state.launch(me).filter(|l| l.change > seen.1) {
+        seen.1 = launch.change;
+        body.launch = Some(Vec3::from_array(launch.velocity));
+    }
+}
+
+/// Where the local player's pawn is now (along its walk, if it's walking: the hero rides
+/// it), if a game has given them one.
 fn my_pawn(ledger: &Ledger) -> Option<Vec3> {
-    pawn_of(&ledger.logic.state, &ledger.profile.id).map(Vec3::from_array)
+    let me = ledger.profile.id.as_str();
+    let (_, pawn) = ledger.logic.state.entities().find(|(_, e)| e.components.get("pawn").and_then(|p| p.as_str()) == Some(me))?;
+    Some(Vec3::from_array(position_at(pawn, now_exact())))
 }
 
 

@@ -21,10 +21,10 @@ use crate::{
 
 const HALF_WIDTH: f32 = 0.28;
 const HEIGHT: f32 = 1.35;
-const WALK_SPEED: f32 = 4.0;
-const RUN_SPEED: f32 = 7.0;
+pub const WALK_SPEED: f32 = 4.0;
+pub const RUN_SPEED: f32 = 7.0;
 const JUMP_SPEED: f32 = 7.5;
-const GRAVITY: f32 = 24.0;
+pub const GRAVITY: f32 = 24.0;
 /// Highest ledge the hero walks up without jumping.
 const STEP_HEIGHT: f32 = 2.0 * VOXEL_SIZE;
 
@@ -34,6 +34,8 @@ impl Plugin for PlayerPlugin {
     fn build(&self, app: &mut App) {
         app.init_resource::<InputBlocked>()
             .init_resource::<Pawned>()
+            .init_resource::<HeroBody>()
+            .init_resource::<ScriptedHero>()
             .init_resource::<PointerOverUi>()
             .init_resource::<OrbitLock>()
             .init_resource::<SolidAreas>()
@@ -61,6 +63,44 @@ pub struct InputBlocked(pub bool);
 #[derive(Resource, Default)]
 pub struct Pawned(pub Option<Vec3>);
 
+/// How a game has the hero move, each a multiple of the usual (see `agent::game`), and a
+/// throw it hasn't felt yet.
+#[derive(Resource)]
+pub struct HeroBody {
+    pub speed: f32,
+    /// How high a jump goes.
+    pub jump: f32,
+    pub gravity: f32,
+    pub air_jumps: u8,
+    pub launch: Option<Vec3>,
+}
+
+impl Default for HeroBody {
+    fn default() -> Self {
+        Self { speed: 1.0, jump: 1.0, gravity: 1.0, air_jumps: 0, launch: None }
+    }
+}
+
+/// What a game's player scripts decided this frame (see `agent::player_scripts`): the
+/// hero's velocity in place of the usual controls, and how the camera follows.
+#[derive(Resource, Default)]
+pub struct ScriptedHero {
+    pub velocity: Option<Vec3>,
+    pub camera: Option<CameraRig>,
+}
+
+/// How a script has the camera follow the hero; unset parts stay the player's.
+#[derive(Clone, Copy, Debug, Default)]
+pub struct CameraRig {
+    /// Meters behind the hero; 0 looks out of their eyes.
+    pub distance: Option<f32>,
+    pub pitch: Option<f32>,
+    pub yaw: Option<f32>,
+    /// Meters the camera's target rises above the hero's head.
+    pub height: Option<f32>,
+    pub shake: f32,
+}
+
 /// Set while the pointer is over a UI, whose scrolling isn't the camera's zoom.
 #[derive(Resource, Default)]
 pub struct PointerOverUi(pub bool);
@@ -82,6 +122,8 @@ pub struct Player {
     /// How far the model sits above (+) or below (-) the body after a step snaps it, eased to zero.
     lag: f32,
     spawned: bool,
+    /// Jumps made since leaving the ground.
+    air_jumps: u8,
 }
 
 #[derive(Component)]
@@ -91,6 +133,22 @@ struct Hero {
 }
 
 impl Player {
+    #[cfg_attr(target_arch = "wasm32", allow(dead_code))] // Player scripts are desktop-only for now.
+    pub fn velocity(&self) -> Vec3 {
+        self.velocity
+    }
+
+    #[cfg_attr(target_arch = "wasm32", allow(dead_code))] // Player scripts are desktop-only for now.
+    pub fn grounded(&self) -> bool {
+        self.grounded
+    }
+
+    /// Radians around Y, 0 facing north (-z).
+    #[cfg_attr(target_arch = "wasm32", allow(dead_code))] // Player scripts are desktop-only for now.
+    pub fn facing(&self) -> f32 {
+        self.facing
+    }
+
     /// True once the ground under the spawn point has loaded and the hero stands on it.
     #[cfg_attr(target_arch = "wasm32", allow(dead_code))] // Used by the desktop-only builder.
     pub fn has_landed(&self) -> bool {
@@ -139,8 +197,15 @@ pub struct FollowCamera {
 
 impl FollowCamera {
     /// Which way the camera looks, radians around Y (0 looks north, -z).
+    #[cfg_attr(target_arch = "wasm32", allow(dead_code))] // Player scripts are desktop-only for now.
     pub fn yaw(&self) -> f32 {
         self.yaw
+    }
+
+    /// How far it looks down, radians.
+    #[cfg_attr(target_arch = "wasm32", allow(dead_code))] // Player scripts are desktop-only for now.
+    pub fn pitch(&self) -> f32 {
+        self.pitch
     }
 }
 
@@ -177,6 +242,7 @@ fn spawn_player(mut commands: Commands, asset_server: Res<AssetServer>, world: R
                 pace: 0.0,
                 lag: 0.0,
                 spawned: false,
+                air_jumps: 0,
             },
             ChunkLoader,
             Transform::from_translation(start),
@@ -283,7 +349,7 @@ impl Obstacles<'_> {
 
 /// Solid models by the ground they reach, so the hero only looks at the ones near it.
 #[derive(Resource, Default)]
-struct SolidAreas(Areas<Entity>);
+pub struct SolidAreas(Areas<Entity>);
 
 /// How far from where a model stands it might touch the hero this frame.
 fn reach(model: &VoxelModel) -> f32 {
@@ -306,11 +372,13 @@ fn index_solids(
     }
 }
 
-fn move_player(
+pub fn move_player(
     time: Res<Time>,
     keys: Res<ButtonInput<KeyCode>>,
     blocked: Res<InputBlocked>,
     pawned: Res<Pawned>,
+    mut body: ResMut<HeroBody>,
+    scripted: Res<ScriptedHero>,
     world: Res<VoxelWorld>,
     cameras: Query<&FollowCamera>,
     solids: Query<(&VoxelModel, &GlobalTransform), With<SolidModel>>,
@@ -335,17 +403,20 @@ fn move_player(
                 .filter(|(model, t)| t.translation().distance(here) < reach(model))
                 .collect(),
         };
-        // Inside something solid (a build or a game's gate appeared there, or the hero
-        // arrived in one): step out to the nearest free spot, sideways before up onto it;
-        // buried deeper (spawning under ground), straight up.
+        // Inside something solid (a build or a game's gate appeared there, the hero
+        // arrived in one, or got off a ride standing in its floor): step out to the
+        // nearest free spot: up onto a floor, else sideways, else up onto it; buried
+        // deeper (spawning under ground), straight up.
         if pawned.0.is_none() && obstacles.collides(transform.translation) {
             let here = transform.translation;
-            let out = (1..=8)
-                .flat_map(|r| {
+            let up = |h: i32| Vec3::Y * (h as f32 * VOXEL_SIZE);
+            let out = (1..=2)
+                .map(up)
+                .chain((1..=8).flat_map(|r| {
                     let r = r as f32 * VOXEL_SIZE;
                     (0..8).map(move |i| Quat::from_rotation_y(i as f32 * TAU / 8.0) * Vec3::X * r)
-                })
-                .chain((1..=16).map(|h| Vec3::Y * (h as f32 * VOXEL_SIZE)))
+                }))
+                .chain((3..=16).map(up))
                 .find(|step| !obstacles.collides(here + *step));
             match out {
                 Some(step) => transform.translation += step,
@@ -364,6 +435,7 @@ fn move_player(
         // A game moves the hero: glide to its spot, facing the way it goes (or jump
         // straight there from afar, as when a game holds the hero at startup).
         if let Some(spot) = pawned.0 {
+            body.launch = None;
             if spot.distance(transform.translation) > 3.0 {
                 transform.translation = spot;
             }
@@ -396,20 +468,37 @@ fn move_player(
         let forward = Vec3::new(-yaw.sin(), 0.0, -yaw.cos());
         let right = Vec3::new(-forward.z, 0.0, forward.x);
         let wish = right * input.x + forward * input.y;
-        let speed = if pressed(KeyCode::ShiftLeft) { RUN_SPEED } else { WALK_SPEED };
+        let speed = if pressed(KeyCode::ShiftLeft) { RUN_SPEED } else { WALK_SPEED } * body.speed;
 
         let target = wish * speed;
         let accel = if player.grounded { 14.0 } else { 4.0 };
         let horizontal = player.velocity.xz().lerp(target.xz(), 1.0 - (-accel * dt).exp());
         player.velocity.x = horizontal.x;
         player.velocity.z = horizontal.y;
-        player.velocity.y -= GRAVITY * dt;
-        if player.grounded && !blocked.0 && keys.just_pressed(KeyCode::Space) {
-            player.velocity.y = JUMP_SPEED;
+        player.velocity.y -= GRAVITY * body.gravity * dt;
+        // A game's player script moves the hero its own way (flying, swimming, dashing).
+        let scripted_move = scripted.velocity.is_some();
+        if let Some(v) = scripted.velocity {
+            player.velocity = v;
+        }
+        if player.grounded {
+            player.air_jumps = 0;
+        }
+        if !scripted_move && !blocked.0 && keys.just_pressed(KeyCode::Space) && (player.grounded || player.air_jumps < body.air_jumps) {
+            if !player.grounded {
+                player.air_jumps += 1;
+            }
+            // Height goes with the square of speed: `jump` ×2 goes twice as high.
+            player.velocity.y = JUMP_SPEED * (body.jump * body.gravity).sqrt();
+        }
+        if let Some(throw) = body.launch.take() {
+            player.velocity = throw;
+            player.grounded = false;
         }
 
-        if wish.length_squared() > 0.01 {
-            let goal = f32::atan2(-wish.x, -wish.z);
+        let heading = if scripted_move { player.velocity.with_y(0.0) } else { wish };
+        if heading.length_squared() > 0.01 {
+            let goal = f32::atan2(-heading.x, -heading.z);
             let diff = (goal - player.facing + PI).rem_euclid(TAU) - PI;
             player.facing += diff * (1.0 - (-12.0 * dt).exp());
         }
@@ -536,9 +625,11 @@ fn follow_camera(
     over_ui: Res<PointerOverUi>,
     lock: Res<OrbitLock>,
     world: Res<VoxelWorld>,
+    scripted: Res<ScriptedHero>,
     players: Query<(&Transform, &Player), Without<FollowCamera>>,
     mut cameras: Query<(&mut FollowCamera, &mut Transform)>,
 ) {
+    let rig = scripted.camera.unwrap_or_default();
     let Ok((player, hero)) = players.single() else {
         return;
     };
@@ -559,19 +650,32 @@ fn follow_camera(
         cam.distance = (cam.distance * (1.0 - lines * 0.08)).clamp(2.0, 25.0);
 
         // Track the eased model, not the body, so steps don't jolt the view.
-        let goal = player.translation + Vec3::Y * (1.1 + hero.lag);
+        let goal = player.translation + Vec3::Y * (1.1 + hero.lag + rig.height.unwrap_or(0.0));
         if cam.target == Vec3::ZERO {
             cam.target = goal;
         }
         let blend = 1.0 - (-10.0 * dt).exp();
         cam.target = cam.target.lerp(goal, blend);
 
+        // A game's player script may hold the camera its own way.
+        if let Some(yaw) = rig.yaw {
+            cam.yaw = yaw;
+        }
+        let pitch = rig.pitch.unwrap_or(cam.pitch);
+        let wanted = rig.distance.unwrap_or(cam.distance);
         // Pull the camera in front of any terrain between it and the hero.
-        let rotation = Quat::from_euler(EulerRot::YXZ, cam.yaw, -cam.pitch, 0.0);
+        let rotation = Quat::from_euler(EulerRot::YXZ, cam.yaw, -pitch, 0.0);
         let dir = rotation * Vec3::Z;
-        let mut distance = cam.distance;
+        if wanted < 0.5 {
+            // Out of the hero's eyes, looking where the camera faces.
+            let eye = player.translation + Vec3::Y * 1.2;
+            transform.translation = eye - dir * 0.3;
+            transform.look_at(eye - dir * 2.0, Vec3::Y);
+            continue;
+        }
+        let mut distance = wanted;
         let mut d = 0.3;
-        while d < cam.distance {
+        while d < wanted {
             let p = VoxelWorld::voxel_at(cam.target + dir * d);
             if world.get(p).is_some_and(is_solid) {
                 distance = (d - 0.3).max(0.5);
@@ -579,7 +683,13 @@ fn follow_camera(
             }
             d += VOXEL_SIZE * 0.5;
         }
-        transform.translation = cam.target + dir * distance;
-        transform.look_at(cam.target, Vec3::Y);
+        let shake = if rig.shake > 0.0 {
+            let t = time.elapsed_secs() * 37.0;
+            Vec3::new(t.sin(), (t * 1.3).cos(), (t * 0.7).sin()) * rig.shake * 0.3
+        } else {
+            Vec3::ZERO
+        };
+        transform.translation = cam.target + dir * distance + shake;
+        transform.look_at(cam.target + shake, Vec3::Y);
     }
 }

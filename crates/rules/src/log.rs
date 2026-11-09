@@ -247,6 +247,10 @@ pub enum Action {
     /// Makes a placed build a portal to another world (`None` unlinks it). Whoever may
     /// change the build may do this; the link stays when the build moves or changes.
     SetPortal { build: u64, to: Option<PortalTo> },
+    /// What something in the world means, for agents to find and understand it later
+    /// ([`crate::semantic`]): a build, a land change, a package or one of its files, or a
+    /// place with nothing built (an area someone named). Changes nothing else.
+    Describe { meaning: crate::semantic::Meaning },
     /// A package's timers going off, up to `until` (Unix seconds): what they did, so
     /// replay applies it without running them again. Made by the world (a server) or,
     /// offline, by an admin's game.
@@ -293,8 +297,12 @@ impl Action {
             Action::Intent { intent: Intent::Choose { choice: Some(choice) } } => format!("chose {choice}"),
             Action::Intent { intent: Intent::Choose { choice: None } } => "closed a panel".into(),
             Action::Intent { intent: Intent::Hit { .. } } => "attacked".into(),
+            Action::Intent { intent: Intent::Message { name, .. } } => format!("sent \"{name}\""),
+            Action::Intent { intent: Intent::Chat { text, .. } } => format!("said \"{text}\""),
             Action::Timers { package, effects, .. } => format!("{package}'s timers ({} change(s))", effects.len()),
             Action::Save { name } => format!("saved \"{name}\""),
+            Action::Describe { meaning } if meaning.about.trim().is_empty() && meaning.name.trim().is_empty() => format!("forgot what {} means", meaning.of),
+            Action::Describe { meaning } => format!("described \"{}\"", meaning.name),
             Action::Depart { to, items, .. } => format!("left for {to} carrying {} kind(s) of item", items.len()),
             Action::Arrive { from, items, .. } => format!("arrived from {from} carrying {} kind(s) of item", items.len()),
             Action::Load { name, .. } => format!("loaded \"{name}\""),
@@ -1023,6 +1031,18 @@ impl Replay {
                 return Err("a save's name is 1 to 40 characters".into());
             }
             Action::Save { .. } => {}
+            Action::Describe { meaning } => {
+                let ok = !meaning.of.is_empty()
+                    && meaning.of.len() <= 200
+                    && meaning.name.chars().count() <= 80
+                    && meaning.about.chars().count() <= 400
+                    && meaning.tags.len() <= 16
+                    && meaning.tags.iter().all(|t| t.chars().count() <= 40)
+                    && meaning.area.is_none_or(|a| a.iter().all(|v| v.is_finite()));
+                if !ok {
+                    return Err("a description is a name (up to 80 characters), a line about it (400), and up to 16 short tags".into());
+                }
+            }
             Action::SetPortal { build, to } => {
                 let placed = self.builds.get(build).ok_or(format!("there's no build {build}"))?;
                 self.land.authorize(&by.player, &parcels_of(placed))?;
@@ -1162,7 +1182,7 @@ mod tests {
         Action::Terrain {
             name: "Pond".into(),
             area: Area { min: [x, 0], size: [24, 24] },
-            spec: TerrainSpec { name: "Pond".into(), ops: vec![op] },
+            spec: TerrainSpec { name: "Pond".into(), ops: vec![op], about: None },
             changed: 0,
         }
     }

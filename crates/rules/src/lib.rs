@@ -15,6 +15,7 @@ pub mod log;
 pub mod logic;
 pub mod rate;
 pub mod sculpt;
+pub mod semantic;
 pub mod settings;
 #[cfg(not(target_arch = "wasm32"))]
 pub mod store;

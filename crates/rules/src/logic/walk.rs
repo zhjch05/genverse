@@ -14,6 +14,8 @@
 //!
 //! Engine components (only the piece's own package sets them):
 //! - `walk`: `{"to": [x, y, z], "speed": m/s}`, and once on its way `"path"` and `"start"`.
+//!   With `"fly": true` it goes in a straight line through the air (a boat, a lift, a
+//!   bird), never looking at the ground.
 //! - `chase`: `{"player", "speed", "reach"}`: every couple of seconds it heads for where
 //!   that player is now, and its package's `on_catch` runs when it's within reach.
 //!
@@ -267,10 +269,14 @@ pub fn walking_at(e: &Entity, now: f64) -> Option<([f32; 3], f32)> {
 }
 
 /// What a script or a package's data does to send `id` walking to `to` from `at`.
-pub fn walk_effects(id: EntityId, to: [f32; 3], speed: Option<f32>, at: u64) -> Vec<Effect> {
+pub fn walk_effects(id: EntityId, to: [f32; 3], speed: Option<f32>, fly: bool, at: u64) -> Vec<Effect> {
     let speed = speed.unwrap_or(DEFAULT_SPEED);
+    let mut walk = json!({ "to": to, "speed": speed });
+    if fly {
+        walk["fly"] = true.into();
+    }
     vec![
-        Effect::Set { entity: id, component: "walk".into(), value: json!({ "to": to, "speed": speed }) },
+        Effect::Set { entity: id, component: "walk".into(), value: walk },
         // A second on: the clock may have run up to `at` already.
         Effect::Schedule { name: timer("walk", id), due: at + 1, every: None, data: Value::Null, near: Some(id), feature: None },
     ]
@@ -316,6 +322,7 @@ pub fn check(name: &str, value: &Value) -> Result<(), String> {
             point(&value["to"]).is_some()
                 && num("speed", *SPEEDS.start() as f64..=*SPEEDS.end() as f64)
                 && (value["path"].is_null() || points(&value["path"]).is_some_and(|p| (2..=MAX_POINTS).contains(&p.len())))
+                && (value["fly"].is_null() || value["fly"].is_boolean())
         }
         "chase" => value["player"].as_str().is_some_and(|p| !p.is_empty()) && num("speed", 0.2..=12.0) && num("reach", 0.5..=16.0),
         _ => true,
@@ -376,7 +383,7 @@ impl Engine<'_, '_> {
         let (Some(to), speed) = (point(&walk["to"]), walk["speed"].as_f64().unwrap_or(DEFAULT_SPEED as f64) as f32) else {
             return Ok(None);
         };
-        match self.go(id, e, to, speed, 0) {
+        match self.go(id, e, to, speed, walk["fly"] == true) {
             Ok(()) => Ok(None),
             Err(_) => {
                 self.apply(Effect::Remove { entity: id, component: "walk".into() })?;
@@ -385,17 +392,24 @@ impl Engine<'_, '_> {
         }
     }
 
-    /// Sends `id` from where it is now to `to`, leaving after `pause` seconds.
-    fn go(&mut self, id: EntityId, e: &Entity, to: [f32; 3], speed: f32, pause: u64) -> Result<(), String> {
+    /// Sends `id` from where it is now to `to`: over the ground, or (`fly`) straight there.
+    fn go(&mut self, id: EntityId, e: &Entity, to: [f32; 3], speed: f32, fly: bool) -> Result<(), String> {
         let here = position_at(e, self.now as f64);
         if here != e.position {
             self.apply(Effect::Move { entity: id, position: here })?;
         }
-        let path = path(self.ground, here, to)?;
-        let start = self.now + pause;
+        let path = match fly {
+            true if flat_distance(here, to) > MAX_WALK || (to[1] - here[1]).abs() > MAX_WALK => return Err(format!("a flight is at most {MAX_WALK} m")),
+            true => vec![here, to],
+            false => path(self.ground, here, to)?,
+        };
+        let start = self.now;
         let speed = speed.clamp(*SPEEDS.start(), *SPEEDS.end());
         let takes = (length(&path) / speed).ceil().max(1.0) as u64;
-        let walk = json!({ "to": snap(to), "speed": speed, "path": path.iter().map(|p| snap(*p)).collect::<Vec<_>>(), "start": start });
+        let mut walk = json!({ "to": snap(to), "speed": speed, "path": path.iter().map(|p| snap(*p)).collect::<Vec<_>>(), "start": start });
+        if fly {
+            walk["fly"] = true.into();
+        }
         self.apply(Effect::Set { entity: id, component: "walk".into(), value: walk })?;
         self.apply(Effect::Schedule { name: timer("arrive", id), due: start + takes, every: None, data: Value::Null, near: Some(id), feature: None })?;
         Ok(())
@@ -438,7 +452,7 @@ impl Engine<'_, '_> {
         }
         let speed = chase["speed"].as_f64().unwrap_or(2.5) as f32;
         // Too far, or no way there: it gives up this time and looks again.
-        let _ = self.go(id, e, *target, speed, 0);
+        let _ = self.go(id, e, *target, speed, false);
         Ok(None)
     }
 }

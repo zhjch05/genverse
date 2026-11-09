@@ -155,9 +155,10 @@ impl Package {
             errors.push(format!("{} scripts; the most is {MAX_SCRIPTS}", self.scripts.len()));
         }
         for file in self.scripts.keys() {
-            let stem = file.strip_suffix(".luau").unwrap_or_default();
+            // A player script is <name>.player.luau (`super::frame`).
+            let stem = file.strip_suffix(".player.luau").or_else(|| file.strip_suffix(".luau")).unwrap_or_default();
             if stem.is_empty() || !stem.chars().all(|c| c.is_ascii_alphanumeric() || c == '_' || c == '-') {
-                errors.push(format!("script \"{file}\" must be a plain file name ending in .luau"));
+                errors.push(format!("script \"{file}\" must be a plain file name ending in .luau (or .player.luau)"));
             }
         }
         for p in &m.permissions {

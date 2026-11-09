@@ -77,6 +77,9 @@ pub struct AgentAnswer {
     /// Makes the build a portal to this world (by name) or server (`host:port`).
     #[serde(default)]
     pub portal: Option<String>,
+    /// What things in the world mean ([`crate::semantic`]).
+    #[serde(default)]
+    pub describe: Option<Vec<crate::semantic::Meaning>>,
 }
 
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
@@ -85,6 +88,9 @@ pub struct BuildSpec {
     pub size: Vec<i64>,
     pub palette: Vec<ColorSpec>,
     pub shapes: Vec<ShapeSpec>,
+    /// What it is and what it's for, in a line ([`crate::semantic`]).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub about: Option<String>,
 }
 
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
@@ -312,6 +318,7 @@ mod tests {
                 shape("box", "light", [1.0, 17.0, 1.0], [6.0, 21.0, 6.0]),
                 shape("box", "iron", [0.0, 21.0, 0.0], [7.0, 22.0, 7.0]),
             ],
+            about: None,
         }
     }
 

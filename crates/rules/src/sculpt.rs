@@ -122,6 +122,9 @@ pub fn surface(column: &[VoxelId]) -> (i32, i32, VoxelId) {
 pub struct TerrainSpec {
     pub name: String,
     pub ops: Vec<TerrainOp>,
+    /// What it is and what it's for, in a line ([`crate::semantic`]).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub about: Option<String>,
 }
 
 /// One operation. Every field is present (strict structured output); unused ones are null.
@@ -919,7 +922,7 @@ mod tests {
     }
 
     fn run(area: Area, ops: Vec<TerrainOp>) -> (Columns, TerrainEdit) {
-        let spec = TerrainSpec { name: "test".into(), ops };
+        let spec = TerrainSpec { name: "test".into(), ops, about: None };
         let edit = compile(&spec, area, TERRAIN, columns(area), &TerrainLimits::default()).unwrap();
         let mut after = columns(area);
         for (p, id) in &edit.edits {
@@ -978,7 +981,7 @@ mod tests {
         let area = dry_area();
         let mut up = op("raise");
         up.amount_m = Some(20.0);
-        let spec = TerrainSpec { name: "too much".into(), ops: vec![up, op("teleport")] };
+        let spec = TerrainSpec { name: "too much".into(), ops: vec![up, op("teleport")], about: None };
         let errors = validate(&spec, area, &TerrainLimits::default());
         assert_eq!(errors.len(), 2, "{errors:?}");
 

@@ -254,6 +254,14 @@ pub fn play_in(package: &Package, steps: &[String], world: Option<Copy>) -> Stri
     let items: Vec<String> = logic.state.inventory(TESTER).map(|(n, c)| format!("{n} ×{c}")).collect();
     let at = tester.here(&logic.state);
     let _ = writeln!(out, "\nThe tester, at ({:.1}, {:.1}): stats [{}], items [{}].", at[0], at[2], stats.join(", "), items.join(", "));
+    let body = logic.state.body(TESTER);
+    if body != super::Body::default() {
+        let _ = writeln!(out, "  Moves: speed ×{}, jump ×{}, gravity ×{}, {} air jump(s)", body.speed, body.jump, body.gravity, body.air_jumps);
+    }
+    if let Some(launch) = logic.state.launch(TESTER) {
+        let [x, y, z] = launch.velocity;
+        let _ = writeln!(out, "  Last launched at ({x}, {y}, {z}) m/s");
+    }
     // In a copy of a world, the players who were there before: what a migration did to them.
     let others: Vec<String> = logic.state.players().into_iter().filter(|p| p != TESTER).collect();
     for player in others.iter().take(5) {

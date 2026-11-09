@@ -1,7 +1,9 @@
-//! Runs a local coding-agent CLI headless, locked down to answering with a build spec.
+//! Runs a local coding-agent CLI headless, answering with JSON that matches the build
+//! schema.
 //!
-//! Neither CLI gets tools: no shell, no file edits, no MCP servers, no user config. They
-//! run in an empty scratch directory and must return JSON matching the build schema.
+//! It works in the world's folder ([`super::workspace`]): it may read and search it, and
+//! edit files there (the game's packages), and use the game's world tools, but nothing
+//! else: no shell, no other MCP servers, no user config.
 
 use std::{
     io::{BufRead, BufReader},
@@ -46,7 +48,7 @@ impl Provider {
 
 pub enum AgentEvent {
     Status(String),
-    Finished(Result<AgentAnswer, String>),
+    Finished(Box<Result<AgentAnswer, String>>),
 }
 
 /// A running agent request. Dropping it doesn't stop the process; call [`AgentJob::cancel`].
@@ -69,14 +71,16 @@ struct ToolServer {
     token: String,
 }
 
-pub fn start(provider: Provider, system: String, prompt: String, tools: Option<&McpServer>) -> AgentJob {
+/// Starts a request, in `folder` (the world's, which it may read and edit) or an empty
+/// scratch folder.
+pub fn start(provider: Provider, system: String, prompt: String, tools: Option<&McpServer>, folder: Option<PathBuf>) -> AgentJob {
     let (tx, rx) = mpsc::channel();
     let cancel = Arc::new(AtomicBool::new(false));
     let flag = cancel.clone();
     let tools = tools.map(|t| ToolServer { url: t.url.clone(), token: t.token.clone() });
     thread::spawn(move || {
-        let result = run(provider, &system, &prompt, tools.as_ref(), &tx, &flag);
-        let _ = tx.send(AgentEvent::Finished(result));
+        let result = run(provider, &system, &prompt, tools.as_ref(), folder, &tx, &flag);
+        let _ = tx.send(AgentEvent::Finished(Box::new(result)));
     });
     AgentJob { events: rx, cancel, started: Instant::now() }
 }
@@ -92,19 +96,29 @@ fn run(
     system: &str,
     prompt: &str,
     tools: Option<&ToolServer>,
+    folder: Option<PathBuf>,
     tx: &Sender<AgentEvent>,
     cancel: &AtomicBool,
 ) -> Result<AgentAnswer, String> {
-    let dir = scratch_dir()?;
+    let scratch = scratch_dir()?;
+    let files = folder.is_some();
+    let dir = folder.unwrap_or_else(|| scratch.clone());
     let mut cmd;
-    let last_message = dir.join("codex-last-message.json");
+    let last_message = scratch.join("codex-last-message.json");
     match provider {
         Provider::Claude => {
             cmd = Command::new("claude");
             cmd.args(["-p", prompt, "--output-format", "stream-json", "--verbose"])
                 .args(["--json-schema", SCHEMA, "--system-prompt", system])
-                .args(["--tools", "", "--strict-mcp-config", "--setting-sources", ""])
+                .args(["--strict-mcp-config", "--setting-sources", ""])
                 .args(["--disable-slash-commands", "--no-session-persistence"]);
+            // In the world's folder: reading and searching it, and editing files in it
+            // (edits are accepted only inside the working folder).
+            if files {
+                cmd.args(["--tools", "Read,Glob,Grep,Edit,Write", "--permission-mode", "acceptEdits"]);
+            } else {
+                cmd.args(["--tools", ""]);
+            }
             // Only the game's own read-only tools; no other MCP servers load.
             if let Some(tools) = tools {
                 let config = serde_json::json!({ "mcpServers": { SERVER_NAME: {
@@ -117,12 +131,12 @@ fn run(
             }
         }
         Provider::Codex => {
-            let schema = dir.join("build_spec.schema.json");
+            let schema = scratch.join("build_spec.schema.json");
             std::fs::write(&schema, SCHEMA).map_err(|e| e.to_string())?;
             let _ = std::fs::remove_file(&last_message);
             cmd = Command::new("codex");
             cmd.args(["exec", "--json", "--ignore-user-config", "--ephemeral", "--skip-git-repo-check"])
-                .args(["--sandbox", "read-only", "-c", "model_reasoning_effort=\"low\""]);
+                .args(["--sandbox", if files { "workspace-write" } else { "read-only" }, "-c", "model_reasoning_effort=\"low\""]);
             if let Some(tools) = tools {
                 cmd.arg("-c")
                     .arg(format!("mcp_servers.{SERVER_NAME}.url=\"{}\"", tools.url))
@@ -205,13 +219,19 @@ fn run(
                         Some(name) if name.starts_with("mcp__") => {
                             format!("using {}…", name.rsplit("__").next().unwrap_or(name))
                         }
+                        Some("Read" | "Glob" | "Grep") => "looking around the world…".into(),
+                        Some("Edit" | "Write") => "editing the game…".into(),
                         _ => "designing…".into(),
                     };
                     let _ = tx.send(AgentEvent::Status(status));
                 }
                 Some("result") => {
                     if event["is_error"].as_bool() == Some(true) {
-                        failure = Some(event["result"].as_str().unwrap_or("Claude reported an error").to_string());
+                        let why = event["result"].as_str().map(str::to_string).unwrap_or_else(|| {
+                            let kind = event["subtype"].as_str().unwrap_or("error");
+                            format!("Claude reported an error ({kind}: {})", event["errors"].to_string().chars().take(300).collect::<String>())
+                        });
+                        failure = Some(why);
                     } else {
                         answer = Some(event["structured_output"].clone());
                     }

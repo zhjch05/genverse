@@ -822,6 +822,7 @@ pub fn worlds_window(
                 creations: &mut creations,
                 landscape: &mut landscape,
                 travel: &mut travel,
+                at: [0.0; 3],
             };
             Some(commands::load(cx, id))
         }

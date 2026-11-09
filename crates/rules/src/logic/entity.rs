@@ -137,12 +137,59 @@ pub enum Effect {
     /// Puts a player's hero at `position` (a respawn, a trapdoor, a portal of the game's).
     /// For `"*"`, it's where players appear when they come into the world.
     Teleport { player: String, position: [f32; 3] },
+    /// Changes how a player's hero moves (`None`: back to normal).
+    Body { player: String, body: Option<Body> },
+    /// Throws a player's hero: sets how fast it's going, meters a second.
+    Launch { player: String, velocity: [f32; 3] },
 }
 
 /// Where a game last put a player, and in which change (so a game shows each move once).
 #[derive(Clone, Copy, Debug, PartialEq, Serialize, Deserialize)]
 pub struct Teleport {
     pub position: [f32; 3],
+    pub change: u64,
+}
+
+/// How a game has a player's hero move, each a multiple of the usual.
+#[derive(Clone, Copy, Debug, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct Body {
+    #[serde(default = "one")]
+    pub speed: f32,
+    #[serde(default = "one")]
+    pub jump: f32,
+    #[serde(default = "one")]
+    pub gravity: f32,
+    /// Jumps they can make in the air, after leaving the ground.
+    #[serde(default)]
+    pub air_jumps: u8,
+}
+
+fn one() -> f32 {
+    1.0
+}
+
+impl Default for Body {
+    fn default() -> Self {
+        Self { speed: 1.0, jump: 1.0, gravity: 1.0, air_jumps: 0 }
+    }
+}
+
+impl Body {
+    fn check(&self) -> Result<(), String> {
+        let within = |v: f32, lo: f32, hi: f32| v.is_finite() && (lo..=hi).contains(&v);
+        if within(self.speed, 0.0, 4.0) && within(self.jump, 0.0, 4.0) && within(self.gravity, 0.1, 2.0) && self.air_jumps <= 3 {
+            Ok(())
+        } else {
+            Err("body(player, {speed = 0-4, jump = 0-4, gravity = 0.1-2, air_jumps = 0-3}): multiples of the usual".into())
+        }
+    }
+}
+
+/// How a game last threw a player, and in which change (so it's felt once).
+#[derive(Clone, Copy, Debug, PartialEq, Serialize, Deserialize)]
+pub struct Launch {
+    pub velocity: [f32; 3],
     pub change: u64,
 }
 
@@ -327,6 +374,10 @@ pub struct GameState {
     builds: BTreeMap<u64, String>,
     /// Where games last put each player (`"*"`: where players appear).
     teleports: BTreeMap<String, Teleport>,
+    /// How games have players move, when it isn't the usual.
+    bodies: BTreeMap<String, Body>,
+    /// How games last threw each player.
+    launches: BTreeMap<String, Launch>,
     /// Entities by where they stand.
     areas: Areas<EntityId>,
 }
@@ -349,6 +400,10 @@ struct SavedState {
     builds: Vec<(u64, String)>,
     #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
     teleports: BTreeMap<String, Teleport>,
+    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    bodies: BTreeMap<String, Body>,
+    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    launches: BTreeMap<String, Launch>,
 }
 
 impl From<GameState> for SavedState {
@@ -362,6 +417,8 @@ impl From<GameState> for SavedState {
             panels: state.panels,
             builds: state.builds.into_iter().collect(),
             teleports: state.teleports,
+            bodies: state.bodies,
+            launches: state.launches,
         }
     }
 }
@@ -387,6 +444,8 @@ impl From<SavedState> for GameState {
             panels: saved.panels,
             builds: saved.builds.into_iter().collect(),
             teleports: saved.teleports,
+            bodies: saved.bodies,
+            launches: saved.launches,
         }
     }
 }
@@ -456,12 +515,23 @@ impl GameState {
         out.extend(self.hud.keys().filter(|p| *p != "*"));
         out.extend(self.panels.keys());
         out.extend(self.teleports.keys().filter(|p| *p != "*"));
+        out.extend(self.bodies.keys());
         out.into_iter().cloned().collect()
     }
 
     /// Where a game last put `player` (`"*"`: where players appear), and when.
     pub fn teleport(&self, player: &str) -> Option<Teleport> {
         self.teleports.get(player).copied()
+    }
+
+    /// How `player`'s hero moves.
+    pub fn body(&self, player: &str) -> Body {
+        self.bodies.get(player).copied().unwrap_or_default()
+    }
+
+    /// How a game last threw `player`, and when.
+    pub fn launch(&self, player: &str) -> Option<Launch> {
+        self.launches.get(player).copied()
     }
 
     /// The package that placed build `id`, if a package did.
@@ -569,7 +639,10 @@ impl GameState {
             builds: BTreeMap::new(),
             built: 0,
             last_build: None,
+            answer: None,
             teleports: BTreeMap::new(),
+            bodies: BTreeMap::new(),
+            launches: BTreeMap::new(),
         }
     }
 
@@ -634,6 +707,13 @@ impl GameState {
             };
         }
         self.teleports.extend(done.teleports);
+        for (player, body) in done.bodies {
+            match body {
+                Some(b) => self.bodies.insert(player, b),
+                None => self.bodies.remove(&player),
+            };
+        }
+        self.launches.extend(done.launches);
     }
 }
 
@@ -666,7 +746,11 @@ pub struct Batch<'a> {
     built: u64,
     /// The id of the build the last [`Effect::Build`] placed.
     pub last_build: Option<u64>,
+    /// What a query's code returned ([`super::Trigger::Query`]).
+    pub answer: Option<serde_json::Value>,
     teleports: BTreeMap<String, Teleport>,
+    bodies: BTreeMap<String, Option<Body>>,
+    launches: BTreeMap<String, Launch>,
 }
 
 /// A point in a batch to go back to, if what follows fails ([`Batch::rollback`]).
@@ -685,6 +769,8 @@ pub struct Mark {
     builds: BTreeMap<u64, Option<String>>,
     built: u64,
     teleports: BTreeMap<String, Teleport>,
+    bodies: BTreeMap<String, Option<Body>>,
+    launches: BTreeMap<String, Launch>,
 }
 
 /// What a batch changes, to [`GameState::commit`].
@@ -698,6 +784,8 @@ pub struct Done {
     panels: BTreeMap<String, Option<Panel>>,
     builds: BTreeMap<u64, Option<String>>,
     teleports: BTreeMap<String, Teleport>,
+    bodies: BTreeMap<String, Option<Body>>,
+    launches: BTreeMap<String, Launch>,
     /// Messages for players: who, and what.
     pub notes: Vec<(String, String)>,
     /// What it does to the world's voxels, in order ([`Effect::Build`],
@@ -720,6 +808,24 @@ impl Batch<'_> {
     }
 
     /// Every entity as staged, in id order.
+    /// Entities within `radius` meters of `at` (along the ground and up), as staged and
+    /// where they are at `now` (walking ones along their way), nearest first.
+    pub fn near(&self, at: [f32; 3], radius: f32, now: u64) -> Vec<(EntityId, f32)> {
+        let (lo, hi) = ([at[0] - radius, at[2] - radius], [at[0] + radius, at[2] + radius]);
+        let mut ids: std::collections::BTreeSet<EntityId> = self.base.within(lo, hi).map(|(id, _)| id).collect();
+        ids.extend(self.touched.keys());
+        let mut found: Vec<(EntityId, f32)> = ids
+            .into_iter()
+            .filter_map(|id| {
+                let p = super::walk::position_at(self.get(id)?, now as f64);
+                let d = ((p[0] - at[0]).powi(2) + (p[1] - at[1]).powi(2) + (p[2] - at[2]).powi(2)).sqrt();
+                (d <= radius).then_some((id, d))
+            })
+            .collect();
+        found.sort_by(|a, b| a.1.total_cmp(&b.1).then(a.0.cmp(&b.0)));
+        found
+    }
+
     pub fn ids(&self) -> Vec<EntityId> {
         let base = self.base.entities.keys().filter(|id| !self.touched.contains_key(id));
         let staged = self.touched.iter().filter(|(_, e)| e.is_some()).map(|(id, _)| id);
@@ -753,6 +859,8 @@ impl Batch<'_> {
             builds: self.builds.clone(),
             built: self.built,
             teleports: self.teleports.clone(),
+            bodies: self.bodies.clone(),
+            launches: self.launches.clone(),
         }
     }
 
@@ -772,6 +880,8 @@ impl Batch<'_> {
         self.builds = mark.builds;
         self.built = mark.built;
         self.teleports = mark.teleports;
+        self.bodies = mark.bodies;
+        self.launches = mark.launches;
     }
 
     /// One of a player's stats, as staged.
@@ -1024,6 +1134,21 @@ impl Batch<'_> {
                 self.teleports.insert(player.clone(), Teleport { position: *position, change: self.change });
                 Ok(None)
             }
+            Effect::Body { player, body } => {
+                if player.is_empty() || player == "*" {
+                    return Err("body takes one player".into());
+                }
+                body.as_ref().map_or(Ok(()), Body::check)?;
+                self.bodies.insert(player.clone(), body.filter(|b| *b != Body::default()));
+                Ok(None)
+            }
+            Effect::Launch { player, velocity } => {
+                if player.is_empty() || player == "*" || !velocity.iter().all(|v| v.is_finite() && v.abs() <= 40.0) {
+                    return Err("launch(player, {x, y, z}): how fast to throw them, up to 40 m/s each way".into());
+                }
+                self.launches.insert(player.clone(), Launch { velocity: *velocity, change: self.change });
+                Ok(None)
+            }
             Effect::Terrain { area, .. } => {
                 if !grants.build {
                     return Err(format!("{} may not reshape land (it needs the build permission)", grants.package));
@@ -1074,6 +1199,8 @@ impl Batch<'_> {
             panels: self.panels,
             builds: self.builds,
             teleports: self.teleports,
+            bodies: self.bodies,
+            launches: self.launches,
             notes: self.notes,
             world,
         }
