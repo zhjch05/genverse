@@ -1457,6 +1457,9 @@ fn migrate(seed: u32, voxels: Option<SavedEdits>) -> WorldLog {
         );
     }
     if !log.changes.is_empty() {
+        // Those saves were edits and builds on the first terrain; a first run starts
+        // on the current one.
+        log.terrain_version = genverse_rules::terrain::LEGACY_TERRAIN;
         info!("migrated old saves into {} ({} changes)", world_dir(), log.changes.len());
     }
     for old in ["saves/creations.json", "saves/terrain_changes.json"] {

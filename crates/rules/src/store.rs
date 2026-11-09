@@ -34,11 +34,13 @@ struct Head {
     rules: WorldRules,
     #[serde(default)]
     flat: bool,
+    #[serde(default = "crate::terrain::legacy_terrain")]
+    terrain_version: u32,
 }
 
 impl Head {
     fn of(log: &WorldLog) -> Self {
-        Self { seed: log.seed, rules_version: log.rules_version, admins: log.admins.clone(), rules: log.rules.clone(), flat: log.flat }
+        Self { seed: log.seed, rules_version: log.rules_version, admins: log.admins.clone(), rules: log.rules.clone(), flat: log.flat, terrain_version: log.terrain_version }
     }
 }
 
@@ -225,6 +227,7 @@ fn read_lines(path: &Path) -> io::Result<WorldLog> {
                 fresh.admins = h.admins;
                 fresh.rules = h.rules;
                 fresh.flat = h.flat;
+                fresh.terrain_version = h.terrain_version;
                 log = Some(fresh);
             }
             (Line::Package(p), Some(log)) => {
@@ -241,6 +244,24 @@ fn read_lines(path: &Path) -> io::Result<WorldLog> {
 mod tests {
     use super::*;
     use crate::log::{Action, Provenance};
+
+    /// A world saved before terrain versions stays on the first terrain; a new one is
+    /// on the current one, and keeps it through its file.
+    #[test]
+    fn worlds_keep_their_terrain() {
+        let dir = std::env::temp_dir().join(format!("genverse-store-terrain-{}", std::process::id()));
+        let _ = fs::remove_dir_all(&dir);
+        fs::create_dir_all(&dir).unwrap();
+        fs::write(dir.join("world.jsonl"), "{\"head\":{\"seed\":4,\"rules_version\":1}}\n").unwrap();
+        let old = LogFile::open(&dir).unwrap().1.unwrap();
+        assert_eq!(old.terrain().version, crate::terrain::LEGACY_TERRAIN);
+        let (mut file, _) = LogFile::open(&dir.join("new")).unwrap();
+        let log = WorldLog::new(4);
+        assert_eq!(log.terrain().version, crate::terrain::TERRAIN_VERSION);
+        file.rewrite(&log).unwrap();
+        assert_eq!(LogFile::open(&dir.join("new")).unwrap().1.unwrap().terrain(), log.terrain());
+        let _ = fs::remove_dir_all(&dir);
+    }
 
     #[test]
     fn appends_and_reads_back() {

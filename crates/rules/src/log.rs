@@ -34,7 +34,7 @@ use crate::{
     rate::Rates,
     sculpt::{self, Area, Columns, TerrainSpec},
     settings::WorldRules,
-    terrain::{Terrain, WORLD_HEIGHT},
+    terrain::{self, TERRAIN_VERSION, Terrain, WORLD_HEIGHT},
     undo::{Cell, Op, Placed, UndoRecord},
     voxel::VoxelId,
 };
@@ -358,6 +358,10 @@ pub struct WorldLog {
     /// Flat and empty ground instead of the natural landscape.
     #[serde(default, skip_serializing_if = "std::ops::Not::not")]
     pub flat: bool,
+    /// The terrain generator the world was made with ([`Terrain::version`]). Worlds
+    /// saved before it was kept are on the first.
+    #[serde(default = "terrain::legacy_terrain")]
+    pub terrain_version: u32,
     pub changes: Vec<Change>,
     /// Game packages, by hash: everything an [`Action::InstallPackage`] may name.
     /// Packages that were never installed are harmless; they just wait.
@@ -373,6 +377,7 @@ impl WorldLog {
             admins: Vec::new(),
             rules: WorldRules::default(),
             flat: false,
+            terrain_version: TERRAIN_VERSION,
             changes: Vec::new(),
             packages: BTreeMap::new(),
         }
@@ -380,7 +385,7 @@ impl WorldLog {
 
     /// The ground this world is made of.
     pub fn terrain(&self) -> Terrain {
-        Terrain { seed: self.seed, flat: self.flat }
+        Terrain { seed: self.seed, flat: self.flat, version: self.terrain_version }
     }
 
     /// Keeps `package` so changes can install it. Returns its hash.
@@ -505,6 +510,7 @@ pub fn fnv1a(bytes: &[u8]) -> u64 {
 pub struct Replay {
     pub seed: u32,
     pub flat: bool,
+    pub terrain_version: u32,
     pub admins: Vec<String>,
     pub builds: Builds,
     /// Voxel edits on top of the seed.
@@ -748,7 +754,7 @@ impl Replay {
                     budgets.check(&cost, None, &self.rules.budgets).map_err(|e| format!("{package}: {e}"))?;
                     budgets.add(&cost);
                     if voxels {
-                        let terrain = Terrain { seed: self.seed, flat: self.flat };
+                        let terrain = self.terrain();
                         let columns = ground_columns(terrain, *area, &self.edits);
                         let edit = sculpt::compile(spec, *area, terrain, columns, &self.rules.terrain)
                             .map_err(|errors| format!("{package}'s land change: {}", errors.join("; ")))?;
@@ -833,12 +839,17 @@ impl Replay {
         self.undoable = state.undoable.iter().cloned().collect();
     }
 
+    /// The ground the world is made of.
+    pub fn terrain(&self) -> Terrain {
+        Terrain { seed: self.seed, flat: self.flat, version: self.terrain_version }
+    }
+
     /// The world before any change: the log's seed, admins and starting rules.
     pub fn new(log: &WorldLog) -> Self {
         let rules = log.rules.clone();
         let land = Land::new(log.admins.clone(), rules.spawn.clone(), rules.land);
         let logic = Logic { packages: log.packages.clone(), ..Default::default() };
-        Self { seed: log.seed, flat: log.flat, admins: log.admins.clone(), land, rules, logic, ..Default::default() }
+        Self { seed: log.seed, flat: log.flat, terrain_version: log.terrain_version, admins: log.admins.clone(), land, rules, logic, ..Default::default() }
     }
 
     /// Applies one change on top of the current state, or says why the rules refuse it
@@ -929,7 +940,7 @@ impl Replay {
                 self.budgets.check(&cost, None, &self.rules.budgets)?;
                 let mut cells = Vec::new();
                 if voxels {
-                    let terrain = Terrain { seed: self.seed, flat: self.flat };
+                    let terrain = self.terrain();
                     let columns = ground_columns(terrain, *area, &self.edits);
                     let ground = columns.clone();
                     let edit = sculpt::compile(spec, *area, terrain, columns, &self.rules.terrain)
@@ -1086,7 +1097,7 @@ impl Replay {
 /// top (a replay without voxels knows only the seed's).
 impl crate::logic::Ground for Replay {
     fn heights(&self, min: [i32; 2], step: i32, count: [i32; 2]) -> Option<Vec<Option<i32>>> {
-        TerrainGround { terrain: Terrain { seed: self.seed, flat: self.flat }, edits: &self.edits }.heights(min, step, count)
+        TerrainGround { terrain: self.terrain(), edits: &self.edits }.heights(min, step, count)
     }
 
     fn solids(&self, lo: [f32; 2], hi: [f32; 2]) -> Vec<crate::logic::solid::Solid<'_>> {
@@ -1120,7 +1131,7 @@ impl crate::logic::Ground for TerrainGround<'_> {
             for i in 0..count[0] {
                 let (x, z) = (min[0] + i * step, min[1] + j * step);
                 let h = terrain.height(x, z);
-                let sea = !flat && h < crate::terrain::SEA_LEVEL;
+                let sea = !flat && h < terrain.sea_level();
                 let Some(edits) = edited.get(&(x, z)) else {
                     out.push((!sea).then_some(h));
                     continue;
@@ -1130,7 +1141,7 @@ impl crate::logic::Ground for TerrainGround<'_> {
                     .map(|y| {
                         if y <= h {
                             crate::terrain::block::STONE[0]
-                        } else if !flat && y <= crate::terrain::SEA_LEVEL {
+                        } else if !flat && y <= terrain.sea_level() {
                             crate::terrain::block::WATER
                         } else {
                             crate::voxel::AIR
@@ -1526,7 +1537,7 @@ mod tests {
     #[test]
     fn generated_columns_match_however_the_region_is_cut() {
         // Chunks generate in pieces; replay generates whole areas. They must agree.
-        let terrain = Terrain { seed: 1337, flat: false };
+        let terrain = Terrain::new(1337, false);
         let a = terrain.generate(IVec3::new(390, 0, -12), UVec3::new(48, WORLD_HEIGHT as u32, 48));
         let b = terrain.generate(IVec3::new(400, 0, 0), UVec3::new(32, WORLD_HEIGHT as u32, 32));
         for z in 0..32 {

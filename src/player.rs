@@ -15,7 +15,7 @@ use crate::{
     voxel::{VoxelModel, VoxelModelAsset, query::overlaps_box},
     world::{
         ChunkLoader, SolidModel, VoxelWorld,
-        terrain::{SEA_LEVEL, Terrain, VOXEL_SIZE, is_solid},
+        terrain::{Terrain, VOXEL_SIZE, is_solid},
     },
 };
 
@@ -168,11 +168,12 @@ impl Player {
 /// (in voxels), feet in meters.
 pub fn spawn_point(terrain: Terrain, origin: IVec2) -> Vec3 {
     let (mut x, mut z) = (origin.x, origin.y);
-    for i in 0..400 {
+    // A spiral out to about 300 m: past the widest lakes and bays.
+    for i in 0..4000 {
         let angle = i as f32 * 2.4;
-        let r = (i as f32).sqrt() * 6.0;
+        let r = (i as f32).sqrt() * 20.0;
         (x, z) = (origin.x + (angle.cos() * r) as i32, origin.y + (angle.sin() * r) as i32);
-        if terrain.height(x, z) > SEA_LEVEL + 2 {
+        if terrain.height(x, z) > terrain.sea_level() + 2 {
             break;
         }
     }

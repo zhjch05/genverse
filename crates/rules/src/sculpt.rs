@@ -12,7 +12,7 @@
 use bevy_math::prelude::*;
 use serde::{Deserialize, Serialize};
 
-use crate::terrain::{SEA_LEVEL, Terrain, VOXEL_SIZE, WORLD_HEIGHT, block, is_ground, pick};
+use crate::terrain::{Terrain, VOXEL_SIZE, WORLD_HEIGHT, block, is_ground, pick};
 use crate::voxel::{
     AIR, VoxelGrid, VoxelId,
     noise::{hash01, value},
@@ -54,8 +54,6 @@ pub const ITEMS: [&str; 6] = ["tree", "bush", "rock", "flowers", "grass", "plant
 /// Columns read around the area, so trees and rocks near its edge aren't cut off.
 const MARGIN: i32 = 12;
 const H: usize = WORLD_HEIGHT as usize;
-/// Ground never rises into the top of the world, where trees would be clipped.
-const MAX_GROUND: i32 = WORLD_HEIGHT - 40;
 
 /// An axis-aligned rectangle of terrain columns, in world voxels.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
@@ -99,13 +97,13 @@ impl Area {
     }
 }
 
-/// Ground level in meters relative to the sea surface, for ground voxel `y`.
-pub fn level_of(y: i32) -> f32 {
-    (y - SEA_LEVEL) as f32 * VOXEL_SIZE
+/// Ground level in meters relative to the sea surface of `terrain`, for ground voxel `y`.
+pub fn level_of(terrain: Terrain, y: i32) -> f32 {
+    (y - terrain.sea_level()) as f32 * VOXEL_SIZE
 }
 
-fn voxel_of_level(level: f32) -> i32 {
-    SEA_LEVEL + (level / VOXEL_SIZE).round() as i32
+fn voxel_of_level(terrain: Terrain, level: f32) -> i32 {
+    terrain.sea_level() + (level / VOXEL_SIZE).round() as i32
 }
 
 /// The ground voxel at the top of a column (`0` if there is none), the top of the
@@ -187,6 +185,8 @@ pub struct Columns {
     orig: Vec<VoxelId>,
     ground: Vec<i32>,
     water: Vec<i32>,
+    /// The highest the ground may be moved to ([`Terrain::max_ground`]).
+    cap: i32,
 }
 
 impl Columns {
@@ -209,7 +209,7 @@ impl Columns {
                 return None;
             }
         }
-        let mut columns = Self { min, size, orig: vox.clone(), vox, ground: vec![0; n], water: vec![0; n] };
+        let mut columns = Self { min, size, orig: vox.clone(), vox, ground: vec![0; n], water: vec![0; n], cap: WORLD_HEIGHT - 40 };
         for i in 0..n {
             columns.rescan(i);
         }
@@ -272,7 +272,7 @@ impl Columns {
     /// when it falls. Whatever stands on it (plants, trees) moves with it. Water keeps
     /// its level; dry land stays dry.
     fn set_ground(&mut self, i: usize, new: i32) {
-        let new = new.clamp(2, MAX_GROUND);
+        let new = new.clamp(2, self.cap);
         let (g, water) = (self.ground[i], self.water[i]);
         if new == g || self.orig[i * H] == AIR {
             return;
@@ -532,6 +532,9 @@ pub fn compile(
     if !errors.is_empty() {
         return Err(errors);
     }
+    columns.cap = terrain.max_ground();
+    let sea = terrain.sea_level();
+    let voxel_of_level = |level: f32| voxel_of_level(terrain, level);
     let whole = area.size_m();
     let n = columns.len();
     let start = columns.ground.clone();
@@ -554,7 +557,7 @@ pub fn compile(
         let covered = || (0..n).filter(|&i| weights[i] > 0.0);
         let mean_ground = || {
             let (sum, count) = covered().fold((0.0, 0.0), |(s, c), i| (s + columns.ground[i] as f32 * weights[i], c + weights[i]));
-            if count > 0.0 { sum / count } else { SEA_LEVEL as f32 }
+            if count > 0.0 { sum / count } else { sea as f32 }
         };
         let density = finite(op.density).unwrap_or(0.5).clamp(0.0, 1.0);
 
@@ -578,7 +581,7 @@ pub fn compile(
                 let step = (finite(op.amount_m).unwrap_or(1.0).abs() / VOXEL_SIZE).round().max(2.0) as i32;
                 for i in covered().collect::<Vec<_>>() {
                     let g = columns.ground[i];
-                    let stepped = SEA_LEVEL + (g - SEA_LEVEL).div_euclid(step) * step;
+                    let stepped = sea + (g - sea).div_euclid(step) * step;
                     columns.set_ground(i, (g as f32 + (stepped - g) as f32 * weights[i]).round() as i32);
                 }
             }
@@ -612,7 +615,7 @@ pub fn compile(
             }
             "water" => {
                 let level = finite(op.level_m).map_or_else(
-                    || covered().filter(|&i| weights[i] > 0.5).map(|i| columns.ground[i]).min().unwrap_or(SEA_LEVEL),
+                    || covered().filter(|&i| weights[i] > 0.5).map(|i| columns.ground[i]).min().unwrap_or(sea),
                     voxel_of_level,
                 );
                 let depth = finite(op.depth_m).unwrap_or(1.0).abs().max(VOXEL_SIZE) / VOXEL_SIZE;
@@ -697,7 +700,7 @@ pub fn compile(
                 let mut profile: Vec<f32> = (0..samples)
                     .map(|s| {
                         let at = point_along(&points, s as f32 * VOXEL_SIZE);
-                        columns.index(area.to_world(at)).map_or(SEA_LEVEL as f32, |i| columns.ground[i] as f32)
+                        columns.index(area.to_world(at)).map_or(sea as f32, |i| columns.ground[i] as f32)
                     })
                     .collect();
                 for _ in 0..3 {
@@ -892,7 +895,7 @@ fn copy_into(columns: &mut Columns, grid: &VoxelGrid, min: IVec3) {
 mod tests {
     use super::*;
 
-    const TERRAIN: Terrain = Terrain { seed: 1337, flat: false };
+    const TERRAIN: Terrain = Terrain { seed: 1337, flat: false, version: crate::terrain::TERRAIN_VERSION };
 
     fn columns(area: Area) -> Columns {
         Columns::read(area, |x, z, out| {
@@ -937,7 +940,7 @@ mod tests {
     /// An inland spot above sea level.
     fn dry_area() -> Area {
         let mut x = 0;
-        while TERRAIN.height(x, 0) <= SEA_LEVEL + 4 {
+        while TERRAIN.height(x, 0) <= TERRAIN.sea_level() + 4 {
             x += 7;
         }
         Area { min: [x, 0], size: [24, 24] }
@@ -947,7 +950,7 @@ mod tests {
     fn flatten_levels_the_area() {
         let area = dry_area();
         let mut flat = op("flatten");
-        flat.level_m = Some(level_of(TERRAIN.height(area.min[0], 0)) as f64);
+        flat.level_m = Some(level_of(TERRAIN, TERRAIN.height(area.min[0], 0)) as f64);
         let (after, edit) = run(area, vec![flat]);
         assert!(edit.stats.changed > 0);
         let target = TERRAIN.height(area.min[0], 0);

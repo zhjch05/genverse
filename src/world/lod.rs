@@ -17,7 +17,7 @@ use bevy::{platform::collections::HashSet, prelude::*};
 
 use super::{CHUNK, terrain};
 use crate::voxel::{AIR, Palette, VoxelGrid, VoxelId, mesher::mesh_region};
-use terrain::{Terrain, VOXEL_SIZE, WORLD_HEIGHT, block, is_solid};
+use terrain::{Heights, Terrain, VOXEL_SIZE, WORLD_HEIGHT, block, is_solid};
 
 /// How many levels there are: full detail and three coarser ones, at 50 cm, 1 m and
 /// 2 m voxels.
@@ -220,7 +220,8 @@ fn downsample(fine: &VoxelGrid, step: i32, columns: Option<&dyn Fn(IVec2) -> boo
 }
 
 /// The world voxels a chunk at `level` is made from: its span plus one of its voxels
-/// of border, so it meshes without seams against its neighbors at that level.
+/// of border, so it meshes without seams against its neighbors at that level. At level
+/// 0, a chunk's padded grid.
 pub fn coarse_region(level: u32, key: IVec3) -> (IVec3, IVec3) {
     let min = key * span(level) - IVec3::splat(step(level));
     (min, min + IVec3::splat(span(level) + 2 * step(level)))
@@ -233,20 +234,49 @@ pub fn coarse_keys(level: u32, lo: IVec3, hi: IVec3) -> impl Iterator<Item = IVe
     (lo.z..=hi.z).flat_map(move |z| (lo.y..=hi.y).flat_map(move |y| (lo.x..=hi.x).map(move |x| IVec3::new(x, y, z))))
 }
 
+/// The ground under a column of chunks at one level, worked out once for all of them:
+/// its columns' heights (in coarse cells past level 1), and the highest voxel the seed
+/// fills there. Most of a tall column is sky.
+pub struct ColumnGround {
+    pub heights: Heights,
+    top: i32,
+}
+
+impl ColumnGround {
+    /// The ground under the chunks at `level` over `xz` (in chunk columns at that level).
+    pub fn new(terrain: Terrain, level: u32, xz: IVec2) -> Self {
+        let (min, max) = coarse_region(level, IVec3::new(xz.x, 0, xz.y));
+        let step = step(level);
+        let heights = if level <= 1 {
+            terrain.heights(min.xz(), (max - min).xz())
+        } else {
+            terrain.coarse_heights(min.xz() / step, (max - min).xz() / step, step)
+        };
+        let top = terrain.top(min.xz(), max.xz(), heights.max().ceil() as i32);
+        Self { heights, top }
+    }
+
+    /// Whether the seed leaves chunk `key` at `level` (and its border) empty: sky.
+    pub fn sky(&self, level: u32, key: IVec3) -> bool {
+        coarse_region(level, key).0.y > self.top
+    }
+}
+
 /// The voxels of chunk `key` at `level` (1 and up) with its border: generated from
-/// the seed, with `edits` (world voxels in its region) merged in.
-fn coarse_voxels(terrain: Terrain, level: u32, key: IVec3, edits: &[(IVec3, VoxelId)]) -> VoxelGrid {
+/// the seed, with `edits` (world voxels in its region) merged in. `ground` is its
+/// column's.
+fn coarse_voxels(terrain: Terrain, ground: &ColumnGround, level: u32, key: IVec3, edits: &[(IVec3, VoxelId)]) -> VoxelGrid {
     let (min, max) = coarse_region(level, key);
     let step = step(level);
     if level == 1 {
-        let mut fine = terrain.generate(min, (max - min).as_uvec3());
+        let mut fine = terrain.generate_in(&ground.heights, min, (max - min).as_uvec3());
         for (p, id) in edits {
             fine.set(*p - min, *id);
         }
         return downsample(&fine, step, None);
     }
     let cells = (max - min) / step;
-    let mut coarse = terrain.generate_coarse(min / step, cells.as_uvec3(), step);
+    let mut coarse = terrain.generate_coarse_in(&ground.heights, min / step, cells.as_uvec3(), step);
     if edits.is_empty() {
         return coarse;
     }
@@ -274,7 +304,36 @@ fn coarse_voxels(terrain: Terrain, level: u32, key: IVec3, edits: &[(IVec3, Voxe
 /// region, and meshes it. Meshes are in that level's voxels, relative to the chunk's
 /// corner.
 pub fn build_coarse(terrain: Terrain, palette: &Palette, level: u32, key: IVec3, edits: &[(IVec3, VoxelId)]) -> Vec<(usize, Mesh)> {
-    let coarse = coarse_voxels(terrain, level, key, edits);
+    let ground = ColumnGround::new(terrain, level, key.xz());
+    build_coarse_in(terrain, &ground, palette, level, key, edits)
+}
+
+/// Builds every chunk of `node` (level 1 and up), each with its `edits`: like
+/// [`build_coarse`], working the ground out once and leaving the sky empty.
+pub fn build_coarse_node(terrain: Terrain, palette: &Palette, node: Node, edits: &[Vec<(IVec3, VoxelId)>]) -> Vec<(IVec3, Vec<(usize, Mesh)>)> {
+    let ground = ColumnGround::new(terrain, node.level, node.xz);
+    node.chunks()
+        .zip(edits)
+        .map(|(key, edits)| {
+            let meshes = if edits.is_empty() && ground.sky(node.level, key) {
+                Vec::new()
+            } else {
+                build_coarse_in(terrain, &ground, palette, node.level, key, edits)
+            };
+            (key, meshes)
+        })
+        .collect()
+}
+
+fn build_coarse_in(
+    terrain: Terrain,
+    ground: &ColumnGround,
+    palette: &Palette,
+    level: u32,
+    key: IVec3,
+    edits: &[(IVec3, VoxelId)],
+) -> Vec<(usize, Mesh)> {
+    let coarse = coarse_voxels(terrain, ground, level, key, edits);
     let origin = key * CHUNK;
     mesh_region(|p| coarse.get(p - origin + IVec3::ONE), palette, origin, origin + IVec3::splat(CHUNK))
 }
@@ -346,19 +405,30 @@ mod tests {
 
     #[test]
     fn coarse_chunks_mesh_the_seed_and_edits() {
-        let terrain = Terrain { seed: super::super::SEED, flat: false };
+        let terrain = Terrain::new(super::super::SEED, false);
         let palette = terrain::palette();
         for level in 1..LEVELS {
-            assert!(!build_coarse(terrain, &palette, level, IVec3::new(3, 0, -2), &[]).is_empty());
+            let node = Node::new(level, IVec2::new(3, -2));
+            let none = vec![Vec::new(); vertical(level) as usize];
+            let built = build_coarse_node(terrain, &palette, node, &none);
+            // The same as built one at a time, with the sky left empty.
+            for (key, meshes) in &built {
+                assert_eq!(meshes.len(), build_coarse(terrain, &palette, level, *key, &[]).len());
+            }
+            assert!(built.iter().any(|(_, m)| !m.is_empty()));
+            assert!(built.last().unwrap().1.is_empty());
         }
-        // A pillar of stone up to the sky shows at level 2.
-        let key = IVec3::ZERO;
+        // A pillar of stone up to the sky shows at level 2, in its top chunk.
+        let key = IVec3::new(0, vertical(2) - 1, 0);
         let (min, _) = coarse_region(2, key);
         let column = IVec2::new(40, 40);
         let edits: Vec<_> = (0..WORLD_HEIGHT)
             .flat_map(|y| (0..4).flat_map(move |dz| (0..4).map(move |dx| (IVec3::new(column.x + dx, y, column.y + dz), block::STONE[0]))))
             .collect();
-        let voxels = coarse_voxels(terrain, 2, key, &edits);
+        let edits: Vec<_> = edits.into_iter().filter(|(p, _)| p.y >= min.y).collect();
+        let ground = ColumnGround::new(terrain, 2, key.xz());
+        assert!(ground.sky(2, key));
+        let voxels = coarse_voxels(terrain, &ground, 2, key, &edits);
         let top = (WORLD_HEIGHT - 1) / 4 - min.y / 4;
         assert_eq!(voxels.get(IVec3::new(column.x / 4 - min.x / 4, top, column.y / 4 - min.z / 4)), block::STONE[0]);
     }

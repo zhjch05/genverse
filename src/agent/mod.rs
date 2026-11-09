@@ -349,7 +349,7 @@ fn here_context(world: &VoxelWorld, terrain: genverse_rules::terrain::Terrain, h
             Some(h) => h[0]?,
             None => {
                 let h = terrain.height(x, z);
-                if !terrain.flat && h < genverse_rules::terrain::SEA_LEVEL {
+                if !terrain.flat && h < terrain.sea_level() {
                     return None;
                 }
                 h

@@ -196,7 +196,7 @@ impl Landscape {
                 local.x,
                 local.y,
                 if inside { "inside the area" } else { "outside the area" },
-                p.y - (crate::world::terrain::SEA_LEVEL + 1) as f32 * VOXEL_SIZE,
+                p.y - (world.terrain.sea_level() + 1) as f32 * VOXEL_SIZE,
             );
         }
         if let Some(view) = view.map(|v| v.xz()).filter(|v| v.length() > 0.01) {
@@ -334,7 +334,7 @@ pub fn sample(world: &VoxelWorld, area: Area, from: Vec2, size: Vec2, cells: usi
                         continue;
                     }
                     let (g, _, _) = surface(&column);
-                    sum += level_of(g);
+                    sum += level_of(world.terrain, g);
                     count += 1;
                     trees |= column[g as usize + 1..].iter().take(4).any(|id| block::BARK.contains(id));
                 }
@@ -350,7 +350,7 @@ pub fn sample(world: &VoxelWorld, area: Area, from: Vec2, size: Vec2, cells: usi
             total += 1;
             let cell = if w > g {
                 wet += 1;
-                format!("{:+.1}w", level_of(w))
+                format!("{:+.1}w", level_of(world.terrain, w))
             } else {
                 format!("{:+.1}{}", mean, surface_code(top))
             };
