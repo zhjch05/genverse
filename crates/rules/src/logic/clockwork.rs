@@ -192,6 +192,21 @@ impl Clockwork {
         }
         due.truncate(MAX_FIRED);
         let mut batch = logic.state.batch(change, "", rules.max_effects);
+        // What the other packages told this one since it last heard (their `emit`).
+        let unheard: Vec<_> = logic.state.unheard(package).cloned().collect();
+        for (i, signal) in unheard.iter().enumerate() {
+            let seed = fnv1a(format!("{world_seed}/{change}/{package}/signal/{i}").as_bytes());
+            let trigger = Trigger::Signal { from: &signal.from, name: &signal.name, data: &signal.data };
+            let event = Event { change, player: "", trigger, time: rules.clock.at(now), at: now, seed };
+            let mark = batch.mark();
+            if let Err(why) = runtime.handle(found, &event, &mut batch, &grants) {
+                batch.rollback(mark);
+                out.errors.push(format!("{package}: on_signal \"{}\": {why}", signal.name));
+            }
+        }
+        if let Some(last) = unheard.last() {
+            let _ = batch.apply(&grants, &Effect::Heard { upto: last.change });
+        }
         // What players did first: they came, left, walked into regions.
         for (i, what) in seen.iter().enumerate() {
             let (player, trigger) = match what {
@@ -280,6 +295,9 @@ impl Clockwork {
         let mut out = Run::default();
         let positions: Vec<[f32; 3]> = players.iter().map(|(_, p)| *p).collect();
         let mut packages: BTreeSet<String> = self.due(host.logic(), now, &positions).into_iter().collect();
+        // Packages with signals to hear.
+        let logic = host.logic();
+        packages.extend(logic.installed.keys().filter(|p| logic.state.unheard(p).next().is_some()).cloned());
         let mut seen: HashMap<String, Vec<Seen>> = HashMap::new();
         for package in host.logic().installed.keys() {
             let saw = self.watch(host.logic(), package, players, now);

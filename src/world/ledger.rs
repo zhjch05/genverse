@@ -355,6 +355,9 @@ pub struct Ledger {
     pub version: u64,
     /// What games said to the local player on their own (timers), for the game to show.
     pub heard: Vec<String>,
+    /// Saved changes that no longer applied when the world loaded (a game calling what
+    /// the engine no longer has): for the player, and the agent, to know.
+    pub load_problems: Vec<String>,
     /// What games did to the voxels (builds, land), and who installed them: for the game
     /// to draw.
     pub pending_world: Vec<(String, Vec<cubewish_rules::logic::WorldChange>)>,
@@ -1244,6 +1247,10 @@ fn load_with(seed: u32, join: bool) -> (Ledger, HashMap<IVec3, VoxelId>) {
     let (profile, key) = guest().unwrap_or((profile, key));
     let mut ledger = empty(log, profile, key);
     ledger.adopt(&replayed);
+    ledger.load_problems = replayed.problems.clone();
+    if !replayed.problems.is_empty() {
+        ledger.heard.push(format!("⚠ {} saved change(s) no longer work in this world; ask the builder to \"fix the game\"", replayed.problems.len()));
+    }
     ledger.clock = Clockwork::new(ledger.logic.timers_until);
     #[cfg(not(target_arch = "wasm32"))]
     {
@@ -1273,6 +1280,7 @@ fn empty(log: WorldLog, profile: Profile, key: Keypair) -> Ledger {
         follow: default(),
         version: 0,
         heard: Vec::new(),
+        load_problems: Vec::new(),
         pending_world: Vec::new(),
         refused: None,
         clock: Clockwork::default(),

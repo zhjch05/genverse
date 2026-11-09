@@ -17,8 +17,11 @@ Two rules decide what goes in the engine:
 
 Each step ends by rerunning the request set in [`evals/`](../evals/README.md).
 
-Status: steps 1 and 2 are done. In step 3, messages, chat and `near` are done;
-`ground`, player names and the time of day are still to do. Steps 4 to 6 are next.
+Status: all six steps are built. Still to do:
+- step 3: `ground(x, z)` for game scripts, players' names, and setting the time of day
+  for the game logic (the sky can already hold a time of day as players see it);
+- step 5: scripts declaring the API version they were written for;
+- player scripts and effects on the web build.
 
 ## 1. The world as a workspace
 

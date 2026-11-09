@@ -14,6 +14,7 @@ pub mod data;
 pub mod entity;
 pub mod package;
 pub mod script;
+pub mod present;
 pub mod solid;
 #[cfg(not(target_arch = "wasm32"))]
 pub mod frame;
@@ -213,6 +214,8 @@ pub enum Trigger<'a> {
     Exit { entity: EntityId },
     /// One of its pieces chasing [`Event::player`] caught up with them.
     Catch { entity: EntityId },
+    /// Another package told the others something (`emit`): its `on_signal`.
+    Signal { from: &'a str, name: &'a str, data: &'a serde_json::Value },
     /// Code to run once with the package's API, for what it returns (an agent asking
     /// about the world: [`Logic::query`]).
     Query { code: &'a str },

@@ -94,7 +94,7 @@ impl Play {
 pub(super) enum Look {
     /// One of its package's voxel models (by package hash and name), turned by quarter
     /// turns.
-    Model { package: String, model: String, turn: u8 },
+    Model { package: String, model: String, turn: u8, scale: f32, tint: Option<String>, glow: bool },
     /// Nothing to draw (a pawn: the hero shows it).
     Hidden,
     /// Its package isn't installed (any more): kept, but asleep.
@@ -111,17 +111,32 @@ impl Look {
     }
 }
 
-/// Compiled voxel models, by package hash and model name (none if it doesn't compile).
+/// Compiled voxel models, by package hash, model name, tint and glow (none if it
+/// doesn't compile).
 #[derive(Default)]
-struct Models(HashMap<(String, String), Option<ModelData>>);
+struct Models(HashMap<(String, String, Option<String>, bool), Option<ModelData>>);
 
 impl Models {
     fn get(&mut self, logic: &Logic, package: &str, model: &str) -> Option<&ModelData> {
+        self.tinted(logic, package, model, None, false)
+    }
+
+    /// The model with its colors multiplied by `tint`, and all of it glowing if `glow`.
+    fn tinted(&mut self, logic: &Logic, package: &str, model: &str, tint: Option<&str>, glow: bool) -> Option<&ModelData> {
         self.0
-            .entry((package.to_string(), model.to_string()))
+            .entry((package.to_string(), model.to_string(), tint.map(str::to_string), glow))
             .or_insert_with(|| {
-                let spec = logic.packages.get(package)?.models.get(model)?;
-                compile(spec, &BuildLimits::ACCEPTED).map(|b| b.model).ok()
+                let mut spec = logic.packages.get(package)?.models.get(model)?.clone();
+                let tint = tint.and_then(|t| Srgba::hex(t.trim_start_matches('#')).ok());
+                for color in &mut spec.palette {
+                    if let (Some(tint), Ok(c)) = (tint, Srgba::hex(color.hex.trim_start_matches('#'))) {
+                        color.hex = Srgba::rgb(c.red * tint.red, c.green * tint.green, c.blue * tint.blue).to_hex();
+                    }
+                    if glow && color.material != "glass" {
+                        color.material = "glow".into();
+                    }
+                }
+                compile(&spec, &BuildLimits::ACCEPTED).map(|b| b.model).ok()
             })
             .as_ref()
     }
@@ -129,7 +144,7 @@ impl Models {
     /// How tall a piece stands, in meters.
     fn height(&mut self, logic: &Logic, look: &Look) -> f32 {
         match look {
-            Look::Model { package, model, .. } => self.get(logic, package, model).map_or(0.0, |m| m.grid.size().y as f32 * m.voxel_size),
+            Look::Model { package, model, scale, .. } => self.get(logic, package, model).map_or(0.0, |m| m.grid.size().y as f32 * m.voxel_size * scale),
             other => other.block().map_or(0.0, |(size, _)| size.y),
         }
     }
@@ -147,11 +162,14 @@ fn describe(logic: &Logic, e: &Piece) -> (Look, Option<String>) {
         return (Look::Dormant, Some(format!("{} (not installed)", e.package)));
     }
     match e.components.get("look") {
+        Some(look) if look["hidden"] == true => (Look::Hidden, label),
         Some(look) => {
             let installed = logic.installed.get(&e.package).map(|i| i.package.hash.clone()).unwrap_or_default();
             let model = look["model"].as_str().unwrap_or_default().to_string();
             let turn = look["turn"].as_u64().unwrap_or(0).min(3) as u8;
-            (Look::Model { package: installed, model, turn }, label)
+            let scale = look["scale"].as_f64().unwrap_or(1.0).clamp(0.1, 8.0) as f32;
+            let tint = look["tint"].as_str().map(str::to_string);
+            (Look::Model { package: installed, model, turn, scale, tint, glow: look["glow"] == true }, label)
         }
         None => (Look::Hidden, label),
     }
@@ -173,6 +191,9 @@ pub(super) fn placement(e: &Piece, turn: u8, look: &Look) -> Transform {
     let mut transform = Transform::from_translation(Vec3::from_array(at)).with_rotation(Quat::from_rotation_y(yaw));
     if let Some((size, _)) = look.block() {
         transform.translation.y += size.y / 2.0;
+    }
+    if let Look::Model { scale, .. } = look {
+        transform.scale = Vec3::splat(*scale);
     }
     transform
 }
@@ -236,8 +257,8 @@ pub fn sync_pieces(
         }
         let mut entity = commands.spawn((Visibility::default(), Name::new("Game piece")));
         match &look {
-            Look::Model { package, model, .. } => {
-                if let Some(data) = play.models.get(logic, package, model) {
+            Look::Model { package, model, tint, glow, .. } => {
+                if let Some(data) = play.models.tinted(logic, package, model, tint.as_deref(), *glow) {
                     // Pieces stand on the ground, so their faces often meet it, as builds' do.
                     entity.insert((VoxelModel::from(data), DepthBias(500.0)));
                     if solid {

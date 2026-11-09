@@ -127,7 +127,7 @@ pub struct Player {
 }
 
 #[derive(Component)]
-struct Hero {
+pub struct Hero {
     model: Handle<VoxelModelAsset>,
     parts: HashMap<String, Entity>,
 }
@@ -617,7 +617,7 @@ fn animate_hero(
     }
 }
 
-fn follow_camera(
+pub fn follow_camera(
     time: Res<Time>,
     buttons: Res<ButtonInput<MouseButton>>,
     motion: Res<AccumulatedMouseMotion>,

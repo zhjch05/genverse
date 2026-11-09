@@ -133,6 +133,8 @@ World tools (read-only, in your build frame: y=0 is the ground at the build site
 - query: runs Lua with the game API (docs/game.md) on the live world and returns what it returns,
   to look at what the game is doing: return near({x = 0, y = 9, z = 0}, 20, "wolf").
 - test_game: plays your game change (the package files on disk) as a player would.
+- look: takes a picture of the world (the player's view, or from a point you give) and saves it
+  in shots/: Read it to see how what you made looks.
 Look around as much as the request needs (files, search, query), then answer."#,
         );
     }
@@ -282,6 +284,8 @@ Keep "build" and "terrain" null unless they also ask for those (on_start can bui
                      where the player is: any key or click can drive the game this way
     on_chat(ev)      ev.player typed ev.text in chat, a /command the game itself doesn't know
                      ("/home", "/sethome"); the world's package ("world") hears it
+    on_signal(ev)    another package said ev.name with ev.data (emit), from ev.from; heard at
+                     the next tick (within a second)
   ev also has player (id; nil for timers), pos ({x,y,z} meters; for keys, the region's), day,
   time (0..1 of the day), now (seconds).
   The world API (component names without ":" are your package's):
@@ -293,6 +297,10 @@ Keep "build" and "terrain" null unless they also ask for those (on_start can bui
     set(id, name, value)    remove(id, name)       notify(player, text)
     give(player, item, n)   take(player, item, n)  count(player, item)
     random() -> 0..1        random_int(a, b)       (no os, io, print or math.random)
+    remember(key, value)    recall(key) -> value   values the package keeps for itself (a
+                            season's score, whose turn it is); remember(key, nil) forgets
+    emit(name, data)        tells the other packages something happened (their on_signal):
+                            how features in separate packages react to each other
     after(seconds, name, data, near)   on_timer once, seconds from now (1 or more)
     every(seconds, name, data, near)   on_timer every that many seconds    cancel(name)
   Pieces that move on their own (the engine finds the way over the ground, around water and
@@ -334,7 +342,9 @@ Keep "build" and "terrain" null unless they also ask for those (on_start can bui
   Engine components on your entities:
     look = {model = "crate", turn = 0, solid = true}: drawn as that model of yours standing on
       pos, turned by quarter turns (0-3); positions snap to the 12.5 cm voxel grid. solid: players
-      and walking pieces can't go through it (a gate, a crate, a fence) while it isn't moving
+      and walking pieces can't go through it (a gate, a crate, a fence) while it isn't moving.
+      Also scale = 0.1-8 (a growing crop, a giant), tint = "#rrggbb" (multiplies its colors: a
+      ghostly blue, a poisoned green), glow = true (it all shines), hidden = true (not drawn)
     label = "text": shown over it nearby; E on it calls on_interact
     pawn = player id: that player's hero stands on this entity and rides it as it walks or
       flies; move it to move them
@@ -357,6 +367,21 @@ Keep "build" and "terrain" null unless they also ask for those (on_start can bui
       (dialogue, a shop, a quest log); a button calls on_choose(ev) with ev.choice (its id),
       ev.panel and ev.entity. It stays open until you show another or close(player); the
       player can always close it.
+  How the game shows things (all made from numbers: there are no image or sound files):
+    effect(pos, {color = "#ffaa33", to = "#ff3300", count = 30, speed = 4, size = 0.12,
+      life = 0.8, spread = 1, gravity = 4, glow = true}, player): a burst of particles there (a
+      sparkle, an explosion, smoke: gravity -2 rises), for everyone or one player
+    sound(pos, {wave = "sine"|"square"|"triangle"|"saw"|"noise", freq = 440, to = 880,
+      length = 0.25, volume = 0.5, attack = 0.005, decay = 0.6, notes = {72, 76, 79}}, player):
+      a sound heard near there. A tone slides from freq to to; notes (MIDI, 60 is middle C) play
+      a tune, length each. A bell: sine, notes = {84}, length = 1.5, decay = 1. A coin: square,
+      notes = {88, 96}, length = 0.08. A thud: noise, freq = 120, length = 0.2. A fanfare: square,
+      notes = {67, 72, 76, 79, 84}, length = 0.12
+    sky({time = 0-1 (0.5 noon, 0 midnight), fog = 0-1, fog_color = "#rrggbb", sun = 0-2,
+      weather = "rain"|"snow"}): how the sky looks for everyone until changed; sky(nil) puts the
+      world's own back. time holds the sun there as players see it (a night that stays night)
+    appearance(player, {model = "wolf", scale = 1}): shows that player's hero as one of your
+      models (a costume, turning into a wolf); appearance(player) gives them their own look back
   The world's voxels (whoever installed the game answers for it: their land and budget):
     build(model, pos, turn) -> build id: places one of your models as a real, solid build
       (walls, a bridge, a house that appears); unbuild(id) removes one you placed. The player
@@ -383,13 +408,15 @@ Keep "build" and "terrain" null unless they also ask for those (on_start can bui
       swinging open (pose it from a component the world script sets, like open = true).
     camera({distance, pitch, yaw, height, shake}): this frame's camera (distance 0 looks out of
       the hero's eyes; pitch 1.4 looks down from above).
+    effect(pos, spec) and sound(pos, spec): as in the game logic, but only this player sees
+      and hears them, at once (a footstep, a muzzle flash): at most 8 a frame
     send(name, data): tells your game logic something happened (on_message there): "Q was
       pressed, aiming this way" (data: plain values, under 2 KB). Send when something happens
       (f.pressed), never every frame: at most 10 a second. The game logic decides what it does.
   Flying: if f.keys.space then up = 6 elseif f.keys.shift then up = -6 else up = 0 end;
   hero_velocity({x = f.walk.x * 2, y = up, z = f.walk.z * 2}). Gate it on f.body or a stat the
-  world script sets (a flight potion), so the game decides who may fly. test_game doesn't run
-  player scripts: check them by reading them carefully.
+  world script sets (a flight potion), so the game decides who may fly. test_game runs player
+  scripts with "press <key>" and "hold <key+key> <seconds>".
 - One meter per tile works well (the hero is 1.35 m tall). Positions are meters; ev.pos from
   on_place is on the ground. A failed check (bad component, someone else's entity) or a Lua error
   refuses the whole action; the player sees the message, and you get it with the next request.
@@ -402,8 +429,11 @@ Keep "build" and "terrain" null unless they also ask for those (on_start can bui
   the tester there (world meters; regions and chases notice), "hit <label>" attacks, "place
   <item>" puts one down there. Its map shows where everything is.
   "wait <seconds>" lets time pass so timers go off (walks and chases too); "choose <id>" picks in the open
-  panel and "close" closes it; "interact <label>" presses E on a particular piece; the report
-  lists the tester's stats, HUD and open panel, and where pieces are walking to.
+  panel and "close" closes it; "interact <label>" presses E on a particular piece; "use <item> on
+  <label>" right-clicks with an item; "say /home" chats; "send <name> <json>" is a player
+  script's message; "press q" and "hold space 2" run the player scripts; "wait until night"
+  skips to a time of day. The report lists the tester's stats, HUD and open panel, and where
+  pieces are walking to.
 
 Example (a world with no game logic yet; the player stood near x=0, z=0 on ground at y=8.75):
 "three coins to collect around here"

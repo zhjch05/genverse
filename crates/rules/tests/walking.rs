@@ -398,3 +398,85 @@ fn agents_query_the_world_without_changing_it() {
     assert_eq!(state.logic.state.len(), 3);
     assert!(state.logic.query("town", "ada", "return near({x = 0, y = 0, z = 0}, 500)", 200, &rules).unwrap_err().contains("0-128"));
 }
+
+#[test]
+fn packages_tell_each_other_and_keep_values() {
+    let pkg = |name: &str, source: &str| GameSpec {
+        remove: None, rename: None,
+        name: name.into(),
+        title: name.into(),
+        defs: vec![DefSpec { name: "bell".into(), kind: "fixture".into(), title: "Bell".into(), ..Default::default() }],
+        scripts: vec![ScriptSpec { name: "main.luau".into(), source: source.into() }],
+        models: vec![model("bell")],
+    };
+    let bells = pkg("bells", r#"
+        function on_place(ev) spawn(ev.pos, { look = { model = "bell" }, label = "Bell" }) end
+        function on_interact(ev)
+          remember("rings", (recall("rings") or 0) + 1)
+          emit("rang", { times = recall("rings") })
+        end
+    "#);
+    let town = pkg("town", r#"
+        function on_signal(ev) remember("heard", ev.from .. ":" .. ev.name .. ":" .. ev.data.times) end
+    "#);
+    let mut log = world(&bells);
+    let package = town.to_package(1);
+    let reference = package.reference();
+    log.add_package(package);
+    log.push(by("admin", 100), Action::InstallPackage { package: reference, scope: Scope::World });
+    let placed = log.push(by("ada", 101), Action::Intent { intent: Intent::Place { item: "bells:bell".into(), position: [20.0, Y, 20.0] } });
+    let bell = EntityId { change: placed, n: 0 };
+    log.push(by("ada", 102), Action::Intent { intent: Intent::Interact { entity: bell } });
+    log.push(by("ada", 103), Action::Intent { intent: Intent::Interact { entity: bell } });
+    // The town hears it at its next tick, recorded like any timer's work.
+    let mut clock = Clockwork::new(103);
+    tick(&mut clock, &mut log, 104, &[[20.0, Y, 20.0]]);
+    let state = replay(&log);
+    assert!(state.problems.is_empty(), "{:?}", state.problems);
+    let rules = LogicRules::default();
+    let ask = |package: &str, code: &str| state.logic.query(package, "ada", code, 200, &rules).unwrap().0;
+    assert_eq!(ask("bells", "return recall('rings')"), 2);
+    assert_eq!(ask("town", "return recall('heard')"), "bells:rang:2");
+    // Heard once: nothing new next time.
+    assert!(state.logic.state.unheard("town").next().is_none());
+    // A script from before calling what the game no longer has hears what to use instead.
+    let old = state.logic.query("town", "ada", "wander('1.0', {radius = 5}) return nil", 200, &rules).unwrap_err();
+    assert!(old.contains("isn't in the game any more"), "{old}");
+}
+
+#[test]
+fn trials_play_player_scripts_items_and_time() {
+    let game = GameSpec {
+        remove: None, rename: None,
+        name: "sky".into(),
+        title: "Sky".into(),
+        defs: vec![
+            DefSpec { name: "pad".into(), kind: "fixture".into(), title: "Pad".into(), ..Default::default() },
+            DefSpec { name: "key".into(), kind: "item".into(), title: "Key".into(), ..Default::default() },
+        ],
+        scripts: vec![
+            ScriptSpec { name: "main.luau".into(), source: r#"
+                function on_place(ev) spawn(ev.pos, { look = { model = "pad" }, label = "Chest" }) end
+                function on_join(ev) give(ev.player, "key", 1) end
+                function on_use(ev) notify(ev.player, "opened with the " .. ev.item) end
+                function on_message(ev) notify(ev.player, "dash " .. ev.data.dir) end
+                function on_chat(ev) notify(ev.player, "heard " .. ev.text) end
+            "#.into() },
+            ScriptSpec { name: "jet.player.luau".into(), source: r#"
+                function on_frame(f)
+                  if f.keys.space then hero_velocity({x = 0, y = 4, z = 0}) end
+                  if f.pressed.q then send("dash", {dir = "north"}) end
+                end
+            "#.into() },
+        ],
+        models: vec![model("pad")],
+    };
+    let steps: Vec<String> = ["place pad", "use key on Chest", "say /home", "hold space 1", "press q", "wait until night"].iter().map(|s| s.to_string()).collect();
+    let report = cubewish_rules::logic::trial::play(&game.to_package(1), &steps);
+    println!("{report}");
+    assert!(report.contains("2. use key on Chest") && report.contains("opened with the key"), "{report}");
+    assert!(report.contains("heard /home"), "{report}");
+    assert!(report.contains("4.0 m up at most, steered in 30"), "{report}");
+    assert!(report.contains("sent \"dash\": 1 change(s), said \"dash north\""), "{report}");
+    assert!(report.contains("time of day 0.85"), "{report}");
+}

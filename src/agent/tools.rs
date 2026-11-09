@@ -128,7 +128,11 @@ pub fn definitions(rules: &WorldRules) -> Value {
                 passes: timers, walks, chases and spawners run; pieces more than 64 m from the tester sleep), \
                 \"choose <choice id>\" (a pick in the open panel), \"close\", \"place <fixture>\" (puts it down, \
                 each 32 m apart; the tester stands there after), or a key (\"enter\", \"north\", \"south\", \"east\", \
-                \"west\", \"action\", \"reset\", \"leave\"; sent to the region taking keys the tester's pawn is in). Every step takes a \
+                \"west\", \"action\", \"reset\", \"leave\"; sent to the region taking keys the tester's pawn is in), \
+                \"use <item> on <label>\" (right-click with the item in hand on that piece: on_use), \"say <chat line>\" \
+                (on_chat), \"send <name> <json>\" (as if a player script sent it: on_message), \"press <key>\" and \"hold \
+                <key+key> <seconds>\" (runs the player scripts frame by frame with those keys: how the hero moves, the \
+                camera, and what they send), \"wait until night\" (or dawn, noon, dusk, midnight, 0-1). Every step takes a \
                 second. Use it to play your game through as a player would, winning and losing, and fix what fails.",
             "inputSchema": {
                 "type": "object",
@@ -138,6 +142,20 @@ pub fn definitions(rules: &WorldRules) -> Value {
                     "steps": { "type": "array", "items": { "type": "string" }, "maxItems": 300 },
                 },
                 "required": ["steps"],
+            },
+        },
+        {
+            "name": "look",
+            "description": "Takes a picture of the world as the player's game draws it, and saves it in your folder \
+                (shots/): Read the file it names to see it. With no arguments it's the player's own view. Otherwise \
+                the camera stands at from {x, y, z} and looks at {x, y, z} (meters; the camera goes back to the \
+                player after). Use it to check how what you made looks: its size, colors, where it stands.",
+            "inputSchema": {
+                "type": "object",
+                "properties": {
+                    "from": { "type": "object", "properties": { "x": { "type": "number" }, "y": { "type": "number" }, "z": { "type": "number" } } },
+                    "at": { "type": "object", "properties": { "x": { "type": "number" }, "y": { "type": "number" }, "z": { "type": "number" } } },
+                },
             },
         },
         {
@@ -200,6 +218,40 @@ fn query(args: &Value, ledger: &Ledger) -> Result<String, String> {
         out.push_str(&format!("\n(It would have made {changes} change(s); none were kept.)"));
     }
     Ok(out)
+}
+
+/// A picture the agent asked for (`look`): where the camera stands and looks (the
+/// player's view if `None`), the file, and who's waiting.
+pub struct PendingLook {
+    view: Option<(Vec3, Vec3)>,
+    path: std::path::PathBuf,
+    reply: std::sync::mpsc::Sender<super::mcp::ToolResult>,
+    frames: u32,
+}
+
+#[derive(Resource, Default)]
+pub struct Looks(Option<PendingLook>);
+
+/// Takes the picture: holds the camera where it was asked for a few frames, saves the
+/// screen, and answers once the file is there.
+pub fn take_looks(mut commands: Commands, mut looks: ResMut<Looks>, mut cameras: Query<&mut Transform, With<crate::player::FollowCamera>>) {
+    let Some(look) = &mut looks.0 else { return };
+    look.frames += 1;
+    if let (Some((from, at)), Ok(mut camera)) = (look.view, cameras.single_mut()) {
+        *camera = Transform::from_translation(from).looking_at(at, Vec3::Y);
+    }
+    // Let the view settle (and the ground stream in) before the picture.
+    if look.frames == 20 {
+        use bevy::render::view::screenshot::{Screenshot, save_to_disk};
+        commands.spawn(Screenshot::primary_window()).observe(save_to_disk(look.path.clone()));
+    }
+    // Saving takes a few frames more; give the file time to be written in full.
+    let saved = look.frames > 35 && std::fs::metadata(&look.path).is_ok_and(|m| m.len() > 0);
+    if saved || look.frames > 600 {
+        let look = looks.0.take().expect("checked above");
+        let name = look.path.file_name().map(|n| n.to_string_lossy().to_string()).unwrap_or_default();
+        let _ = look.reply.send(if saved { Ok(format!("Saved shots/{name}: Read it to see the picture.")) } else { Err("the picture didn't save".into()) });
+    }
 }
 
 /// The world's ground and its builds, for a trial's walks.
@@ -290,6 +342,7 @@ pub fn answer_tool_calls(
     ledger: Res<Ledger>,
     players: Query<&Transform, With<Player>>,
     transforms: Query<&Transform>,
+    mut looks: ResMut<Looks>,
 ) {
     let Some(server) = server else {
         return;
@@ -304,6 +357,25 @@ pub fn answer_tool_calls(
         .filter_map(|(e, c)| transforms.get(*e).ok().map(|t| (*t, c)))
         .collect();
     for ToolCall { name, args, reply } in calls {
+        // A picture takes a few frames: it answers when it's saved.
+        if name == "look" {
+            let point = |v: &Value| Some(Vec3::new(v["x"].as_f64()? as f32, v["y"].as_f64()? as f32, v["z"].as_f64()? as f32));
+            let Some(dir) = super::workspace::current() else {
+                let _ = reply.send(Err("there's no folder to save the picture in".into()));
+                continue;
+            };
+            if looks.0.is_some() {
+                let _ = reply.send(Err("a picture is already being taken".into()));
+                continue;
+            }
+            let n = std::fs::read_dir(dir.join("shots")).map_or(0, |d| d.count()) + 1;
+            let path = dir.join("shots").join(format!("look-{n}.png"));
+            let _ = std::fs::create_dir_all(dir.join("shots"));
+            let view = point(&args["from"]).map(|from| (from, point(&args["at"]).unwrap_or(from + Vec3::NEG_Z)));
+            looks.0 = Some(PendingLook { view, path, reply, frames: 0 });
+            info!("agent tool look: taking a picture");
+            continue;
+        }
         let ctx = Ctx { site: *site, world: &world, creations: &creations, placed: &placed, limits: &ledger.rules.build };
         let result = match name.as_str() {
             "get_build_site" => Ok(ctx.build_site(&args, players.single().ok())),

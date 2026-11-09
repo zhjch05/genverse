@@ -161,6 +161,38 @@ pub fn play_in(package: &Package, steps: &[String], world: Option<Copy>) -> Stri
     let _ = writeln!(out, "The tester came in at ({:.1}, {:.1}): {came}", tester.at[0], tester.at[2]);
     for (i, step) in steps.iter().enumerate() {
         let step = step.trim();
+        // Until a time of day: "wait until night" (or dawn, noon, dusk, or 0-1).
+        if let Some(when) = step.strip_prefix("wait until ") {
+            let goal = match when.trim() {
+                "midnight" => Some(0.0),
+                "dawn" | "morning" => Some(0.27),
+                "noon" | "day" => Some(0.5),
+                "dusk" | "evening" => Some(0.75),
+                "night" => Some(0.85),
+                t => t.parse::<f32>().ok().filter(|t| (0.0..=1.0).contains(t)),
+            };
+            let Some(goal) = goal else {
+                let _ = writeln!(out, "{}. {step}: REFUSED: wait until night, dawn, noon, dusk, midnight or a time of day 0-1", i + 1);
+                continue;
+            };
+            let day = rules.clock.day_seconds.max(1) as u64;
+            let from = rules.clock.at(now).time_of_day;
+            let ahead = (goal - from).rem_euclid(1.0);
+            let later = ((ahead as f64) * day as f64).ceil() as u64;
+            let target = now + later;
+            let report = wait(&mut logic, &mut clock, &mut change, &mut now, target, &rules, &mut tester, ground);
+            let _ = writeln!(out, "{}. {step}: {later} s later, time of day {:.2}: {report}", i + 1, rules.clock.at(now).time_of_day);
+            continue;
+        }
+        // Player scripts, frame by frame: "press q", "hold w+space 2".
+        #[cfg(not(target_arch = "wasm32"))]
+        if let Some(rest) = step.strip_prefix("press ").map(|k| (k, 0.0)).or_else(|| {
+            step.strip_prefix("hold ").and_then(|r| r.rsplit_once(' ')).and_then(|(k, s)| Some((k, s.trim().parse::<f32>().ok()?.clamp(0.0, 10.0))))
+        }) {
+            let report = play_frames(package, &mut logic, &rules, &mut tester, ground_y, now, &mut change, rest.0, rest.1);
+            let _ = writeln!(out, "{}. {step}: {report}", i + 1);
+            continue;
+        }
         if let Some(seconds) = step.strip_prefix("wait ") {
             let Ok(seconds) = seconds.trim().parse::<u64>() else {
                 let _ = writeln!(out, "{}. {step}: REFUSED: wait takes whole seconds", i + 1);
@@ -203,6 +235,21 @@ pub fn play_in(package: &Package, steps: &[String], world: Option<Copy>) -> Stri
                 Some(entity) => Ok(Intent::Key { entity, key: step.into() }),
                 None => Err("the tester isn't in a region that takes keys (keys = true)".to_string()),
             }
+        } else if let Some(rest) = step.strip_prefix("use ") {
+            // "use <item> on <label>": right-click with the item in hand on that piece.
+            let (item, label) = rest.split_once(" on ").map_or((rest.trim(), None), |(i, l)| (i.trim(), Some(l.trim())));
+            let item = if split_name(item).is_some() { item.to_string() } else { format!("{}:{item}", package.manifest.name) };
+            match here.and_then(|at| nearest(&logic.state, at, label)) {
+                Some(target) => Ok(Intent::UseItem { item, target }),
+                None => Err(label.map_or("nothing labeled near the tester".into(), |l| format!("nothing labeled or modeled \"{l}\""))),
+            }
+        } else if let Some(text) = step.strip_prefix("say ") {
+            Ok(Intent::Chat { text: text.trim().to_string(), at: tester.here(&logic.state) })
+        } else if let Some(rest) = step.strip_prefix("send ") {
+            let (name, data) = rest.trim().split_once(' ').unwrap_or((rest.trim(), "null"));
+            serde_json::from_str(data)
+                .map_err(|e| format!("send <name> <data as JSON>: {e}"))
+                .map(|data| Intent::Message { package: package.manifest.name.clone(), name: name.to_string(), data, at: tester.here(&logic.state) })
         } else if let Some(choice) = step.strip_prefix("choose ") {
             Ok(Intent::Choose { choice: Some(choice.trim().to_string()) })
         } else if step == "close" {
@@ -218,7 +265,7 @@ pub fn play_in(package: &Package, steps: &[String], world: Option<Copy>) -> Stri
             }
         } else {
             Err(format!(
-                "unknown step \"{step}\" (use \"place <item>\", a key: {}, \"interact\", \"interact <label>\", \"hit <label>\", \"go <x> <z>\", \"choose <choice id>\", \"close\" or \"wait <seconds>\")",
+                "unknown step \"{step}\" (use \"place <item>\", a key: {}, \"interact\", \"interact <label>\", \"hit <label>\", \"use <item> on <label>\", \"go <x> <z>\", \"choose <choice id>\", \"close\", \"say <chat line>\", \"send <name> <json>\", \"press <key>\", \"hold <key+key> <seconds>\", \"wait <seconds>\" or \"wait until night\")",
                 KEYS.join(", ")
             ))
         };
@@ -473,4 +520,83 @@ fn describe(out: &mut String, state: &GameState, origin: [f32; 3], ground: f32) 
     if near.len() > 60 {
         let _ = writeln!(out, "  … and {} more", near.len() - 60);
     }
+}
+
+/// Runs the package's player scripts for `seconds` (one frame if 0) with `keys` held
+/// (pressed on the first frame), moving the tester as they steer, and sends what they
+/// send to the game logic. Says how the hero moved, what the camera did, and what came of it.
+#[cfg(not(target_arch = "wasm32"))]
+#[allow(clippy::too_many_arguments)]
+fn play_frames(package: &Package, logic: &mut Logic, rules: &LogicRules, tester: &mut Tester, ground_y: f32, now: u64, change: &mut u64, keys: &str, seconds: f32) -> String {
+    use super::frame::{FrameIn, Hero, PlayerVm};
+    let mut vm = match PlayerVm::new(package) {
+        Ok(Some(vm)) => vm,
+        Ok(None) => return "nothing: the package has no player scripts (*.player.luau)".into(),
+        Err(why) => return format!("REFUSED: the player scripts don't load: {why}"),
+    };
+    let held: Vec<&str> = keys.split('+').map(str::trim).filter(|k| !k.is_empty()).collect();
+    let dt = 1.0 / 30.0;
+    let frames = ((seconds / dt).round() as usize).max(1);
+    let mut hero = Hero { pos: tester.here(&logic.state), grounded: true, ..Default::default() };
+    let start = hero.pos;
+    let (mut steered, mut highest, mut camera, mut poses, mut shows) = (0, hero.pos[1], None, 0, 0);
+    let mut said = Vec::new();
+    for f in 0..frames {
+        let body = logic.state.body(TESTER);
+        let gravity = 24.0 * body.gravity;
+        let input = FrameIn {
+            dt,
+            now: now as f64 + f as f64 * dt as f64,
+            me: TESTER,
+            hero,
+            keys: &held,
+            pressed: if f == 0 { &held } else { &[] },
+            walk: [0.0, 0.0],
+            camera: [0.0, 0.3],
+            body,
+            gravity,
+        };
+        let out = match vm.frame(&input, &logic.state) {
+            Ok(out) => out,
+            Err(why) => return format!("REFUSED on frame {}: {why}", f + 1),
+        };
+        // The hero moves as steered (or falls), standing on the test world's flat ground.
+        let v = match out.velocity {
+            Some(v) => {
+                steered += 1;
+                v
+            }
+            None => [0.0, if hero.grounded { 0.0 } else { hero.velocity[1] - gravity * dt }, 0.0],
+        };
+        hero.pos = std::array::from_fn(|i| hero.pos[i] + v[i] * dt);
+        hero.grounded = hero.pos[1] <= ground_y;
+        if hero.grounded {
+            hero.pos[1] = ground_y;
+        }
+        hero.velocity = v;
+        highest = highest.max(hero.pos[1]);
+        camera = out.camera.or(camera);
+        poses += out.poses.len();
+        shows += out.shows.len();
+        for (name, data) in out.sent {
+            *change += 1;
+            let intent = Intent::Message { package: package.manifest.name.clone(), name: name.clone(), data, at: hero.pos };
+            said.push(match logic.act(*change, TESTER, now, 7, rules, &intent) {
+                Ok(o) => {
+                    let notes: Vec<String> = o.notes.iter().map(|(_, t)| format!("\"{t}\"")).collect();
+                    format!("sent \"{name}\": {} change(s){}", o.effects, if notes.is_empty() { String::new() } else { format!(", said {}", notes.join(", ")) })
+                }
+                Err(why) => format!("sent \"{name}\": REFUSED: {why}"),
+            });
+        }
+    }
+    tester.at = hero.pos;
+    let moved = format!(
+        "{frames} frame(s); the hero went from ({:.1}, {:.1}, {:.1}) to ({:.1}, {:.1}, {:.1}), {:.1} m up at most, steered in {steered}",
+        start[0], start[1], start[2], hero.pos[0], hero.pos[1], hero.pos[2], highest - start[1]
+    );
+    let camera = camera.map_or(String::new(), |c| format!("; camera {c:?}"));
+    let extra = format!("{}{}", if poses > 0 { format!("; posed pieces {poses} time(s)") } else { String::new() }, if shows > 0 { format!("; {shows} effect(s)/sound(s)") } else { String::new() });
+    let said = if said.is_empty() { String::new() } else { format!("; {}", said.join("; ")) };
+    format!("{moved}{camera}{extra}{said}")
 }

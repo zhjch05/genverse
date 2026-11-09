@@ -42,6 +42,7 @@ use serde_json::Value;
 use super::{
     Scope,
     package::split_name,
+    present::{Appearance, Show, Shown, Sky},
     solid::Areas,
     ui::{MAX_HUD, PanelSpec, Ui},
 };
@@ -141,7 +142,34 @@ pub enum Effect {
     Body { player: String, body: Option<Body> },
     /// Throws a player's hero: sets how fast it's going, meters a second.
     Launch { player: String, velocity: [f32; 3] },
+    /// Shows or plays something once at `pos`, for everyone or one player.
+    Play { pos: [f32; 3], to: Option<String>, what: Shown },
+    /// How the sky looks (`None`: the world's own again).
+    Sky { sky: Option<Sky> },
+    /// What a player's hero looks like (`None`: their own again).
+    Appearance { player: String, appearance: Option<Appearance> },
+    /// Tells the other packages something happened (their `on_signal`, at their next tick).
+    Emit { name: String, data: Value },
+    /// The package has heard the signals up to this change.
+    Heard { upto: u64 },
+    /// Keeps a value for the package under `key` (`None` forgets it).
+    Store { key: String, value: Option<Value> },
 }
+
+/// Something one package told the others.
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+pub struct Signal {
+    pub change: u64,
+    pub from: String,
+    pub name: String,
+    pub data: Value,
+}
+
+/// How many signals the world keeps for packages that haven't heard them yet.
+pub const MAX_SIGNALS: usize = 64;
+
+/// How many recent effects and sounds the world keeps for players' games to play.
+pub const MAX_SHOWS: usize = 32;
 
 /// Where a game last put a player, and in which change (so a game shows each move once).
 #[derive(Clone, Copy, Debug, PartialEq, Serialize, Deserialize)]
@@ -266,6 +294,13 @@ impl Timer {
 }
 
 /// Components the engine itself reads.
+/// Engine components the game no longer has, and what games use instead.
+pub const REMOVED_COMPONENTS: [(&str, &str); 3] = [
+    ("wander", "walk() from on_arrive"),
+    ("spawner", "an every() timer that spawns while find() says there are too few"),
+    ("zone", "region(id, {w, d, keys = true})"),
+];
+
 pub const RESERVED: [&str; 8] = ["look", "label", "pawn", "walk", "chase", "region", "world", "feature"];
 
 /// Checks an engine component's value, phrased for the agent that wrote it.
@@ -279,7 +314,10 @@ fn check_reserved(name: &str, value: &Value, grants: &Grants) -> Result<(), Stri
             let model = value["model"].as_str().is_some_and(|m| grants.models.iter().any(|g| g == m));
             let turn = value["turn"].is_null() || value["turn"].as_u64().is_some_and(|t| t < 4);
             let solid = value["solid"].is_null() || value["solid"].is_boolean();
-            model && turn && solid
+            let scale = value["scale"].is_null() || value["scale"].as_f64().is_some_and(|s| (0.1..=8.0).contains(&s));
+            let tint = value["tint"].is_null() || value["tint"].as_str().is_some_and(super::present::is_color);
+            let flags = ["glow", "hidden"].iter().all(|k| value[*k].is_null() || value[*k].is_boolean());
+            model && turn && solid && scale && tint && flags
         }
         "label" => value.as_str().is_some_and(|l| l.chars().count() <= 60),
         "pawn" => value.as_str().is_some_and(|p| !p.is_empty() && p.len() <= 128),
@@ -297,7 +335,7 @@ fn check_reserved(name: &str, value: &Value, grants: &Grants) -> Result<(), Stri
     } else {
         Err(match name {
             "look" => format!(
-                "\"look\" is {{\"model\": one of the package's models ({}), \"turn\": 0-3, \"solid\": true to block walking}}",
+                "\"look\" is {{\"model\": one of the package's models ({}), \"turn\": 0-3, \"solid\": true to block walking, \"scale\": 0.1-8, \"tint\": \"#rrggbb\", \"glow\": true, \"hidden\": true}}",
                 if grants.models.is_empty() { "it has none".to_string() } else { grants.models.join(", ") }
             ),
             "label" => "\"label\" is text of up to 60 characters".into(),
@@ -330,6 +368,10 @@ impl Grants {
     /// Whether it may change the component or item `name`.
     fn writable(&self, name: &str) -> Result<(), String> {
         let Some((ns, _)) = split_name(name) else {
+            // Engine components the game had once (recorded in old changes).
+            if let Some((_, instead)) = REMOVED_COMPONENTS.iter().find(|(old, _)| *old == name) {
+                return Err(format!("the engine no longer has \"{name}\"; games use {instead}"));
+            }
             return Err(format!("\"{name}\" must be named \"<package>:<name>\""));
         };
         if ns == self.package || self.write.iter().any(|w| w == ns) {
@@ -378,6 +420,18 @@ pub struct GameState {
     bodies: BTreeMap<String, Body>,
     /// How games last threw each player.
     launches: BTreeMap<String, Launch>,
+    /// How a game has the sky look.
+    sky: Option<Sky>,
+    /// What games show players' heroes as.
+    appearances: BTreeMap<String, Appearance>,
+    /// Effects and sounds lately, newest last (players' games play each once).
+    shows: Vec<Show>,
+    /// What packages told each other lately (`emit`), oldest first.
+    signals: Vec<Signal>,
+    /// The last signal each package has heard.
+    heard: BTreeMap<String, u64>,
+    /// What each package keeps for itself (`remember`), by key.
+    stores: BTreeMap<String, BTreeMap<String, Value>>,
     /// Entities by where they stand.
     areas: Areas<EntityId>,
 }
@@ -404,6 +458,18 @@ struct SavedState {
     bodies: BTreeMap<String, Body>,
     #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
     launches: BTreeMap<String, Launch>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    sky: Option<Sky>,
+    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    appearances: BTreeMap<String, Appearance>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    shows: Vec<Show>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    signals: Vec<Signal>,
+    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    heard: BTreeMap<String, u64>,
+    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    stores: BTreeMap<String, BTreeMap<String, Value>>,
 }
 
 impl From<GameState> for SavedState {
@@ -419,6 +485,12 @@ impl From<GameState> for SavedState {
             teleports: state.teleports,
             bodies: state.bodies,
             launches: state.launches,
+            sky: state.sky,
+            appearances: state.appearances,
+            shows: state.shows,
+            signals: state.signals,
+            heard: state.heard,
+            stores: state.stores,
         }
     }
 }
@@ -446,6 +518,12 @@ impl From<SavedState> for GameState {
             teleports: saved.teleports,
             bodies: saved.bodies,
             launches: saved.launches,
+            sky: saved.sky,
+            appearances: saved.appearances,
+            shows: saved.shows,
+            signals: saved.signals,
+            heard: saved.heard,
+            stores: saved.stores,
         }
     }
 }
@@ -532,6 +610,32 @@ impl GameState {
     /// How a game last threw `player`, and when.
     pub fn launch(&self, player: &str) -> Option<Launch> {
         self.launches.get(player).copied()
+    }
+
+    /// How a game has the sky look, if one does.
+    pub fn sky(&self) -> Option<&Sky> {
+        self.sky.as_ref()
+    }
+
+    /// What a game shows `player`'s hero as, if one does.
+    pub fn appearance(&self, player: &str) -> Option<&Appearance> {
+        self.appearances.get(player)
+    }
+
+    /// Effects and sounds lately, oldest first.
+    pub fn shows(&self) -> &[Show] {
+        &self.shows
+    }
+
+    /// Signals from other packages that `package` hasn't heard yet.
+    pub fn unheard(&self, package: &str) -> impl Iterator<Item = &Signal> {
+        let since = self.heard.get(package).copied().unwrap_or(0);
+        self.signals.iter().filter(move |s| s.change > since && s.from != package)
+    }
+
+    /// What `package` keeps under `key`.
+    pub fn recalled(&self, package: &str, key: &str) -> Option<&Value> {
+        self.stores.get(package)?.get(key)
     }
 
     /// The package that placed build `id`, if a package did.
@@ -643,6 +747,12 @@ impl GameState {
             teleports: BTreeMap::new(),
             bodies: BTreeMap::new(),
             launches: BTreeMap::new(),
+            sky: None,
+            appearances: BTreeMap::new(),
+            shows: Vec::new(),
+            signals: Vec::new(),
+            heard: BTreeMap::new(),
+            stores: BTreeMap::new(),
         }
     }
 
@@ -714,6 +824,32 @@ impl GameState {
             };
         }
         self.launches.extend(done.launches);
+        if let Some(sky) = done.sky {
+            self.sky = sky;
+        }
+        for (player, look) in done.appearances {
+            match look {
+                Some(a) => self.appearances.insert(player, a),
+                None => self.appearances.remove(&player),
+            };
+        }
+        self.shows.extend(done.shows);
+        let excess = self.shows.len().saturating_sub(MAX_SHOWS);
+        self.shows.drain(..excess);
+        self.signals.extend(done.signals);
+        let excess = self.signals.len().saturating_sub(MAX_SIGNALS);
+        self.signals.drain(..excess);
+        self.heard.extend(done.heard);
+        for ((package, key), value) in done.stores {
+            let store = self.stores.entry(package.clone()).or_default();
+            match value {
+                Some(v) => store.insert(key, v),
+                None => store.remove(&key),
+            };
+            if store.is_empty() {
+                self.stores.remove(&package);
+            }
+        }
     }
 }
 
@@ -751,6 +887,12 @@ pub struct Batch<'a> {
     teleports: BTreeMap<String, Teleport>,
     bodies: BTreeMap<String, Option<Body>>,
     launches: BTreeMap<String, Launch>,
+    sky: Option<Option<Sky>>,
+    appearances: BTreeMap<String, Option<Appearance>>,
+    shows: Vec<Show>,
+    signals: Vec<Signal>,
+    heard: BTreeMap<String, u64>,
+    stores: BTreeMap<(String, String), Option<Value>>,
 }
 
 /// A point in a batch to go back to, if what follows fails ([`Batch::rollback`]).
@@ -771,6 +913,12 @@ pub struct Mark {
     teleports: BTreeMap<String, Teleport>,
     bodies: BTreeMap<String, Option<Body>>,
     launches: BTreeMap<String, Launch>,
+    sky: Option<Option<Sky>>,
+    appearances: BTreeMap<String, Option<Appearance>>,
+    shows: Vec<Show>,
+    signals: Vec<Signal>,
+    heard: BTreeMap<String, u64>,
+    stores: BTreeMap<(String, String), Option<Value>>,
 }
 
 /// What a batch changes, to [`GameState::commit`].
@@ -786,6 +934,12 @@ pub struct Done {
     teleports: BTreeMap<String, Teleport>,
     bodies: BTreeMap<String, Option<Body>>,
     launches: BTreeMap<String, Launch>,
+    sky: Option<Option<Sky>>,
+    appearances: BTreeMap<String, Option<Appearance>>,
+    shows: Vec<Show>,
+    signals: Vec<Signal>,
+    heard: BTreeMap<String, u64>,
+    stores: BTreeMap<(String, String), Option<Value>>,
     /// Messages for players: who, and what.
     pub notes: Vec<(String, String)>,
     /// What it does to the world's voxels, in order ([`Effect::Build`],
@@ -861,6 +1015,12 @@ impl Batch<'_> {
             teleports: self.teleports.clone(),
             bodies: self.bodies.clone(),
             launches: self.launches.clone(),
+            sky: self.sky.clone(),
+            appearances: self.appearances.clone(),
+            shows: self.shows.clone(),
+            signals: self.signals.clone(),
+            heard: self.heard.clone(),
+            stores: self.stores.clone(),
         }
     }
 
@@ -882,6 +1042,20 @@ impl Batch<'_> {
         self.teleports = mark.teleports;
         self.bodies = mark.bodies;
         self.launches = mark.launches;
+        self.sky = mark.sky;
+        self.appearances = mark.appearances;
+        self.shows = mark.shows;
+        self.signals = mark.signals;
+        self.heard = mark.heard;
+        self.stores = mark.stores;
+    }
+
+    /// What `package` keeps under `key`, as staged.
+    pub fn recall(&self, package: &str, key: &str) -> Option<Value> {
+        match self.stores.get(&(package.to_string(), key.to_string())) {
+            Some(staged) => staged.clone(),
+            None => self.base.recalled(package, key).cloned(),
+        }
     }
 
     /// One of a player's stats, as staged.
@@ -1149,6 +1323,58 @@ impl Batch<'_> {
                 self.launches.insert(player.clone(), Launch { velocity: *velocity, change: self.change });
                 Ok(None)
             }
+            Effect::Play { pos, to, what } => {
+                match what {
+                    Shown::Effect(fx) => fx.check()?,
+                    Shown::Sound(sound) => sound.check()?,
+                }
+                if !pos.iter().all(|v| v.is_finite()) {
+                    return Err("that isn't a place".into());
+                }
+                if self.shows.len() >= 16 {
+                    return Err("at most 16 effects and sounds in one action".into());
+                }
+                self.shows.push(Show { change: self.change, pos: *pos, to: to.clone(), what: what.clone() });
+                Ok(None)
+            }
+            Effect::Emit { name, data } => {
+                let size = serde_json::to_vec(data).map_or(usize::MAX, |b| b.len());
+                if name.is_empty() || name.len() > 64 || size > MAX_COMPONENT_BYTES {
+                    return Err(format!("emit(name, data): a name up to 64 characters, data up to {MAX_COMPONENT_BYTES} bytes"));
+                }
+                if self.signals.len() >= 16 {
+                    return Err("at most 16 signals in one action".into());
+                }
+                self.signals.push(Signal { change: self.change, from: grants.package.clone(), name: name.clone(), data: data.clone() });
+                Ok(None)
+            }
+            Effect::Heard { upto } => {
+                self.heard.insert(grants.package.clone(), *upto);
+                Ok(None)
+            }
+            Effect::Store { key, value } => {
+                let size = value.as_ref().map_or(0, |v| serde_json::to_vec(v).map_or(usize::MAX, |b| b.len()));
+                if key.is_empty() || key.len() > 64 || size > MAX_COMPONENT_BYTES {
+                    return Err(format!("remember(key, value): a key up to 64 characters, a value up to {MAX_COMPONENT_BYTES} bytes"));
+                }
+                self.stores.insert((grants.package.clone(), key.clone()), value.clone());
+                Ok(None)
+            }
+            Effect::Sky { sky } => {
+                sky.as_ref().map_or(Ok(()), Sky::check)?;
+                self.sky = Some(sky.clone());
+                Ok(None)
+            }
+            Effect::Appearance { player, appearance } => {
+                if let Some(a) = appearance
+                    && (!grants.models.contains(&a.model) || !(0.1..=4.0).contains(&a.scale))
+                {
+                    return Err(format!("appearance(player, {{model = one of {}'s models, scale = 0.1-4}})", grants.package));
+                }
+                let appearance = appearance.clone().map(|a| Appearance { package: grants.package.clone(), ..a });
+                self.appearances.insert(player.clone(), appearance);
+                Ok(None)
+            }
             Effect::Terrain { area, .. } => {
                 if !grants.build {
                     return Err(format!("{} may not reshape land (it needs the build permission)", grants.package));
@@ -1201,6 +1427,12 @@ impl Batch<'_> {
             teleports: self.teleports,
             bodies: self.bodies,
             launches: self.launches,
+            sky: self.sky,
+            appearances: self.appearances,
+            shows: self.shows,
+            signals: self.signals,
+            heard: self.heard,
+            stores: self.stores,
             notes: self.notes,
             world,
         }

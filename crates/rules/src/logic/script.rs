@@ -145,9 +145,18 @@ pub fn run(package: &Package, event: &Event, world: &mut Batch, grants: &Grants)
 
 /// The handlers a script file may define.
 #[cfg(not(target_arch = "wasm32"))]
-const HANDLERS: [&str; 16] = [
+const HANDLERS: [&str; 17] = [
     "on_place", "on_interact", "on_use", "on_key", "on_timer", "on_choose", "on_arrive", "on_start", "on_join", "on_leave", "on_enter",
-    "on_exit", "on_catch", "on_hit", "on_message", "on_chat",
+    "on_exit", "on_catch", "on_hit", "on_message", "on_chat", "on_signal",
+];
+
+/// Functions the game had once and doesn't now, and what to use instead: an old
+/// script that calls one hears so, rather than that it's nil.
+#[cfg(not(target_arch = "wasm32"))]
+pub const REMOVED: [(&str, &str); 3] = [
+    ("wander", "walk() to a spot it picks, and pick the next spot in on_arrive"),
+    ("spawner", "an every() timer that spawns while find() says there are too few"),
+    ("zone", "region(id, {w, d, keys = true})"),
 ];
 
 #[cfg(not(target_arch = "wasm32"))]
@@ -237,6 +246,19 @@ pub(super) mod vm {
         let math: Table = globals.get("math")?;
         math.set("random", Value::Nil)?;
         math.set("randomseed", Value::Nil)?;
+        // Functions the game no longer has say what to use instead.
+        let meta = lua.create_table()?;
+        meta.set(
+            "__index",
+            lua.create_function(|_, (_, key): (Value, Value)| {
+                let key = key.as_string().map(|k| k.to_string_lossy()).unwrap_or_default();
+                match super::REMOVED.iter().find(|(name, _)| *name == key) {
+                    Some((name, instead)) => Err(fail(format!("{name}() isn't in the game any more; use {instead}"))),
+                    None => Ok(Value::Nil),
+                }
+            })?,
+        )?;
+        globals.set_metatable(Some(meta))?;
 
         let ns = package.manifest.name.clone();
         let full = {
@@ -531,6 +553,63 @@ pub(super) mod vm {
                     apply(Effect::Teleport { player, position: pos_of(&pos)? }).map(|_| ())
                 })?,
             )?;
+            // How the game shows things: effects, sounds, the sky, heroes' looks.
+            let shown = |lua: &Lua, kind: &str, spec: Table| -> mlua::Result<crate::logic::present::Shown> {
+                use crate::logic::present::{Fx, Shown, Sound};
+                let value = Value::Table(spec);
+                Ok(match kind {
+                    "effect" => Shown::Effect(lua.from_value::<Fx>(value).map_err(|e| fail(format!("effect: {e}")))?),
+                    _ => Shown::Sound(lua.from_value::<Sound>(value).map_err(|e| fail(format!("sound: {e}")))?),
+                })
+            };
+            for kind in ["effect", "sound"] {
+                globals.set(
+                    kind,
+                    scope.create_function(move |lua, (pos, spec, player): (Table, Table, Option<String>)| {
+                        apply(Effect::Play { pos: pos_of(&pos)?, to: player, what: shown(lua, kind, spec)? }).map(|_| ())
+                    })?,
+                )?;
+            }
+            globals.set(
+                "sky",
+                scope.create_function(move |lua, spec: Option<Table>| {
+                    let sky = match spec {
+                        Some(t) => Some(lua.from_value(Value::Table(t)).map_err(|e| fail(format!("sky: {e}")))?),
+                        None => None,
+                    };
+                    apply(Effect::Sky { sky }).map(|_| ())
+                })?,
+            )?;
+            globals.set(
+                "appearance",
+                scope.create_function(move |lua, (player, spec): (String, Option<Table>)| {
+                    let appearance = match spec {
+                        Some(t) => Some(lua.from_value(Value::Table(t)).map_err(|e| fail(format!("appearance(player, {{model, scale}}): {e}")))?),
+                        None => None,
+                    };
+                    apply(Effect::Appearance { player, appearance }).map(|_| ())
+                })?,
+            )?;
+            globals.set(
+                "emit",
+                scope.create_function(move |lua, (name, data): (String, Value)| {
+                    apply(Effect::Emit { name, data: lua.from_value(data)? }).map(|_| ())
+                })?,
+            )?;
+            globals.set(
+                "remember",
+                scope.create_function(move |lua, (key, value): (String, Value)| {
+                    let value = if value.is_nil() { None } else { Some(lua.from_value(value)?) };
+                    apply(Effect::Store { key, value }).map(|_| ())
+                })?,
+            )?;
+            globals.set(
+                "recall",
+                scope.create_function(|lua, key: String| match world.borrow().recall(&grants.package, &key) {
+                    Some(v) => lua.to_value(&v),
+                    None => Ok(Value::Nil),
+                })?,
+            )?;
             globals.set(
                 "body",
                 scope.create_function(move |lua, (player, spec): (String, Option<Table>)| {
@@ -667,6 +746,12 @@ pub(super) mod vm {
                         ev.set("from", from)?;
                     }
                     "on_start"
+                }
+                Trigger::Signal { from, name, data } => {
+                    ev.set("from", from)?;
+                    ev.set("name", name)?;
+                    ev.set("data", lua.to_value(data)?)?;
+                    "on_signal"
                 }
                 Trigger::Join => "on_join",
                 Trigger::Leave => "on_leave",

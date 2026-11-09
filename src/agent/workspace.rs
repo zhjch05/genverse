@@ -181,10 +181,24 @@ fn overview(ledger: &Ledger, here: Option<&str>, errors: &[String], records: &[R
             let about = records.iter().find(|r| r.of == format!("feature:{name}/{file}")).map(|r| r.about.as_str()).unwrap_or_default();
             let pieces = ledger.logic.state.entities().filter(|(_, e)| e.package == *name && e.components.get("feature").and_then(|f| f.as_str()) == Some(file.as_str())).count();
             let _ = writeln!(out, "- {file}: {} ({pieces} pieces)", if about.is_empty() { "(no opening comment)" } else { about });
+            // Calls to what the game no longer has: the feature is broken until they go.
+            let source = &package.scripts[file];
+            for (name, instead) in cubewish_rules::logic::script::REMOVED {
+                if source.contains(&format!("{name}(")) {
+                    let _ = writeln!(out, "  ⚠ calls {name}(), which the game no longer has (use {instead}): this feature doesn't work until that's fixed");
+                }
+            }
         }
     }
     if !errors.is_empty() {
         let _ = writeln!(out, "\nRecent errors from these scripts while players played:\n- {}", errors.join("\n- "));
+    }
+    if !ledger.load_problems.is_empty() {
+        let _ = writeln!(
+            out,
+            "\nSaved changes that no longer applied when the world loaded (fix what they meant to do):\n- {}",
+            ledger.load_problems.iter().take(10).cloned().collect::<Vec<_>>().join("\n- ")
+        );
     }
     let names: Vec<String> = match &ledger.online {
         Some(online) => online.game.as_ref().map(|g| g.worlds().into_iter().map(|(n, _)| n).collect()).unwrap_or_default(),

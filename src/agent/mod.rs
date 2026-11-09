@@ -32,6 +32,7 @@ mod theme;
 use cubewish_rules::build as spec;
 mod tools;
 mod workspace;
+mod present;
 #[cfg(not(target_arch = "wasm32"))]
 mod player_scripts;
 mod worlds;
@@ -104,6 +105,8 @@ impl Plugin for AgentPlugin {
             .init_resource::<settings::SettingsWindow>()
             .init_resource::<lan::Lan>()
             .init_resource::<game::Play>()
+            .init_resource::<present::LocalShows>()
+            .init_resource::<tools::Looks>()
             .init_resource::<worlds::Travel>()
             .init_resource::<worlds::WorldsWindow>()
             .init_gizmo_group::<AreaGizmos>()
@@ -132,6 +135,9 @@ impl Plugin for AgentPlugin {
                 (presence::name_tags, presence::hover_credit, history::history_window, fps::fps_overlay, settings::settings_window, worlds::portal_prompt),
             )
             .add_systems(EguiPrimaryContextPass, (worlds::worlds_window, hud::game_hud))
+            // How games show things: effects, sounds, the sky, heroes' looks.
+            .add_systems(Update, (present::play_shows, present::update_particles, present::apply_sky, present::dress_hero))
+            .add_systems(Update, tools::take_looks.after(crate::player::follow_camera))
             // Trips are taken last, once everything else this frame is done with the world.
             .add_systems(PostUpdate, worlds::travel);
         // The games' player scripts: before the hero moves, after the pieces do.

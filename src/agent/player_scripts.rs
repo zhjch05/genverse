@@ -79,6 +79,7 @@ pub fn run_player_scripts(
     mut chat: ResMut<Chat>,
     mut scripted: ResMut<ScriptedHero>,
     mut poses: ResMut<Poses>,
+    mut shows: ResMut<super::present::LocalShows>,
     heroes: Query<(&Transform, &Player)>,
     cameras: Query<&FollowCamera>,
 ) {
@@ -156,6 +157,7 @@ pub fn run_player_scripts(
                     scripted.camera = Some(CameraRig { distance: c.distance, pitch: c.pitch, yaw: c.yaw, height: c.height, shake: c.shake });
                 }
                 poses.now.extend(out.poses);
+                shows.0.extend(out.shows);
                 for (message, data) in out.sent {
                     let count = scripts.sent.entry(name.clone()).or_insert((second, 0));
                     if count.0 != second {

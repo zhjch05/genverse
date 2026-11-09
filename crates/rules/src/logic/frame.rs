@@ -105,6 +105,8 @@ pub struct FrameOut {
     pub camera: Option<CameraRig>,
     /// What it sent its package's game logic (`send(name, data)`: `on_message`).
     pub sent: Vec<(String, serde_json::Value)>,
+    /// Effects and sounds for this player alone, where they happen.
+    pub shows: Vec<([f32; 3], super::present::Shown)>,
 }
 
 /// A package's player scripts, loaded once and run every frame.
@@ -271,6 +273,31 @@ impl PlayerVm {
                     Ok(())
                 })?,
             )?;
+            let shows = &out;
+            for kind in ["effect", "sound"] {
+                globals.set(
+                    kind,
+                    scope.create_function(move |lua, (pos, spec): (Table, Table)| {
+                        use super::present::{Fx, Shown, Sound};
+                        let value = Value::Table(spec);
+                        let what = match kind {
+                            "effect" => Shown::Effect(lua.from_value::<Fx>(value).map_err(|e| fail(format!("effect: {e}")))?),
+                            _ => Shown::Sound(lua.from_value::<Sound>(value).map_err(|e| fail(format!("sound: {e}")))?),
+                        };
+                        match &what {
+                            Shown::Effect(fx) => fx.check(),
+                            Shown::Sound(s) => s.check(),
+                        }
+                        .map_err(fail)?;
+                        let mut out = shows.borrow_mut();
+                        if out.shows.len() >= 8 {
+                            return Err(fail("at most 8 effects and sounds a frame"));
+                        }
+                        out.shows.push((pos_of(&pos)?, what));
+                        Ok(())
+                    })?,
+                )?;
+            }
             for (file, on_frame) in &self.frames {
                 *self.steps.borrow_mut() = 0;
                 on_frame.call::<()>(&f).map_err(|e| mlua::Error::runtime(format!("{file}: {e}")))?;
