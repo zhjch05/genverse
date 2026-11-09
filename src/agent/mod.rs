@@ -114,7 +114,7 @@ impl Plugin for AgentPlugin {
                     (online::sync_online, lan::update_lan, update_build_site, answer_tool_calls, poll_agent).chain(),
                     (presence::send_presence, presence::move_avatars, presence::draw_peers, history::toggle_history, (loading::track_loading, fps::track_frames).chain()),
                     auto_prompt,
-                    (game::script_play.after(auto_prompt), game::run_timers, game::play_zones, game::sync_pieces, game::use_pieces, worlds::use_portals, hud::draw_game_world, history::follow_ledger)
+                    (game::script_play.after(auto_prompt), game::run_timers, game::play_zones, game::sync_pieces, game::walk_pieces, game::use_pieces, worlds::use_portals, hud::draw_game_world, history::follow_ledger)
                         .chain(),
                     worlds::toggle_worlds,
                     (game::place_held, shortcuts, select_area, follow_cursor, check_clearance, click_in_world, outline_creations, draw_area, highlight_area, draw_parcels)

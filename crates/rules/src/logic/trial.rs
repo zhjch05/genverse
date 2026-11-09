@@ -184,6 +184,13 @@ struct Trial<'a> {
     effects: usize,
 }
 
+/// A trial's world is flat and empty: walks go straight.
+impl super::Ground for Trial<'_> {
+    fn heights(&self, _min: [i32; 2], _step: i32, _count: [i32; 2]) -> Option<Vec<Option<i32>>> {
+        None
+    }
+}
+
 impl super::TimerHost for Trial<'_> {
     fn logic(&self) -> &Logic {
         self.logic
@@ -287,7 +294,10 @@ fn describe(out: &mut String, state: &GameState, origin: [f32; 3], ground: f32) 
     let _ = writeln!(out, "Entities near the last place (position relative to it, components without look):");
     for (id, e) in near.iter().take(60) {
         let rel = [e.position[0] - origin[0], e.position[1] - ground, e.position[2] - origin[2]];
-        let others: BTreeMap<_, _> = e.components.iter().filter(|(k, _)| *k != "look").collect();
+        // A walk shows where it's going, not every turn of the way.
+        let walk = e.components.get("walk").map(|w| serde_json::json!({ "to": w["to"], "speed": w["speed"] }));
+        let others: BTreeMap<_, _> =
+            e.components.iter().filter(|(k, _)| *k != "look").map(|(k, v)| (k, if k == "walk" { walk.as_ref().unwrap_or(v) } else { v })).collect();
         let text = serde_json::to_string(&others).unwrap_or_default();
         let text: String = text.chars().take(160).collect();
         let _ = writeln!(out, "  {}.{} {} at ({:.2}, {:.2}, {:.2}) {text}", id.change, id.n, model(e), rel[0], rel[1], rel[2]);

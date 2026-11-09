@@ -19,6 +19,8 @@
 //!                               -- more times went by unrun (nobody was here)
 //! function on_choose(ev) end    -- ev.player picked ev.choice in the panel ev.panel
 //!                               -- (its id) that the package showed them
+//! function on_arrive(ev) end    -- ev.entity got where walk() sent it (or where its
+//!                               -- routine said), at ev.pos; ev.stuck: no way there
 //! ```
 //!
 //! `ev` also has `player` (nil for timers), `pos` (`{x, y, z}` in meters), `day` and
@@ -55,6 +57,20 @@
 //! build(model, pos, turn) -> build id     unbuild(id)
 //! terrain({x, z, w, d}, {name, ops})      -- meters; ops as for land changes
 //! ```
+//!
+//! Pieces that move on their own ([`super::walk`]): the engine finds the way over the
+//! ground, and players see them walk.
+//!
+//! ```lua
+//! walk(id, pos, speed)      -- there, at speed m/s (default 1.5); on_arrive when there
+//! stop(id)                  -- stops where it is
+//! routine(id, {{at = "8:00", to = pos}, ...})   -- where to be when, every day; nil stops
+//! wander(id, {radius = 6, speed = 1, pause = 4, home = pos})   -- nil stops
+//! spawner(id, {model = "slime", label = "Slime", tag = "slime", max = 4, every = 30,
+//!              radius = 8, when = "night", wander = true})       -- nil stops
+//! ```
+//!
+//! `get(id).pos` is where a walking piece is now; `get(id).walking` says whether it is.
 //!
 //! Timers are how a game moves on its own (crops, countdowns, NPC turns). Nothing runs
 //! between them, so a quiet game costs nothing; each timer that does something becomes
@@ -188,7 +204,8 @@ mod vm {
             let Some(e) = world.get(id) else { return Ok(Value::Nil) };
             let t = lua.create_table()?;
             t.set("id", id_text(id))?;
-            t.set("pos", pos_table(lua, e.position)?)?;
+            t.set("pos", pos_table(lua, crate::logic::walk::position_at(e, event.at as f64))?)?;
+            t.set("walking", e.components.contains_key("walk"))?;
             t.set("owner", e.package.clone())?;
             let c = lua.create_table()?;
             for (name, value) in &e.components {
@@ -382,6 +399,9 @@ mod vm {
                 })?,
             )?;
             let schedule = |lua: &Lua, (seconds, name, data, near, every): (f64, String, Value, Option<String>, bool)| -> mlua::Result<()> {
+                if name.starts_with('~') {
+                    return Err(fail("timers starting with ~ are the engine's"));
+                }
                 if !seconds.is_finite() || seconds < MIN_WAIT as f64 || seconds > 1e9 {
                     return Err(fail(format!("a timer waits at least {MIN_WAIT} second")));
                 }
@@ -404,6 +424,85 @@ mod vm {
                 })?,
             )?;
             globals.set("cancel", scope.create_function(|_, name: String| apply(Effect::Cancel { name }).map(|_| ()))?)?;
+            let all = |effects: Vec<Effect>| effects.into_iter().try_for_each(|e| apply(e).map(|_| ()));
+            let staged = &world;
+            globals.set(
+                "walk",
+                scope.create_function(move |_, (id, pos, speed): (String, Table, Option<f32>)| {
+                    all(crate::logic::walk::walk_effects(parse_id(&id)?, pos_of(&pos)?, speed, event.at))
+                })?,
+            )?;
+            globals.set(
+                "stop",
+                scope.create_function(move |_, id: String| {
+                    let id = parse_id(&id)?;
+                    let e = staged.borrow().get(id).cloned().ok_or_else(|| fail(format!("entity {} doesn't exist", id_text(id))))?;
+                    all(crate::logic::walk::stop_effects(id, &e, event.at))
+                })?,
+            )?;
+            globals.set(
+                "routine",
+                scope.create_function(move |lua, (id, stops): (String, Option<Table>)| {
+                    let id = parse_id(&id)?;
+                    let value = match stops {
+                        None => None,
+                        Some(stops) => {
+                            let mut list = Vec::new();
+                            for stop in stops.sequence_values::<Table>() {
+                                let stop = stop?;
+                                let at: String = stop.get("at")?;
+                                let at = crate::logic::walk::time_of_day(&at).ok_or_else(|| fail(format!("routine: \"{at}\" isn't a time like \"8:30\"")))?;
+                                let to = pos_of(&stop.get::<Table>("to")?)?;
+                                list.push(serde_json::json!({ "at": at, "to": to }));
+                            }
+                            let _ = lua;
+                            Some(serde_json::Value::Array(list))
+                        }
+                    };
+                    all(crate::logic::walk::start_effects(id, "routine", value, event.at))
+                })?,
+            )?;
+            globals.set(
+                "wander",
+                scope.create_function(move |lua, (id, spec): (String, Option<Table>)| {
+                    let id = parse_id(&id)?;
+                    let value = match spec {
+                        None => None,
+                        Some(spec) => {
+                            let home = match spec.get::<Option<Table>>("home")? {
+                                Some(t) => pos_of(&t)?,
+                                None => staged.borrow().get(id).map(|e| e.position).ok_or_else(|| fail("wander: no such entity"))?,
+                            };
+                            let mut value: serde_json::Value = lua.from_value(Value::Table(spec))?;
+                            value["home"] = serde_json::json!(home);
+                            for (key, default) in [("radius", 6.0), ("speed", 1.0), ("pause", 4.0)] {
+                                if value[key].is_null() {
+                                    value[key] = default.into();
+                                }
+                            }
+                            Some(value)
+                        }
+                    };
+                    all(crate::logic::walk::start_effects(id, "wander", value, event.at))
+                })?,
+            )?;
+            globals.set(
+                "spawner",
+                scope.create_function(move |lua, (id, spec): (String, Option<Table>)| {
+                    let id = parse_id(&id)?;
+                    let value = match spec {
+                        None => None,
+                        Some(spec) => {
+                            let mut value: serde_json::Value = lua.from_value(Value::Table(spec))?;
+                            if value["when"].is_null() {
+                                value["when"] = "any".into();
+                            }
+                            Some(value)
+                        }
+                    };
+                    all(crate::logic::walk::start_effects(id, "spawner", value, event.at))
+                })?,
+            )?;
             globals.set("random", scope.create_function(|_, ()| Ok(next_random(&mut rng.borrow_mut())))?)?;
             globals.set(
                 "random_int",
@@ -423,8 +522,16 @@ mod vm {
             ev.set("now", event.at)?;
             ev.set("day", event.time.day)?;
             ev.set("time", event.time.time_of_day)?;
-            let at = |id: &EntityId| world.borrow().get(*id).map(|e| e.position);
+            let at = |id: &EntityId| staged.borrow().get(*id).map(|e| e.position);
             let handler = match event.trigger {
+                Trigger::Arrive { entity, stuck } => {
+                    ev.set("entity", id_text(entity))?;
+                    ev.set("stuck", stuck)?;
+                    if let Some(p) = at(&entity) {
+                        ev.set("pos", pos_table(&lua, p)?)?;
+                    }
+                    "on_arrive"
+                }
                 Trigger::Timer { name, data, missed } => {
                     ev.set("name", name)?;
                     ev.set("data", lua.to_value(data)?)?;

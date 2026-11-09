@@ -14,6 +14,8 @@
 //!   moves its players by moving their pawns.
 //! - `shop`: one of its package's shop definitions (`"general"`): E on it opens the shop,
 //!   and buying there needs no script.
+//! - `walk`, `routine`, `wander`, `spawner`: pieces that move on their own, and pieces
+//!   that make more (see [`super::walk`]); `spawned` names the spawner a piece came from.
 //!
 //! Players have state of their own too, also kept by package: **stats** (`game:hp`,
 //! numbers kept between 0 and a maximum when they have one), **HUD widgets** pinned to
@@ -238,7 +240,7 @@ impl Timer {
 }
 
 /// Components the engine itself reads.
-pub const RESERVED: [&str; 5] = ["look", "label", "zone", "pawn", "shop"];
+pub const RESERVED: [&str; 10] = ["look", "label", "zone", "pawn", "shop", "walk", "routine", "wander", "spawner", "spawned"];
 
 /// Checks an engine component's value, phrased for the agent that wrote it.
 fn check_reserved(name: &str, value: &Value, grants: &Grants) -> Result<(), String> {
@@ -256,6 +258,16 @@ fn check_reserved(name: &str, value: &Value, grants: &Grants) -> Result<(), Stri
         "zone" => sizes("size", 2, 128.0),
         "pawn" => value.as_str().is_some_and(|p| !p.is_empty() && p.len() <= 128),
         "shop" => value.as_str().is_some_and(|s| !s.is_empty() && s.len() <= 64),
+        "spawned" => value.as_str().is_some_and(|s| s.len() <= 32),
+        "walk" | "routine" | "wander" => return super::walk::check(name, value),
+        "spawner" => {
+            super::walk::check(name, value)?;
+            let model = value["model"].as_str().unwrap_or_default();
+            if !grants.models.iter().any(|m| m == model) {
+                return Err(format!("a spawner's model is one of the package's models ({})", grants.models.join(", ")));
+            }
+            true
+        }
         _ => true,
     };
     if ok {
@@ -269,6 +281,7 @@ fn check_reserved(name: &str, value: &Value, grants: &Grants) -> Result<(), Stri
             "label" => "\"label\" is text of up to 60 characters".into(),
             "zone" => "\"zone\" is {\"size\": [w, d]} (meters, 0-128)".into(),
             "shop" => "\"shop\" is the name of one of the package's shops".into(),
+            "spawned" => "\"spawned\" is the id of the spawner a piece came from".into(),
             _ => "\"pawn\" is a player id".into(),
         })
     }
@@ -789,7 +802,8 @@ impl Batch<'_> {
                 if count + 1 > grants.max_entities as i64 {
                     return Err(format!("{} already has {count} entities; this world allows {}", grants.package, grants.max_entities));
                 }
-                if grants.drawn && !components.contains_key("look") && !components.contains_key("pawn") {
+                // A spawner shows as a marker of its own.
+                if grants.drawn && !components.contains_key("look") && !components.contains_key("pawn") && !components.contains_key("spawner") {
                     return Err(format!(
                         "every piece needs a look: {{model = ...}}, one of the package's models ({})",
                         if grants.models.is_empty() { "it has none yet; add some".to_string() } else { grants.models.join(", ") }

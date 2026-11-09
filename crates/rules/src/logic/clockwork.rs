@@ -7,10 +7,18 @@
 //! [`WAKE_RADIUS`] of it, so games nobody is near cost nothing. The clockwork remembers
 //! when each sleeping timer last ran, so when someone comes back it goes off once, with
 //! `missed` counting the runs it slept through.
+//!
+//! The engine's own timers (`~walk:2.0`, see [`super::walk`]) run here too, on the
+//! ground the host knows, and are recorded like the package's.
 
 use std::{collections::HashMap, sync::Arc};
 
-use super::{Effect, Event, GameState, Logic, LogicRules, Rules, Timer, Trigger, entity::WAKE_RADIUS, grants};
+use super::{
+    Effect, Event, GameState, Logic, LogicRules, Rules, Timer, Trigger,
+    entity::WAKE_RADIUS,
+    grants,
+    walk::{Engine, Ground},
+};
 use crate::log::fnv1a;
 
 /// The most timers one package runs per firing; the rest wait for the next.
@@ -101,6 +109,7 @@ impl Clockwork {
     pub fn fire(
         &mut self,
         logic: &Logic,
+        ground: &dyn Ground,
         package: &str,
         change: u64,
         now: u64,
@@ -134,6 +143,30 @@ impl Clockwork {
                 let _ = batch.apply(&grants, &Effect::Cancel { name: name.clone() });
             }
             let seed = fnv1a(format!("{world_seed}/{change}/{package}/{name}").as_bytes());
+            // The engine's own: walking, routines, spawners. A piece that arrives tells
+            // its package.
+            if let Some(engine) = name.strip_prefix('~') {
+                let mark = batch.mark();
+                let mut cx = Engine { batch: &mut batch, grants: &grants, ground, rules, now, seed };
+                match cx.fire(engine) {
+                    Ok(Some(arrived)) => {
+                        let trigger = Trigger::Arrive { entity: arrived.entity, stuck: arrived.stuck };
+                        let event = Event { change, player: "", trigger, time: rules.clock.at(now), at: now, seed };
+                        let mark = batch.mark();
+                        if let Err(why) = runtime.handle(found, &event, &mut batch, &grants) {
+                            batch.rollback(mark);
+                            out.errors.push(format!("{package}: on_arrive: {why}"));
+                        }
+                    }
+                    Ok(None) => {}
+                    Err(why) => {
+                        batch.rollback(mark);
+                        out.errors.push(format!("{package}: {name}: {why}"));
+                        let _ = batch.apply(&grants, &Effect::Cancel { name: name.clone() });
+                    }
+                }
+                continue;
+            }
             let trigger = Trigger::Timer { name, data: &timer.data, missed: n - 1 };
             let event = Event { change, player: "", trigger, time: rules.clock.at(now), at: now, seed };
             let mark = batch.mark();
@@ -173,7 +206,7 @@ impl Clockwork {
         }
         for package in self.due(host.logic(), now, players) {
             let change = host.next_change();
-            let fired = self.fire(host.logic(), &package, change, now, world_seed, rules, players);
+            let fired = self.fire(host.logic(), &*host, &package, change, now, world_seed, rules, players);
             out.errors.extend(fired.errors.iter().cloned());
             if !fired.worth_recording() {
                 continue;
@@ -191,8 +224,9 @@ impl Clockwork {
     }
 }
 
-/// What keeps a world while its timers run: a server, the game offline, a trial.
-pub trait TimerHost {
+/// What keeps a world while its timers run: a server, the game offline, a trial. It
+/// knows the ground, for pieces that walk.
+pub trait TimerHost: Ground {
     fn logic(&self) -> &Logic;
     /// The id the next change will get.
     fn next_change(&self) -> u64;

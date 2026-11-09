@@ -83,6 +83,10 @@ and installs it for the whole world, live (`crates/rules/src/logic`, design in
   and items, and every change is checked as it happens. The engine draws entities from their
   `look` (one of the package's models), names them with `label`, and acts on `zone` and
   `pawn`.
+- **Pieces that move on their own:** `walk`, daily `routine`s, `wander` and `spawner`s (also
+  as data: `spawner` and `npc` definitions). The engine finds the way over the ground and
+  records the whole walk as one change; games show the piece walking along it. Like timers,
+  they sleep while nobody is near.
 - **The log is still the truth:** installs and every move are changes in the log, so games
   replay like the voxels do, across restarts, undo and servers. The server runs the same
   scripts, and a package travels with the change that installs it.

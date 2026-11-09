@@ -968,6 +968,55 @@ impl Replay {
     }
 }
 
+/// The world's ground for walking pieces: the seed's heights, with the voxel edits on
+/// top (a replay without voxels knows only the seed's).
+impl crate::logic::Ground for Replay {
+    fn heights(&self, min: [i32; 2], step: i32, count: [i32; 2]) -> Option<Vec<Option<i32>>> {
+        let terrain = Terrain { seed: self.seed, flat: self.flat };
+        let step = step.max(1);
+        let max = [min[0] + count[0] * step, min[1] + count[1] * step];
+        // The edits in the sampled columns, by column.
+        let mut edited: HashMap<(i32, i32), Vec<(i32, VoxelId)>> = HashMap::new();
+        for (p, id) in &self.edits {
+            let (dx, dz) = (p.x - min[0], p.z - min[1]);
+            if p.x >= min[0] && p.z >= min[1] && p.x < max[0] && p.z < max[1] && dx % step == 0 && dz % step == 0 {
+                edited.entry((p.x, p.z)).or_default().push((p.y, *id));
+            }
+        }
+        let mut out = Vec::with_capacity((count[0] * count[1]).max(0) as usize);
+        for j in 0..count[1] {
+            for i in 0..count[0] {
+                let (x, z) = (min[0] + i * step, min[1] + j * step);
+                let h = terrain.height(x, z);
+                let sea = !self.flat && h < crate::terrain::SEA_LEVEL;
+                let Some(edits) = edited.get(&(x, z)) else {
+                    out.push((!sea).then_some(h));
+                    continue;
+                };
+                // An edited column: as generated, with the edits over it.
+                let mut column: Vec<VoxelId> = (0..WORLD_HEIGHT)
+                    .map(|y| {
+                        if y <= h {
+                            crate::terrain::block::STONE[0]
+                        } else if !self.flat && y <= crate::terrain::SEA_LEVEL {
+                            crate::terrain::block::WATER
+                        } else {
+                            crate::voxel::AIR
+                        }
+                    })
+                    .collect();
+                for (y, id) in edits {
+                    if let Some(v) = column.get_mut(*y as usize) {
+                        *v = *id;
+                    }
+                }
+                out.push(crate::logic::walk::stand_in(&column));
+            }
+        }
+        Some(out)
+    }
+}
+
 /// The columns a terrain change in `area` reads, generated from the seed with `edits`
 /// on top: what the loaded world would show, without needing it loaded.
 pub fn ground_columns(terrain: Terrain, area: Area, edits: &HashMap<IVec3, VoxelId>) -> Columns {

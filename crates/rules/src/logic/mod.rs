@@ -15,6 +15,7 @@ pub mod entity;
 pub mod package;
 pub mod script;
 pub mod trial;
+pub mod walk;
 
 use std::{collections::BTreeMap, sync::Arc};
 
@@ -23,6 +24,7 @@ use serde::{Deserialize, Serialize};
 
 pub use clock::{ClockRules, WorldTime};
 pub use clockwork::{Clockwork, Fired, Run, TimerHost};
+pub use walk::{Ground, NoGround};
 pub use data::{Def, DataRules};
 pub use entity::{Batch, Choice, Effect, Entity, EntityId, GameState, Grants, Panel, PanelSpec, Stat, Timer, Widget};
 pub use package::{Manifest, Package, PackageRef, Permission};
@@ -171,6 +173,8 @@ pub enum Trigger<'a> {
     /// One of its timers went off; `missed` more times went by unfired, if it repeats
     /// and nobody was here to run it.
     Timer { name: &'a str, data: &'a serde_json::Value, missed: u64 },
+    /// One of its pieces got where it was walking (`stuck`: it found no way there).
+    Arrive { entity: EntityId, stuck: bool },
 }
 
 /// What a package's rules are asked about.
@@ -204,6 +208,8 @@ impl Runtime for Rules {
     fn handle(&self, package: &Package, event: &Event, world: &mut Batch, grants: &Grants) -> Result<(), String> {
         if package.scripts.is_empty() {
             DataRules.handle(package, event, world, grants)
+        } else if data::place_living(package, event, world, grants)? {
+            Ok(())
         } else {
             script::run(package, event, world, grants)
         }

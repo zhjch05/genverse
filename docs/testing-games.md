@@ -20,6 +20,7 @@ What covers what:
 | `players.rs` `games_build_with_the_installers_budget` | a script places a solid build and digs land; both are charged to whoever installed the game; removing its build; over budget, nothing changes at all (two walls, budget one); snapshots keep games' builds |
 | `players.rs` `trials_show_panels_stats_and_builds` | the agent's `test_game` report shows stats, HUD, the open panel, and builds |
 | `crates/rules/tests/timers.rs` | timers, including through the same path builds take |
+| `crates/rules/tests/walking.rs` | walks (one change, `on_arrive`), routines and spawners from data alone, sleeping while nobody is near |
 | `crates/server/tests/two_players.rs` | everything above through a real server: items and stats travel between worlds, game saves |
 
 ## 2. By hand, alone (15 minutes)
@@ -83,6 +84,29 @@ the archway and delete it yourself: allowed if you could delete any build there.
 
 Put down the purse and the store, take coins, open the store, buy until you run out.
 No script runs: it's all the engine's.
+
+### Walking, routines and spawners
+
+> Make a small village game. A slime pool that keeps up to 3 slimes hopping about nearby at
+> any time of day. A baker NPC who walks around her little stall during the day; pressing E
+> on her opens a short dialogue where you can buy bread for a coin, and players start with
+> 5 coins. Use the engine's spawners and walking, not timers that move things step by step.
+
+Check:
+
+1. **Spawner.** Put the slime pool down: within its `every` seconds a slime appears, then
+   more, never more than 3. They walk smoothly between spots (no jumping tile to tile), and
+   around water.
+2. **NPC.** Put the baker down: she wanders around her stall; E on her still opens her
+   dialogue while she walks.
+3. **Sleep.** Walk more than 64 m away and come back: the slimes are where they'd be, and
+   `H` shows no changes while you were away.
+4. **Cheap log.** `H` while they walk: about one change per slime per leg, never one a step.
+5. **Replay.** Quit and start again: everyone is where they were, and keeps going.
+
+`crates/rules/tests/walking.rs` covers the rest: a scripted walk is one change and ends
+in `on_arrive`; spawners keep to their most and sleep with nobody near; an NPC's routine
+takes it to its noon stop.
 
 ## 3. Two players (10 minutes)
 

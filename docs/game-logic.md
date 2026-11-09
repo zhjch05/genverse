@@ -12,8 +12,34 @@ rather than returning a list of intents. Timers replace per-tick events (see
 shops, with `Intent::Choose`), shops as data, and games changing the world's voxels
 (`build`, `unbuild`, `terrain`) through the world's own rules, charged to the installer's
 land and budget, all or nothing (see [`entity`](../crates/rules/src/logic/entity.rs) and
-[testing-games.md](testing-games.md)). Not built yet: NPC movement and schedules,
-spawners, migrations, preview, and the game master agent.
+[testing-games.md](testing-games.md)). Also built: pieces that move on their own (walking
+with paths over the ground, daily routines, wandering, spawners; see [Movement](#movement)).
+Not built yet: migrations, preview, and the game master agent.
+
+## Movement
+
+Villagers, wandering monsters and visitors are run by the engine, not by scripts stepping
+them ([`walk`](../crates/rules/src/logic/walk.rs)):
+
+- **A walk is one change.** `walk(id, pos)` asks for it; the engine's own timer finds a
+  path over the ground the host knows (around water, no step over 0.6 m, at most 64 m) and
+  records it, with when it starts and how fast, in the piece's `walk` component. Players'
+  games move the piece along that path as time passes; its position stays where it set off
+  until a second timer moves it to the end and calls the package's `on_arrive`. So a walk
+  costs two log changes however long it is, and replay never looks for a path.
+- **Routines, wandering, spawners** are engine components with engine timers (`~plan:`,
+  `~wander:` legs, `~spawn:`) on the piece's package: a routine walks to each stop at its
+  time of day; a wanderer picks somewhere within its radius after each pause; a spawner
+  keeps up to `max` pieces around it (by day, night, or always).
+- **They sleep like any timer anchored to a piece** while no player is within 64 m, and
+  catch up when someone comes.
+- **Data alone** can do it: `spawner` and `npc` definitions need no script.
+- **The ground** comes from whoever runs timers: the server from its world (the seed's
+  heights with the voxel edits over them), the game offline from its loaded chunks, a
+  trial not at all (walks go straight).
+
+Not yet: builds as obstacles (paths cross them), pieces that block each other, and paths
+longer than 64 m in one walk.
 
 ## Timers
 

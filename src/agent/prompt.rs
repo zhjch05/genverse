@@ -122,6 +122,16 @@ live at once for everyone. Keep "build" and "terrain" null unless they also ask 
     items, e.g. coins). Players put it down from the game bar, or your script spawns an entity
     with shop = "<its name>" (and a look and label); E on it opens the shop, and buying takes the
     price and gives the item with no script needed.
+  spawner: keeps up to "max" (1-32) pieces around it, one every "every_seconds" (5-86400),
+    within "radius" m (1-32), "when" "day", "night" or "any"; they look like "model" (one of
+    your models), are labeled "spawns" (or unlabeled if null), wander unless "wander" is
+    false, and carry a component named after the spawner (find("slime_pool") in scripts:
+    on_interact on one gets ev.entity). Players put the spawner down from the game bar.
+  npc: a character players put down: looks like "model", labeled "title"; "routine" is its
+    day, [{"at": "7:00", "to": [x, z]}, ...] in meters from where it was put down (it walks
+    to each stop at that time, every game day); "radius" makes it wander that far around its
+    stop (null: it stands). It carries a component named after the def: answer on_interact for
+    it in your script (dialogue, a shop).
 - "models": [{"name":"crate","build":{...}}]: every piece is drawn as one of these voxel models,
   in exactly the "build" format and under the same limits and style rules as builds (12.5 cm
   voxels: a 1 m tile is 8 voxels). There is no other way to draw pieces, so the whole world keeps
@@ -138,10 +148,12 @@ live at once for everyone. Keep "build" and "terrain" null unless they also ask 
                      "north" (-z), "south" (+z), "east" (+x), "west" (-x), "action" (E), "reset" (R)
     on_timer(ev)     your timer ev.name went off, with ev.data (what you gave it); ev.missed is
                      how many more times a repeating timer went by unrun (catch up, don't loop)
+    on_arrive(ev)    ev.entity got where walk() (or its routine) sent it, at ev.pos; ev.stuck
+                     is true if there was no way there on foot
   ev also has player (id; nil for timers), pos ({x,y,z} meters; for keys, the zone's), day,
   time (0..1 of the day), now (seconds).
   The world API (component names without ":" are your package's):
-    get(id) -> {id, pos, owner, c = components} or nil
+    get(id) -> {id, pos, owner, walking, c = components} or nil (pos: where it is now)
     find(component) -> list of entities that have it, in id order
     spawn(pos, components) -> id     despawn(id)    move(id, pos)
     set(id, name, value)    remove(id, name)       notify(player, text)
@@ -149,6 +161,18 @@ live at once for everyone. Keep "build" and "terrain" null unless they also ask 
     random() -> 0..1        random_int(a, b)       (no os, io, print or math.random)
     after(seconds, name, data, near)   on_timer once, seconds from now (1 or more)
     every(seconds, name, data, near)   on_timer every that many seconds    cancel(name)
+  Pieces that move on their own (the engine finds the way over the ground, around water and
+  steep steps, up to 64 m; players see them walk; it all sleeps while nobody is within 64 m):
+    walk(id, pos, speed): walks there (speed m/s, default 1.5), then on_arrive. stop(id)
+    routine(id, {{at = "7:00", to = pos}, {at = "18:00", to = pos2}}): where to be when, every
+      game day (days are 20 real minutes by default); routine(id, nil) stops it
+    wander(id, {radius = 6, speed = 1, pause = 4, home = pos}): roams around home (default:
+      where it is); with a routine, around each stop. wander(id, nil) stops
+    spawner(id, {model = "slime", label = "Slime", tag = "slime", max = 4, every = 30,
+      radius = 8, when = "night", wander = true}): keeps up to max pieces around id, each with
+      a component named tag (find("slime")); spawner(id, nil) stops it
+    Never move a piece step by step with fast timers: walk() is one change for a whole walk.
+    Builds don't block walking yet: send pieces around them yourself if it matters.
   Timers are how the game moves on its own (countdowns, crops, NPCs taking turns, a monster
   stepping). Nothing runs between them, so make them as slow as the game allows: a timer per
   thing that changes, or one "every" that updates many things, never a fast loop that does
@@ -165,6 +189,7 @@ live at once for everyone. Keep "build" and "terrain" null unless they also ask 
       while they have a pawn there, their movement keys come to on_key instead of walking
     pawn = player id: that player's hero stands on this entity; move it to move them
     shop = "name": one of your shop defs; E on it opens that shop
+    walk, routine, wander, spawner, spawned: set through the functions above, not by hand
   Players (stat names without ":" are your package's):
     stat(player, name) -> number or nil      stat_max(player, name) -> number or nil
     set_stat(player, name, value, max)       add_stat(player, name, delta) -> new value
@@ -194,12 +219,15 @@ live at once for everyone. Keep "build" and "terrain" null unless they also ask 
   strings, booleans); keep each component under 4 KB.
 - Before answering, play your game with the test_game tool: place it, enter, and play it through
   to the end (win it), then fix anything refused or wrong. Its map shows where everything is.
-  "wait <seconds>" lets time pass so timers go off; "choose <id>" picks in the open panel and
-  "close" closes it; the report lists the tester's stats, HUD and open panel.
+  "wait <seconds>" lets time pass so timers go off (walks, routines and spawners too; the
+  trial world is flat and empty, so walks there go straight); "choose <id>" picks in the open
+  panel and "close" closes it; "interact <label>" presses E on a particular piece; the report
+  lists the tester's stats, HUD and open panel, and where pieces are walking to.
 
 Example "game": walk onto the mat and collect the coins.
 {"name":"coins","title":"Coin mat","defs":[{"name":"mat","kind":"fixture","title":"Coin mat","seed":null,
-  "stage_days":null,"harvest":null,"gives":null,"every_days":null,"sells":null}],
+  "stage_days":null,"harvest":null,"gives":null,"every_days":null,"sells":null,"model":null,"spawns":null,
+  "max":null,"every_seconds":null,"radius":null,"when":null,"wander":null,"routine":null}],
  "models":[{"name":"mat","build":{"name":"Mat","size":[40,1,40],"palette":[{"name":"straw","hex":"#d9c79a","material":"matte"}],
    "shapes":[{"kind":"box","color":"straw","from":[0,0,0],"to":[40,1,40],"radius":null,"wobble":null}]}},
   {"name":"coin","build":{"name":"Coin","size":[3,3,3],"palette":[{"name":"gold","hex":"#f4cf4b","material":"glow"}],

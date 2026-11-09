@@ -14,6 +14,18 @@
 //! Placing a seed plants its crop (and uses up the seed); a crop is ripe once its stages'
 //! days have passed, and interacting with a ripe one harvests it. A source is placed
 //! by its own name and gives each player its items once every `every_days`.
+//!
+//! Living things need no script either ([`super::walk`]): a **spawner** keeps up to
+//! `max` pieces around it (one every `every_seconds`, by day, night or always), and an
+//! **npc** keeps a daily routine of stops, relative to where it's put down:
+//!
+//! ```json
+//! "farm:slime_pool": { "kind": "spawner", "title": "Slime pool", "model": "slime",
+//!                      "spawns": "Slime", "max": 4, "every_seconds": 30, "radius": 8,
+//!                      "when": "night", "wander": true },
+//! "farm:baker":      { "kind": "npc", "title": "Baker", "model": "baker", "radius": 3,
+//!                      "routine": [{ "at": "7:00", "to": [0, 0] }, { "at": "18:00", "to": [12, 4] }] }
+//! ```
 
 use std::collections::BTreeMap;
 
@@ -23,6 +35,7 @@ use serde_json::json;
 use super::{
     Batch, Effect, Event, Grants, Intent, Manifest, Package, Permission, Runtime, Trigger,
     package::split_name,
+    walk::{self, MAX_SPAWNED, MAX_STOPS, MAX_WALK},
 };
 
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
@@ -52,6 +65,51 @@ pub enum Def {
     /// A shop: what it sells, for what. Put down (or spawned by a script with a `shop`
     /// component), E opens it, and buying needs no script.
     Shop { title: String, sells: Vec<Offer> },
+    /// Keeps up to `max` pieces around where it's put down: one every `every_seconds`,
+    /// within `radius` m, `when` it's "day", "night" or "any" time. They look like
+    /// `model`, are labeled `spawns`, carry the component `tag` (the def's own name
+    /// unless given) for scripts to answer, and wander unless `wander` is false.
+    Spawner {
+        title: String,
+        model: String,
+        spawns: String,
+        max: u32,
+        every_seconds: u32,
+        radius: f32,
+        #[serde(default = "any")]
+        when: String,
+        #[serde(default = "yes")]
+        wander: bool,
+    },
+    /// A character put down by name: looks like `model`, keeps its `routine` (times of
+    /// day and places, in meters from where it was put down), and wanders `radius` m
+    /// around each stop if given.
+    Npc {
+        title: String,
+        model: String,
+        #[serde(default)]
+        routine: Vec<Stop>,
+        #[serde(default)]
+        radius: Option<f32>,
+    },
+}
+
+/// One stop of an NPC's day.
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct Stop {
+    /// "8:30".
+    pub at: String,
+    /// Meters east and south of where the NPC was put down.
+    pub to: [f32; 2],
+}
+
+fn any() -> String {
+    "any".into()
+}
+
+fn yes() -> bool {
+    true
 }
 
 /// One thing a shop sells, and its price.
@@ -101,7 +159,7 @@ pub fn check(package: &Package) -> Vec<String> {
         .filter_map(|(name, value)| match serde_json::from_value(value.clone()) {
             Ok(def) => Some((name.as_str(), def)),
             Err(e) => {
-                errors.push(format!("\"{name}\": {e} (kinds are item, crop, source and fixture)"));
+                errors.push(format!("\"{name}\": {e} (kinds are item, crop, source, fixture, shop, spawner and npc)"));
                 None
             }
         })
@@ -119,7 +177,13 @@ pub fn check(package: &Package) -> Vec<String> {
     };
     for (name, def) in &parsed {
         match def {
-            Def::Item { title } | Def::Crop { title, .. } | Def::Source { title, .. } | Def::Fixture { title } | Def::Shop { title, .. }
+            Def::Item { title }
+            | Def::Crop { title, .. }
+            | Def::Source { title, .. }
+            | Def::Fixture { title }
+            | Def::Shop { title, .. }
+            | Def::Spawner { title, .. }
+            | Def::Npc { title, .. }
                 if title.trim().is_empty() || title.len() > 80 =>
             {
                 errors.push(format!("\"{name}\": title must be 1-80 characters"));
@@ -147,6 +211,36 @@ pub fn check(package: &Package) -> Vec<String> {
                 stack(&mut errors, name, "gives", gives);
                 if !(1..=365).contains(every_days) {
                     errors.push(format!("\"{name}\": every_days must be 1 to 365"));
+                }
+            }
+            Def::Spawner { model, max, every_seconds, radius, when, spawns, .. } => {
+                if !package.models.contains_key(model) {
+                    errors.push(format!("\"{name}\": model \"{model}\" must be one of the package's models"));
+                }
+                if !(1..=MAX_SPAWNED as u32).contains(max) || !(5..=86_400).contains(every_seconds) || !(1.0..=32.0).contains(radius) {
+                    errors.push(format!("\"{name}\": max is 1-{MAX_SPAWNED}, every_seconds 5-86400, radius 1-32 m"));
+                }
+                if !matches!(when.as_str(), "any" | "day" | "night") {
+                    errors.push(format!("\"{name}\": when is \"any\", \"day\" or \"night\""));
+                }
+                if spawns.chars().count() > 60 {
+                    errors.push(format!("\"{name}\": spawns (their label) is at most 60 characters"));
+                }
+            }
+            Def::Npc { model, routine, radius, .. } => {
+                if !package.models.contains_key(model) {
+                    errors.push(format!("\"{name}\": model \"{model}\" must be one of the package's models"));
+                }
+                if routine.len() > MAX_STOPS {
+                    errors.push(format!("\"{name}\": a routine has at most {MAX_STOPS} stops"));
+                }
+                for stop in routine {
+                    if walk::time_of_day(&stop.at).is_none() || stop.to.iter().any(|v| !v.is_finite() || v.abs() > MAX_WALK) {
+                        errors.push(format!("\"{name}\": each stop is {{at: \"8:30\", to: [x, z]}}, within {MAX_WALK} m"));
+                    }
+                }
+                if radius.is_some_and(|r| !(1.0..=32.0).contains(&r)) {
+                    errors.push(format!("\"{name}\": radius (how far it wanders) is 1-32 m"));
                 }
             }
             Def::Shop { sells, .. } => {
@@ -206,6 +300,30 @@ pub struct DefSpec {
     /// shop: what it sells, for what.
     #[serde(default)]
     pub sells: Option<Vec<Offer>>,
+    /// spawner, npc: the model it (or what it spawns) looks like.
+    #[serde(default)]
+    pub model: Option<String>,
+    /// spawner: the label of what it spawns.
+    #[serde(default)]
+    pub spawns: Option<String>,
+    /// spawner: how many it keeps around.
+    #[serde(default)]
+    pub max: Option<u32>,
+    /// spawner: seconds between spawns.
+    #[serde(default)]
+    pub every_seconds: Option<u32>,
+    /// spawner: how far around it they appear and wander; npc: how far it wanders.
+    #[serde(default)]
+    pub radius: Option<f32>,
+    /// spawner: "day", "night" or "any".
+    #[serde(default)]
+    pub when: Option<String>,
+    /// spawner: whether what it spawns wanders (null: yes).
+    #[serde(default)]
+    pub wander: Option<bool>,
+    /// npc: where to be when.
+    #[serde(default)]
+    pub routine: Option<Vec<Stop>>,
 }
 
 impl GameSpec {
@@ -230,6 +348,14 @@ impl GameSpec {
                 field("harvest", stack(&d.harvest));
                 field("gives", stack(&d.gives));
                 field("every_days", d.every_days.map(Into::into));
+                field("model", d.model.clone().map(Into::into));
+                field("spawns", d.spawns.clone().map(Into::into));
+                field("max", d.max.map(Into::into));
+                field("every_seconds", d.every_seconds.map(Into::into));
+                field("radius", d.radius.map(Into::into));
+                field("when", d.when.clone().map(Into::into));
+                field("wander", d.wander.map(Into::into));
+                field("routine", d.routine.as_ref().map(|r| json!(r)));
                 field(
                     "sells",
                     d.sells.as_ref().map(|offers| {
@@ -286,6 +412,28 @@ impl GameSpec {
                         sells: Some(sells.iter().map(|o| Offer { item: stack(&o.item), price: stack(&o.price) }).collect()),
                         ..Default::default()
                     },
+                    Def::Spawner { title, model, spawns, max, every_seconds, radius, when, wander } => DefSpec {
+                        name,
+                        kind: "spawner".into(),
+                        title,
+                        model: Some(model),
+                        spawns: Some(spawns),
+                        max: Some(max),
+                        every_seconds: Some(every_seconds),
+                        radius: Some(radius),
+                        when: Some(when),
+                        wander: Some(wander),
+                        ..Default::default()
+                    },
+                    Def::Npc { title, model, routine, radius } => DefSpec {
+                        name,
+                        kind: "npc".into(),
+                        title,
+                        model: Some(model),
+                        radius,
+                        routine: Some(routine),
+                        ..Default::default()
+                    },
                 }
             })
             .collect();
@@ -298,9 +446,15 @@ impl GameSpec {
 /// A definition's title, for what players see ("Turnip seeds"); the name if it has none.
 pub fn title(package: &Package, name: &str) -> String {
     match defs(package).get(name) {
-        Some(Def::Item { title } | Def::Crop { title, .. } | Def::Source { title, .. } | Def::Fixture { title } | Def::Shop { title, .. }) => {
-            title.clone()
-        }
+        Some(
+            Def::Item { title }
+            | Def::Crop { title, .. }
+            | Def::Source { title, .. }
+            | Def::Fixture { title }
+            | Def::Shop { title, .. }
+            | Def::Spawner { title, .. }
+            | Def::Npc { title, .. },
+        ) => title.clone(),
         None => name.to_string(),
     }
 }
@@ -324,11 +478,53 @@ pub struct DataRules;
 
 impl Runtime for DataRules {
     fn handle(&self, package: &Package, event: &Event, world: &mut Batch, grants: &Grants) -> Result<(), String> {
+        if place_living(package, event, world, grants)? {
+            return Ok(());
+        }
         for effect in self.answer(package, event, world)? {
             world.apply(grants, &effect)?;
         }
         Ok(())
     }
+}
+
+/// Puts down a spawner or an NPC the event places, if it does, scripts or not: the
+/// engine runs them. Returns whether it did.
+pub fn place_living(package: &Package, event: &Event, world: &mut Batch, grants: &Grants) -> Result<bool, String> {
+    let Trigger::Intent(Intent::Place { item, position }) = event.trigger else { return Ok(false) };
+    let defs = defs(package);
+    let (value, components) = match defs.get(item.as_str()) {
+        Some(Def::Spawner { title, model, spawns, max, every_seconds, radius, when, wander }) => {
+            let spawner = json!({ "model": model, "label": spawns, "tag": item, "max": max, "every": every_seconds,
+                "radius": radius, "when": when, "wander": wander });
+            (("spawner", Some(spawner)), [("label".to_string(), json!(title))].into())
+        }
+        Some(Def::Npc { title, model, routine, radius }) => {
+            let at = |to: [f32; 2]| [position[0] + to[0], position[1], position[2] + to[1]];
+            let mut components: BTreeMap<String, serde_json::Value> =
+                [("label".to_string(), json!(title)), ("look".to_string(), json!({ "model": model })), (item.clone(), json!({}))].into();
+            if let Some(radius) = radius {
+                components.insert("wander".into(), json!({ "home": position, "radius": radius, "speed": 1.0, "pause": 6 }));
+            }
+            let stops: Vec<_> = routine.iter().filter_map(|s| Some(json!({ "at": walk::time_of_day(&s.at)?, "to": at(s.to) }))).collect();
+            let start = if stops.is_empty() { ("wander", radius.map(|_| components["wander"].clone())) } else { ("routine", Some(json!(stops))) };
+            (start, components)
+        }
+        _ => return Ok(false),
+    };
+    let ((name, value), at) = (value, event.at);
+    // Spawned with its engine component, so a spawner needs no look of its own.
+    let mut components = components;
+    if let Some(value) = &value {
+        components.insert(name.to_string(), value.clone());
+    }
+    let id = world.apply(grants, &Effect::Spawn { position: *position, components })?.ok_or("nothing spawned")?;
+    if let Some(value) = value {
+        for effect in walk::start_effects(id, name, Some(value), at) {
+            world.apply(grants, &effect)?;
+        }
+    }
+    Ok(true)
 }
 
 impl DataRules {

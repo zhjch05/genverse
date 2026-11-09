@@ -106,6 +106,13 @@ struct Place {
     fresh: Vec<Change>,
 }
 
+/// Pieces walk on the world as the server has it.
+impl cubewish_rules::logic::Ground for Place {
+    fn heights(&self, min: [i32; 2], step: i32, count: [i32; 2]) -> Option<Vec<Option<i32>>> {
+        self.state.heights(min, step, count)
+    }
+}
+
 impl cubewish_rules::logic::TimerHost for Place {
     fn logic(&self) -> &cubewish_rules::logic::Logic {
         &self.state.logic

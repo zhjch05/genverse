@@ -38,6 +38,7 @@ use cubewish_rules::{
         Entity as Piece, EntityId, Intent, Logic, Package,
         data::{self, Def},
         trial::{self, pawn_of},
+        walk::{position_at, walking_at},
     },
 };
 
@@ -167,8 +168,8 @@ fn describe(logic: &Logic, e: &Piece, today: u64) -> (Look, Option<String>) {
         let turn = look["turn"].as_u64().unwrap_or(0).min(3) as u8;
         return (Look::Model { package: installed, model, turn }, label);
     }
-    // A shop from data alone is drawn like a seed bin.
-    if e.components.contains_key("shop") {
+    // A shop or a spawner from data alone is drawn like a seed bin.
+    if e.components.contains_key("shop") || e.components.contains_key("spawner") {
         return (Look::Source, label);
     }
     let defs = data::defs(package);
@@ -189,6 +190,37 @@ fn describe(logic: &Logic, e: &Piece, today: u64) -> (Look, Option<String>) {
 
 fn now() -> u64 {
     std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map_or(0, |d| d.as_secs())
+}
+
+/// Now, to the millisecond: where walking pieces are.
+fn now_exact() -> f64 {
+    std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map_or(0.0, |d| d.as_secs_f64())
+}
+
+/// Where a piece stands now and how it's turned: along its walk, facing the way it
+/// goes, if it's walking.
+fn placement(e: &Piece, turn: u8, look: &Look) -> Transform {
+    let (at, yaw) = walking_at(e, now_exact()).unwrap_or((e.position, turn as f32 * FRAC_PI_2));
+    let mut transform = Transform::from_translation(Vec3::from_array(at)).with_rotation(Quat::from_rotation_y(yaw));
+    if let Some((size, _)) = look.block() {
+        transform.translation.y += size.y / 2.0;
+    }
+    transform
+}
+
+/// Moves the walking pieces along their way every frame: the log holds only where each
+/// walk goes and when it set off.
+pub fn walk_pieces(ledger: Res<Ledger>, play: Res<Play>, mut transforms: Query<&mut Transform>) {
+    for (id, e) in ledger.logic.state.entities() {
+        if !e.components.contains_key("walk") {
+            continue;
+        }
+        let Some((entity, look)) = play.pieces.get(&id) else { continue };
+        let turn = if let Look::Model { turn, .. } = look { *turn } else { 0 };
+        if let Ok(mut transform) = transforms.get_mut(*entity) {
+            *transform = placement(e, turn, look);
+        }
+    }
 }
 
 /// Keeps a piece in the world for each of the game's entities: its voxel model, drawn
@@ -215,12 +247,10 @@ pub fn sync_pieces(
     for (id, e) in logic.state.entities() {
         let (look, _) = describe(logic, e, today);
         let turn = if let Look::Model { turn, .. } = look { turn } else { 0 };
-        let mut transform = Transform::from_translation(Vec3::from_array(e.position)).with_rotation(Quat::from_rotation_y(turn as f32 * FRAC_PI_2));
+        let mut transform = placement(e, turn, &Look::Hidden);
         if let Some((entity, old)) = play.pieces.remove(&id) {
             if old == look {
-                if let Some((size, _)) = look.block() {
-                    transform.translation.y += size.y / 2.0;
-                }
+                let transform = placement(e, turn, &look);
                 commands.entity(entity).insert(transform);
                 keep.insert(id, (entity, look));
                 continue;
@@ -281,13 +311,14 @@ pub fn run_timers(
     mut play: ResMut<Play>,
     mut chat: ResMut<Chat>,
     heroes: Query<&Transform, With<Player>>,
+    world: Res<VoxelWorld>,
     mut last: Local<f32>,
 ) {
     let now_s = time.elapsed_secs();
     if now_s - *last >= 0.5 {
         *last = now_s;
         let players: Vec<[f32; 3]> = heroes.iter().map(|t| t.translation.to_array()).collect();
-        for why in ledger.run_timers(&players) {
+        for why in ledger.run_timers(&players, &*world) {
             report(Err(format!("script error: {why}")), &ledger, &mut play, &mut chat, now_s);
         }
     }
@@ -317,7 +348,7 @@ pub fn use_pieces(
         .state
         .entities()
         .filter(|(_, e)| describe(logic, e, today).1.is_some())
-        .map(|(id, e)| (id, Vec3::from_array(e.position).distance(feet)))
+        .map(|(id, e)| (id, Vec3::from_array(position_at(e, now_exact())).distance(feet)))
         .filter(|(_, d)| *d <= REACH)
         .min_by(|a, b| a.1.total_cmp(&b.1))
         .map(|(id, _)| id);
@@ -504,7 +535,11 @@ fn placeable(ledger: &Ledger) -> Vec<(String, String, Option<u32>)> {
         let Some(package) = logic.package(install) else { continue };
         for (name, def) in data::defs(package) {
             match def {
-                Def::Fixture { title } | Def::Source { title, .. } | Def::Shop { title, .. } => out.push((title, name.to_string(), None)),
+                Def::Fixture { title }
+                | Def::Source { title, .. }
+                | Def::Shop { title, .. }
+                | Def::Spawner { title, .. }
+                | Def::Npc { title, .. } => out.push((title, name.to_string(), None)),
                 Def::Crop { seed, .. } => seeds.push(seed),
                 Def::Item { .. } => {}
             }
@@ -560,14 +595,14 @@ pub fn game_bar(
         let mut nearby: Vec<_> = logic
             .state
             .entities()
-            .map(|(id, e)| (play.near != Some(id), Vec3::from_array(e.position).distance(hero.translation), id, e))
+            .map(|(id, e)| (play.near != Some(id), Vec3::from_array(position_at(e, now_exact())).distance(hero.translation), id, e))
             .filter(|(_, d, _, _)| *d <= LABEL_DISTANCE)
             .collect();
         nearby.sort_by(|a, b| a.0.cmp(&b.0).then(a.1.total_cmp(&b.1)));
         let mut shown: Vec<Vec2> = Vec::new();
         for (_, _, id, e) in nearby {
             let (look, Some(label)) = describe(logic, e, today.day) else { continue };
-            let top = Vec3::from_array(e.position) + Vec3::Y * (play.models.height(logic, &look) + 0.3);
+            let top = Vec3::from_array(position_at(e, now_exact())) + Vec3::Y * (play.models.height(logic, &look) + 0.3);
             // Only pieces in front of the camera.
             if (top - eye.translation()).dot(*eye.forward()) <= 0.0 {
                 continue;

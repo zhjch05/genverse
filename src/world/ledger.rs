@@ -42,7 +42,7 @@ use cubewish_rules::{
     log::{Action, BuildState, PortalTo, Provenance, Replay, Snapshot, WorldLog, WorldState, replay_from, signing_bytes},
     undo::{Cell, Op, UndoRecord},
     game::{GameAction, GameLog},
-    logic::{Clockwork, Intent, Logic, Package, Scope},
+    logic::{Clockwork, Ground, Intent, Logic, Package, Scope},
 };
 use serde::{Deserialize, Serialize};
 
@@ -407,24 +407,36 @@ pub struct Online {
 #[cfg(not(target_arch = "wasm32"))]
 const FIRST_REQUEST: u64 = 1 << 40;
 
-/// Offline, the game keeps the world, so timers run here.
-impl cubewish_rules::logic::TimerHost for Ledger {
+/// Offline, the game keeps the world, so timers run here, on the ground it has loaded.
+struct Keeper<'a> {
+    ledger: &'a mut Ledger,
+    ground: &'a dyn Ground,
+}
+
+impl Ground for Keeper<'_> {
+    fn heights(&self, min: [i32; 2], step: i32, count: [i32; 2]) -> Option<Vec<Option<i32>>> {
+        self.ground.heights(min, step, count)
+    }
+}
+
+impl cubewish_rules::logic::TimerHost for Keeper<'_> {
     fn logic(&self) -> &Logic {
-        &self.logic
+        &self.ledger.logic
     }
 
     fn next_change(&self) -> u64 {
-        self.log.changes.last().map_or(1, |c| c.id + 1)
+        self.ledger.log.changes.last().map_or(1, |c| c.id + 1)
     }
 
     fn record(&mut self, package: &str, now: u64, effects: Vec<cubewish_rules::logic::Effect>) -> Result<(), String> {
-        let by = Provenance::new(&self.profile.id, &self.profile.name, None, None, now);
-        self.log.push_signed(by, Action::Timers { package: package.into(), until: now, effects }, &self.key);
-        let result = self.advance();
+        let ledger = &mut *self.ledger;
+        let by = Provenance::new(&ledger.profile.id, &ledger.profile.name, None, None, now);
+        ledger.log.push_signed(by, Action::Timers { package: package.into(), until: now, effects }, &ledger.key);
+        let result = ledger.advance();
         if result.is_err() {
-            self.log.changes.pop();
+            ledger.log.changes.pop();
         }
-        self.save();
+        ledger.save();
         result
     }
 }
@@ -662,15 +674,16 @@ impl Ledger {
 
     /// Offline, fires the games' timers that are due and records what each package's
     /// did, as a server would. Timers anchored to game pieces run only while one of
-    /// `players` (the hero) is near. Returns the timers that failed (and stopped).
-    pub fn run_timers(&mut self, players: &[[f32; 3]]) -> Vec<String> {
+    /// `players` (the hero) is near; pieces walk over `ground`. Returns the timers that
+    /// failed (and stopped).
+    pub fn run_timers(&mut self, players: &[[f32; 3]], ground: &dyn Ground) -> Vec<String> {
         if self.is_online() || !self.is_admin() {
             return Vec::new();
         }
         let now = now();
         let mut clock = std::mem::take(&mut self.clock);
         let (seed, rules) = (self.log.seed, self.rules.logic);
-        let run = clock.run(self, now, seed, &rules, players);
+        let run = clock.run(&mut Keeper { ledger: self, ground }, now, seed, &rules, players);
         self.clock = clock;
         let me = &self.profile.id;
         self.heard.extend(run.notes.into_iter().filter(|(to, _)| to == me).map(|(_, t)| t));

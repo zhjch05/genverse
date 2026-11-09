@@ -148,6 +148,24 @@ fn coarse_keys(lo: IVec3, hi: IVec3) -> impl Iterator<Item = IVec3> {
     (lo.z..=hi.z).flat_map(move |z| (lo.y..=hi.y).flat_map(move |y| (lo.x..=hi.x).map(move |x| IVec3::new(x, y, z))))
 }
 
+/// Offline, game pieces walk on the ground as it's loaded here; where it isn't, they go
+/// straight.
+impl cubewish_rules::logic::Ground for VoxelWorld {
+    fn heights(&self, min: [i32; 2], step: i32, count: [i32; 2]) -> Option<Vec<Option<i32>>> {
+        let mut column = vec![AIR; WORLD_HEIGHT as usize];
+        let mut out = Vec::with_capacity((count[0] * count[1]).max(0) as usize);
+        for j in 0..count[1] {
+            for i in 0..count[0] {
+                if !self.column(min[0] + i * step, min[1] + j * step, &mut column) {
+                    return None;
+                }
+                out.push(cubewish_rules::logic::walk::stand_in(&column));
+            }
+        }
+        Some(out)
+    }
+}
+
 impl VoxelWorld {
     pub fn voxel_at(pos: Vec3) -> IVec3 {
         (pos / VOXEL_SIZE).floor().as_ivec3()
