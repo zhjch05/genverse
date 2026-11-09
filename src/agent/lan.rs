@@ -8,7 +8,7 @@ use std::{net::SocketAddr, sync::atomic::Ordering};
 use bevy::prelude::*;
 use genverse_net::lan::{Announcer, Beacon, Listener, is_local};
 
-use super::{Chat, Role, online};
+use super::{Chat, Role, online, ops::said};
 use crate::world::ledger::Ledger;
 
 /// Seconds a world stays listed after its last beacon.
@@ -102,11 +102,11 @@ pub fn update_lan(time: Res<Time>, mut lan: ResMut<Lan>, mut ledger: ResMut<Ledg
     if let Some(world) = found {
         let (name, address) = (world.beacon.world.clone(), world.address());
         lan.play_until = None;
-        let reply = online::join(&mut ledger, &address);
+        let reply = said(online::join(&mut ledger, &address));
         chat.say(Role::System, format!("Found {name} on your network. {reply}"));
     } else if now >= until {
         lan.play_until = None;
-        let reply = online::host(&mut ledger);
+        let reply = said(online::host(&mut ledger));
         chat.say(Role::System, format!("No worlds on your network yet, so this one is open for others. {reply}"));
     }
 }

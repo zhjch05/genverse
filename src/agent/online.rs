@@ -19,25 +19,25 @@ use genverse_rules::{
     logic::Effect,
 };
 
-use super::{Chat, Role, creations::Creations, landscape::Landscape, presence::Peers};
+use super::{Chat, Role, creations::Creations, landscape::Landscape, ops::Reply, presence::Peers};
 use crate::world::{VoxelWorld, ledger::Ledger};
 
 /// Joins the server at `addr`; returns what to tell the player.
-pub fn join(ledger: &mut Ledger, addr: &str) -> String {
+pub fn join(ledger: &mut Ledger, addr: &str) -> Reply {
     if ledger.is_online() {
-        return "Already online; /leave first.".into();
+        return Err("Already online; /leave first.".into());
     }
     match ledger.go_online(addr) {
-        Ok(()) => format!("Joining {addr}…"),
-        Err(e) => format!("⚠ {e}"),
+        Ok(()) => Ok(format!("Joining {addr}…")),
+        Err(e) => Err(format!("⚠ {e}")),
     }
 }
 
 /// Opens this world to others: starts a server in the game on the world's own save
 /// (so changes made together are kept with it) and joins it.
-pub fn host(ledger: &mut Ledger) -> String {
+pub fn host(ledger: &mut Ledger) -> Reply {
     if ledger.is_online() {
-        return "Already online; only your local world can be hosted.".into();
+        return Err("Already online; only your local world can be hosted.".into());
     }
     let config = genverse_server::ServerConfig {
         data_dir: crate::world::ledger::game_dir().into(),
@@ -47,25 +47,25 @@ pub fn host(ledger: &mut Ledger) -> String {
     };
     let running = match genverse_server::start(config) {
         Ok(running) => running,
-        Err(e) => return format!("⚠ Couldn't host: {e}"),
+        Err(e) => return Err(format!("⚠ Couldn't host: {e}")),
     };
     let port = running.addr.port();
     ledger.hosting = Some(running);
     if let Err(e) = ledger.go_online(&format!("127.0.0.1:{port}")) {
-        return format!("⚠ {e}");
+        return Err(format!("⚠ {e}"));
     }
     let lan = lan_ip().map_or(format!("this computer's address, port {port}"), |ip| format!("{ip}:{port}"));
-    format!("Hosting this world; Leave closes it. Others on your network join with {lan}.")
+    Ok(format!("Hosting this world; Leave closes it. Others on your network join with {lan}."))
 }
 
 /// Leaves the server for the local world; a hosted one closes on the way out.
-pub fn leave(ledger: &mut Ledger, travel: &mut super::worlds::Travel) -> String {
+pub fn leave(ledger: &mut Ledger, travel: &mut super::worlds::Travel) -> Reply {
     if !ledger.is_online() {
-        return "You're in your local world.".into();
+        return Err("You're in your local world.".into());
     }
     travel.stop_hosting = ledger.hosting.is_some();
     travel.next = Some(super::worlds::Trip::Local { game: crate::world::ledger::game_name(), world: crate::world::ledger::world_name() });
-    String::new()
+    Ok(String::new())
 }
 
 /// This computer's address on the local network: the one a route to the internet would

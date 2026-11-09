@@ -8,12 +8,13 @@
 use bevy::prelude::*;
 use bevy_egui::{EguiContexts, egui};
 use egui_phosphor::regular as icon;
+use serde_json::json;
 
 use super::{
     Chat, Role,
-    commands::{self, Context},
     creations::Creations,
     landscape::Landscape,
+    ops::{self, Context},
     presence::color_of,
 };
 use crate::{
@@ -149,10 +150,10 @@ pub fn history_window(
         travel: &mut travel,
         at: [0.0; 3],
     };
-    let reply = match pick {
-        Pick::Undo(id) => commands::undo(cx, id),
-        Pick::Load(id) => commands::load(cx, id),
-    };
+    let reply = ops::said(match pick {
+        Pick::Undo(id) => ops::run("undo", json!({ "id": id }), cx),
+        Pick::Load(id) => ops::run("load", json!({ "id": id }), cx),
+    });
     chat.say(Role::System, reply);
     Ok(())
 }

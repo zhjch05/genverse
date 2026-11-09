@@ -21,17 +21,18 @@ use genverse_rules::{
     build::VOXEL_SIZE as BUILD_VOXEL,
     game::GameAction,
     log::{Action, BuildState, PortalTo},
-    logic::{Package, Scope},
+    logic::Package,
 };
 use egui_phosphor::regular as icon;
+use serde_json::json;
 
 use super::{
     Chat, Role,
-    commands::{self, Context},
     creations::Creations,
     game::Play,
     landscape::Landscape,
     loading::Loading,
+    ops::{self, Context},
     theme,
 };
 use crate::{
@@ -396,7 +397,7 @@ enum Do {
     LoadGame(String),
     NewGame,
     Portal(PortalTo),
-    TurnOn(std::sync::Arc<Package>),
+    TurnOn(String),
     TurnOff(String),
     RemovePackage(String),
     Link(u64),
@@ -425,6 +426,11 @@ fn remember_server(addr: &str) {
     list.insert(0, addr.to_string());
     list.truncate(8);
     super::prefs::set("recent_servers", serde_json::json!(list));
+}
+
+/// How a new world's ground is named in an op's arguments.
+fn ground(flat: bool) -> &'static str {
+    if flat { "flat" } else { "natural" }
 }
 
 /// A seed for a new natural world.
@@ -723,7 +729,7 @@ pub fn worlds_window(
                                                 todo = Some(Do::TurnOff(name.clone()));
                                             }
                                         } else if ui.button("Turn on here").clicked() {
-                                            todo = Some(Do::TurnOn(package.clone()));
+                                            todo = Some(Do::TurnOn(name.clone()));
                                         }
                                     });
                                 }
@@ -800,82 +806,53 @@ pub fn worlds_window(
     window.rows = Some((worlds, games));
 
     let Some(todo) = todo else { return Ok(()) };
-    let reply = match todo {
+    window.rows = None;
+    // Going somewhere is the window's own; everything else is an op, as in the chat.
+    let (op, args) = match todo {
         Do::Go(trip) => {
             if let Trip::Server(addr) = &trip {
                 remember_server(addr);
             }
             travel.next = Some(trip);
-            None
+            return Ok(());
         }
-        Do::Leave => Some(super::online::leave(&mut ledger, &mut travel)).filter(|reply| !reply.is_empty()),
-        Do::NewWorld => {
-            let (name, flat) = (std::mem::take(&mut window.new_name), window.new_flat);
-            Some(commands::new_world(&mut ledger, &mut travel, &name, flat))
+        Do::Portal(to) => {
+            if let Err(why) = travel.portal(&to, &ledger) {
+                chat.say(Role::System, why);
+            }
+            return Ok(());
         }
+        Do::Leave => ("leave", json!({})),
+        Do::Host => ("host", json!({})),
+        Do::NewWorld => ("newworld", json!({ "name": std::mem::take(&mut window.new_name), "ground": ground(window.new_flat) })),
         Do::RemoveWorld(name) => {
             window.removing = None;
-            Some(commands::remove_world(&mut ledger, &name))
+            ("removeworld", json!({ "name": name }))
         }
-        Do::Save => {
-            let name = std::mem::take(&mut window.save_name);
-            Some(commands::save(&mut ledger, &world.edit_list(), &name))
-        }
-        Do::SaveGame => {
-            let name = std::mem::take(&mut window.game_save_name);
-            Some(commands::save_game(&mut ledger, &world.edit_list(), &name))
-        }
-        Do::LoadGame(name) => Some(commands::load_game(&mut ledger, &world.edit_list(), &name)),
+        Do::Save => ("save", json!({ "name": std::mem::take(&mut window.save_name) })),
+        Do::SaveGame => ("savegame", json!({ "name": std::mem::take(&mut window.game_save_name) })),
+        Do::LoadGame(name) => ("loadgame", json!({ "name": name })),
         Do::Fork(save, name) => {
             window.fork = None;
-            Some(commands::fork(&mut ledger, &save, &name))
+            ("fork", json!({ "save": save, "world": name }))
         }
-        Do::Load(id) => {
-            let cx = &mut Context {
-                ledger: &mut ledger,
-                world: &mut world,
-                creations: &mut creations,
-                landscape: &mut landscape,
-                travel: &mut travel,
-                at: [0.0; 3],
-            };
-            Some(commands::load(cx, id))
-        }
-        Do::NewGame => {
-            let (name, flat) = (std::mem::take(&mut window.new_game), window.new_flat);
-            Some(commands::new_game(&ledger, &mut travel, &name, flat))
-        }
-        Do::Portal(to) => travel.portal(&to, &ledger).err(),
-        Do::TurnOn(package) => {
-            let title = package.manifest.title.clone();
-            Some(match ledger.install((*package).clone(), Scope::World, None, None) {
-                Ok(_) => format!("{title} is on in this world."),
-                Err(why) => format!("⚠ Couldn't turn {title} on: {why}."),
-            })
-        }
-        Do::TurnOff(name) => {
-            ledger.record(None, None, Action::UninstallPackage { name: name.clone() });
-            Some(format!("{name} is off in this world; its pieces stay, asleep."))
-        }
-        Do::RemovePackage(name) => Some(match ledger.set_game_package(GameAction::RemovePackage { name: name.clone() }) {
-            Ok(()) => format!("Took {name} out of the game; worlds stop running it."),
-            Err(why) => why,
-        }),
-        Do::Link(build) => Some(match PortalTo::parse(&window.link) {
-            Ok(to) => {
-                let label = to.label();
-                ledger.record(None, None, Action::SetPortal { build, to: Some(to) });
-                format!("It's a portal to {label} now: walk up to it and press E.")
-            }
-            Err(why) => why,
-        }),
-        Do::Unlink(build) => {
-            ledger.record(None, None, Action::SetPortal { build, to: None });
-            Some("It's an ordinary build again.".into())
-        }
-        Do::Host => Some(super::online::host(&mut ledger)),
+        Do::Load(id) => ("load", json!({ "id": id })),
+        Do::NewGame => ("newgame", json!({ "name": std::mem::take(&mut window.new_game), "ground": ground(window.new_flat) })),
+        Do::TurnOn(name) => ("turn_on", json!({ "name": name })),
+        Do::TurnOff(name) => ("uninstall", json!({ "name": name })),
+        Do::RemovePackage(name) => ("remove_package", json!({ "name": name })),
+        Do::Link(build) => ("portal", json!({ "build": build, "to": window.link })),
+        Do::Unlink(build) => ("portal", json!({ "build": build, "to": "off" })),
     };
-    window.rows = None;
+    let cx = &mut Context {
+        ledger: &mut ledger,
+        world: &mut world,
+        creations: &mut creations,
+        landscape: &mut landscape,
+        travel: &mut travel,
+        at: hero.to_array(),
+    };
+    let reply = Some(ops::said(ops::run(op, args, cx)));
     if let Some(reply) = reply.filter(|r| !r.is_empty()) {
         chat.say(Role::System, reply);
     }

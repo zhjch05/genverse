@@ -22,6 +22,7 @@ mod lan;
 mod landscape;
 mod loading;
 mod mcp;
+mod ops;
 mod online;
 mod prefs;
 mod presence;
@@ -509,7 +510,7 @@ fn auto_prompt(
         // Commands, `;`-separated: `GENVERSE_PROMPT="/rate 2; /history"`.
         if text.trim_start().starts_with('/') {
             for command in text.split(';') {
-                let cx = &mut commands::Context {
+                let cx = &mut ops::Context {
                     ledger: &mut ledger,
                     world: &mut world,
                     creations: &mut creations,
@@ -539,7 +540,7 @@ fn auto_prompt(
 }
 
 /// Echoes a chat command and its reply.
-fn run_command(chat: &mut Chat, text: &str, cx: &mut commands::Context) {
+fn run_command(chat: &mut Chat, text: &str, cx: &mut ops::Context) {
     chat.say(Role::Player, text);
     // Play together is the panel's, not a world command.
     if text.trim() == "/play" {
@@ -1416,7 +1417,7 @@ fn show_messages(ui: &mut egui::Ui, messages: &[Message], me: &str, mine: egui::
 /// clicked.
 fn command_suggestions(
     ui: &mut egui::Ui,
-    matches: &[&commands::Command],
+    matches: &[&ops::Op],
     highlighted: usize,
     moved: bool,
     typed: &str,
@@ -1458,7 +1459,7 @@ fn command_suggestions(
 
 /// One suggested command: its name and arguments, what it does, and whether it's for
 /// admins. Lit when highlighted or under the pointer.
-fn command_row(ui: &mut egui::Ui, command: &commands::Command, highlighted: bool, admin: bool) -> egui::Response {
+fn command_row(ui: &mut egui::Ui, command: &ops::Op, highlighted: bool, admin: bool) -> egui::Response {
     let p = theme::palette(ui.ctx());
     let background = ui.painter().add(egui::Shape::Noop);
     let allowed = admin || !command.admin;
@@ -1497,7 +1498,7 @@ fn command_row(ui: &mut egui::Ui, command: &commands::Command, highlighted: bool
 }
 
 /// How to finish the command being typed, once its name is in.
-fn command_usage(ui: &mut egui::Ui, command: &commands::Command, admin: bool) {
+fn command_usage(ui: &mut egui::Ui, command: &ops::Op, admin: bool) {
     let p = theme::palette(ui.ctx());
     egui::Frame::new()
         .fill(p.raised)
@@ -1993,16 +1994,16 @@ fn chat_panel(
                         Some((word, rest)) => (Some(word), Some(rest)),
                         None => (Some(t), None),
                     });
-                    let matches: Vec<&commands::Command> = match (word, rest) {
+                    let matches: Vec<&ops::Op> = match (word, rest) {
                         (Some(word), None) => {
                             let word = word.to_lowercase();
-                            commands::COMMANDS.iter().filter(|c| c.name.starts_with(&word)).collect()
+                            ops::commands().filter(|c| c.name.starts_with(&word)).collect()
                         }
                         _ => Vec::new(),
                     };
                     let usage = word.filter(|_| rest.is_some()).and_then(|w| {
                         let w = w.to_lowercase();
-                        commands::COMMANDS.iter().find(|c| c.name == w)
+                        ops::commands().find(|c| c.name == w)
                     });
                     chat.suggestion = chat.suggestion.min(matches.len().saturating_sub(1));
                     let mut complete = None;
@@ -2068,7 +2069,7 @@ fn chat_panel(
                                     }
                                 }
                                 if let Some(name) = complete.take() {
-                                    chat.input = if commands::COMMANDS.iter().any(|c| c.name == name && !c.args.is_empty()) {
+                                    chat.input = if ops::commands().any(|c| c.name == name && !c.args.is_empty()) {
                                         format!("/{name} ")
                                     } else {
                                         format!("/{name}")
@@ -2162,7 +2163,7 @@ fn chat_panel(
     match action {
         Some(Action::Send) if chat.input.trim_start().starts_with('/') => {
             let text = std::mem::take(&mut chat.input);
-            let cx = &mut commands::Context {
+            let cx = &mut ops::Context {
                 ledger: &mut ledger,
                 world: &mut world,
                 creations: &mut creations,
@@ -2197,15 +2198,15 @@ fn chat_panel(
         }
         Some(Action::Join) => {
             let addr = chat.server_addr.trim().to_string();
-            let reply = online::join(&mut ledger, &addr);
+            let reply = ops::said(online::join(&mut ledger, &addr));
             chat.say(Role::System, reply);
         }
         Some(Action::Host) => {
-            let reply = online::host(&mut ledger);
+            let reply = ops::said(online::host(&mut ledger));
             chat.say(Role::System, reply);
         }
         Some(Action::JoinLan(addr)) => {
-            let reply = online::join(&mut ledger, &addr);
+            let reply = ops::said(online::join(&mut ledger, &addr));
             chat.say(Role::System, reply);
         }
         Some(Action::PlayTogether) => {
@@ -2213,7 +2214,7 @@ fn chat_panel(
             chat.say(Role::System, "Looking for worlds on your network…");
         }
         Some(Action::Leave) => {
-            let reply = online::leave(&mut ledger, &mut travel);
+            let reply = ops::said(online::leave(&mut ledger, &mut travel));
             if !reply.is_empty() {
                 chat.say(Role::System, reply);
             }
