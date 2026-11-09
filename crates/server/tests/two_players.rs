@@ -453,16 +453,26 @@ fn items_and_rules_follow_the_game() {
         until(&ada, |m| matches!(m, ToClient::Game { request: Some(r), .. } if *r == request))
     };
     let by = || Provenance::new(&ada.key.player_id(), "Ada", None, None, now());
+    // A seed bin, in Lua: put down, E on it gives 5 seeds.
     let farm = |version: u32| {
-        let bin = DefSpec {
-            name: "bin".into(),
-            kind: "source".into(),
-            title: format!("Seed bin {version}"),
-            gives: Some(serde_json::from_value(serde_json::json!({ "item": "seed", "count": 5 })).unwrap()),
-            ..Default::default()
-        };
         let seed = DefSpec { name: "seed".into(), kind: "item".into(), title: "Seeds".into(), ..Default::default() };
-        GameSpec { remove: None, rename: None, name: "farm".into(), title: "Farm".into(), defs: vec![bin, seed], scripts: Vec::new(), models: Vec::new() }.to_package(version)
+        let bin = format!(
+            "function on_place(ev) spawn(ev.pos, {{ look = {{ model = 'bin' }}, label = 'Seed bin {version}', bin = true }}) end\n\
+             function on_interact(ev) give(ev.player, 'seed', 5) end"
+        );
+        let mut models = models();
+        models.retain(|m| m.name == "box");
+        models[0].name = "bin".into();
+        GameSpec {
+            remove: None,
+            rename: None,
+            name: "farm".into(),
+            title: "Farm".into(),
+            defs: vec![seed],
+            scripts: vec![ScriptSpec { name: "bin.luau".into(), source: bin }],
+            models,
+        }
+        .to_package(version)
     };
 
     // Ada installs the farm in main and the game keeps it.

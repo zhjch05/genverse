@@ -6,7 +6,7 @@ use cubewish_rules::{
     log::{Action, Provenance, Snapshot, WorldLog, replay, replay_from},
     logic::{
         EntityId, Intent, Scope, Widget,
-        data::{DefSpec, GameSpec, ModelSpec, ScriptSpec, Stack},
+        data::{DefSpec, GameSpec, ModelSpec, ScriptSpec},
         entity::SCRIPT_BUILDS,
         trial,
     },
@@ -117,45 +117,6 @@ fn stats_hud_and_panels() {
     // The player can always close a panel.
     log.push(by("ada", 109), Action::Intent { intent: Intent::Choose { choice: None } });
     assert!(replay(&log).logic.state.panel("ada").is_none());
-}
-
-#[test]
-fn shops_need_no_script() {
-    let coin = DefSpec { name: "coin".into(), kind: "item".into(), title: "Coins".into(), ..Default::default() };
-    let seed = DefSpec { name: "seed".into(), kind: "item".into(), title: "Seeds".into(), ..Default::default() };
-    let purse = DefSpec {
-        name: "purse".into(),
-        kind: "source".into(),
-        title: "Purse".into(),
-        gives: Some(Stack { item: "coin".into(), count: 5 }),
-        ..Default::default()
-    };
-    let offer = serde_json::from_value(serde_json::json!({ "item": { "item": "seed", "count": 3 }, "price": { "item": "coin", "count": 2 } })).unwrap();
-    let shop = DefSpec { name: "store".into(), kind: "shop".into(), title: "General store".into(), sells: Some(vec![offer]), ..Default::default() };
-    let spec = game("town", vec![coin, seed, purse, shop], None, Vec::new());
-    let mut log = world(&spec);
-    let place = |log: &mut WorldLog, item: &str, x: f32, at| {
-        let id = log.push(by("ada", at), Action::Intent { intent: Intent::Place { item: item.into(), position: [x, 9.0, 0.0] } });
-        EntityId { change: id, n: 0 }
-    };
-    let purse = place(&mut log, "town:purse", 0.0, 101);
-    let store = place(&mut log, "town:store", 4.0, 102);
-    log.push(by("ada", 103), Action::Intent { intent: Intent::Interact { entity: purse } });
-    log.push(by("ada", 104), Action::Intent { intent: Intent::Interact { entity: store } });
-    let state = replay(&log);
-    let panel = state.logic.state.panel("ada").expect("the shop opens");
-    assert_eq!(panel.spec.choices[0].label, "3 × Seeds");
-    assert_eq!(panel.spec.choices[0].detail, "2 Coins");
-    let buy = |log: &mut WorldLog, at| log.push(by("ada", at), Action::Intent { intent: Intent::Choose { choice: Some("buy:0".into()) } });
-    for at in 105..108 {
-        buy(&mut log, at);
-    }
-    let state = replay(&log);
-    // 5 coins buy twice; the third is refused, and the shop stays open.
-    assert!(state.problems.iter().any(|p| p.contains("you need 2 Coins and have 1")), "{:?}", state.problems);
-    let game = &state.logic.state;
-    assert_eq!((game.items("ada", "town:seed"), game.items("ada", "town:coin")), (6, 1));
-    assert!(game.panel("ada").is_some());
 }
 
 const MASON: &str = r##"

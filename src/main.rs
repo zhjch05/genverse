@@ -9,16 +9,16 @@ mod world;
 use bevy::prelude::*;
 
 fn main() -> AppExit {
+    let mut window = Window {
+        title: "Cubewish".into(),
+        // On the web, size the canvas to the page instead of a fixed resolution.
+        fit_canvas_to_parent: true,
+        ..default()
+    };
+    // On the desktop it opens maximized, filling the screen but keeping its title bar.
+    window.set_maximized(true);
     let mut app = App::new();
-    app.add_plugins(DefaultPlugins.set(WindowPlugin {
-            primary_window: Some(Window {
-                title: "Cubewish".into(),
-                // On the web, size the canvas to the page instead of a fixed resolution.
-                fit_canvas_to_parent: true,
-                ..default()
-            }),
-            ..default()
-        }))
+    app.add_plugins(DefaultPlugins.set(WindowPlugin { primary_window: Some(window), ..default() }))
         .add_plugins((
             voxel::VoxelPlugin,
             world::WorldPlugin,

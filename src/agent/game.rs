@@ -1,14 +1,12 @@
 //! Playing the games installed in the world (`cubewish_rules::logic`).
 //!
 //! - **Pieces:** every entity the game rules keep is drawn from its `look`: one of its
-//!   package's voxel models, drawn like a build (the simple farming kinds, which have
-//!   none, are plain boxes). Pieces with a `label` show it when you're within 10 m; the
-//!   one in reach says E uses it, and F attacks it (`on_hit`).
+//!   package's voxel models, drawn like a build. Pieces with a `label` show it when
+//!   you're within 10 m; the one in reach says E uses it, and F attacks it (`on_hit`).
 //! - The hero goes where games send them: a teleport, and on coming into a world, the
 //!   game's spawn point.
-//! - **The game bar** above the hints lists what you can put down: the fixtures (a game
-//!   board) and sources the installed packages define, and the seeds you carry. Pick one,
-//!   then click the ground (Esc or right-click puts it away). It also shows the day.
+//! - What you carry is the [inventory](super::inventory)'s: a hotbar, and right-click
+//!   to put down or use what's in hand.
 //! - **Zones:** walking into an entity's `zone` tells its game ("enter"). When the game
 //!   gives you a `pawn`, your hero stands on it and the movement keys go to the game as
 //!   world directions (WASD or arrows, turned to the camera: W is away from it), with R
@@ -23,14 +21,14 @@
 //! away instead of landing in the log.
 //!
 //! Script it: `CUBEWISH_PLAY="sokoban:board; enter; east; east"` puts things down in
-//! front of the hero (`place` is the game bar's first fixture), uses the nearest piece
+//! front of the hero (`place` puts down what's in hand), uses the nearest piece
 //! (`use`), goes through the portal the hero stands at (`portal`) or sends a key to the
 //! zone the hero is in, one step every half second once
 //! the hero has landed and the agent is done with `CUBEWISH_PROMPT`.
 
 use std::collections::HashMap;
 
-use bevy::{prelude::*, window::PrimaryWindow};
+use bevy::prelude::*;
 use bevy_egui::{EguiContexts, egui};
 use std::f32::consts::FRAC_PI_2;
 
@@ -38,15 +36,15 @@ use cubewish_rules::{
     build::{BuildLimits, compile},
     logic::{
         Entity as Piece, EntityId, Intent, Logic, Package,
-        data::{self, Def},
+        data,
         trial::{self, pawn_of},
         walk::{position_at, walking_at},
     },
 };
 
-use super::{Chat, Role, creations::Creations, cursor_ray, landscape::Landscape, theme};
+use super::{Chat, Role, creations::Creations, landscape::Landscape, theme};
 use crate::{
-    player::{FollowCamera, InputBlocked, Pawned, Player, PointerOverUi},
+    player::{FollowCamera, InputBlocked, Pawned, Player},
     voxel::{DepthBias, ModelData, VoxelModel},
     world::{
         VoxelWorld,
@@ -58,8 +56,6 @@ use crate::{
 const REACH: f32 = 2.5;
 /// Pieces this close get a name label, so they're easy to find.
 const LABEL_DISTANCE: f32 = 10.0;
-/// How far a placed item may be from the hero.
-const PLACE_REACH: f32 = 8.0;
 const TOAST_SECONDS: f32 = 3.0;
 /// A held direction key repeats after this long, this often.
 const REPEAT_AFTER: f32 = 0.35;
@@ -67,8 +63,6 @@ const REPEAT_EVERY: f32 = 0.16;
 
 #[derive(Resource, Default)]
 pub struct Play {
-    /// The item or fixture being put down: the next click in the world places it.
-    pub holding: Option<String>,
     /// The piece E would use: the nearest labeled one within reach.
     pub near: Option<EntityId>,
     /// The zone whose game has the local player's pawn: it gets the movement keys.
@@ -89,9 +83,8 @@ impl Play {
         self.toast = Some((text.into(), now));
     }
 
-    /// Forgets what was going on in the world left behind: holding, playing, near.
+    /// Forgets what was going on in the world left behind: playing, near.
     pub fn leave_world(&mut self) {
-        self.holding = None;
         self.near = None;
         self.playing = None;
         self.inside = None;
@@ -105,8 +98,6 @@ enum Look {
     /// One of its package's voxel models (by package hash and name), turned by quarter
     /// turns.
     Model { package: String, model: String, turn: u8 },
-    Crop { stage: usize, stages: usize, ripe: bool },
-    Source,
     /// Nothing to draw (a pawn: the hero shows it).
     Hidden,
     /// Its package isn't installed (any more): kept, but asleep.
@@ -114,15 +105,9 @@ enum Look {
 }
 
 impl Look {
-    /// For the simple farming kinds, which have no models: a box's size and color.
+    /// A piece with no model of its own (its game is gone): a box's size and color.
     fn block(&self) -> Option<(Vec3, Color)> {
         Some(match self {
-            Look::Crop { ripe: true, .. } => (Vec3::new(0.4, 0.45, 0.4), Color::srgb(0.95, 0.72, 0.25)),
-            Look::Crop { stage, stages, .. } => {
-                let grown = (*stage as f32 + 1.0) / (*stages as f32 + 1.0);
-                (Vec3::new(0.15 + 0.2 * grown, 0.1 + 0.3 * grown, 0.15 + 0.2 * grown), Color::srgb(0.35, 0.7, 0.3))
-            }
-            Look::Source => (Vec3::splat(0.6), Color::srgb(0.55, 0.38, 0.22)),
             Look::Dormant => (Vec3::splat(0.2), Color::srgb(0.5, 0.5, 0.5)),
             Look::Model { .. } | Look::Hidden => return None,
         })
@@ -158,44 +143,29 @@ fn package_of<'a>(logic: &'a Logic, package: &str) -> Option<&'a Package> {
     logic.installed.get(package).and_then(|i| logic.package(i))
 }
 
-/// How a piece looks and what it's called, from its components and today's date.
-fn describe(logic: &Logic, e: &Piece, today: u64) -> (Look, Option<String>) {
+/// How a piece looks and what it's called: its `look` and `label`.
+fn describe(logic: &Logic, e: &Piece) -> (Look, Option<String>) {
     let label = e.components.get("label").and_then(|l| l.as_str()).map(str::to_string);
-    let Some(package) = package_of(logic, &e.package) else {
+    if package_of(logic, &e.package).is_none() {
         return (Look::Dormant, Some(format!("{} (not installed)", e.package)));
-    };
-    if let Some(look) = e.components.get("look") {
-        let installed = logic.installed.get(&e.package).map(|i| i.package.hash.clone()).unwrap_or_default();
-        let model = look["model"].as_str().unwrap_or_default().to_string();
-        let turn = look["turn"].as_u64().unwrap_or(0).min(3) as u8;
-        return (Look::Model { package: installed, model, turn }, label);
     }
-    // A shop or a spawner from data alone is drawn like a seed bin.
-    if e.components.contains_key("shop") || e.components.contains_key("spawner") {
-        return (Look::Source, label);
-    }
-    let defs = data::defs(package);
-    for (component, value) in &e.components {
-        match defs.get(component.as_str()) {
-            Some(Def::Crop { title, stage_days, .. }) => {
-                let planted = value["planted"].as_u64().unwrap_or(today);
-                let (stage, ripe) = data::crop_stage(stage_days, planted, today);
-                let text = if ripe { format!("{title} · ripe") } else { format!("{title} · growing {}/{}", stage + 1, stage_days.len()) };
-                return (Look::Crop { stage, stages: stage_days.len(), ripe }, Some(label.unwrap_or(text)));
-            }
-            Some(Def::Source { title, .. }) => return (Look::Source, Some(label.unwrap_or(title.clone()))),
-            _ => {}
+    match e.components.get("look") {
+        Some(look) => {
+            let installed = logic.installed.get(&e.package).map(|i| i.package.hash.clone()).unwrap_or_default();
+            let model = look["model"].as_str().unwrap_or_default().to_string();
+            let turn = look["turn"].as_u64().unwrap_or(0).min(3) as u8;
+            (Look::Model { package: installed, model, turn }, label)
         }
+        None => (Look::Hidden, label),
     }
-    (Look::Hidden, label)
 }
 
-fn now() -> u64 {
+pub(super) fn now() -> u64 {
     std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map_or(0, |d| d.as_secs())
 }
 
 /// Now, to the millisecond: where walking pieces are.
-fn now_exact() -> f64 {
+pub(super) fn now_exact() -> f64 {
     std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map_or(0.0, |d| d.as_secs_f64())
 }
 
@@ -243,11 +213,10 @@ pub fn sync_pieces(
     }
     *seen = (ledger.version, now_s);
     let logic = &ledger.logic;
-    let today = ledger.rules.logic.clock.at(now()).day;
     let play = &mut *play;
     let mut keep = HashMap::new();
     for (id, e) in logic.state.entities() {
-        let (look, _) = describe(logic, e, today);
+        let (look, _) = describe(logic, e);
         let turn = if let Look::Model { turn, .. } = look { turn } else { 0 };
         let mut transform = placement(e, turn, &Look::Hidden);
         if let Some((entity, old)) = play.pieces.remove(&id) {
@@ -345,12 +314,11 @@ pub fn use_pieces(
 ) {
     let Ok(hero) = heroes.single() else { return };
     let feet = hero.translation;
-    let today = ledger.rules.logic.clock.at(now()).day;
     let logic = &ledger.logic;
     play.near = logic
         .state
         .entities()
-        .filter(|(_, e)| describe(logic, e, today).1.is_some())
+        .filter(|(_, e)| describe(logic, e).1.is_some())
         .map(|(id, e)| (id, Vec3::from_array(position_at(e, now_exact())).distance(feet)))
         .filter(|(_, d)| *d <= REACH)
         .min_by(|a, b| a.1.total_cmp(&b.1))
@@ -491,103 +459,15 @@ fn describe_gains(ledger: &Ledger, gained: &[(String, i64)]) -> String {
         .join(", ")
 }
 
-fn item_title(logic: &Logic, item: &str) -> String {
+pub(super) fn item_title(logic: &Logic, item: &str) -> String {
     let package = item.split(':').next().and_then(|ns| package_of(logic, ns));
     // Carried in from a world whose game rules aren't on here: its name will do.
     package.map_or_else(|| item.rsplit(':').next().unwrap_or(item).replace('_', " "), |p| data::title(p, item))
 }
 
-/// While holding something, a click on the ground puts it there; right-click or Esc
-/// puts it away.
-pub fn place_held(
-    time: Res<Time>,
-    keys: Res<ButtonInput<KeyCode>>,
-    buttons: Res<ButtonInput<MouseButton>>,
-    blocked: Res<InputBlocked>,
-    windows: Query<&Window, With<PrimaryWindow>>,
-    cameras: Query<(&Camera, &GlobalTransform), With<Camera3d>>,
-    over_ui: Res<PointerOverUi>,
-    world: Res<VoxelWorld>,
-    heroes: Query<&Transform, With<Player>>,
-    mut ledger: ResMut<Ledger>,
-    mut play: ResMut<Play>,
-    mut chat: ResMut<Chat>,
-    mut pressed_at: Local<Option<Vec2>>,
-) {
-    let Some(item) = play.holding.clone() else {
-        *pressed_at = None;
-        return;
-    };
-    if (!blocked.0 && keys.just_pressed(KeyCode::Escape)) || buttons.just_pressed(MouseButton::Right) {
-        play.holding = None;
-        return;
-    }
-    let Some((cursor, ray)) = cursor_ray(&windows, &cameras, &over_ui) else { return };
-    if buttons.just_pressed(MouseButton::Left) {
-        *pressed_at = Some(cursor);
-    }
-    // A click, not a drag to look around.
-    if !buttons.just_released(MouseButton::Left) || !pressed_at.take().is_some_and(|at| at.distance(cursor) <= 5.0) {
-        return;
-    }
-    let now_s = time.elapsed_secs();
-    let Some(hit) = world.raycast(ray, 64.0) else { return };
-    if hit.normal.y < 0.5 {
-        play.toast("Put it on top of the ground.", now_s);
-        return;
-    }
-    let at = ray.get_point(hit.distance);
-    if heroes.single().is_ok_and(|h| h.translation.distance(at) > PLACE_REACH) {
-        play.toast("That's too far away; walk closer.", now_s);
-        return;
-    }
-    let had = ledger.logic.state.items(&ledger.profile.id, &item) as i64;
-    let result = ledger.act(Intent::Place { item: item.clone(), position: at.to_array() });
-    if let Ok(acted) = &result {
-        // Fixtures go down once; seeds until there are none left.
-        let used_up = acted.gained.iter().any(|(i, n)| *i == item && had + n <= 0);
-        if used_up || !acted.gained.iter().any(|(i, _)| *i == item) {
-            play.holding = None;
-        }
-        if acted.notes.is_empty() {
-            play.toast(format!("Put down {}.", item_title(&ledger.logic, &item)), now_s);
-            return;
-        }
-    }
-    report(result, &ledger, &mut play, &mut chat, now_s);
-}
-
-/// What the local player can put down: every installed fixture and source, and the
-/// items they carry that plant something. Title, name, and how many (none for those
-/// that don't run out).
-fn placeable(ledger: &Ledger) -> Vec<(String, String, Option<u32>)> {
-    let logic = &ledger.logic;
-    let mut out = Vec::new();
-    let mut seeds = Vec::new();
-    for install in logic.installed.values() {
-        let Some(package) = logic.package(install) else { continue };
-        for (name, def) in data::defs(package) {
-            match def {
-                Def::Fixture { title }
-                | Def::Source { title, .. }
-                | Def::Shop { title, .. }
-                | Def::Spawner { title, .. }
-                | Def::Npc { title, .. } => out.push((title, name.to_string(), None)),
-                Def::Crop { seed, .. } => seeds.push(seed),
-                Def::Item { .. } => {}
-            }
-        }
-    }
-    for (item, n) in logic.state.inventory(&ledger.profile.id) {
-        if seeds.iter().any(|s| s == item) {
-            out.push((item_title(logic, item), item.to_string(), Some(n)));
-        }
-    }
-    out
-}
-
-/// The game bar, the toast, and labels over the pieces nearby.
-pub fn game_bar(
+/// The toast, and labels over the pieces nearby.
+pub fn game_labels(
+    inventory: Res<super::inventory::Inventory>,
     mut contexts: EguiContexts,
     time: Res<Time>,
     chat: Res<Chat>,
@@ -621,7 +501,10 @@ pub fn game_bar(
     }
 
     let logic = &ledger.logic;
-    let today = ledger.rules.logic.clock.at(now());
+    // Not over the inventory screen.
+    if inventory.open {
+        return Ok(());
+    }
     if let (Ok((camera, eye)), Ok(hero)) = (cameras.single(), heroes.single()) {
         // The one in reach first, then the closest; labels that would cover one already
         // shown are left out.
@@ -634,7 +517,7 @@ pub fn game_bar(
         nearby.sort_by(|a, b| a.0.cmp(&b.0).then(a.1.total_cmp(&b.1)));
         let mut shown: Vec<Vec2> = Vec::new();
         for (_, _, id, e) in nearby {
-            let (look, Some(label)) = describe(logic, e, today.day) else { continue };
+            let (look, Some(label)) = describe(logic, e) else { continue };
             let top = Vec3::from_array(position_at(e, now_exact())) + Vec3::Y * (play.models.height(logic, &look) + 0.3);
             // Only pieces in front of the camera.
             if (top - eye.translation()).dot(*eye.forward()) <= 0.0 {
@@ -667,49 +550,6 @@ pub fn game_bar(
         }
     }
 
-    if logic.installed.is_empty() && logic.state.inventory(&ledger.profile.id).next().is_none() {
-        return Ok(());
-    }
-    let spots = placeable(&ledger);
-    let carried: Vec<(String, u32)> = logic
-        .state
-        .inventory(&ledger.profile.id)
-        .filter(|(item, _)| !spots.iter().any(|(_, name, _)| name == item))
-        .map(|(item, n)| (item_title(logic, item), n))
-        .collect();
-    let mut pick = None;
-    egui::Area::new("game_bar".into())
-        .anchor(egui::Align2::CENTER_BOTTOM, egui::vec2(-covered / 2.0, -96.0))
-        .show(ctx, |ui| {
-            egui::Frame::new()
-                .fill(p.overlay)
-                .stroke(egui::Stroke::new(1.0, p.line))
-                .corner_radius(theme::ROUND + 1)
-                .inner_margin(egui::Margin::symmetric(10, 6))
-                .show(ui, |ui| {
-                    ui.horizontal(|ui| {
-                        let season = cubewish_rules::logic::clock::SEASONS[today.season];
-                        ui.label(egui::RichText::new(format!("Day {} · {season}", today.day_of_season + 1)).color(p.muted));
-                        for (title, name, count) in &spots {
-                            ui.separator();
-                            let text = match count {
-                                Some(n) => format!("{title} ×{n}"),
-                                None => title.clone(),
-                            };
-                            let held = play.holding.as_deref() == Some(name.as_str());
-                            if ui.selectable_label(held, text).on_hover_text("Pick it, then click the ground").clicked() {
-                                pick = Some(if held { None } else { Some(name.clone()) });
-                            }
-                        }
-                        for (title, n) in &carried {
-                            ui.label(egui::RichText::new(format!("{title} ×{n}")).color(p.text));
-                        }
-                    });
-                });
-        });
-    if let Some(pick) = pick {
-        play.holding = pick;
-    }
     Ok(())
 }
 
@@ -722,6 +562,7 @@ pub fn script_play(
     mut chat: ResMut<Chat>,
     mut heroes: Query<(&mut Player, &mut Transform)>,
     mut travel: ResMut<super::worlds::Travel>,
+    mut inventory: ResMut<super::inventory::Inventory>,
     mut steps: Local<Option<(Vec<String>, f32, usize)>>,
 ) {
     let now_s = time.elapsed_secs();
@@ -743,6 +584,16 @@ pub fn script_play(
     }
     *next = now_s + 0.5;
     let mut step = list.remove(0);
+    // The inventory: open or close it, or put hotbar slot N (1-9) in hand.
+    if step == "inventory" {
+        inventory.open = !inventory.open;
+        info!("CUBEWISH_PLAY inventory: {}", if inventory.open { "open" } else { "closed" });
+        return;
+    }
+    if let Some(n) = step.strip_prefix("slot ").and_then(|n| n.trim().parse::<usize>().ok()) {
+        inventory.pick(n.saturating_sub(1), now_s);
+        return;
+    }
     // Time for the world to happen.
     if let Some(seconds) = step.strip_prefix("wait ").and_then(|s| s.trim().parse::<f32>().ok()) {
         *next = now_s + seconds;
@@ -772,8 +623,7 @@ pub fn script_play(
         return;
     }
     if step == "place" {
-        let fixture = placeable(&ledger).into_iter().find(|(_, name, count)| count.is_none() && name.contains(':'));
-        step = fixture.map_or(step, |(_, name, _)| name);
+        step = inventory.held().map_or(step, str::to_string);
     }
     let result = if let Some(choice) = step.strip_prefix("choose ") {
         ledger.act(Intent::Choose { choice: Some(choice.trim().to_string()) })

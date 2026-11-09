@@ -1,8 +1,11 @@
-//! Pieces that move on their own: walking somewhere, a daily routine, wandering about,
-//! and spawners that keep a few pieces around. The engine runs them with timers of its
-//! own (named `~walk:<id>` and so on, on the piece's package), so they cost nothing
-//! while nobody is near, and what they do is recorded like any timer's: replay never
-//! looks for a path again.
+//! Pieces that move on their own: walking somewhere, and chasing a player. They're the
+//! engine's because a script can't do them: a path needs the ground (which scripts
+//! don't see), a chase needs where players are now, and players' games have to move the
+//! piece smoothly between changes. Routines, wandering and spawners are scripts' to
+//! build out of these and timers. The engine runs them with timers of its own (named
+//! `~walk:<id>` and so on, on the piece's package), so they cost nothing while nobody
+//! is near, and what they do is recorded like any timer's: replay never looks for a path
+//! again.
 //!
 //! A walk is one change, not one per step: the `walk` component holds the path, when
 //! it starts and how fast, and players' games move the piece along it as time passes
@@ -11,9 +14,6 @@
 //!
 //! Engine components (only the piece's own package sets them):
 //! - `walk`: `{"to": [x, y, z], "speed": m/s}`, and once on its way `"path"` and `"start"`.
-//! - `routine`: `[{"at": 0.0-1.0 of the day, "to": [x, y, z]}, ...]`: where to be when.
-//! - `wander`: `{"home": [x, y, z], "radius": m, "speed": m/s, "pause": s}`.
-//! - `spawner`: `{"model", "label", "tag", "max", "every", "radius", "when", "wander"}`.
 //! - `chase`: `{"player", "speed", "reach"}`: every couple of seconds it heads for where
 //!   that player is now, and its package's `on_catch` runs when it's within reach.
 //!
@@ -28,7 +28,7 @@ use std::{
 use serde_json::{Value, json};
 
 use super::{
-    Batch, Effect, EntityId, Grants, LogicRules,
+    Batch, Effect, EntityId, Grants,
     entity::{Entity, snap},
 };
 use crate::terrain::VOXEL_SIZE;
@@ -42,10 +42,6 @@ pub const DEFAULT_SPEED: f32 = 1.5;
 pub const CLIMB: f32 = 0.6;
 /// The most points a path keeps.
 pub const MAX_POINTS: usize = 48;
-/// The most stops in a routine.
-pub const MAX_STOPS: usize = 12;
-/// The most pieces one spawner keeps around.
-pub const MAX_SPAWNED: u64 = 32;
 /// How often a chaser looks for its player again, in seconds.
 pub const CHASE_EVERY: u64 = 2;
 /// Terrain columns per path cell (half a meter).
@@ -267,40 +263,21 @@ pub fn stop_effects(id: EntityId, e: &Entity, at: u64) -> Vec<Effect> {
     out
 }
 
-/// What gives `id` the engine component `name` (`routine`, `wander`, `spawner`) and
-/// starts its timer at `at`; `None` takes it away.
-pub fn start_effects(id: EntityId, name: &str, value: Option<Value>, at: u64) -> Vec<Effect> {
-    let kind = match name {
-        "routine" => "plan",
-        "spawner" => "spawn",
-        other => other,
-    };
-    match value {
-        Some(value) => {
-            let every = match name {
-                "spawner" => Some(value["every"].as_u64().unwrap_or(60).max(1)),
-                "chase" => Some(CHASE_EVERY),
-                _ => None,
-            };
-            vec![
-                Effect::Set { entity: id, component: name.into(), value },
-                Effect::Schedule { name: timer(kind, id), due: at + 1, every, data: Value::Null, near: Some(id), feature: None },
-            ]
-        }
-        None => vec![Effect::Remove { entity: id, component: name.into() }, Effect::Cancel { name: timer(kind, id) }],
+/// What sets `id` chasing (`chase`: `{"player", "speed", "reach"}`) from `at`, or stops
+/// it chasing (`None`).
+pub fn chase_effects(id: EntityId, chase: Option<Value>, at: u64) -> Vec<Effect> {
+    match chase {
+        Some(value) => vec![
+            Effect::Set { entity: id, component: "chase".into(), value },
+            Effect::Schedule { name: timer("chase", id), due: at + 1, every: Some(CHASE_EVERY), data: Value::Null, near: Some(id), feature: None },
+        ],
+        None => vec![Effect::Remove { entity: id, component: "chase".into() }, Effect::Cancel { name: timer("chase", id) }],
     }
 }
 
 /// The engine's timer `kind` for entity `id`: `~walk:2.0`.
 pub fn timer(kind: &str, id: EntityId) -> String {
     format!("~{kind}:{}.{}", id.change, id.n)
-}
-
-/// "8:30" as a share of the day.
-pub fn time_of_day(text: &str) -> Option<f64> {
-    let (h, m) = text.trim().split_once(':')?;
-    let (h, m): (u32, u32) = (h.parse().ok()?, m.parse().ok()?);
-    (h < 24 && m < 60).then(|| (h * 60 + m) as f64 / 1440.0)
 }
 
 /// Checks an engine component this module owns, phrased for the agent that wrote it.
@@ -312,20 +289,7 @@ pub fn check(name: &str, value: &Value) -> Result<(), String> {
                 && num("speed", *SPEEDS.start() as f64..=*SPEEDS.end() as f64)
                 && (value["path"].is_null() || points(&value["path"]).is_some_and(|p| (2..=MAX_POINTS).contains(&p.len())))
         }
-        "routine" => value.as_array().is_some_and(|stops| {
-            !stops.is_empty()
-                && stops.len() <= MAX_STOPS
-                && stops.iter().all(|s| s["at"].as_f64().is_some_and(|t| (0.0..1.0).contains(&t)) && point(&s["to"]).is_some())
-        }),
-        "wander" => point(&value["home"]).is_some() && num("radius", 1.0..=32.0) && num("speed", 0.2..=12.0) && num("pause", 0.0..=3600.0),
         "chase" => value["player"].as_str().is_some_and(|p| !p.is_empty()) && num("speed", 0.2..=12.0) && num("reach", 0.5..=16.0),
-        "spawner" => {
-            value["model"].as_str().is_some()
-                && num("max", 1.0..=MAX_SPAWNED as f64)
-                && num("every", 5.0..=86_400.0)
-                && num("radius", 1.0..=32.0)
-                && matches!(value["when"].as_str(), Some("any" | "day" | "night"))
-        }
         _ => true,
     };
     if ok {
@@ -333,12 +297,7 @@ pub fn check(name: &str, value: &Value) -> Result<(), String> {
     }
     Err(match name {
         "walk" => format!("\"walk\" is {{\"to\": [x, y, z], \"speed\": {}-{} m/s}}; use walk(id, pos, speed)", SPEEDS.start(), SPEEDS.end()),
-        "routine" => format!("a routine is 1 to {MAX_STOPS} stops {{at = \"8:00\", to = pos}}"),
-        "wander" => "\"wander\" is {home = pos, radius = 1-32 m, speed = 0.2-12 m/s, pause = 0-3600 s}".into(),
-        "chase" => "chase(id, player, {speed = 0.2-12 m/s, reach = 0.5-16 m})".into(),
-        _ => format!(
-            "a spawner is {{model = one of the package's models, max = 1-{MAX_SPAWNED}, every = 5-86400 s, radius = 1-32 m, when = \"any\"|\"day\"|\"night\"}}"
-        ),
+        _ => "chase(id, player, {speed = 0.2-12 m/s, reach = 0.5-16 m})".into(),
     })
 }
 
@@ -347,9 +306,7 @@ pub(super) struct Engine<'a, 'b> {
     pub batch: &'a mut Batch<'b>,
     pub grants: &'a Grants,
     pub ground: &'a dyn Ground,
-    pub rules: &'a LogicRules,
     pub now: u64,
-    pub seed: u64,
     /// Who's in the world, and where.
     pub players: &'a [(String, [f32; 3])],
 }
@@ -363,11 +320,6 @@ pub(super) enum Heard {
 }
 
 impl Engine<'_, '_> {
-    fn random(&mut self) -> f32 {
-        self.seed = self.seed.wrapping_mul(6364136223846793005).wrapping_add(1442695040888963407);
-        (self.seed >> 40) as f32 / (1u64 << 24) as f32
-    }
-
     fn apply(&mut self, effect: Effect) -> Result<Option<EntityId>, String> {
         self.batch.apply(self.grants, &effect)
     }
@@ -385,9 +337,6 @@ impl Engine<'_, '_> {
         match kind {
             "walk" => self.set_off(id, &e),
             "arrive" => self.arrive(id, &e),
-            "plan" => self.plan(id, &e).map(|_| None),
-            "wander" => self.wander(id, &e).map(|_| None),
-            "spawn" => self.spawn(id, &e).map(|_| None),
             "chase" => self.chase(id, &e),
             _ => Ok(None),
         }
@@ -424,48 +373,17 @@ impl Engine<'_, '_> {
         Ok(())
     }
 
-    /// A walk is over: the piece stands at its end. A wanderer sets off again after its
-    /// pause; anyone else's package hears about it.
+    /// A walk is over: the piece stands at its end, and its package hears about it.
     fn arrive(&mut self, id: EntityId, e: &Entity) -> Result<Option<Heard>, String> {
         let Some(walk) = e.components.get("walk") else { return Ok(None) };
         let end = points(&walk["path"]).and_then(|p| p.last().copied()).unwrap_or(e.position);
         self.apply(Effect::Move { entity: id, position: end })?;
-        let wander = e.components.get("wander").cloned();
-        let Some(wander) = wander.filter(|_| !e.components.contains_key("routine") || walk["wandering"].as_bool() == Some(true)) else {
-            self.apply(Effect::Remove { entity: id, component: "walk".into() })?;
-            // A chaser's walks are the engine's business, not its package's.
-            if e.components.contains_key("chase") {
-                return Ok(None);
-            }
-            return Ok(Some(Heard::Arrived { entity: id, stuck: false }));
-        };
-        let mut e = e.clone();
-        e.position = end;
-        e.components.remove("walk");
-        self.leg(id, &e, &wander)
-            .or_else(|_| self.apply(Effect::Remove { entity: id, component: "walk".into() }).map(|_| ()))?;
-        Ok(None)
-    }
-
-    /// The next leg of a wander: somewhere within its radius of home.
-    fn leg(&mut self, id: EntityId, e: &Entity, wander: &Value) -> Result<(), String> {
-        let home = point(&wander["home"]).unwrap_or(e.position);
-        let radius = wander["radius"].as_f64().unwrap_or(6.0) as f32;
-        let speed = wander["speed"].as_f64().unwrap_or(1.0) as f32;
-        let pause = wander["pause"].as_f64().unwrap_or(4.0) as u64;
-        // A few tries, in case the first spot is in water.
-        for _ in 0..4 {
-            let (angle, r) = (self.random() * std::f32::consts::TAU, radius * self.random().sqrt());
-            let to = [home[0] + angle.cos() * r, home[1], home[2] + angle.sin() * r];
-            if self.go(id, e, to, speed, pause).is_ok() {
-                // Marked, so a routine's arrival isn't mistaken for a wander's.
-                let mut walk = self.batch.get(id).and_then(|e| e.components.get("walk").cloned()).unwrap_or_default();
-                walk["wandering"] = true.into();
-                self.apply(Effect::Set { entity: id, component: "walk".into(), value: walk })?;
-                return Ok(());
-            }
+        self.apply(Effect::Remove { entity: id, component: "walk".into() })?;
+        // A chaser's walks are the engine's business, not its package's.
+        if e.components.contains_key("chase") {
+            return Ok(None);
         }
-        Err("nowhere to wander".into())
+        Ok(Some(Heard::Arrived { entity: id, stuck: false }))
     }
 
     /// A chaser's turn: caught up, or off again toward where its player is now.
@@ -494,92 +412,6 @@ impl Engine<'_, '_> {
         // Too far, or no way there: it gives up this time and looks again.
         let _ = self.go(id, e, *target, speed, 0);
         Ok(None)
-    }
-
-    /// Starts wandering, unless it's on its way somewhere.
-    fn wander(&mut self, id: EntityId, e: &Entity) -> Result<(), String> {
-        let Some(wander) = e.components.get("wander").cloned() else { return Ok(()) };
-        if e.components.contains_key("walk") {
-            return Ok(());
-        }
-        self.leg(id, e, &wander)
-    }
-
-    /// A routine: goes where it should be at this time of day, and wakes at the next stop.
-    fn plan(&mut self, id: EntityId, e: &Entity) -> Result<(), String> {
-        let Some(stops) = e.components.get("routine").and_then(|r| r.as_array()).cloned() else { return Ok(()) };
-        let mut stops: Vec<(f64, [f32; 3])> = stops.iter().filter_map(|s| Some((s["at"].as_f64()?, point(&s["to"])?))).collect();
-        stops.sort_by(|a, b| a.0.total_cmp(&b.0));
-        let (Some(first), Some(last)) = (stops.first().copied(), stops.last().copied()) else { return Ok(()) };
-        let day = self.rules.clock.day_seconds.max(1) as f64;
-        let now = self.rules.clock.at(self.now).time_of_day as f64;
-        let current = stops.iter().rev().find(|s| s.0 <= now).copied().unwrap_or(last);
-        let next = stops.iter().find(|s| s.0 > now).map_or(first.0 + 1.0, |s| s.0);
-        let wait = ((next - now) * day).ceil().max(1.0) as u64;
-        self.apply(Effect::Schedule { name: timer("plan", id), due: self.now + wait, every: None, data: Value::Null, near: Some(id), feature: None })?;
-        let here = position_at(e, self.now as f64);
-        if flat_distance(here, current.1) > 0.5 {
-            let speed = e.components.get("wander").and_then(|w| w["speed"].as_f64()).unwrap_or(DEFAULT_SPEED as f64) as f32;
-            // A routine stop is where it wanders from, too.
-            if let Some(mut wander) = e.components.get("wander").cloned() {
-                wander["home"] = json!(current.1);
-                self.apply(Effect::Set { entity: id, component: "wander".into(), value: wander })?;
-            }
-            self.apply(Effect::Set { entity: id, component: "walk".into(), value: json!({ "to": current.1, "speed": speed }) })?;
-            let e = self.batch.get(id).cloned().unwrap_or_else(|| e.clone());
-            self.go(id, &e, current.1, speed, 0)?;
-        }
-        Ok(())
-    }
-
-    /// A spawner's turn: one more piece, if it has fewer than its most and it's the
-    /// right time of day.
-    fn spawn(&mut self, id: EntityId, e: &Entity) -> Result<(), String> {
-        let Some(spawner) = e.components.get("spawner").cloned() else { return Ok(()) };
-        let when = spawner["when"].as_str().unwrap_or("any");
-        let time = self.rules.clock.at(self.now).time_of_day;
-        let day = (0.25..0.75).contains(&time);
-        if (when == "day" && !day) || (when == "night" && day) {
-            return Ok(());
-        }
-        let me = json!(format!("{}.{}", id.change, id.n));
-        let alive = self.batch.ids().into_iter().filter(|i| self.batch.get(*i).is_some_and(|o| o.components.get("spawned") == Some(&me))).count() as u64;
-        if alive >= spawner["max"].as_u64().unwrap_or(1).min(MAX_SPAWNED) {
-            return Ok(());
-        }
-        let radius = spawner["radius"].as_f64().unwrap_or(4.0) as f32;
-        let (angle, r) = (self.random() * std::f32::consts::TAU, radius * self.random().sqrt());
-        let mut at = [e.position[0] + angle.cos() * r, e.position[1], e.position[2] + angle.sin() * r];
-        if let Some(heights) = self.ground.heights([column(at[0]), column(at[2])], 1, [1, 1]) {
-            match heights.first().copied().flatten() {
-                Some(y) => at[1] = (y + 1) as f32 * VOXEL_SIZE,
-                // In water: try again next time.
-                None => return Ok(()),
-            }
-        }
-        let mut components = serde_json::Map::new();
-        components.insert("look".into(), json!({ "model": spawner["model"] }));
-        components.insert("spawned".into(), me);
-        if let Some(feature) = e.components.get("feature") {
-            components.insert("feature".into(), feature.clone());
-        }
-        if let Some(label) = spawner["label"].as_str().filter(|l| !l.is_empty()) {
-            components.insert("label".into(), label.into());
-        }
-        if let Some(tag) = spawner["tag"].as_str().filter(|t| !t.is_empty()) {
-            let tag = if tag.contains(':') { tag.to_string() } else { format!("{}:{tag}", self.grants.package) };
-            components.insert(tag, json!({}));
-        }
-        let wanders = spawner["wander"].as_bool().unwrap_or(true);
-        if wanders {
-            components.insert("wander".into(), json!({ "home": snap(e.position), "radius": radius.max(2.0), "speed": 1.0, "pause": 4 }));
-        }
-        let components = components.into_iter().collect();
-        let Some(new) = self.apply(Effect::Spawn { position: at, components })? else { return Ok(()) };
-        if wanders {
-            self.apply(Effect::Schedule { name: timer("wander", new), due: self.now + 1, every: None, data: Value::Null, near: Some(new), feature: None })?;
-        }
-        Ok(())
     }
 }
 
@@ -627,7 +459,5 @@ mod tests {
         assert_eq!(position_at(&e, 101.0), [2.0, 0.0, 0.0]);
         assert_eq!(position_at(&e, 104.0), [4.0, 0.0, 4.0]);
         assert_eq!(position_at(&e, 1000.0), [4.0, 0.0, 6.0]);
-        assert_eq!(time_of_day("6:00"), Some(0.25));
-        assert_eq!(time_of_day("25:00"), None);
     }
 }

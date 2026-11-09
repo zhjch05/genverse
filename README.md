@@ -66,8 +66,9 @@ and installs it for the whole world, live (`crates/rules/src/logic`, design in
   same format, compiled by the same code and held to the same limits as builds. They're drawn
   the way builds are, and every piece stands on the 12.5 cm build voxel grid.
 
-- **Put it down:** the package's *fixtures* (a game board) appear in the game bar above the
-  hints. Pick one, click the ground, and its script builds it.
+- **Inventory:** what you carry fills a Minecraft-like hotbar (1-9 picks what's in hand, I opens
+  the rest). Right-click the ground puts what's in hand down (the game's `on_place`); on a piece
+  in reach, uses it there (`on_use`).
 - **Play:** walk onto a board. A game takes over your keys inside its *zone*. WASD or the arrow
   keys move you a tile (W is away from the camera), `R` resets, `E` is the game's action, and
   `Esc` leaves. Your hero stands on the *pawn* the game moves. Labeled pieces show their name
@@ -90,10 +91,12 @@ and installs it for the whole world, live (`crates/rules/src/logic`, design in
   (pieces, monsters, regions, the spawn point) and can stop players building. Games see
   players come and go (`on_join`, `on_leave`) and walk into regions (`on_enter`), chase them
   (`on_catch`), teleport them, and answer F (`on_hit`), with health and score as stats.
-- **Pieces that move on their own:** `walk`, daily `routine`s, `wander` and `spawner`s (also
-  as data: `spawner` and `npc` definitions). The engine finds the way over the ground and
-  records the whole walk as one change; games show the piece walking along it. Like timers,
-  they sleep while nobody is near.
+- **Pieces that move on their own:** `walk` and `chase`. The engine finds the way over the
+  ground and records the whole walk as one change; games show the piece walking along it.
+  Routines, wandering and spawners are a few lines of Lua on top. Like timers, they sleep
+  while nobody is near.
+- **Building blocks, not genres:** the engine has no shops, crops or spawners of its own;
+  the agent writes them in Lua for the game at hand.
 - **The log is still the truth:** installs and every move are changes in the log, so games
   replay like the voxels do, across restarts, undo and servers. The server runs the same
   scripts, and a package travels with the change that installs it.
@@ -101,8 +104,8 @@ and installs it for the whole world, live (`crates/rules/src/logic`, design in
   asleep).
 - A dedicated server's first world is flat with `--flat` (`CUBEWISH_SERVER=host cargo run`
   joins it; the ground follows whichever world you're in).
-- Script a run: `CUBEWISH_WORLD=s CUBEWISH_PROMPT="make Sokoban" CUBEWISH_PLAY="place; enter;
-  east; east" cargo run`. It waits for the agent, puts the first fixture down, then sends keys.
+- Script a run: `CUBEWISH_WORLD=s CUBEWISH_PROMPT="wolves 20 m east of me" CUBEWISH_PLAY="go 15 0;
+  wait 4; hit" cargo run`. It waits for the agent, then plays the steps.
 
 ## An open world, kept as a log
 
@@ -175,7 +178,7 @@ game: install a game once and turn it on in the worlds that play it (the Rules t
 version reaches every world that runs it.
 
 Games give players **stats** (HP, gold) shown on a **HUD**, open **panels** (dialogue, menus,
-shops: a shop can be pure data), and change the world itself: a script can place its models as
+shops), and change the world itself: a script can place its models as
 real builds and reshape land, within the budget of whoever installed it. How to test all of it:
 `docs/testing-games.md`. Chat: `/worlds`, `/world`, `/newworld`, `/games`, `/game`, `/newgame`,
 `/savegame`, `/loadgame`, `/portal`. Design: `docs/worlds.md`.

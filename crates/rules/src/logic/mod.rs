@@ -25,7 +25,7 @@ use serde::{Deserialize, Serialize};
 pub use clock::{ClockRules, WorldTime};
 pub use clockwork::{Clockwork, Fired, Run, Seen, TimerHost};
 pub use walk::{Ground, NoGround};
-pub use data::{Def, DataRules};
+pub use data::Def;
 pub use entity::{Batch, Choice, Effect, Entity, EntityId, GameState, Grants, Panel, PanelSpec, Stat, Timer, Widget};
 pub use package::{Manifest, Package, PackageRef, Permission};
 
@@ -242,19 +242,15 @@ pub trait Runtime: Send + Sync {
     fn handle(&self, package: &Package, event: &Event, world: &mut Batch, grants: &Grants) -> Result<(), String>;
 }
 
-/// The rules every world runs: a package's scripts if it has them, its definitions
-/// otherwise.
+/// The rules every world runs: a package's scripts (one without any does nothing).
 pub struct Rules;
 
 impl Runtime for Rules {
     fn handle(&self, package: &Package, event: &Event, world: &mut Batch, grants: &Grants) -> Result<(), String> {
         if package.scripts.is_empty() {
-            DataRules.handle(package, event, world, grants)
-        } else if data::place_living(package, event, world, grants)? {
-            Ok(())
-        } else {
-            script::run(package, event, world, grants)
+            return Ok(());
         }
+        script::run(package, event, world, grants)
     }
 }
 
@@ -400,18 +396,10 @@ impl Logic {
         let package = self.package(install).ok_or(format!("package {} is missing", install.package.name))?;
         let grants = grants(package, install, rules);
         let mut batch = self.state.batch(change, player, rules.max_effects);
-        // E on a shop opens it: the engine's, whatever the package's rules are.
-        if let Intent::Interact { entity } = intent
-            && let Some(shop) = self.state.get(*entity).and_then(|e| e.components.get("shop")).and_then(|v| v.as_str())
-        {
-            let panel = shop_panel(package, shop, *entity)?;
-            batch.apply(&grants, &Effect::Show { player: player.into(), panel: Some(panel) })?;
-        } else {
-            let runtime = self.runtime.clone().unwrap_or_else(|| Arc::new(Rules));
-            let seed = fnv1a(format!("{world_seed}/{change}/{}", install.package.name).as_bytes());
-            let event = Event { change, player, trigger: Trigger::Intent(intent), time: rules.clock.at(at), at, seed };
-            runtime.handle(package, &event, &mut batch, &grants)?;
-        }
+        let runtime = self.runtime.clone().unwrap_or_else(|| Arc::new(Rules));
+        let seed = fnv1a(format!("{world_seed}/{change}/{}", install.package.name).as_bytes());
+        let event = Event { change, player, trigger: Trigger::Intent(intent), time: rules.clock.at(at), at, seed };
+        runtime.handle(package, &event, &mut batch, &grants)?;
         Ok(self.prepared(batch, package, install, None))
     }
 
@@ -456,21 +444,6 @@ impl Logic {
             Some(choice) if !panel.spec.choices.iter().any(|c| c.id == choice) => {
                 let offered: Vec<&str> = panel.spec.choices.iter().map(|c| c.id.as_str()).collect();
                 return Err(format!("\"{choice}\" isn't a choice in \"{}\" (it offers {})", panel.spec.title, offered.join(", ")));
-            }
-            Some(choice) if panel.spec.id.starts_with("shop:") => {
-                let shop = &panel.spec.id["shop:".len()..];
-                let Some(data::Def::Shop { sells, .. }) = data::defs(package).get(shop).cloned() else {
-                    return Err("that shop is gone".into());
-                };
-                let offer = choice.strip_prefix("buy:").and_then(|i| i.parse::<usize>().ok()).and_then(|i| sells.get(i)).ok_or("that isn't for sale")?;
-                let have = batch.items(player, &offer.price.item);
-                if have < offer.price.count {
-                    return Err(format!("you need {} {} and have {have}", offer.price.count, data::title(package, &offer.price.item)));
-                }
-                batch.apply(&grants, &Effect::Take { item: offer.price.item.clone(), count: offer.price.count })?;
-                batch.apply(&grants, &Effect::Give { player: player.into(), item: offer.item.item.clone(), count: offer.item.count })?;
-                let bought = format!("Bought {} {}.", offer.item.count, data::title(package, &offer.item.item));
-                batch.apply(&grants, &Effect::Notify { player: player.into(), text: bought })?;
             }
             Some(_) => {
                 let runtime = self.runtime.clone().unwrap_or_else(|| Arc::new(Rules));
@@ -595,23 +568,6 @@ impl Logic {
     pub fn package(&self, install: &Install) -> Option<&Package> {
         self.packages.get(&install.package.hash).map(|p| &**p)
     }
-}
-
-/// The panel for the shop `shop` (one of `package`'s definitions), on `entity`.
-fn shop_panel(package: &Package, shop: &str, entity: EntityId) -> Result<PanelSpec, String> {
-    let Some(data::Def::Shop { title, sells }) = data::defs(package).get(shop).cloned() else {
-        return Err(format!("{} has no shop \"{shop}\"", package.manifest.name));
-    };
-    let choices = sells
-        .iter()
-        .enumerate()
-        .map(|(i, o)| Choice {
-            id: format!("buy:{i}"),
-            label: format!("{} × {}", o.item.count, data::title(package, &o.item.item)),
-            detail: format!("{} {}", o.price.count, data::title(package, &o.price.item)),
-        })
-        .collect();
-    Ok(PanelSpec { id: format!("shop:{shop}"), title, text: String::new(), choices, entity: Some(entity) })
 }
 
 fn allowed(admin: bool, rules: &LogicRules) -> Result<(), String> {

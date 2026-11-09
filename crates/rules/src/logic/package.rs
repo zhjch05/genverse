@@ -198,16 +198,6 @@ pub(crate) mod tests {
             defs: BTreeMap::from([
                 ("farm:turnip_seed".into(), serde_json::json!({ "kind": "item", "title": "Turnip seeds" })),
                 ("farm:turnip".into(), serde_json::json!({ "kind": "item", "title": "Turnip" })),
-                (
-                    "farm:turnip_crop".into(),
-                    serde_json::json!({ "kind": "crop", "title": "turnips", "seed": "farm:turnip_seed",
-                        "stage_days": [1, 2, 1], "harvest": { "item": "farm:turnip", "count": 2 } }),
-                ),
-                (
-                    "farm:seed_bin".into(),
-                    serde_json::json!({ "kind": "source", "title": "seed bin",
-                        "gives": { "item": "farm:turnip_seed", "count": 5 } }),
-                ),
             ]),
             scripts: BTreeMap::new(),
         }

@@ -121,12 +121,15 @@ with "game": a change to the world's package (the request shows it as it runs no
   (find() their pieces, stat() their stats) and change how they behave by changing their file.
 - on_start sets a feature up: the moment it's added, and again whenever its file changes (with
   ev.upgrade; then set up only what's missing: check find() first). Unchanged files aren't rerun.
-  It places the feature's pieces, monsters and spawners, NPCs, regions (areas that notice players),
+  It places the feature's pieces, creatures, characters, regions (areas that notice players),
   builds and land; spawn_point sets where players appear; building(false) keeps players playing.
+- The engine gives you building blocks, not genres: shops, crops, spawners, villagers' days,
+  wandering animals and quests are yours to write in Lua from pieces, timers, walk, stats, items
+  and panels, the way the game needs them.
 - Positions: the request says where the player stands (x, y, z in meters) and where pieces stand
   on the ground around them (a height map every 4 m). "Here", "next to me", "20 m east" are those
-  numbers: write them into the script (local CAMP = {x = 12, y = 9.25, z = -4}). Never make a
-  fixture just to find a spot; fixtures are only for things the player says they'll put down.
+  numbers: write them into the script (local CAMP = {x = 12, y = 9.25, z = -4}). The world
+  places its own things in on_start; nothing has to be put down by the player first.
 - Changing how a feature keeps things (a migration: new component fields, a renamed stat or item):
   do it in that file's on_start when ev.upgrade is set; ev.from is the version it replaces. Fix
   its pieces (find()) and every player's stats and items (players()). Renaming a file: list it in
@@ -138,31 +141,16 @@ with "game": a change to the world's package (the request shows it as it runs no
 - Regions, chases and hits make the world react to players: walking into a region (on_enter), a
   monster that catches them (on_catch), the player attacking a piece with F (on_hit). Use stats
   for health and score; teleport to send a player back to camp, into a dungeon, out of a trap.
-- Fixtures (things players put down from the game bar) are still there for things players place
-  themselves: a board, a trap, a tent. Most games need none.
+- Items are what players carry: they show in the player's inventory (a hotbar of 9, 1-9 picks what's
+  in hand, I opens the rest). give/take/count change them. With one in hand, a right-click on the
+  ground puts it down (on_place: ev.item, ev.pos: a tent, a seed, a trap) and on a piece in reach
+  uses it on that piece (on_use: ev.item, ev.entity: a key on a door, a can on a plant).
 Keep "build" and "terrain" null unless they also ask for those (on_start can build and reshape).
 - "name": the world's package (as the request shows it; "world" if it has none yet). "title":
   what players see, or "" to keep it. "remove": names to take out, or null. "rename": script
   files renamed ({from, to}), or null.
-- "defs", each with every field (null where unused), names lowercase and local to the package:
-  fixture: something players put down by its name from the game bar (a board, a machine);
-    your script's on_place builds it. Only "name", "kind", "title".
-  item: something players carry. crop / source: simple farming without scripts (crop: "seed",
-    "stage_days", "harvest"; source: "gives", "every_days").
-  shop: "sells": [{"item": {"item", "count"}, "price": {"item", "count"}}] (up to 10; prices in
-    items, e.g. coins). Players put it down from the game bar, or your script spawns an entity
-    with shop = "<its name>" (and a look and label); E on it opens the shop, and buying takes the
-    price and gives the item with no script needed.
-  spawner: keeps up to "max" (1-32) pieces around it, one every "every_seconds" (5-86400),
-    within "radius" m (1-32), "when" "day", "night" or "any"; they look like "model" (one of
-    your models), are labeled "spawns" (or unlabeled if null), wander unless "wander" is
-    false, and carry a component named after the spawner (find("slime_pool") in scripts:
-    on_interact on one gets ev.entity). Players put the spawner down from the game bar.
-  npc: a character players put down: looks like "model", labeled "title"; "routine" is its
-    day, [{"at": "7:00", "to": [x, z]}, ...] in meters from where it was put down (it walks
-    to each stop at that time, every game day); "radius" makes it wander that far around its
-    stop (null: it stands). It carries a component named after the def: answer on_interact for
-    it in your script (dialogue, a shop).
+- "defs": the items players carry, {"name", "kind": "item", "title", "model"}: names lowercase
+  and local to the package; "model" is one of your models, its icon (null: a plain tile).
 - "models": [{"name":"crate","build":{...}}]: every piece is drawn as one of these voxel models,
   in exactly the "build" format and under the same limits and style rules as builds (12.5 cm
   voxels: a 1 m tile is 8 voxels). There is no other way to draw pieces, so the whole world keeps
@@ -173,13 +161,14 @@ Keep "build" and "terrain" null unless they also ask for those (on_start can bui
   targets, the player's marker) its own small model.
 - "scripts": [{"name":"main.luau","source":"..."}]. Each player action runs your scripts fresh,
   so keep all state in the world (entities and components), never in Lua globals. Define:
-    on_place(ev)     ev.item (local name) was put down at ev.pos
+    on_place(ev)     ev.item (local name) was put down at ev.pos (right-click with it in hand)
+    on_use(ev)       ev.item used on ev.entity (right-click on a piece in reach with it in hand)
     on_interact(ev)  E on ev.entity (an entity of yours with a "label")
     on_key(ev)       ev.key inside ev.entity's zone: "enter" (walked in), "leave" (Esc),
                      "north" (-z), "south" (+z), "east" (+x), "west" (-x), "action" (E), "reset" (R)
     on_timer(ev)     your timer ev.name went off, with ev.data (what you gave it); ev.missed is
                      how many more times a repeating timer went by unrun (catch up, don't loop)
-    on_arrive(ev)    ev.entity got where walk() (or its routine) sent it, at ev.pos; ev.stuck
+    on_arrive(ev)    ev.entity got where walk() sent it, at ev.pos; ev.stuck
                      is true if there was no way there on foot
     on_start(ev)     the game was installed (ev.player did it), or upgraded (ev.upgrade)
     on_join(ev)      ev.player came into the world (each visit); on_leave(ev) when they go
@@ -201,16 +190,12 @@ Keep "build" and "terrain" null unless they also ask for those (on_start can bui
   Pieces that move on their own (the engine finds the way over the ground, around water and
   steep steps, up to 64 m; players see them walk; it all sleeps while nobody is within 64 m):
     walk(id, pos, speed): walks there (speed m/s, default 1.5), then on_arrive. stop(id)
-    routine(id, {{at = "7:00", to = pos}, {at = "18:00", to = pos2}}): where to be when, every
-      game day (days are 20 real minutes by default); routine(id, nil) stops it
-    wander(id, {radius = 6, speed = 1, pause = 4, home = pos}): roams around home (default:
-      where it is); with a routine, around each stop. wander(id, nil) stops
-    spawner(id, {model = "slime", label = "Slime", tag = "slime", max = 4, every = 30,
-      radius = 8, when = "night", wander = true}): keeps up to max pieces around id, each with
-      a component named tag (find("slime")); spawner(id, nil) stops it
     chase(id, player, {speed = 4, reach = 1.5}): runs after that player wherever they go, then
       on_catch; chase(id) stops it (and it stands where it is)
     Never move a piece step by step with fast timers: walk() is one change for a whole walk.
+    A day's routine is an "every" timer that walks a character to where ev.time (0..1 of the
+    day) says; wandering is on_arrive picking the next spot; a spawner is a timer that spawns
+    while find() says there are too few.
   The players and the world:
     region(id, {radius = 8}) or region(id, {w = 10, d = 6}): an area around a piece (it may be an
       unseen piece with no look) that calls on_enter / on_exit as players cross it
@@ -232,9 +217,8 @@ Keep "build" and "terrain" null unless they also ask for those (on_start can bui
     zone = {size = {w, d}}: a rectangle centered on pos; a player walking in sends "enter", and
       while they have a pawn there, their movement keys come to on_key instead of walking
     pawn = player id: that player's hero stands on this entity; move it to move them
-    shop = "name": one of your shop defs; E on it opens that shop
-    walk, routine, wander, spawner, spawned, chase, region, world: set through the functions
-      above, not by hand
+    walk, chase, region, world, feature: set through the functions above (feature for you),
+      not by hand
   Players (stat names without ":" are your package's):
     stat(player, name) -> number or nil      stat_max(player, name) -> number or nil
     set_stat(player, name, value, max)       add_stat(player, name, delta) -> new value
@@ -243,8 +227,7 @@ Keep "build" and "terrain" null unless they also ask for those (on_start can bui
     hud(player, id, widget): pinned to the player's screen ("*" for everyone); nil takes it off:
       {kind = "bar", label = "HP", stat = "hp", color = "#d84a4a"}
       {kind = "counter", label = "Gold", stat = "gold"}   {kind = "text", text = "Find the key"}
-      {kind = "items", label = "Coins", item = "coin"}: how many of an item they carry (money
-      that shops take is an item, so show it this way)
+      {kind = "items", label = "Coins", item = "coin"}: how many of an item they carry
     show(player, {id = "inn", title = "The innkeeper", text = "...", entity = id,
       choices = {{id = "room", label = "Rent a room", detail = "5 gold"}, ...}})
       opens a panel (dialogue, a menu): their pick calls on_choose(ev) with ev.choice, ev.panel
@@ -267,21 +250,14 @@ Keep "build" and "terrain" null unless they also ask for those (on_start can bui
   stats and items, and its ground): your change lands as the next version (on_start runs for new
   and changed files), and the tester starts where the player stands (on_join). "go <x> <z>" walks
   the tester there (world meters; regions and chases notice), "hit <label>" attacks, "place
-  <fixture>" puts one down. Its map shows where everything is.
-  "wait <seconds>" lets time pass so timers go off (walks, routines and spawners too; the
-  trial world is flat and empty, so walks there go straight); "choose <id>" picks in the open
+  <item>" puts one down there. Its map shows where everything is.
+  "wait <seconds>" lets time pass so timers go off (walks and chases too); "choose <id>" picks in the open
   panel and "close" closes it; "interact <label>" presses E on a particular piece; the report
   lists the tester's stats, HUD and open panel, and where pieces are walking to.
 
-Example "game": walk onto the mat and collect the coins.
-{"name":"coins","title":"Coin mat","defs":[{"name":"mat","kind":"fixture","title":"Coin mat","seed":null,
-  "stage_days":null,"harvest":null,"gives":null,"every_days":null,"sells":null,"model":null,"spawns":null,
-  "max":null,"every_seconds":null,"radius":null,"when":null,"wander":null,"routine":null}],"remove":null,"rename":null,
- "models":[{"name":"mat","build":{"name":"Mat","size":[40,1,40],"palette":[{"name":"straw","hex":"#d9c79a","material":"matte"}],
-   "shapes":[{"kind":"box","color":"straw","from":[0,0,0],"to":[40,1,40],"radius":null,"wobble":null}]}},
-  {"name":"coin","build":{"name":"Coin","size":[3,3,3],"palette":[{"name":"gold","hex":"#f4cf4b","material":"glow"}],
-   "shapes":[{"kind":"ellipsoid","color":"gold","from":[0,0,0],"to":[3,3,3],"radius":null,"wobble":null}]}}],
- "scripts":[{"name":"main.luau","source":"local N = 5\nlocal function tile(o, c, r) return {x = o.x + c - 3, y = o.y, z = o.z + r - 3} end\nfunction on_place(ev)\n  spawn(ev.pos, {mat = {origin = ev.pos}, zone = {size = {N, N}}, label = 'Coin mat', look = {model = 'mat'}})\n  for i = 1, 3 do\n    local c, r = random_int(1, N), random_int(1, N)\n    spawn(tile(ev.pos, c, r), {coin = {c = c, r = r}, look = {model = 'coin'}})\n  end\nend\nlocal STEP = {north = {0, -1}, south = {0, 1}, east = {1, 0}, west = {-1, 0}}\nfunction on_key(ev)\n  local mat = get(ev.entity)\n  local me\n  for _, p in ipairs(find('walker')) do if p.c.pawn == ev.player then me = p end end\n  if ev.key == 'enter' and not me then\n    spawn(tile(mat.c.mat.origin, 3, 3), {walker = {c = 3, r = 3}, pawn = ev.player})\n  elseif ev.key == 'leave' and me then\n    despawn(me.id)\n  elseif STEP[ev.key] and me then\n    local c, r = me.c.walker.c + STEP[ev.key][1], me.c.walker.r + STEP[ev.key][2]\n    if c < 1 or c > N or r < 1 or r > N then return end\n    set(me.id, 'walker', {c = c, r = r})\n    move(me.id, tile(mat.c.mat.origin, c, r))\n    for _, coin in ipairs(find('coin')) do\n      if coin.c.coin.c == c and coin.c.coin.r == r then despawn(coin.id) end\n    end\n    if #find('coin') == 0 then notify(ev.player, 'All coins!') end\n  end\nend\n"}]}"##,
+Example "game" (a world with no game logic yet; the player stood near x=0, z=0 on ground at y=8.75):
+"three coins to collect around here"
+{"name":"world","title":"","defs":[{"name":"coin","kind":"item","title":"Coin","model":"coin"}],"remove":null,"rename":null,"models":[{"name":"coin","build":{"name":"Coin","size":[3,3,3],"palette":[{"name":"gold","hex":"#f4cf4b","material":"glow"}],"shapes":[{"kind":"ellipsoid","color":"gold","from":[0,0,0],"to":[3,3,3],"radius":null,"wobble":null}]}}],"scripts":[{"name":"coins.luau","source":"local SPOTS = {{x = 3, z = 2}, {x = -2, z = 4}, {x = 5, z = -3}}\nlocal Y = 8.75\nfunction on_start(ev)\n  for i, s in ipairs(SPOTS) do\n    if #find(\"coin\") < #SPOTS then\n      spawn({x = s.x, y = Y, z = s.z}, {coin = true, look = {model = \"coin\"}, label = \"Coin\"})\n    end\n  end\nend\nfunction on_join(ev)\n  hud(ev.player, \"coins\", {kind = \"items\", label = \"Coins\", item = \"coin\"})\nend\nfunction on_interact(ev)\n  local c = get(ev.entity)\n  if not c.c.coin then return end\n  despawn(c.id)\n  give(ev.player, \"coin\", 1)\n  if #find(\"coin\") == 0 then notify(ev.player, \"All coins!\") end\nend\n"}]}"##,
     );
     if with_tools {
         out.push_str(

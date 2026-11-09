@@ -205,11 +205,11 @@ impl Clockwork {
                 let _ = batch.apply(&grants, &Effect::Cancel { name: name.clone() });
             }
             let seed = fnv1a(format!("{world_seed}/{change}/{package}/{name}").as_bytes());
-            // The engine's own: walking, routines, spawners. A piece that arrives tells
+            // The engine's own: walking and chasing. A piece that arrives tells
             // its package.
             if let Some(engine) = name.strip_prefix('~') {
                 let mark = batch.mark();
-                let mut cx = Engine { batch: &mut batch, grants: &grants, ground, rules, now, seed, players: players_at };
+                let mut cx = Engine { batch: &mut batch, grants: &grants, ground, now, players: players_at };
                 match cx.fire(engine) {
                     Ok(Some(heard)) => {
                         let (player, trigger, handler) = match &heard {

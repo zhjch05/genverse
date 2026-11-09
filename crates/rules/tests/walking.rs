@@ -1,11 +1,12 @@
-//! Pieces that move on their own: walking, routines, wandering and spawners. The engine
-//! runs them on timers, records what they did, and replay never looks for a path again.
+//! Pieces that move on their own: walking and chasing are the engine's (it runs them on
+//! timers, records what they did, and replay never looks for a path again); routines,
+//! wandering and spawners are a few lines of Lua on top.
 
 use cubewish_rules::{
     log::{Action, Provenance, Replay, WORLD, WorldLog, replay},
     logic::{
         Clockwork, Effect, EntityId, Ground, Intent, LogicRules, Scope, TimerHost,
-        data::{DefSpec, GameSpec, ModelSpec, ScriptSpec, Stop},
+        data::{DefSpec, GameSpec, ModelSpec, ScriptSpec},
         walk::position_at,
     },
     terrain::{FLAT_GROUND, VOXEL_SIZE},
@@ -120,80 +121,6 @@ fn a_walk_is_one_change_and_ends_in_on_arrive() {
     assert_eq!(state.logic.state.timers().count(), 0);
 }
 
-#[test]
-fn spawners_and_routines_need_no_script() {
-    let def = |name: &str, kind: &str| DefSpec { name: name.into(), kind: kind.into(), title: name.into(), ..Default::default() };
-    let game = GameSpec {
-        remove: None, rename: None,
-        name: "vale".into(),
-        title: "Vale".into(),
-        defs: vec![
-            DefSpec { model: Some("slime".into()), spawns: Some("Slime".into()), max: Some(2), every_seconds: Some(10), radius: Some(4.0), ..def("pool", "spawner") },
-            DefSpec {
-                model: Some("baker".into()),
-                routine: Some(vec![Stop { at: "0:00".into(), to: [0.0, 0.0] }, Stop { at: "12:00".into(), to: [10.0, 0.0] }]),
-                ..def("baker", "npc")
-            },
-        ],
-        scripts: Vec::new(),
-        models: vec![model("slime"), model("baker")],
-    };
-    // Day 10 begins at 12000 (days are 1200 s).
-    let start = 12_000;
-    let mut log = world(&game);
-    log.push(by("ada", start), Action::Intent { intent: Intent::Place { item: "vale:pool".into(), position: [40.0, Y, 0.0] } });
-    let baker = log.push(by("ada", start), Action::Intent { intent: Intent::Place { item: "vale:baker".into(), position: [0.0, Y, 0.0] } });
-    let baker = EntityId { change: baker, n: 0 };
-    let mut clock = Clockwork::new(start);
-    let near = [[20.0, Y, 0.0]];
-    let slimes = |log: &WorldLog| replay(log).logic.state.entities().filter(|(_, e)| e.components.contains_key("spawned")).count();
-
-    // Nobody near: nothing spawns.
-    assert!(tick(&mut clock, &mut log, start + 30, &[[500.0, Y, 500.0]]).is_empty());
-    assert_eq!(slimes(&log), 0);
-    // Someone comes: slimes appear, never more than two, and wander.
-    for t in (start + 31..start + 120).step_by(5) {
-        let errors = tick(&mut clock, &mut log, t, &near);
-        assert!(errors.is_empty(), "{errors:?}");
-    }
-    assert_eq!(slimes(&log), 2);
-    let state = replay(&log);
-    assert!(state.problems.is_empty(), "{:?}", state.problems);
-    assert!(state.logic.state.entities().any(|(_, e)| e.components.contains_key("spawned") && e.components.contains_key("walk")));
-
-    // At noon the baker walks to the second stop, 10 m east.
-    for t in (start + 120..start + 606).step_by(5) {
-        let errors = tick(&mut clock, &mut log, t, &near);
-        assert!(errors.is_empty(), "{errors:?}");
-    }
-    let walking = replay(&log).logic.state.get(baker).unwrap().clone();
-    assert!(walking.components.contains_key("walk"), "{:?}", walking.components);
-    tick(&mut clock, &mut log, start + 640, &near);
-    let state = replay(&log);
-    assert_eq!(state.logic.state.get(baker).unwrap().position, [10.0, Y, 0.0]);
-    assert!(state.problems.is_empty(), "{:?}", state.problems);
-}
-
-#[test]
-fn a_scripted_game_puts_down_data_spawners_and_the_trial_shows_them() {
-    let def = |name: &str, kind: &str| DefSpec { name: name.into(), kind: kind.into(), title: name.into(), ..Default::default() };
-    let game = GameSpec {
-        remove: None, rename: None,
-        name: "vale".into(),
-        title: "Vale".into(),
-        defs: vec![
-            DefSpec { model: Some("slime".into()), spawns: Some("Slime".into()), max: Some(3), every_seconds: Some(10), radius: Some(4.0), ..def("pool", "spawner") },
-            def("stall", "fixture"),
-        ],
-        scripts: vec![ScriptSpec { name: "main.luau".into(), source: "function on_place(ev) end".into() }],
-        models: vec![model("slime")],
-    };
-    let steps: Vec<String> = ["place pool", "wait 45"].iter().map(|s| s.to_string()).collect();
-    let report = cubewish_rules::logic::trial::play(&game.to_package(1), &steps);
-    assert!(report.contains("1. place pool: ok"), "{report}");
-    assert_eq!(report.matches("\"spawned\"").count(), 3, "{report}");
-}
-
 /// A world that is the game: it sets itself up on install, greets players, a wolf
 /// guards a clearing and chases whoever walks in, and its bite sends them back to camp.
 const NIGHT: &str = r#"
@@ -275,4 +202,77 @@ fn the_world_is_the_game() {
     tick(&mut clock, &mut log, 103, &[[14.0, Y, 0.0]]);
     let wolf = replay(&log).logic.state.entities().find(|(_, e)| e.components.contains_key("night:wolf")).map(|(_, e)| e.clone()).unwrap();
     assert_eq!(wolf.components["chase"]["player"], "p0");
+}
+
+/// What the engine used to do itself, in Lua: a pool that keeps two slimes about, which
+/// hop from spot to spot, and a baker who goes to her stall at noon.
+const VILLAGE: &str = r#"
+local Y = 8.75
+function on_start(ev)
+  local pool = spawn({x = 40, y = Y, z = 0}, { look = { model = "slime" }, label = "Slime pool", pool = true })
+  every(10, "spawn", { pool = pool }, pool)
+  local baker = spawn({x = 0, y = Y, z = 0}, { look = { model = "baker" }, label = "Baker", baker = true })
+  every(60, "day", { baker = baker }, baker)
+end
+local function hop(id)
+  local s = get(id)
+  local a = random() * 6.28
+  walk(id, {x = s.pos.x + math.cos(a) * 3, y = Y, z = s.pos.z + math.sin(a) * 3}, 1)
+end
+function on_timer(ev)
+  if ev.name == "spawn" then
+    local pool = get(ev.data.pool)
+    if #find("slime") < 2 then
+      local a = random() * 6.28
+      local s = spawn({x = pool.pos.x + math.cos(a) * 3, y = Y, z = pool.pos.z + math.sin(a) * 3},
+        { look = { model = "slime" }, label = "Slime", slime = true })
+      hop(s)
+    end
+  elseif ev.name == "day" then
+    local baker = get(ev.data.baker)
+    if ev.time >= 0.5 and not baker.walking and baker.pos.x < 9 then walk(baker.id, {x = 10, y = Y, z = 0}) end
+  end
+end
+function on_arrive(ev)
+  if get(ev.entity).c.slime then hop(ev.entity) end
+end
+"#;
+
+#[test]
+fn routines_wandering_and_spawners_are_lua() {
+    let game = GameSpec {
+        remove: None,
+        rename: None,
+        name: "vale".into(),
+        title: "Vale".into(),
+        defs: Vec::new(),
+        scripts: vec![ScriptSpec { name: "village.luau".into(), source: VILLAGE.into() }],
+        models: vec![model("slime"), model("baker")],
+    };
+    // Day 10 begins at 12000 (days are 1200 s): installed then.
+    let start = 12_000;
+    let mut log = WorldLog { flat: true, ..WorldLog::new(7) };
+    log.admins = vec!["admin".into()];
+    let package = game.to_package(1);
+    assert!(package.check().is_ok(), "{:?}", package.check());
+    let reference = package.reference();
+    log.add_package(package);
+    log.push(by("admin", start), Action::InstallPackage { package: reference, scope: Scope::World });
+    let mut clock = Clockwork::new(start);
+    let near = [[20.0, Y, 0.0]];
+    let slimes = |log: &WorldLog| replay(log).logic.state.entities().filter(|(_, e)| e.components.contains_key("vale:slime")).count();
+    for t in (start + 1..start + 120).step_by(5) {
+        let errors = tick(&mut clock, &mut log, t, &near);
+        assert!(errors.is_empty(), "{errors:?}");
+    }
+    assert_eq!(slimes(&log), 2);
+    assert!(replay(&log).logic.state.entities().any(|(_, e)| e.components.contains_key("vale:slime") && e.components.contains_key("walk")));
+    // At noon the baker walks to her stall.
+    for t in (start + 120..start + 700).step_by(10) {
+        tick(&mut clock, &mut log, t, &near);
+    }
+    let state = replay(&log);
+    assert!(state.problems.is_empty(), "{:?}", state.problems);
+    let baker = state.logic.state.entities().find(|(_, e)| e.components.contains_key("vale:baker")).map(|(_, e)| e.clone()).unwrap();
+    assert_eq!(baker.position, [10.0, Y, 0.0]);
 }

@@ -24,8 +24,8 @@
 //!                               -- more times went by unrun (nobody was here)
 //! function on_choose(ev) end    -- ev.player picked ev.choice in the panel ev.panel
 //!                               -- (its id) that the package showed them
-//! function on_arrive(ev) end    -- ev.entity got where walk() sent it (or where its
-//!                               -- routine said), at ev.pos; ev.stuck: no way there
+//! function on_arrive(ev) end    -- ev.entity got where walk() sent it, at ev.pos;
+//!                               -- ev.stuck: no way there
 //! function on_start(ev) end     -- installed: set the world up (ev.player installed it);
 //!                               -- again on each new version, with ev.upgrade
 //! function on_join(ev) end      -- ev.player came into the world (each visit)
@@ -77,10 +77,6 @@
 //! ```lua
 //! walk(id, pos, speed)      -- there, at speed m/s (default 1.5); on_arrive when there
 //! stop(id)                  -- stops where it is
-//! routine(id, {{at = "8:00", to = pos}, ...})   -- where to be when, every day; nil stops
-//! wander(id, {radius = 6, speed = 1, pause = 4, home = pos})   -- nil stops
-//! spawner(id, {model = "slime", label = "Slime", tag = "slime", max = 4, every = 30,
-//!              radius = 8, when = "night", wander = true})       -- nil stops
 //! ```
 //!
 //! `get(id).pos` is where a walking piece is now; `get(id).walking` says whether it is.
@@ -484,52 +480,6 @@ mod vm {
                 })?,
             )?;
             globals.set(
-                "routine",
-                scope.create_function(move |lua, (id, stops): (String, Option<Table>)| {
-                    let id = parse_id(&id)?;
-                    let value = match stops {
-                        None => None,
-                        Some(stops) => {
-                            let mut list = Vec::new();
-                            for stop in stops.sequence_values::<Table>() {
-                                let stop = stop?;
-                                let at: String = stop.get("at")?;
-                                let at = crate::logic::walk::time_of_day(&at).ok_or_else(|| fail(format!("routine: \"{at}\" isn't a time like \"8:30\"")))?;
-                                let to = pos_of(&stop.get::<Table>("to")?)?;
-                                list.push(serde_json::json!({ "at": at, "to": to }));
-                            }
-                            let _ = lua;
-                            Some(serde_json::Value::Array(list))
-                        }
-                    };
-                    all(crate::logic::walk::start_effects(id, "routine", value, event.at))
-                })?,
-            )?;
-            globals.set(
-                "wander",
-                scope.create_function(move |lua, (id, spec): (String, Option<Table>)| {
-                    let id = parse_id(&id)?;
-                    let value = match spec {
-                        None => None,
-                        Some(spec) => {
-                            let home = match spec.get::<Option<Table>>("home")? {
-                                Some(t) => pos_of(&t)?,
-                                None => staged.borrow().get(id).map(|e| e.position).ok_or_else(|| fail("wander: no such entity"))?,
-                            };
-                            let mut value: serde_json::Value = lua.from_value(Value::Table(spec))?;
-                            value["home"] = serde_json::json!(home);
-                            for (key, default) in [("radius", 6.0), ("speed", 1.0), ("pause", 4.0)] {
-                                if value[key].is_null() {
-                                    value[key] = default.into();
-                                }
-                            }
-                            Some(value)
-                        }
-                    };
-                    all(crate::logic::walk::start_effects(id, "wander", value, event.at))
-                })?,
-            )?;
-            globals.set(
                 "teleport",
                 scope.create_function(move |_, (player, pos): (String, Table)| {
                     apply(Effect::Teleport { player, position: pos_of(&pos)? }).map(|_| ())
@@ -575,7 +525,7 @@ mod vm {
                             Some(value)
                         }
                     };
-                    let mut effects = crate::logic::walk::start_effects(id, "chase", value.clone(), event.at);
+                    let mut effects = crate::logic::walk::chase_effects(id, value.clone(), event.at);
                     if value.is_none() {
                         let e = staged.borrow().get(id).cloned();
                         if let Some(e) = e {
@@ -603,23 +553,6 @@ mod vm {
                             apply(Effect::Spawn { position: [0.0, 0.0, 0.0], components }).map(|_| ())
                         }
                     }
-                })?,
-            )?;
-            globals.set(
-                "spawner",
-                scope.create_function(move |lua, (id, spec): (String, Option<Table>)| {
-                    let id = parse_id(&id)?;
-                    let value = match spec {
-                        None => None,
-                        Some(spec) => {
-                            let mut value: serde_json::Value = lua.from_value(Value::Table(spec))?;
-                            if value["when"].is_null() {
-                                value["when"] = "any".into();
-                            }
-                            Some(value)
-                        }
-                    };
-                    all(crate::logic::walk::start_effects(id, "spawner", value, event.at))
                 })?,
             )?;
             globals.set("random", scope.create_function(|_, ()| Ok(next_random(&mut rng.borrow_mut())))?)?;

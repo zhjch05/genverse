@@ -9,11 +9,11 @@ to the whole world, and only admins change them; an intent goes only to the pack
 owns its item or entity; scripts change the world through a checked batch as they run,
 rather than returning a list of intents. Timers replace per-tick events (see
 [Timers](#timers)). Also built: players' stats, HUD widgets, and panels (dialogue, menus,
-shops, with `Intent::Choose`), shops as data, and games changing the world's voxels
+shops, with `Intent::Choose`), and games changing the world's voxels
 (`build`, `unbuild`, `terrain`) through the world's own rules, charged to the installer's
 land and budget, all or nothing (see [`entity`](../crates/rules/src/logic/entity.rs) and
 [testing-games.md](testing-games.md)). Also built: pieces that move on their own (walking
-with paths over the ground, daily routines, wandering, spawners; see [Movement](#movement)),
+with paths over the ground, and chasing; see [Movement](#movement)),
 and the world as the game ([The world is the game](#the-world-is-the-game)): games set the
 world up, see players come and go and walk into places, chase and teleport them, and can
 keep players from building. Not built yet: migrations, preview, and the game master agent.
@@ -37,7 +37,7 @@ changes it a little:
 - **The agent sees the world as it runs:** every script in full, definitions, and models by
   name and size, plus recent script errors, and where the player stands with the ground
   heights around them (world meters), so "next to me" and "20 m east" are positions its
-  scripts can hold: nothing needs putting down from the game bar first.
+  scripts can hold: nothing needs putting down first.
 
 ### Migrations
 
@@ -63,7 +63,7 @@ renamed). What makes that safe:
 A game isn't only something players put down. Installed, it can be the whole world:
 
 - **It sets the world up.** `on_start` runs when the package is installed (and again, with
-  `ev.upgrade`, for each new version): the map's pieces, spawners, NPCs, regions, builds and
+  `ev.upgrade`, for each new version): the map's pieces, creatures, characters, regions, builds and
   land changes, the spawn point. It's part of the install change, so it replays with it,
   and if it fails the install is refused.
 - **It sees players.** Whoever keeps the world (the server; offline, the game) tells the
@@ -86,8 +86,10 @@ the tester in at the spawn point (`on_join`), and steps include `go <x> <z>` and
 
 ## Movement
 
-Villagers, wandering monsters and visitors are run by the engine, not by scripts stepping
-them ([`walk`](../crates/rules/src/logic/walk.rs)):
+Pieces move through two engine functions, because a script can't do them itself: a path
+needs the ground (scripts don't see voxels), a chase needs where players are now, and
+players' games have to move the piece smoothly between changes
+([`walk`](../crates/rules/src/logic/walk.rs)):
 
 - **A walk is one change.** `walk(id, pos)` asks for it; the engine's own timer finds a
   path over the ground the host knows (around water, no step over 0.6 m, at most 64 m) and
@@ -95,19 +97,28 @@ them ([`walk`](../crates/rules/src/logic/walk.rs)):
   games move the piece along that path as time passes; its position stays where it set off
   until a second timer moves it to the end and calls the package's `on_arrive`. So a walk
   costs two log changes however long it is, and replay never looks for a path.
-- **Routines, wandering, spawners** are engine components with engine timers (`~plan:`,
-  `~wander:` legs, `~spawn:`) on the piece's package: a routine walks to each stop at its
-  time of day; a wanderer picks somewhere within its radius after each pause; a spawner
-  keeps up to `max` pieces around it (by day, night, or always).
-- **They sleep like any timer anchored to a piece** while no player is within 64 m, and
-  catch up when someone comes.
-- **Data alone** can do it: `spawner` and `npc` definitions need no script.
+- **A chase** (`chase(id, player)`) aims a walk at where the player is every 2 s, and calls
+  `on_catch` within reach.
+- **The rest is Lua.** A day's routine is an `every` timer walking a character to where
+  `ev.time` says; wandering is `on_arrive` picking the next spot; a spawner is a timer
+  spawning while `find()` says there are too few (`walking.rs` has all three).
+- **They sleep like any timer anchored to a piece** while no player is within 64 m.
 - **The ground** comes from whoever runs timers: the server from its world (the seed's
   heights with the voxel edits over them), the game offline from its loaded chunks, a
   trial not at all (walks go straight).
 
 Not yet: builds as obstacles (paths cross them), pieces that block each other, and paths
 longer than 64 m in one walk.
+
+## Items and the inventory
+
+A package's only definitions are its items: a title, and optionally one of its models as
+the icon ([`data`](../crates/rules/src/logic/data.rs)); scripts `give`, `take` and `count`
+them. What a player carries is the game's, in the log; how it's laid out in the player's
+inventory (a hotbar of 9, 27 more behind it) is the player's own, kept locally per world.
+Right-click with an item in hand puts it down (`on_place`) or uses it on the piece in reach
+(`on_use`). Definitions of the kinds from before (crop, source, fixture, shop, spawner,
+npc) are ignored, so old worlds still load.
 
 ## Timers
 
@@ -234,6 +245,8 @@ Most of what agents write. Definitions are checked against a JSON schema, the wa
 - quests and shops
 
 Data alone covers much of a farming or survival game. It is the first thing to ship.
+(Changed since: only items stayed data. Crops, shops, spawners and villagers proved
+better written in Lua by the agent for the game at hand, so the engine dropped them.)
 
 ### 3. Scripts
 
@@ -415,6 +428,7 @@ for what to add to the kernel next.
 1. **Kernel and log.** Entity/component store in `cubewish_rules`, the world clock,
    `Action::Intent`, `InstallPackage` and the package store.
 2. **Data-only packages.** Items, crops, creatures, NPCs and shops. No scripts yet.
+   (Since retired, except items: scripts do the rest.)
 3. **Server-side Luau.** Event handlers, intents, permissions, budgets, turning off
    a package that overruns.
 4. **Agent authoring flow.** Chat panel → package, test fork, preview, keep, approval,

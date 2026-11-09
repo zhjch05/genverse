@@ -12,11 +12,7 @@
 //!   their movement keys to its package (as [`super::Intent::Key`]) instead of walking.
 //! - `pawn`: a player id. That player's hero stands where this entity is, so a game
 //!   moves its players by moving their pawns.
-//! - `shop`: one of its package's shop definitions (`"general"`): E on it opens the shop,
-//!   and buying there needs no script.
-//! - `walk`, `routine`, `wander`, `spawner`, `chase`: pieces that move on their own, and
-//!   pieces that make more (see [`super::walk`]); `spawned` names the spawner a piece
-//!   came from.
+//! - `walk`, `chase`: pieces that move on their own (see [`super::walk`]).
 //! - `region`: `{"radius": r}` or `{"size": [w, d]}` around it: players walking in and out
 //!   tell its package (`on_enter`, `on_exit`). It needs no look.
 //! - `world`: `{"building": false}`: while a piece with it stands, only admins build and
@@ -263,8 +259,7 @@ impl Timer {
 }
 
 /// Components the engine itself reads.
-pub const RESERVED: [&str; 14] =
-    ["look", "label", "zone", "pawn", "shop", "walk", "routine", "wander", "spawner", "spawned", "chase", "region", "world", "feature"];
+pub const RESERVED: [&str; 9] = ["look", "label", "zone", "pawn", "walk", "chase", "region", "world", "feature"];
 
 /// Checks an engine component's value, phrased for the agent that wrote it.
 fn check_reserved(name: &str, value: &Value, grants: &Grants) -> Result<(), String> {
@@ -281,20 +276,10 @@ fn check_reserved(name: &str, value: &Value, grants: &Grants) -> Result<(), Stri
         "label" => value.as_str().is_some_and(|l| l.chars().count() <= 60),
         "zone" => sizes("size", 2, 128.0),
         "pawn" => value.as_str().is_some_and(|p| !p.is_empty() && p.len() <= 128),
-        "shop" => value.as_str().is_some_and(|s| !s.is_empty() && s.len() <= 64),
-        "spawned" => value.as_str().is_some_and(|s| s.len() <= 32),
         "feature" => value.as_str().is_some_and(|s| s.len() <= 64),
-        "walk" | "routine" | "wander" | "chase" => return super::walk::check(name, value),
+        "walk" | "chase" => return super::walk::check(name, value),
         "region" => value["radius"].as_f64().is_some_and(|r| r > 0.0 && r <= 64.0) || sizes("size", 2, 128.0),
         "world" => value.as_object().is_some_and(|o| o.keys().all(|k| k == "building")) && !value["building"].is_null(),
-        "spawner" => {
-            super::walk::check(name, value)?;
-            let model = value["model"].as_str().unwrap_or_default();
-            if !grants.models.iter().any(|m| m == model) {
-                return Err(format!("a spawner's model is one of the package's models ({})", grants.models.join(", ")));
-            }
-            true
-        }
         _ => true,
     };
     if ok {
@@ -307,8 +292,6 @@ fn check_reserved(name: &str, value: &Value, grants: &Grants) -> Result<(), Stri
             ),
             "label" => "\"label\" is text of up to 60 characters".into(),
             "zone" => "\"zone\" is {\"size\": [w, d]} (meters, 0-128)".into(),
-            "shop" => "\"shop\" is the name of one of the package's shops".into(),
-            "spawned" => "\"spawned\" is the id of the spawner a piece came from".into(),
             "region" => "\"region\" is {\"radius\": 0-64 m} or {\"size\": [w, d]} (meters, 0-128)".into(),
             "world" => "\"world\" is {\"building\": true or false}".into(),
             _ => "\"pawn\" is a player id".into(),
@@ -868,8 +851,8 @@ impl Batch<'_> {
                 if count + 1 > grants.max_entities as i64 {
                     return Err(format!("{} already has {count} entities; this world allows {}", grants.package, grants.max_entities));
                 }
-                // A spawner shows as a marker of its own; a region or the world's rules aren't seen.
-                let unseen = ["pawn", "spawner", "region", "world"].iter().any(|c| components.contains_key(*c));
+                // A region or the world's rules aren't seen; a pawn is the hero.
+                let unseen = ["pawn", "region", "world"].iter().any(|c| components.contains_key(*c));
                 if grants.drawn && !components.contains_key("look") && !unseen {
                     return Err(format!(
                         "every piece needs a look: {{model = ...}}, one of the package's models ({})",

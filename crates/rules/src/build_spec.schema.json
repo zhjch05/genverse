@@ -497,112 +497,23 @@
         "name",
         "kind",
         "title",
-        "seed",
-        "stage_days",
-        "harvest",
-        "gives",
-        "every_days",
-        "sells",
-        "model",
-        "spawns",
-        "max",
-        "every_seconds",
-        "radius",
-        "when",
-        "wander",
-        "routine"
+        "model"
       ],
       "properties": {
         "name": {
           "type": "string",
-          "description": "Lowercase id within the package, e.g. \"turnip_seed\"."
+          "description": "Lowercase id within the package, e.g. \"torch\"."
         },
         "kind": {
           "type": "string",
           "enum": [
-            "item",
-            "crop",
-            "source",
-            "fixture",
-            "shop",
-            "spawner",
-            "npc"
-          ]
+            "item"
+          ],
+          "description": "Something players carry (scripts give and take it)."
         },
         "title": {
-          "type": "string"
-        },
-        "seed": {
-          "anyOf": [
-            {
-              "type": "null"
-            },
-            {
-              "type": "string"
-            }
-          ],
-          "description": "crop: the item (by name) that plants it."
-        },
-        "stage_days": {
-          "anyOf": [
-            {
-              "type": "null"
-            },
-            {
-              "type": "array",
-              "items": {
-                "type": "integer"
-              }
-            }
-          ],
-          "description": "crop: days each growth stage takes."
-        },
-        "harvest": {
-          "anyOf": [
-            {
-              "type": "null"
-            },
-            {
-              "$ref": "#/$defs/stack"
-            }
-          ],
-          "description": "crop: what harvesting it gives."
-        },
-        "gives": {
-          "anyOf": [
-            {
-              "type": "null"
-            },
-            {
-              "$ref": "#/$defs/stack"
-            }
-          ],
-          "description": "source: what it gives a player each time."
-        },
-        "every_days": {
-          "anyOf": [
-            {
-              "type": "null"
-            },
-            {
-              "type": "integer"
-            }
-          ],
-          "description": "source: days between gifts to the same player (null: 1)."
-        },
-        "sells": {
-          "anyOf": [
-            {
-              "type": "null"
-            },
-            {
-              "type": "array",
-              "items": {
-                "$ref": "#/$defs/offer"
-              }
-            }
-          ],
-          "description": "shop: what it sells (up to 10), each for a price in items, e.g. seeds for coins."
+          "type": "string",
+          "description": "What players see, e.g. \"Torch\"."
         },
         "model": {
           "anyOf": [
@@ -613,109 +524,7 @@
               "type": "string"
             }
           ],
-          "description": "spawner, npc: one of the package's models, what it (spawner: what it spawns) looks like."
-        },
-        "spawns": {
-          "anyOf": [
-            {
-              "type": "null"
-            },
-            {
-              "type": "string"
-            }
-          ],
-          "description": "spawner: the label over what it spawns, e.g. \"Slime\"."
-        },
-        "max": {
-          "anyOf": [
-            {
-              "type": "null"
-            },
-            {
-              "type": "integer"
-            }
-          ],
-          "description": "spawner: how many it keeps around (1-32)."
-        },
-        "every_seconds": {
-          "anyOf": [
-            {
-              "type": "null"
-            },
-            {
-              "type": "integer"
-            }
-          ],
-          "description": "spawner: seconds between spawns (5-86400)."
-        },
-        "radius": {
-          "anyOf": [
-            {
-              "type": "null"
-            },
-            {
-              "type": "number"
-            }
-          ],
-          "description": "spawner: how far around it they appear and wander (1-32 m); npc: how far it wanders around each stop (null: it stands)."
-        },
-        "when": {
-          "anyOf": [
-            {
-              "type": "null"
-            },
-            {
-              "type": "string",
-              "enum": [
-                "any",
-                "day",
-                "night"
-              ]
-            }
-          ],
-          "description": "spawner: when it spawns (null: any)."
-        },
-        "wander": {
-          "anyOf": [
-            {
-              "type": "null"
-            },
-            {
-              "type": "boolean"
-            }
-          ],
-          "description": "spawner: whether what it spawns wanders (null: yes)."
-        },
-        "routine": {
-          "anyOf": [
-            {
-              "type": "null"
-            },
-            {
-              "type": "array",
-              "items": {
-                "$ref": "#/$defs/stop"
-              }
-            }
-          ],
-          "description": "npc: where to be when, every day: stops in meters from where it was put down."
-        }
-      }
-    },
-    "stack": {
-      "type": "object",
-      "additionalProperties": false,
-      "required": [
-        "item",
-        "count"
-      ],
-      "properties": {
-        "item": {
-          "type": "string",
-          "description": "An item's name in this package."
-        },
-        "count": {
-          "type": "integer"
+          "description": "One of the package's models: the item's icon in the inventory and in the hand (null: a plain tile)."
         }
       }
     },
@@ -751,43 +560,6 @@
         },
         "build": {
           "$ref": "#/$defs/build"
-        }
-      }
-    },
-    "offer": {
-      "type": "object",
-      "additionalProperties": false,
-      "required": [
-        "item",
-        "price"
-      ],
-      "properties": {
-        "item": {
-          "$ref": "#/$defs/stack"
-        },
-        "price": {
-          "$ref": "#/$defs/stack"
-        }
-      }
-    },
-    "stop": {
-      "type": "object",
-      "additionalProperties": false,
-      "required": [
-        "at",
-        "to"
-      ],
-      "properties": {
-        "at": {
-          "type": "string",
-          "description": "Time of day, \"8:30\"."
-        },
-        "to": {
-          "type": "array",
-          "items": {
-            "type": "number"
-          },
-          "description": "[x, z]: meters east and south of where it was put down."
         }
       }
     }

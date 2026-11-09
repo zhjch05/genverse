@@ -17,6 +17,7 @@ mod fps;
 mod game;
 mod history;
 mod hud;
+mod inventory;
 mod lan;
 mod landscape;
 mod loading;
@@ -94,6 +95,7 @@ impl Plugin for AgentPlugin {
             .init_resource::<ParcelOverlay>()
             .init_resource::<presence::Peers>()
             .init_resource::<history::History>()
+            .init_resource::<inventory::Inventory>()
             .init_resource::<fps::Fps>()
             .init_resource::<loading::Loading>()
             .init_resource::<settings::SettingsWindow>()
@@ -117,11 +119,11 @@ impl Plugin for AgentPlugin {
                     (game::script_play.after(auto_prompt), game::run_timers, game::play_zones, game::sync_pieces, game::walk_pieces, game::follow_teleports, game::use_pieces, worlds::use_portals, hud::draw_game_world, history::follow_ledger)
                         .chain(),
                     worlds::toggle_worlds,
-                    (game::place_held, shortcuts, select_area, follow_cursor, check_clearance, click_in_world, outline_creations, draw_area, highlight_area, draw_parcels)
+                    (inventory::sync_inventory, inventory::inventory_keys, inventory::use_held, shortcuts, select_area, follow_cursor, check_clearance, click_in_world, outline_creations, draw_area, highlight_area, draw_parcels)
                         .chain(),
                 ),
             )
-            .add_systems(EguiPrimaryContextPass, (install_icon_font, chat_panel, shortcut_hints, game::game_bar, loading::loading_screen).chain())
+            .add_systems(EguiPrimaryContextPass, (install_icon_font, chat_panel, shortcut_hints, game::game_labels, inventory::hotbar, loading::loading_screen).chain())
             .add_systems(
                 EguiPrimaryContextPass,
                 (presence::name_tags, presence::hover_credit, history::history_window, fps::fps_overlay, settings::settings_window, worlds::portal_prompt),
@@ -1009,13 +1011,11 @@ fn click_in_world(
     mut creations: ResMut<Creations>,
     mut chat: ResMut<Chat>,
     landscape: Res<Landscape>,
-    play: Res<game::Play>,
     mut ledger: ResMut<Ledger>,
     mut pressed_at: Local<[Option<Vec2>; 3]>,
     mut last_select: Local<Option<(Entity, f32)>>,
 ) {
-    // Clicks put down what the player holds instead ([`game::place_held`]).
-    if landscape.selecting || play.holding.is_some() {
+    if landscape.selecting {
         *pressed_at = default();
         return;
     }
@@ -1078,6 +1078,7 @@ fn shortcut_hints(
     creations: Res<Creations>,
     landscape: Res<Landscape>,
     play: Res<game::Play>,
+    inventory: Res<inventory::Inventory>,
 ) -> Result {
     let actions: &[(&str, &str)] = match &creations.draft {
         Some(d) if d.follow => &[
@@ -1092,7 +1093,6 @@ fn shortcut_hints(
             &[("Enter", "keep the change"), ("T", "ask for changes"), ("Esc", "put the ground back")]
         }
         None if landscape.selecting => &[("Drag", "select an area (a click: 6 m)"), ("G or Esc", "stop")],
-        None if play.holding.is_some() => &[("Click", "put it down"), ("Esc or right-click", "put it away")],
         None if play.playing.is_some() => &[("WASD/arrows", "move"), ("R", "reset"), ("E", "action"), ("Esc", "leave the game")],
         None if creations.selected.is_some() => &[
             ("T", "change it"),
@@ -1106,6 +1106,16 @@ fn shortcut_hints(
         None if landscape.area.is_some() => {
             &[("T", "describe what this land should become"), ("G", "select again"), ("Esc", "clear the area")]
         }
+        None if inventory.open => &[("Click", "pick up or put down a stack"), ("1-9", "what's in hand"), ("I or Esc", "close")],
+        None if play.near.is_some() && inventory.held().is_some() => &[
+            ("E", "use"),
+            ("F", "hit"),
+            ("Right-click", "use what's in hand on it"),
+            ("1-9", "hand"),
+            ("I", "inventory"),
+            ("T", "describe a build"),
+            ("H", "history"),
+        ],
         None if play.near.is_some() => &[
             ("E", "use"),
             ("F", "hit"),
@@ -1113,6 +1123,15 @@ fn shortcut_hints(
             ("G", "reshape the ground"),
             ("Click", "select a build"),
             ("P", "land"),
+            ("H", "history"),
+        ],
+        None if inventory.held().is_some() => &[
+            ("Right-click", "put down what's in hand"),
+            ("1-9", "hand"),
+            ("I", "inventory"),
+            ("T", "describe a build"),
+            ("G", "reshape the ground"),
+            ("Click", "select a build"),
             ("H", "history"),
         ],
         None => &[
