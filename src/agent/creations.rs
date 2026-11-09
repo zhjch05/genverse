@@ -46,38 +46,31 @@ pub struct Creations {
     pub placed: Vec<(Entity, SavedCreation)>,
     pub draft: Option<Draft>,
     pub selected: Option<Entity>,
-    /// Changes this session, newest last, for Undo.
+    /// Our changes online the server hasn't answered yet, newest last: shown already,
+    /// and taken back if it refuses them.
     history: Vec<Change>,
     next_id: u64,
 }
 
-/// One undoable change, with the id of its entry in the change log.
+/// A change shown before the server took it, with its reference.
 enum Change {
     Placed { build: u64, change: u64 },
     Deleted { before: SavedCreation, change: u64 },
     /// A build was moved or revised; holds how it was before.
     Replaced { before: SavedCreation, change: u64 },
-    /// A kept terrain change, undone by the landscape.
-    Terrain { change: u64 },
 }
 
 impl Change {
-    /// The change-log reference (online: the request) this undo entry belongs to.
+    /// The change-log reference (online: the request) it belongs to.
     fn reference(&self) -> u64 {
         match self {
             Change::Placed { change, .. }
             | Change::Deleted { change, .. }
-            | Change::Replaced { change, .. }
-            | Change::Terrain { change } => *change,
+            | Change::Replaced { change, .. } => *change,
         }
     }
 }
 
-/// What [`Creations::undo`] did, or left for the caller to do.
-pub enum Undone {
-    Message(String),
-    Terrain(u64),
-}
 
 /// Marks a creation entity; drafts also carry [`DraftMarker`].
 #[derive(Component)]
@@ -314,18 +307,7 @@ impl Creations {
                 self.take_placed(commands, before.build);
                 self.restore(commands, before);
             }
-            Change::Terrain { .. } => {}
         }
-    }
-
-    /// Records a kept terrain change (its change-log id), so Undo reverts changes in
-    /// the order they were made.
-    pub fn record_terrain(&mut self, change: u64) {
-        self.history.push(Change::Terrain { change });
-    }
-
-    pub fn can_undo(&self) -> bool {
-        self.draft.is_none() && !self.history.is_empty()
     }
 
     pub fn selected(&self) -> Option<&SavedCreation> {
@@ -389,36 +371,6 @@ impl Creations {
         // Stay selected so a follow-up chat message ("make it blue") applies to it.
         self.selected = Some(draft.entity);
         Ok(name)
-    }
-
-    /// Reverts the latest change; returns a message describing what happened.
-    /// Terrain changes are left to the caller (the landscape puts the voxels back).
-    pub fn undo(&mut self, commands: &mut Commands, ledger: &mut Ledger) -> Option<Undone> {
-        if self.draft.is_some() {
-            return None;
-        }
-        let message = match self.history.pop()? {
-            Change::Placed { build, change } => {
-                let (_, saved) = self.take_placed(commands, build)?;
-                ledger.revert(change);
-                format!("Removed \"{}\".", saved.name)
-            }
-            Change::Deleted { before, change } => {
-                let name = before.name.clone();
-                self.restore(commands, before)?;
-                ledger.revert(change);
-                format!("Brought back \"{name}\".")
-            }
-            Change::Replaced { before, change } => {
-                self.take_placed(commands, before.build)?;
-                let name = before.name.clone();
-                self.restore(commands, before)?;
-                ledger.revert(change);
-                format!("Put \"{name}\" back how it was.")
-            }
-            Change::Terrain { change } => return Some(Undone::Terrain(change)),
-        };
-        Some(Undone::Message(message))
     }
 
     fn take_placed(&mut self, commands: &mut Commands, build: u64) -> Option<(Entity, SavedCreation)> {

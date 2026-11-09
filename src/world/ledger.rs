@@ -5,10 +5,11 @@
 //! worlds the game has and who runs it, and each world keeps its log in
 //! `saves/games/<game>/worlds/<world>/world.jsonl`, append-only
 //! ([`cubewish_rules::store`]): a change is saved by writing just that change.
-//! Replaying it is the truth; `snapshot.json` beside it holds the voxels and games as of
-//! some change, so loading replays only what came after (it's ignored when it no longer
-//! fits the log). Changes made here are applied on top of the current state, never by
-//! replaying everything. `CUBEWISH_GAME` and `CUBEWISH_WORLD` pick where to start (the
+//! Replaying it is the truth; `snapshot.json` beside it holds the whole world as of
+//! some change, so loading replays only what came after. Changes made here, undos and
+//! loads included, are applied on top of the current state, never by replaying
+//! everything. A save keeps the world as of it in `states/<change>.json`, so loading it
+//! swaps that in. `CUBEWISH_GAME` and `CUBEWISH_WORLD` pick where to start (the
 //! game `local` and its first world by default; a world named there that the game
 //! doesn't have is made, flat and empty). Saves from before games move into `local`
 //! once, and saves from before the log are migrated (the old files are kept as
@@ -38,7 +39,8 @@ use cubewish_rules::{
     land::Land,
     rate::Rates,
     settings::WorldRules,
-    log::{Action, BuildState, PortalTo, Provenance, Replay, Snapshot, WorldLog, replay_from, replay_land, signing_bytes},
+    log::{Action, BuildState, PortalTo, Provenance, Replay, Snapshot, WorldLog, WorldState, replay_from, signing_bytes},
+    undo::{Cell, Op, UndoRecord},
     game::{GameAction, GameLog},
     logic::{Clockwork, Intent, Logic, Package, Scope},
 };
@@ -288,6 +290,19 @@ fn snapshot_path() -> String {
 #[cfg(not(target_arch = "wasm32"))]
 const PROFILE_PATH: &str = "saves/profile.json";
 
+/// What the game has to redo for the world to match the ledger, offline.
+#[derive(Default)]
+pub struct Follow {
+    /// Voxels an undo set back.
+    pub cells: Vec<Cell>,
+    /// Builds changed (an undo, or a load): spawn them again.
+    pub builds: bool,
+    /// A load: every voxel edit, `[x, y, z, block]`.
+    pub edits: Option<Vec<[i32; 4]>>,
+    /// Saves to keep the world's state for, by change (it takes the voxels).
+    pub keep: Vec<u64>,
+}
+
 /// What an action did for the local player.
 pub struct Acted {
     /// How their items changed, by item.
@@ -331,6 +346,11 @@ pub struct Ledger {
     pub logic: Logic,
     /// Builds that are portals, and where they lead.
     pub portals: BTreeMap<u64, PortalTo>,
+    /// What the latest changes did, so they can be undone.
+    pub undoable: BTreeMap<u64, UndoRecord>,
+    /// Offline, what the last changes did that the world's voxels and builds have to
+    /// follow (undos and loads): for the game to show ([`Self::follow`]).
+    pub follow: Follow,
     /// Bumped on every recorded change, so the voxel cache knows to follow.
     pub version: u64,
     /// What games said to the local player on their own (timers), for the game to show.
@@ -445,14 +465,9 @@ impl Ledger {
     }
 
     /// Applies the log's last change on top of the current state, as a server does:
-    /// the cost of a change never grows with the history. Undos change which changes
-    /// count, so they replay (without voxels).
+    /// the cost of a change never grows with the history.
     fn advance(&mut self) -> Result<(), String> {
         let Some(change) = self.log.changes.last().cloned() else { return Ok(()) };
-        if change.action.is_undo() {
-            self.adopt(&replay_land(&self.log));
-            return Ok(());
-        }
         let mut state = Replay::new(&self.log);
         state.builds = std::mem::take(&mut self.builds);
         state.land = std::mem::take(&mut self.land);
@@ -462,7 +477,22 @@ impl Ledger {
         state.footprints = std::mem::take(&mut self.footprints);
         state.logic = Logic { packages: self.log.packages.clone(), ..std::mem::take(&mut self.logic) };
         state.portals = std::mem::take(&mut self.portals);
+        state.undoable = std::mem::take(&mut self.undoable);
         let result = state.apply(&change, false).map(|_| ());
+        // What the game's world has to follow.
+        if result.is_ok() {
+            self.follow.cells.append(&mut state.last_cells);
+            match &change.action {
+                Action::Undo { .. } => self.follow.builds = true,
+                Action::Load { state: Some(loaded), .. } => {
+                    self.follow.builds = true;
+                    self.follow.cells.clear();
+                    self.follow.edits = Some(loaded.edits.clone());
+                }
+                Action::Save { .. } => self.follow.keep.push(change.id),
+                _ => {}
+            }
+        }
         // What a game did to the voxels, for the game to draw (replay has no voxels here).
         if let Some(world) = state.last_world.take().filter(|(_, w)| !w.is_empty()) {
             self.pending_world.push(world);
@@ -475,6 +505,7 @@ impl Ledger {
         self.footprints = state.footprints;
         self.logic = state.logic;
         self.portals = state.portals;
+        self.undoable = state.undoable;
         self.version += 1;
         result
     }
@@ -489,7 +520,22 @@ impl Ledger {
         self.builds = state.builds.clone();
         self.logic = state.logic.clone();
         self.portals = state.portals.clone();
+        self.undoable = state.undoable.clone();
         self.version += 1;
+    }
+
+    /// The whole world as it is now, with the voxel `edits` the game keeps.
+    pub fn world_state(&self, edits: Vec<[i32; 4]>) -> WorldState {
+        let mut state = Replay::new(&self.log);
+        state.builds = self.builds.clone();
+        state.land = self.land.clone();
+        state.rules = self.rules.clone();
+        state.budgets = self.budgets.clone();
+        state.footprints = self.footprints.clone();
+        state.logic = self.logic.clone();
+        state.portals = self.portals.clone();
+        state.undoable = self.undoable.clone();
+        WorldState { edits, ..state.state() }
     }
 
     fn is_admin(&self) -> bool {
@@ -509,10 +555,13 @@ impl Ledger {
         let id = self.record_with(agent, prompt, action, Some(package.clone()));
         // The game keeps it too, so other worlds can turn it on, and those that run it
         // move to this version.
+        #[cfg(not(target_arch = "wasm32"))]
         let known = match &self.online {
             Some(online) => online.game.as_ref().map(|g| g.packages()),
             None => Some(read_game(&game_name()).packages()),
         };
+        #[cfg(target_arch = "wasm32")]
+        let known = Some(read_game(&game_name()).packages());
         if known.and_then(|k| k.get(&package.manifest.name).map(|p| p.hash())) != Some(reference.hash) {
             let action = GameAction::AddPackage { package: Box::new(package) };
             #[cfg(not(target_arch = "wasm32"))]
@@ -692,6 +741,22 @@ impl Ledger {
         #[cfg(target_arch = "wasm32")]
         let worlds = BTreeMap::new();
         let n = worlds.len();
+        // Each world keeps its state as of the save, so loading it never replays: this
+        // one once the game has its voxels, the others now.
+        #[cfg(not(target_arch = "wasm32"))]
+        for (world, last) in &worlds {
+            if *world == world_name() {
+                self.follow.keep.push(*last);
+                continue;
+            }
+            let dir = game_dir_of(&game).join("worlds").join(world);
+            let Ok((_, Some(log))) = cubewish_rules::store::LogFile::open(&dir) else { continue };
+            let snapshot = read_snapshot(&dir.join("snapshot.json"));
+            let state = cubewish_rules::store::state_of_save(&dir, &log, *last, snapshot.as_ref());
+            if let Err(e) = cubewish_rules::store::write_state(&dir, &Snapshot::at(&log, *last, state)) {
+                warn!("couldn't keep {world}'s save: {e}");
+            }
+        }
         let by = Provenance::new(&self.profile.id, &self.profile.name, None, None, now());
         game_log.push(by, GameAction::Save { name: name.trim().into(), worlds })?;
         write_game(&game, &game_log);
@@ -702,10 +767,11 @@ impl Ledger {
     /// the current world's restore is recorded like any change and the others' are
     /// written to their logs, for when they're entered next. On a server, the admin signs
     /// each world's restore and the server makes them.
-    pub fn load_game(&mut self, name: &str) -> Result<usize, String> {
+    pub fn load_game(&mut self, name: &str, edits: &[[i32; 4]]) -> Result<usize, String> {
         if !self.is_admin() {
             return Err("Only admins load saves.".into());
         }
+        self.keep_saves(edits);
         #[cfg(not(target_arch = "wasm32"))]
         if let Some(online) = &self.online {
             let game = online.game.as_ref().ok_or("the server hasn't welcomed us yet")?;
@@ -713,7 +779,7 @@ impl Ledger {
             let by = Provenance::new(&self.profile.id, &self.profile.name, None, None, now());
             let signed = worlds
                 .iter()
-                .map(|(world, to)| (world.clone(), self.key.sign(&signing_bytes(&by, &Action::Restore { to: *to }))))
+                .map(|(world, to)| (world.clone(), self.key.sign(&signing_bytes(&by, &cubewish_rules::game::load_action(name, *to)))))
                 .collect();
             self.propose_game_by(by, GameAction::LoadSave { name: name.into(), signed })?;
             return Ok(worlds.len());
@@ -726,7 +792,8 @@ impl Ledger {
         for (world, to) in worlds {
             if *world == world_name() {
                 if self.log.changes.last().map_or(0, |c| c.id) > *to {
-                    self.record(None, None, Action::Restore { to: *to });
+                    let state = Some(Box::new(self.state_of_save(*to)));
+                    self.record(None, None, Action::Load { save: *to, name: name.trim().into(), state });
                     n += 1;
                 }
                 continue;
@@ -738,9 +805,10 @@ impl Ledger {
                 if log.changes.last().map_or(0, |c| c.id) <= *to {
                     continue;
                 }
+                let snapshot = read_snapshot(&dir.join("snapshot.json"));
+                let state = Some(Box::new(cubewish_rules::store::state_of_save(&dir, &log, *to, snapshot.as_ref())));
                 let by = Provenance::new(&self.profile.id, &self.profile.name, None, None, now());
-                log.push_signed(by, Action::Restore { to: *to }, &self.key);
-                let _ = std::fs::remove_file(dir.join("snapshot.json"));
+                log.push_signed(by, Action::Load { save: *to, name: name.trim().into(), state }, &self.key);
                 file.sync(&log).map_err(|e| e.to_string())?;
                 n += 1;
             }
@@ -833,15 +901,81 @@ impl Ledger {
         self.land.authorize(&self.profile.id, parcels)
     }
 
-    /// Undoes the change `reference` stands for by appending (or, online, proposing) a
-    /// revert of it.
-    pub fn revert(&mut self, reference: u64) {
-        match self.resolve(reference) {
-            Some(change) => {
-                self.record(None, None, Action::Revert { change });
-            }
-            None => warn!("can't undo a change the server hasn't confirmed yet"),
+    /// Undoes the change `reference` stands for (online, proposes it): what it replaced
+    /// comes back on the world as it is now, or, if something changed there since, it
+    /// says so and nothing happens.
+    pub fn undo(&mut self, reference: u64) -> Result<(), String> {
+        let change = self.resolve(reference).ok_or("the server hasn't confirmed that change yet")?;
+        let record = self.undoable.get(&change).ok_or(format!("Change {change} can't be undone (it's undone already, too old, or a kind that can't be)."))?;
+        if record.by != self.profile.id && !self.is_admin() {
+            return Err("You can only undo your own changes.".into());
         }
+        self.refused = None;
+        self.record(None, None, Action::Undo { change });
+        if let Some(why) = self.refused.take() {
+            self.log.changes.pop();
+            self.save();
+            return Err(why);
+        }
+        Ok(())
+    }
+
+    /// The local player's latest change that can be undone (`redo`: their latest undo,
+    /// which undoing redoes).
+    pub fn latest_undoable(&self, redo: bool) -> Option<u64> {
+        self.undoable.iter().rev().find(|(_, r)| r.by == self.profile.id && r.redo == redo).map(|(id, _)| *id)
+    }
+
+    /// Offline, the voxels land change `change` set, as the game applied them: kept to
+    /// undo it (the ledger doesn't keep voxels itself).
+    pub fn note_cells(&mut self, change: u64, cells: Vec<Cell>) {
+        if let Some(Op::Land { cells: kept, .. }) = self.undoable.get_mut(&change).and_then(|r| r.ops.first_mut()) {
+            *kept = cells;
+        }
+    }
+
+    /// The world as of save `save` (its change): as it was kept, or replayed up to it.
+    pub fn state_of_save(&self, save: u64) -> WorldState {
+        #[cfg(not(target_arch = "wasm32"))]
+        {
+            let snapshot = read_snapshot(std::path::Path::new(&snapshot_path()));
+            cubewish_rules::store::state_of_save(std::path::Path::new(&world_dir()), &self.log, save, snapshot.as_ref())
+        }
+        #[cfg(target_arch = "wasm32")]
+        cubewish_rules::log::state_at(&self.log, save, None)
+    }
+
+    /// Offline, keeps the states of the saves just made, with the world's voxel `edits`
+    /// as they are now (the ledger doesn't keep voxels). Whoever saves calls it right
+    /// after, before anything else changes.
+    pub fn keep_saves(&mut self, edits: &[[i32; 4]]) {
+        for save in std::mem::take(&mut self.follow.keep) {
+            keep_save(self, save, edits.to_vec());
+        }
+    }
+
+    /// Loads save `save` (admins): first saves the world as it is ("before loading …"),
+    /// so loading that brings it back; `edits` are its voxel edits. Online, the server
+    /// swaps the state in.
+    pub fn load(&mut self, save: u64, edits: &[[i32; 4]]) -> Result<String, String> {
+        if !self.is_admin() {
+            return Err("Only admins load saves.".into());
+        }
+        let Some(Action::Save { name }) = self.log.change(save).map(|c| c.action.clone()) else {
+            return Err(format!("Change {save} isn't a save."));
+        };
+        let before = format!("before loading {name}").chars().take(40).collect::<String>();
+        self.record(None, None, Action::Save { name: before.clone() });
+        self.keep_saves(edits);
+        let state = (!self.is_online()).then(|| Box::new(self.state_of_save(save)));
+        self.refused = None;
+        self.record(None, None, Action::Load { save, name: name.clone(), state });
+        if let Some(why) = self.refused.take() {
+            self.log.changes.pop();
+            self.save();
+            return Err(why);
+        }
+        Ok(before)
     }
 
     /// The fullest of `parcels`, as "parcel budget: 2/12 builds · 18k/40k faces · …".
@@ -892,12 +1026,12 @@ impl Ledger {
 
     /// Who first placed build `build`, and who changed it last (if anyone did since).
     pub fn credits(&self, build: u64) -> Option<(&Provenance, Option<&Provenance>)> {
-        let mut changes = self.log.effective().filter(|c| match &c.action {
+        let mut changes = self.log.changes.iter().filter(|c| match &c.action {
             Action::PlaceBuild(b) | Action::UpdateBuild(b) => b.build == build,
             _ => false,
         });
         let first = changes.next()?;
-        Some((&first.by, changes.last().map(|c| &c.by)))
+        Some((&first.by, changes.next_back().map(|c| &c.by)))
     }
 
     /// A short credit line: "Ada with Claude Code, 2 h ago" ("you" for the local player).
@@ -958,15 +1092,28 @@ struct SavedEdits {
     edits: Vec<[i32; 4]>,
 }
 
-/// Saves a snapshot of the local world as of the log's last change: its voxel `edits`
-/// and the games.
+/// Saves a snapshot of the local world as of the log's last change, with its voxel
+/// `edits`.
 pub fn write_snapshot(ledger: &Ledger, edits: Vec<[i32; 4]>) {
-    let game = cubewish_rules::log::GameSave::of(&ledger.logic, &ledger.builds, &ledger.footprints);
-    let snapshot = Snapshot::new(&ledger.log, edits, game);
+    let snapshot = Snapshot::new(&ledger.log, ledger.world_state(edits));
     #[cfg(not(target_arch = "wasm32"))]
     write_json(&snapshot_path(), &snapshot);
     #[cfg(target_arch = "wasm32")]
     let _ = snapshot;
+}
+
+/// Keeps the local world's state as of save `save` (the log's last change then, so the
+/// world as it is now, with its voxel `edits`): loading the save swaps it in.
+pub fn keep_save(ledger: &Ledger, save: u64, edits: Vec<[i32; 4]>) {
+    #[cfg(not(target_arch = "wasm32"))]
+    {
+        let snapshot = Snapshot::at(&ledger.log, save, ledger.world_state(edits));
+        if let Err(e) = cubewish_rules::store::write_state(std::path::Path::new(&world_dir()), &snapshot) {
+            error!("couldn't keep the save: {e}");
+        }
+    }
+    #[cfg(target_arch = "wasm32")]
+    let _ = (ledger, save, edits);
 }
 
 #[cfg(not(target_arch = "wasm32"))]
@@ -979,6 +1126,13 @@ fn write_json(path: &str, value: &impl Serialize) {
     if let Err(e) = result {
         error!("couldn't save {path}: {e}");
     }
+}
+
+/// The snapshot at `path`, if there's one. One in an older form is just skipped: the
+/// next one replaces it.
+#[cfg(not(target_arch = "wasm32"))]
+fn read_snapshot(path: &std::path::Path) -> Option<Snapshot> {
+    serde_json::from_str(&std::fs::read_to_string(path).ok()?).ok()
 }
 
 #[cfg(not(target_arch = "wasm32"))]
@@ -1011,9 +1165,20 @@ fn load_with(seed: u32, join: bool) -> (Ledger, HashMap<IVec3, VoxelId>) {
         let _ = game_log.push(by, GameAction::SetAdmins { admins: vec![profile.id.clone()] });
         write_game(&game, &game_log);
     }
+    // A world named with `CUBEWISH_WORLD` that the game didn't have joins it.
+    if game_log.world(&world_name()).is_none() {
+        let by = Provenance::new(&profile.id, &profile.name, None, None, now());
+        if game_log.push(by, GameAction::CreateWorld { name: world_name(), seed: log.seed, flat: log.flat }).is_ok() {
+            write_game(&game, &game_log);
+        }
+    }
     let mut changed = log.admins != game_log.admins();
     if changed {
         log.admins = game_log.admins();
+    }
+    if log.migrate() {
+        info!("took the old undos out of {}", world_dir());
+        changed = true;
     }
     // Upgrading to keys: the old id becomes the key everywhere, and the player's own
     // unsigned changes get signed.
@@ -1083,6 +1248,8 @@ fn empty(log: WorldLog, profile: Profile, key: Keypair) -> Ledger {
         footprints: default(),
         logic: default(),
         portals: default(),
+        undoable: default(),
+        follow: default(),
         version: 0,
         heard: Vec::new(),
         pending_world: Vec::new(),
@@ -1208,7 +1375,7 @@ fn load_log(seed: u32) -> (WorldLog, Option<cubewish_rules::store::LogFile>, Opt
     {
         error!("couldn't save {}: {e}", file.path().display());
     }
-    let snapshot = read_json::<Snapshot>(&snapshot_path()).filter(|s| s.fits(&log));
+    let snapshot = read_snapshot(std::path::Path::new(&snapshot_path())).filter(|s| s.fits(&log));
     (log, Some(file), snapshot)
 }
 

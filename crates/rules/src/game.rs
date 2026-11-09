@@ -36,7 +36,7 @@ pub enum GameAction {
     /// Takes a package out of the game: worlds that run it stop.
     RemovePackage { name: String },
     /// Loads a game save: each world goes back to it. `signed` is the admin's signature
-    /// of each world's [`crate::log::Action::Restore`], by world.
+    /// of each world's [`load_action`], by world.
     LoadSave { name: String, signed: BTreeMap<String, String> },
 }
 
@@ -251,6 +251,12 @@ impl GameLog {
 pub fn signing_bytes(by: &Provenance, action: &GameAction) -> Vec<u8> {
     let by = Provenance { prompt: None, ..by.clone() };
     serde_json::to_vec(&("game", by, action)).unwrap_or_default()
+}
+
+/// What loading game save `name` does in a world whose part of it is change `save`: the
+/// change the admin signs for it (whoever keeps the world fills in its state).
+pub fn load_action(name: &str, save: u64) -> crate::log::Action {
+    crate::log::Action::Load { save, name: name.into(), state: None }
 }
 
 #[cfg(test)]

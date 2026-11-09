@@ -1,6 +1,9 @@
 //! The history panel (H): every change in the world, newest first, with who made it
-//! and how, like a version history. Undo your own changes; admins can also put the
-//! world back how it was after any change, or roll back everything a player did.
+//! and how, like a version history. Undo your own changes (admins: anyone's) while
+//! nothing has changed there since, redo what you undid, and (admins) load saves.
+//!
+//! Undos and loads are changes like any other, applied on top of the world as it is:
+//! [`follow_ledger`] makes the world's voxels and builds follow them, offline.
 
 use bevy::prelude::*;
 use bevy_egui::{EguiContexts, egui};
@@ -15,8 +18,10 @@ use super::{
 };
 use crate::{
     player::InputBlocked,
+    voxel::VoxelId,
     world::{VoxelWorld, ledger::Ledger},
 };
+use cubewish_rules::log::Action;
 
 /// How many changes the panel lists at once.
 const PAGE: usize = 200;
@@ -30,8 +35,7 @@ pub struct History {
 
 enum Pick {
     Undo(u64),
-    Restore(u64),
-    Rollback(String, String),
+    Load(u64),
 }
 
 /// H opens and closes it; `CUBEWISH_HISTORY=1` opens it at start.
@@ -53,7 +57,6 @@ pub fn toggle_history(
 pub fn history_window(
     mut contexts: EguiContexts,
     mut history: ResMut<History>,
-    mut commands: Commands,
     mut ledger: ResMut<Ledger>,
     mut world: ResMut<VoxelWorld>,
     mut creations: ResMut<Creations>,
@@ -115,22 +118,17 @@ pub fn history_window(
                         let how = how.split_once(", ").map_or(how.as_str(), |(_, when)| when).to_string();
                         let agent = c.by.agent.as_deref().map(|a| format!("with {a} · ")).unwrap_or_default();
                         ui.label(egui::RichText::new(format!("{agent}{how}")).small().weak());
-                        let undo_kind = c.action.is_undo();
-                        if !gone && !undo_kind && ledger.log.may_revert(&me, c.id) && ui.small_button("Undo").clicked() {
+                        // Undoing an undo redoes what it undid.
+                        let label = if matches!(c.action, Action::Undo { .. }) { "Redo" } else { "Undo" };
+                        let may = ledger.undoable.get(&c.id).is_some_and(|r| r.by == me || admin);
+                        if may && ui.small_button(label).clicked() {
                             pick = Some(Pick::Undo(c.id));
                         }
-                        if admin {
-                            if ui.small_button("Restore to here").on_hover_text("Undo everything after this change").clicked() {
-                                pick = Some(Pick::Restore(c.id));
-                            }
-                            if c.by.player != me
-                                && ui
-                                    .small_button(format!("Roll back {}", c.by.player_name))
-                                    .on_hover_text("Undo every change of theirs still in effect")
-                                    .clicked()
-                            {
-                                pick = Some(Pick::Rollback(c.by.player.clone(), c.by.player_name.clone()));
-                            }
+                        if admin
+                            && matches!(c.action, Action::Save { .. })
+                            && ui.small_button("Load").on_hover_text("Put the world back to this save, for everyone (it's saved first)").clicked()
+                        {
+                            pick = Some(Pick::Load(c.id));
                         }
                     });
                 }
@@ -144,7 +142,6 @@ pub fn history_window(
         return Ok(());
     }
     let cx = &mut Context {
-        commands: &mut commands,
         ledger: &mut ledger,
         world: &mut world,
         creations: &mut creations,
@@ -152,13 +149,41 @@ pub fn history_window(
         travel: &mut travel,
     };
     let reply = match pick {
-        Pick::Undo(id) => commands::revert(cx, id),
-        Pick::Restore(id) => commands::restore(cx, id),
-        Pick::Rollback(id, name) => {
-            let reply = commands::rollback(cx, &id);
-            reply.replace(&id.to_lowercase(), &name)
-        }
+        Pick::Undo(id) => commands::undo(cx, id),
+        Pick::Load(id) => commands::load(cx, id),
     };
     chat.say(Role::System, reply);
     Ok(())
+}
+
+/// Offline, makes the world's voxels and builds follow what undos and loads did in the
+/// ledger (it doesn't keep voxels), and keeps saves' states (they need the voxels).
+/// Online, the server's changes do this as they arrive.
+pub fn follow_ledger(
+    mut commands: Commands,
+    mut ledger: ResMut<Ledger>,
+    mut world: ResMut<VoxelWorld>,
+    mut creations: ResMut<Creations>,
+    mut landscape: ResMut<Landscape>,
+) {
+    let follow = &ledger.follow;
+    if follow.cells.is_empty() && !follow.builds && follow.edits.is_none() && follow.keep.is_empty() {
+        return;
+    }
+    let follow = std::mem::take(&mut ledger.follow);
+    if let Some(edits) = follow.edits {
+        world.replace_edits(edits.iter().map(|[x, y, z, id]| (IVec3::new(*x, *y, *z), *id as VoxelId)));
+        landscape.forget_history();
+    }
+    for cell in &follow.cells {
+        world.restore(cell.pos(), cell.to.0, cell.to.1);
+    }
+    if follow.builds {
+        creations.resync(&mut commands, &ledger.builds);
+    }
+    if !follow.keep.is_empty() {
+        ledger.follow.keep = follow.keep;
+        let edits = world.edit_list();
+        ledger.keep_saves(&edits);
+    }
 }

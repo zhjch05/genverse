@@ -59,16 +59,19 @@ other effect.
 - **Saving appends.** The log is `world.jsonl`: a header, then one line per package and
   per change ([`store`](../crates/rules/src/store.rs)). Saving a change writes that
   change; a cut-off last line is skipped on load. Old `world.json` files move over once.
-- **Changes apply on top.** Offline, the game applies each change to its current state,
-  as the server does, instead of replaying the log (undos still replay, without voxels).
-- **Snapshots hold the games.** A snapshot (`snapshot.json`; on the server every 50
+- **Changes apply on top, always.** Offline, the game applies each change to its current
+  state, as the server does. Undo is a change that puts back what a change replaced
+  (refused if something changed there since), and loading a save swaps in the state kept
+  with it, so nothing ever replays the log to change the world.
+- **Snapshots hold the whole world.** A snapshot (`snapshot.json`; on the server every 50
   changes, offline every 2 s after voxel changes or 30 s after game changes) holds the
-  voxels and the games' state and timers. Loading, restarting and joining replay only
-  the changes after it, and never run the old intents' scripts again.
+  voxels, builds, land, budgets, installs, the games' state and timers, and what can still
+  be undone. Loading, restarting and joining apply only the changes after it, and never
+  run the old intents' scripts again. Since the log only grows, a snapshot never goes stale.
 
-Not built: compacting the log itself. Joining still downloads the whole log (players
-need it for history and undo); a base snapshot that replaces old changes would cap
-that, but it needs land, budgets and rates saved too.
+Not built: compacting the log itself. Joining still downloads the whole log (players see
+it as the history). Since a snapshot is the whole world, the changes before it could be
+moved to an archive; nothing needs them to rebuild the world.
 
 ## Goal
 
@@ -246,8 +249,8 @@ the log stays small and replay can still rebuild the world exactly.
    installer's budget, land access and rate limits. "Last changed by" reads
    "farm-pack (installed by Alex)".
 6. **Proven before it goes live.** See [Lifecycle](#lifecycle).
-7. **Rollback.** Admins can roll back a whole package the way they roll back a player.
-   A player can undo their own installs and upgrades.
+7. **Rollback.** A player can undo their own installs and upgrades (undo puts the old
+   version back). Admins go back further by loading a save.
 8. **Moderation.** Text that scripts produce (dialogue, names, signs) goes through the
    per-server moderation setting already planned.
 

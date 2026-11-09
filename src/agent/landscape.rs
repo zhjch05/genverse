@@ -19,6 +19,7 @@ use bevy::{
 use cubewish_rules::{
     land::{Access, PARCEL, area_parcels},
     log::{Action, terrain_footprint},
+    undo::Cell,
     settings::LandMode,
 };
 use cubewish_rules::sculpt::{self, Area, Columns, SculptStats, TerrainEdit, TerrainSpec, level_of, surface};
@@ -53,9 +54,10 @@ pub struct TerrainDraft {
     before: Vec<Before>,
 }
 
+/// A land change of ours the server hasn't answered yet: how the ground was, to put
+/// it back if it refuses.
 struct Kept {
     id: u64,
-    name: String,
     before: Vec<Before>,
 }
 
@@ -66,7 +68,7 @@ pub struct Landscape {
     pub area: Option<Area>,
     drag_from: Option<IVec2>,
     pub draft: Option<TerrainDraft>,
-    /// Kept changes this session, for Undo.
+    /// Kept changes the server may still refuse or redo (online).
     kept: Vec<Kept>,
 }
 
@@ -120,7 +122,16 @@ impl Landscape {
         let name = draft.spec.name.clone();
         let action = Action::Terrain { name: name.clone(), area: draft.area, spec: draft.spec, changed: draft.stats.changed };
         let id = ledger.record(Some(&draft.provider), Some(&draft.prompt), action);
-        self.kept.push(Kept { id, name: name.clone(), before: draft.before });
+        // Offline, the ledger keeps what the voxels were, to undo it.
+        if !ledger.is_online() {
+            let cells = draft
+                .before
+                .iter()
+                .map(|b| Cell { p: b.p.to_array(), from: (b.edit, b.visible), to: (world.edit_at(b.p), world.get(b.p).unwrap_or(b.visible)) })
+                .collect();
+            ledger.note_cells(id, cells);
+        }
+        self.kept.push(Kept { id, before: draft.before });
         Some((id, name))
     }
 
@@ -159,15 +170,6 @@ impl Landscape {
     /// log, they no longer describe it).
     pub fn forget_history(&mut self) {
         self.kept.clear();
-    }
-
-    /// Puts the ground back how it was before kept change `id`, and records the revert.
-    pub fn undo(&mut self, world: &mut VoxelWorld, ledger: &mut Ledger, id: u64) -> Option<String> {
-        let index = self.kept.iter().position(|k| k.id == id)?;
-        let kept = self.kept.remove(index);
-        revert(world, &kept.before);
-        ledger.revert(id);
-        Some(format!("Put the ground back how it was before \"{}\".", kept.name))
     }
 
     /// What the agent is told about the area: size, frame, a coarse height map, where

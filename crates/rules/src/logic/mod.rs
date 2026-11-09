@@ -252,7 +252,7 @@ impl Prepared {
 }
 
 /// An installed package.
-#[derive(Clone, Debug, PartialEq)]
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 pub struct Install {
     pub package: PackageRef,
     pub scope: Scope,

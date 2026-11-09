@@ -57,8 +57,9 @@ runs are in the terminal log, `test_game (N steps)`). Then check:
 5. **Close.** Close, or Leave, closes it.
 6. **Shop.** E on the lantern stall; buy one; your gold or coins go down, the lantern
    shows in the game bar.
-7. **Undo.** `H`, undo your last purchase: the gold comes back. Undo placing the inn:
-   the house goes too.
+7. **Save and load.** Game moves (placing the inn, buying) are moves, so undo skips them.
+   `/save shopping`, buy something, then `/load shopping`: the gold is back. Loading saved
+   the world first, so `/load before loading shopping` brings the purchase back.
 8. **It's all in the log.** Quit and start again (`CUBEWISH_WORLD=inn cargo run`):
    same gold, HP, HUD, house. A panel left open is still open.
 9. **Travel.** `/newworld annex`, then `/world inn` and back: your gold, HP and items

@@ -60,7 +60,7 @@ use cubewish_rules::{
     settings::{LandMode, WorldRules},
 };
 use creations::{
-    Adjust, Creation, Creations, DraftMarker, Undone, load_creations, outline_creations, placement_for_hit, stream_creations,
+    Adjust, Creation, Creations, DraftMarker, load_creations, outline_creations, placement_for_hit, stream_creations,
 };
 use landscape::{
     AreaGizmos, Landscape, ParcelOverlay, PreviewError, draw_parcels, configure_area_gizmos, describe_stats, land_summary, draw_area, highlight_area, select_area,
@@ -114,7 +114,7 @@ impl Plugin for AgentPlugin {
                     (online::sync_online, lan::update_lan, update_build_site, answer_tool_calls, poll_agent).chain(),
                     (presence::send_presence, presence::move_avatars, presence::draw_peers, history::toggle_history, (loading::track_loading, fps::track_frames).chain()),
                     auto_prompt,
-                    (game::script_play.after(auto_prompt), game::run_timers, game::play_zones, game::sync_pieces, game::use_pieces, worlds::use_portals, hud::draw_game_world)
+                    (game::script_play.after(auto_prompt), game::run_timers, game::play_zones, game::sync_pieces, game::use_pieces, worlds::use_portals, hud::draw_game_world, history::follow_ledger)
                         .chain(),
                     worlds::toggle_worlds,
                     (game::place_held, shortcuts, select_area, follow_cursor, check_clearance, click_in_world, outline_creations, draw_area, highlight_area, draw_parcels)
@@ -385,7 +385,6 @@ fn auto_prompt(
         if text.trim_start().starts_with('/') {
             for command in text.split(';') {
                 let cx = &mut commands::Context {
-                    commands: &mut commands,
                     ledger: &mut ledger,
                     world: &mut world,
                     creations: &mut creations,
@@ -522,7 +521,7 @@ fn poll_agent(
                     );
                     // `CUBEWISH_KEEP=1` keeps a scripted preview, as if Enter was pressed.
                     if std::env::var("CUBEWISH_KEEP").is_ok() {
-                        keep_terrain(&mut creations, &mut landscape, &mut world, &mut ledger, &mut chat);
+                        keep_terrain(&mut landscape, &mut world, &mut ledger, &mut chat);
                     }
                 }
                 Err(PreviewError::Refused(why)) => {
@@ -671,9 +670,11 @@ fn shortcuts(
         return;
     }
     let command = keys.any_pressed([KeyCode::ControlLeft, KeyCode::ControlRight, KeyCode::SuperLeft, KeyCode::SuperRight]);
+    // Ctrl/Cmd+Z undoes, with Shift redoes.
     if command && keys.just_pressed(KeyCode::KeyZ) {
-        if landscape.draft.is_none() {
-            undo(&mut commands, &mut creations, &mut landscape, &mut world, &mut ledger, &mut chat);
+        let redo = keys.any_pressed([KeyCode::ShiftLeft, KeyCode::ShiftRight]);
+        if creations.draft.is_none() && landscape.draft.is_none() {
+            undo(&mut ledger, &mut chat, redo);
         }
         return;
     }
@@ -745,7 +746,7 @@ fn shortcuts(
 
     if landscape.draft.is_some() {
         if keys.just_pressed(KeyCode::Enter) {
-            keep_terrain(&mut creations, &mut landscape, &mut world, &mut ledger, &mut chat);
+            keep_terrain(&mut landscape, &mut world, &mut ledger, &mut chat);
         } else if keys.just_pressed(KeyCode::Escape) {
             landscape.discard(&mut world);
             chat.say(Role::System, "Put the ground back.");
@@ -783,29 +784,27 @@ fn shortcuts(
     }
 }
 
-/// Undoes the latest build or terrain change, whichever came last.
-fn undo(
-    commands: &mut Commands,
-    creations: &mut Creations,
-    landscape: &mut Landscape,
-    world: &mut VoxelWorld,
-    ledger: &mut Ledger,
-    chat: &mut Chat,
-) {
-    match creations.undo(commands, ledger) {
-        Some(Undone::Message(message)) => chat.say(Role::System, message),
-        Some(Undone::Terrain(id)) => {
-            if let Some(message) = landscape.undo(world, ledger, id) {
-                chat.say(Role::System, message);
-            }
-        }
-        None => {}
+/// Undoes the local player's latest change that can still be undone (`redo`: their
+/// latest undo, which redoes it). The world follows once the ledger has it.
+fn undo(ledger: &mut Ledger, chat: &mut Chat, redo: bool) {
+    let Some(id) = ledger.latest_undoable(redo) else {
+        chat.say(Role::System, if redo { "Nothing to redo." } else { "Nothing of yours left to undo." });
+        return;
+    };
+    let what = match ledger.log.change(id).map(|c| &c.action) {
+        Some(LogAction::Undo { change }) => ledger.log.change(*change).map(|c| c.action.describe()),
+        other => other.map(LogAction::describe),
+    }
+    .unwrap_or_default();
+    match ledger.undo(id) {
+        Ok(()) if redo => chat.say(Role::System, format!("Redid: {what}. Ctrl/Cmd+Z undoes it again.")),
+        Ok(()) => chat.say(Role::System, format!("Undid: {what}. Ctrl/Cmd+Shift+Z redoes it.")),
+        Err(why) => chat.say(Role::System, why),
     }
 }
 
-fn keep_terrain(creations: &mut Creations, landscape: &mut Landscape, world: &mut VoxelWorld, ledger: &mut Ledger, chat: &mut Chat) {
-    if let Some((id, name)) = landscape.keep(world, ledger) {
-        creations.record_terrain(id);
+fn keep_terrain(landscape: &mut Landscape, world: &mut VoxelWorld, ledger: &mut Ledger, chat: &mut Chat) {
+    if let Some((_, name)) = landscape.keep(world, ledger) {
         chat.say(Role::System, format!("Kept \"{name}\". Ctrl/Cmd+Z undoes it; the area stays selected for more changes."));
     }
 }
@@ -1934,7 +1933,7 @@ fn chat_panel(
                         ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
                             let undo = ui
                                 .add_enabled(
-                                    creations.can_undo() && landscape.draft.is_none(),
+                                    creations.draft.is_none() && landscape.draft.is_none() && ledger.latest_undoable(false).is_some(),
                                     egui::Button::new(egui::RichText::new(format!("{} Undo", icon::ARROW_U_UP_LEFT)).size(11.5)).frame(false),
                                 )
                                 .on_hover_text("Ctrl/Cmd+Z");
@@ -1980,7 +1979,6 @@ fn chat_panel(
         Some(Action::Send) if chat.input.trim_start().starts_with('/') => {
             let text = std::mem::take(&mut chat.input);
             let cx = &mut commands::Context {
-                commands: &mut commands,
                 ledger: &mut ledger,
                 world: &mut world,
                 creations: &mut creations,
@@ -1998,7 +1996,7 @@ fn chat_panel(
                 chat.send(&mut creations, &mut commands, tools.as_deref(), &ledger, area);
             }
         }
-        Some(Action::KeepTerrain) => keep_terrain(&mut creations, &mut landscape, &mut world, &mut ledger, &mut chat),
+        Some(Action::KeepTerrain) => keep_terrain(&mut landscape, &mut world, &mut ledger, &mut chat),
         Some(Action::DiscardTerrain) => {
             landscape.discard(&mut world);
             chat.say(Role::System, "Put the ground back.");
@@ -2104,7 +2102,7 @@ fn chat_panel(
             }
         }
         Some(Action::Deselect) => creations.selected = None,
-        Some(Action::Undo) => undo(&mut commands, &mut creations, &mut landscape, &mut world, &mut ledger, &mut chat),
+        Some(Action::Undo) => undo(&mut ledger, &mut chat, false),
         None => {}
     }
     Ok(())

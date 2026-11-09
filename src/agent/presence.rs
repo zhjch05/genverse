@@ -315,11 +315,11 @@ pub fn hover_credit(
         }
         None => {
             let column = VoxelWorld::voxel_at(ray.get_point(hit.distance) - hit.normal * 0.01).xz();
-            let last = ledger.log.effective().filter_map(|c| match &c.action {
+            let mut last = ledger.log.changes.iter().filter_map(|c| match &c.action {
                 Action::Terrain { name, area, .. } if area.contains(column) => Some((c, name)),
                 _ => None,
             });
-            let Some((change, name)) = last.last() else { return Ok(()) };
+            let Some((change, name)) = last.next_back() else { return Ok(()) };
             format!("\"{name}\": reshaped by {}", ledger.describe(&change.by))
         }
     };

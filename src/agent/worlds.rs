@@ -442,7 +442,6 @@ pub fn worlds_window(
     mut contexts: EguiContexts,
     mut window: ResMut<WorldsWindow>,
     mut travel: ResMut<Travel>,
-    mut commands: Commands,
     mut ledger: ResMut<Ledger>,
     mut world: ResMut<VoxelWorld>,
     mut creations: ResMut<Creations>,
@@ -609,16 +608,14 @@ pub fn worlds_window(
                             todo = Some(Do::Save);
                         }
                     });
-                    theme::note(ui, "Anyone can save. Loading puts it back for everyone (admins), and can be undone.");
-                    let undone = ledger.log.undone();
+                    theme::note(ui, "Anyone can save. Loading puts it back for everyone (admins); the world is saved first, so you can load it back.");
                     let mut seen = std::collections::HashSet::new();
                     let saves: Vec<_> = ledger.log.saves().rev().filter(|(_, n)| seen.insert(n.to_lowercase())).collect();
                     egui::ScrollArea::vertical().auto_shrink(false).show(ui, |ui| {
                         for (c, name) in saves {
                             ui.horizontal(|ui| {
                                 ui.label(egui::RichText::new(name).strong().color(p.strong));
-                                let later = if undone.contains(&c.id) { " · after the world as it is" } else { "" };
-                                ui.label(egui::RichText::new(format!("{}{later}", ledger.describe(&c.by))).small().color(p.muted));
+                                ui.label(egui::RichText::new(ledger.describe(&c.by)).small().color(p.muted));
                                 ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
                                     if !online && admin && ui.button("Fork…").on_hover_text("A new world in this game, from this save").clicked() {
                                         window.fork = Some((name.to_string(), format!("{here_world}-{name}").to_lowercase()));
@@ -807,27 +804,26 @@ pub fn worlds_window(
         }
         Do::Save => {
             let name = std::mem::take(&mut window.save_name);
-            Some(commands::save(&mut ledger, &name))
+            Some(commands::save(&mut ledger, &world.edit_list(), &name))
         }
         Do::SaveGame => {
             let name = std::mem::take(&mut window.game_save_name);
-            Some(commands::save_game(&mut ledger, &name))
+            Some(commands::save_game(&mut ledger, &world.edit_list(), &name))
         }
-        Do::LoadGame(name) => Some(commands::load_game(&mut ledger, &name)),
+        Do::LoadGame(name) => Some(commands::load_game(&mut ledger, &world.edit_list(), &name)),
         Do::Fork(save, name) => {
             window.fork = None;
             Some(commands::fork(&mut ledger, &save, &name))
         }
         Do::Load(id) => {
             let cx = &mut Context {
-                commands: &mut commands,
                 ledger: &mut ledger,
                 world: &mut world,
                 creations: &mut creations,
                 landscape: &mut landscape,
                 travel: &mut travel,
             };
-            Some(commands::restore(cx, id))
+            Some(commands::load(cx, id))
         }
         Do::NewGame => {
             let (name, flat) = (std::mem::take(&mut window.new_game), window.new_flat);

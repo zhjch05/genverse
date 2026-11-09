@@ -285,11 +285,23 @@ fn committed(
         return;
     };
 
-    let incremental = !change.action.is_undo();
-    let applied = if incremental { state.apply(&change, true).map_err(|why| warn!("{why}")).ok() } else { None };
+    let applied = state.apply(&change, true).map_err(|why| warn!("{why}")).ok();
     match applied {
         Some(edits) => {
             match (&change.action, own) {
+                // An undo: the voxels it set back, and builds it changed.
+                (Action::Undo { .. }, _) => {
+                    for cell in &state.last_cells {
+                        world.restore(cell.pos(), cell.to.0, cell.to.1);
+                    }
+                    creations.resync(commands, &state.builds);
+                }
+                // A load: everything may differ.
+                (Action::Load { .. }, _) => {
+                    world.replace_edits(state.edits.iter().map(|(p, id)| (*p, *id)));
+                    creations.resync(commands, &state.builds);
+                    landscape.forget_history();
+                }
                 (Action::Terrain { name, .. }, Some(reference)) => {
                     if landscape.settle(world, reference, &edits) {
                         chat.say(
@@ -330,7 +342,7 @@ fn committed(
                 chat.say(Role::System, format!("{} {}.", change.by.player_name, change.action.describe()));
             }
         }
-        // An undo (or a change the local copy disagrees with): rebuild from the log.
+        // A change the local copy disagrees with (it shouldn't happen): rebuild from the log.
         None => {
             *state = replay(&ledger.log);
             world.replace_edits(state.edits.iter().map(|(p, id)| (*p, *id)));

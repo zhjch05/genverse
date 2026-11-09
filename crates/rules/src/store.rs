@@ -18,7 +18,7 @@ use std::{
 use serde::{Deserialize, Serialize};
 
 use crate::{
-    log::{Change, WorldLog},
+    log::{Change, Snapshot, WorldLog, WorldState, state_at},
     logic::Package,
     settings::WorldRules,
 };
@@ -154,6 +154,30 @@ pub fn write_game(dir: &Path, game: &crate::game::GameLog) -> io::Result<()> {
     let tmp = dir.join("game.json.tmp");
     fs::write(&tmp, serde_json::to_string_pretty(game).map_err(io::Error::other)?)?;
     fs::rename(&tmp, dir.join("game.json"))
+}
+
+/// Keeps the world in `dir` as of a save (`snapshot.upto`, the save's change) in
+/// `states/<change>.json`, so loading the save swaps it in instead of replaying.
+pub fn write_state(dir: &Path, snapshot: &Snapshot) -> io::Result<()> {
+    let dir = dir.join("states");
+    fs::create_dir_all(&dir)?;
+    let path = dir.join(format!("{}.json", snapshot.upto));
+    let tmp = path.with_extension("json.tmp");
+    fs::write(&tmp, serde_json::to_string(snapshot).map_err(io::Error::other)?)?;
+    fs::rename(&tmp, path)
+}
+
+/// The world in `dir`, whose log is `log`, as of its change `save`: as it was kept then
+/// ([`write_state`]), or else replayed up to it (from `snapshot`, if that's older).
+pub fn state_of_save(dir: &Path, log: &WorldLog, save: u64, snapshot: Option<&Snapshot>) -> WorldState {
+    let kept = fs::read_to_string(dir.join("states").join(format!("{save}.json")))
+        .ok()
+        .and_then(|text| serde_json::from_str::<Snapshot>(&text).ok())
+        .filter(|s| s.upto == save && s.fits(log));
+    match kept {
+        Some(kept) => kept.state,
+        None => state_at(log, save, snapshot),
+    }
 }
 
 /// A world at a glance, for lists: read without loading its changes.

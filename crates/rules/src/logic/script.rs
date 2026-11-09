@@ -90,6 +90,7 @@ pub fn run(_package: &Package, _event: &Event, _world: &mut Batch, _grants: &Gra
 }
 
 /// An error's first lines: Luau adds a traceback the player doesn't need.
+#[cfg(not(target_arch = "wasm32"))]
 fn first_lines(text: &str) -> String {
     text.lines().take_while(|l| !l.starts_with("stack traceback")).take(2).collect::<Vec<_>>().join(" ")
 }

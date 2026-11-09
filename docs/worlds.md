@@ -41,15 +41,17 @@ GameAction::CreateWorld { name, seed, flat }
 GameAction::RemoveWorld { name }      // moved to saves/trash, never deleted
 GameAction::SetAdmins { admins }
 GameAction::Save { name, worlds }     // world name → its last change: a save of everything
-GameAction::LoadSave { name, signed } // the admin's signed Restore for each world
+GameAction::LoadSave { name, signed } // the admin's signed Load for each world
 GameAction::AddPackage { package }    // a package for the whole game, or a new version
 GameAction::RemovePackage { name }
 ```
 
-Saving the game bookmarks every world at once, like a strategy game's save. Loading it
-is a `Restore` in each world's log (each one undoable), as loading a world's save is. On
-a server the admin signs each world's restore, so every world change stays signed by
-whoever made it; the server checks the signatures and makes them all.
+Saving the game bookmarks every world at once, like a strategy game's save, and each
+world keeps its state as of it. Loading it is a `Load` in each world's log carrying that
+state, as loading a world's save is; the game is saved first ("before loading …"), so
+loading that brings it back. On a server the admin signs each world's load (without the
+state, which the server fills in), so every world change stays signed by whoever made it;
+the server checks the signatures and makes them all.
 
 ## Game packages
 

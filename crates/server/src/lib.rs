@@ -29,7 +29,7 @@ use std::{
     collections::HashMap,
     io,
     net::{SocketAddr, TcpListener, TcpStream},
-    path::PathBuf,
+    path::{Path, PathBuf},
     sync::{
         Arc,
         atomic::{AtomicUsize, Ordering},
@@ -44,8 +44,8 @@ use cubewish_rules::{
     game::{self, GameAction, GameLog},
     identity::verify,
     log::{
-        Action, Change, Provenance, RULES_VERSION, Replay, Snapshot, WORLD, WorldLog, chunk_edits, chunk_of, chunk_prints,
-        replay, replay_from, signing_bytes,
+        Action, Change, Provenance, RULES_VERSION, Replay, Snapshot, WORLD, WorldLog, WorldState, chunk_edits, chunk_of,
+        chunk_prints, replay_from, signing_bytes,
     },
     logic::{Clockwork, Package},
     store::{self, LogFile},
@@ -123,6 +123,23 @@ impl cubewish_rules::logic::TimerHost for Place {
         self.saved();
         self.fresh.push(change);
         Ok(())
+    }
+}
+
+impl Place {
+    /// The world as of its change `save` (a save), to load.
+    fn state_of(&self, save: u64) -> WorldState {
+        let dir = self.snapshot_path.parent().unwrap_or(Path::new("."));
+        store::state_of_save(dir, &self.log, save, self.snapshot.as_ref())
+    }
+
+    /// Keeps the world as it is now (as of its last change, a save), so loading that save
+    /// swaps it in.
+    fn keep_state(&self) {
+        let dir = self.snapshot_path.parent().unwrap_or(Path::new("."));
+        if let Err(e) = store::write_state(dir, &Snapshot::take(&self.log, &self.state)) {
+            eprintln!("couldn't keep the save in {}: {e}", dir.display());
+        }
     }
 }
 
@@ -271,8 +288,12 @@ impl Server {
             let mut log = log.unwrap_or(WorldLog { flat: ground.flat, ..WorldLog::new(ground.seed) });
             // The game's admins run every world in it.
             log.admins = self.game.admins();
-            file.sync(&log)?;
             let snapshot_path = dir.join("snapshot.json");
+            if log.migrate() {
+                println!("world {name}: took the old undos out of its log");
+                let _ = std::fs::remove_file(&snapshot_path);
+            }
+            file.sync(&log)?;
             let snapshot: Option<Snapshot> = std::fs::read_to_string(&snapshot_path)
                 .ok()
                 .and_then(|text| serde_json::from_str(&text).ok())
@@ -490,20 +511,20 @@ impl Server {
             return Err("that save names changes the worlds don't have".into());
         }
         let by = Provenance { prompt: None, ..by };
-        // Loading a game save: every world's restore must be signed by the admin.
-        let mut restores = Vec::new();
+        // Loading a game save: every world's load must be signed by the admin.
+        let mut loads = Vec::new();
         if let GameAction::LoadSave { name, signed } = &action {
             let worlds = self.game.save_named(name).ok_or(format!("there's no game save \"{name}\""))?.clone();
             for (world, to) in worlds {
                 if self.game.world(&world).is_none() {
                     continue;
                 }
-                let restore = Action::Restore { to };
-                let sig = signed.get(&world).ok_or(format!("the restore of {world} isn't signed"))?;
-                if !verify(&by.player, &signing_bytes(&by, &restore), sig) {
-                    return Err(format!("the restore of {world} isn't signed by you"));
+                let load = game::load_action(name, to);
+                let sig = signed.get(&world).ok_or(format!("loading {world} isn't signed"))?;
+                if !verify(&by.player, &signing_bytes(&by, &load), sig) {
+                    return Err(format!("loading {world} isn't signed by you"));
                 }
-                restores.push((world, restore, sig.clone()));
+                loads.push((world, to, load, sig.clone()));
             }
         }
         // A save names where every world is; the server knows that best.
@@ -514,7 +535,7 @@ impl Server {
             }
             other => other,
         };
-        let by_for_restores = by.clone();
+        let by_for_loads = by.clone();
         self.game.push(by, action.clone())?;
         match &action {
             GameAction::CreateWorld { name, .. } => {
@@ -533,7 +554,16 @@ impl Server {
                 let _ = std::fs::rename(self.dir.join("worlds").join(name), trash.join(format!("{name}-{}", now())));
             }
             GameAction::SetAdmins { .. } => self.admins_changed(),
-            GameAction::Save { .. } => {}
+            GameAction::Save { worlds, .. } => {
+                // Each world keeps its state as of the save, so loading it never replays.
+                for (world, last) in worlds.clone() {
+                    if let Ok(place) = self.place(&world)
+                        && place.log.changes.last().map_or(0, |c| c.id) == last
+                    {
+                        place.keep_state();
+                    }
+                }
+            }
             GameAction::AddPackage { .. } | GameAction::RemovePackage { .. } => {
                 // Loaded worlds follow at once; the others when they're next loaded.
                 let names: Vec<String> = self.places.keys().cloned().collect();
@@ -544,8 +574,7 @@ impl Server {
                 }
             }
             GameAction::LoadSave { .. } => {
-                for (world, restore, sig) in restores {
-                    let Action::Restore { to } = restore else { continue };
+                for (world, to, load, sig) in loads {
                     // Loading may add changes of its own (package upgrades), so the
                     // last change is read after.
                     let Ok(place) = self.place(&world) else { continue };
@@ -553,9 +582,14 @@ impl Server {
                     if last <= to {
                         continue;
                     }
-                    let change = Change { id: last + 1, by: by_for_restores.clone(), action: restore, sig: Some(sig) };
+                    let Action::Load { save, name, .. } = load else { continue };
+                    let state = Some(Box::new(place.state_of(to)));
+                    let change = Change { id: last + 1, by: by_for_loads.clone(), action: Action::Load { save, name, state }, sig: Some(sig) };
+                    if let Err(why) = place.state.apply(&change, true) {
+                        eprintln!("{world}: couldn't load the save: {why}");
+                        continue;
+                    }
                     place.log.changes.push(change.clone());
-                    place.state = replay(&place.log);
                     place.saved();
                     self.broadcast(&world, change, Vec::new(), None, u64::MAX, 0);
                 }
@@ -570,7 +604,8 @@ impl Server {
         let admins = self.game.admins();
         for place in self.places.values_mut() {
             place.log.admins = admins.clone();
-            place.state = replay(&place.log);
+            place.state.admins = admins.clone();
+            place.state.land.admins = admins.clone();
             place.saved();
         }
     }
@@ -668,7 +703,18 @@ impl Place {
         // The request text stays on the player's machine; only its hash is shared.
         let by = cubewish_rules::log::Provenance { prompt: None, ..by };
         let id = self.log.changes.last().map_or(1, |c| c.id + 1);
-        let change = Change { id, by, action, sig: Some(sig) };
+        let mut change = Change { id, by, action, sig: Some(sig) };
+        // A load brings the save's state, which the server keeps; whatever came with the
+        // proposal doesn't count.
+        if let Action::Load { save, name, .. } = &change.action {
+            if !self.log.is_admin(&player) {
+                return Err("only admins load saves".into());
+            }
+            if !matches!(self.log.change(*save).map(|c| &c.action), Some(Action::Save { .. })) {
+                return Err(format!("change {save} isn't a save"));
+            }
+            change.action = Action::Load { save: *save, name: name.clone(), state: Some(Box::new(self.state_of(*save))) };
+        }
         // A package that comes along must be the one the change installs; it's kept
         // only if the change goes through.
         let new_package = match (&change.action, package) {
@@ -686,37 +732,21 @@ impl Place {
         if let Some((hash, package)) = &new_package {
             self.state.logic.packages.insert(hash.clone(), package.clone());
         }
-        let mut made = Vec::new();
-        match &change.action {
-            Action::Revert { change: target } => {
-                if !self.log.may_revert(&player, *target) {
-                    return Err("you can only undo your own changes".into());
+        let made = match self.state.apply(&change, true) {
+            Ok(edits) => edits,
+            Err(why) => {
+                if let Some((hash, _)) = &new_package {
+                    self.state.logic.packages.remove(hash);
                 }
-                if self.log.undone().contains(target) {
-                    return Err(format!("change {target} is already undone"));
-                }
+                return Err(why);
             }
-            Action::Rollback { .. } | Action::Restore { .. } if !self.log.is_admin(&player) => {
-                return Err("only admins roll back or load saves".into());
-            }
-            Action::Restore { to } if !self.log.changes.iter().any(|c| c.id == *to) => return Err(format!("there's no change {to}")),
-            _ => match self.state.apply(&change, true) {
-                Ok(edits) => made = edits,
-                Err(why) => {
-                    if let Some((hash, _)) = &new_package {
-                        self.state.logic.packages.remove(hash);
-                    }
-                    return Err(why);
-                }
-            },
-        }
+        };
         if let Some((hash, package)) = &new_package {
             self.log.packages.insert(hash.clone(), package.clone());
         }
         self.log.changes.push(change.clone());
-        // Undos change which changes count: rebuild from the log.
-        if change.action.is_undo() {
-            self.state = replay(&self.log);
+        if matches!(change.action, Action::Save { .. }) {
+            self.keep_state();
         }
         let mut chunks: Vec<_> = made.iter().map(|(p, _)| chunk_of(*p)).collect();
         chunks.sort_unstable_by_key(|c| c.to_array());

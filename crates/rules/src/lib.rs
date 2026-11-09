@@ -19,6 +19,7 @@ pub mod settings;
 #[cfg(not(target_arch = "wasm32"))]
 pub mod store;
 pub mod terrain;
+pub mod undo;
 pub mod voxel;
 
 pub use bevy_math::IVec3;

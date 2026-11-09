@@ -100,20 +100,23 @@ agent, nothing is lost, and every change says who made it. Everything below work
 single player and on a server.
 
 The world is the seed plus an ordered log of changes (`saves/world.jsonl`, append-only): builds placed,
-moved, revised and removed, terrain changes, rule changes, and undos. Each change records who
+moved, revised and removed, terrain changes, rule changes, undos, saves and loads. Each change records who
 made it, which agent did if one did, a hash of the request, and when. A selected build shows
 "made by you with Claude Code, 2 h ago".
 
 - **Players are keys.** `saves/profile.json` holds your name and an ed25519 secret key; your
   player id is the public key, and every change is signed with it, so any server can check who
   made a change without accounts. `/verify` checks every signature. Keep that file private.
-- **Replay is the truth.** Loading replays the log; terrain changes compile against the ground
-  the earlier changes left, so the same log always gives the same voxels.
-  `saves/world_edits.json` is only a cache of that, used while its hash matches the log.
-- **Undo never deletes history:** it appends a revert, and you can only undo your own changes.
-  Admins (the world's first player) can roll back a player, or restore the world to an earlier
-  change; those are undoable too. When the log changes in a way a simple undo can't express,
-  the game rebuilds from it, regenerating only what differs.
+- **The log only moves forward.** Each change applies on top of the world as it is; terrain
+  changes compile against the ground the earlier changes left. `snapshot.json` holds the whole
+  world as of some change, so loading applies only the changes after it, never the whole log.
+- **Undo is a change too:** it puts back what a change replaced, on the world as it is now, and
+  is refused if something has changed there since (undo the later change first). You undo your
+  own changes (admins: anyone's); undoing an undo redoes it. The latest 100 changes can be undone.
+  Nothing is replayed to undo, and nothing leaves the history.
+- **Saves are swapped in, not replayed.** A save keeps the world's state as of it
+  (`states/<change>.json`); loading it (admins) is a change that carries that state. The world
+  is saved first ("before loading …"), so loading that brings it back.
 - **Each world sets its own rules** (`cubewish_rules::settings`), kept in the log so replay
   always applies the rules of the time: land mode, spawn, limits on one build or land change,
   budgets, and rate limits.
@@ -124,17 +127,18 @@ made it, which agent did if one did, a hash of the request, and when. A selected
     voxels; per player 60 builds, 1.5M build voxels and 2M voxels of terrain changes.
   - **Rate limits:** off unless a world sets them (`/rate 10 200000`: 10 changes a minute, 200k
     voxels per 10 minutes). Admins are exempt.
-- Ownership, budgets and rates aren't saved anywhere: they're derived from the log, and replay
-  enforces them as of each change, so a log can't hold anything its authors weren't allowed to do.
+- Every change is checked against the rules as of it (land, budgets, rates), so a log can't hold
+  anything its authors weren't allowed to do.
 - Saves from before the log, and profiles from before keys, are upgraded once (old files kept as
-  `.bak`).
+  `.bak`). Logs from before undo moved forward lose their old undos once, with what they undid,
+  so the world stays the same.
 
 **History** (`H`, or the clock button in the panel): every change, newest first, with who
-made it, which agent, and when; filter by player. Undo your own changes from there; admins can
-also **Restore to here** (undo everything after a change) and **Roll back** a player.
+made it, which agent, and when; filter by player. Undo your own changes from there (Redo on an
+undo); admins can also **Load** a save.
 
-Chat commands do the same and more: `/history [n]`, `/revert <id>`, `/rules`,
-`/verify`, `/host`, `/join <host[:port]>`, `/play`, `/leave`, and for admins `/rollback <player>`, `/restore <id>`, `/land open|parcels`,
+Chat commands do the same and more: `/history [n]`, `/undo <id>`, `/rules`,
+`/verify`, `/host`, `/join <host[:port]>`, `/play`, `/leave`, and for admins `/load <save>`, `/land open|parcels`,
 `/rate <changes per minute> [voxels per 10 minutes]` or `/rate off`. Try them from someone else's
 side with `CUBEWISH_AS=Bo cargo run`, a non-admin guest for one run; script them with
 `CUBEWISH_PROMPT="/rate 5; /history"`.
@@ -220,8 +224,8 @@ join a new world is its admin.
   and "Claude Code is designing…" while their agent works. Presence is sent when it changes
   (at most ten times a second) and never stored.
 - Rest the cursor on a build or on reshaped ground to see who changed it last (offline too).
-- **Safety nets:** every 50 changes the server saves a snapshot of the world's voxels, so
-  restarts and joins only replay what came after. Each land change carries fingerprints of the
+- **Safety nets:** every 50 changes the server saves a snapshot of the whole world, so
+  restarts and joins only apply what came after. Each land change carries fingerprints of the
   chunks it touched; if your chunks disagree (floating point can differ across machines), the
   game fetches the server's and regenerates just those.
 - Not yet: encryption (TLS).
@@ -251,7 +255,7 @@ can bump into and stand on them) and recorded in the world's change log.
 
   | Context | Shortcuts |
   | --- | --- |
-  | Anywhere | `T`/`Enter` talk to the agent · `G` select ground to reshape · `P` show parcels · click a build to select · middle-click to copy it · `Ctrl/Cmd+Z` undo |
+  | Anywhere | `T`/`Enter` talk to the agent · `G` select ground to reshape · `P` show parcels · click a build to select · middle-click to copy it · `Ctrl/Cmd+Z` undo · `Ctrl/Cmd+Shift+Z` redo |
   | Selecting ground | drag across the ground · right-drag look · `G`/`Esc` stop |
   | Area selected | `T` describe the change · `G` select again · `Esc` clear |
   | Land preview | `Enter` keep · `T` ask for changes · `Esc` put the ground back |
@@ -259,7 +263,8 @@ can bump into and stand on them) and recorded in the world's change log.
   | Draft following the cursor | click place · `Q`/`E` turn · `R`/`F` raise/lower · `Esc`/right-click cancel |
   | Pinned revision | `Enter` keep · `M` pick it up · `T` ask for more · `Esc` cancel |
 
-  Undo steps back through placing, deleting, moving, and revising builds, and kept land changes.
+  Undo steps back through your placing, deleting, moving, and revising builds, kept land changes,
+  portals and installs, newest first; one that something has changed on since says so and stays.
 
 - Needs `claude` and/or `codex` on your `PATH`, already logged in.
 - The agents get no other tools: no shell, no file edits, no other MCP servers, and no user config

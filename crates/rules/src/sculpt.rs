@@ -176,6 +176,7 @@ pub struct TerrainEdit {
 }
 
 /// A copy of the terrain columns under an area (plus a margin), edited in place.
+#[derive(Clone)]
 pub struct Columns {
     min: IVec2,
     size: IVec2,
@@ -214,6 +215,12 @@ impl Columns {
 
     fn len(&self) -> usize {
         self.ground.len()
+    }
+
+    /// The voxel at `p` as it was read, before any edit; `None` outside the columns.
+    pub fn original(&self, p: IVec3) -> Option<VoxelId> {
+        let i = self.index(IVec2::new(p.x, p.z))?;
+        (0..H as i32).contains(&p.y).then(|| self.orig[i * H + p.y as usize])
     }
 
     fn column_of(&self, i: usize) -> IVec2 {

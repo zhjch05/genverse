@@ -106,7 +106,7 @@ fn two_players_share_one_ordered_world() {
     assert!(matches!(bo.next(), ToClient::Committed { request: None, .. }));
 
     // Bo can't undo Ada's change, or build at the protected spawn.
-    bo.propose(1, Action::Revert { change: id });
+    bo.propose(1, Action::Undo { change: id });
     assert!(matches!(bo.next(), ToClient::Rejected { request: 1, why } if why.contains("your own")));
     bo.propose(2, lamp(2, 0.0, 0.0));
     assert!(matches!(bo.next(), ToClient::Rejected { request: 2, why } if why.contains("spawn")));
@@ -119,7 +119,7 @@ fn two_players_share_one_ordered_world() {
     assert!(matches!(bo.next(), ToClient::Rejected { request: 3, why } if why.contains("signed")));
 
     // Ada undoes her own change; everyone hears it.
-    ada.propose(8, Action::Revert { change: id });
+    ada.propose(8, Action::Undo { change: id });
     assert!(matches!(ada.next(), ToClient::Committed { request: Some(8), .. }));
     assert!(matches!(bo.next(), ToClient::Committed { .. }));
 
@@ -343,16 +343,28 @@ fn saves_load_for_everyone() {
     ada.propose(2, lamp(2, 12.0, 4.0));
     committed(&ada);
     committed(&bo);
-    // Only admins load, for everyone.
-    bo.propose(2, Action::Restore { to: save });
+    // The server kept the world as of the save.
+    assert!(dir.join(format!("worlds/main/states/{save}.json")).exists());
+    // Only admins load, for everyone: the load comes with the save's state.
+    let load = Action::Load { save, name: "before".into(), state: None };
+    bo.propose(2, load.clone());
     assert!(matches!(bo.next(), ToClient::Rejected { why, .. } if why.contains("only admins")));
-    ada.propose(3, Action::Restore { to: save });
-    committed(&ada);
-    committed(&bo);
+    ada.propose(3, load);
+    for p in [&ada, &bo] {
+        match p.next() {
+            ToClient::Committed { change, .. } => {
+                let Action::Load { state: Some(state), .. } = change.action else { panic!("{:?}", change.action) };
+                assert_eq!(state.builds.len(), 1);
+            }
+            other => panic!("{other:?}"),
+        }
+    }
     drop((ada, bo));
     let saved = cubewish_rules::store::LogFile::open(&dir.join("worlds/main")).unwrap().1.unwrap();
     let state = cubewish_rules::log::replay(&saved);
     assert_eq!(state.builds.keys().copied().collect::<Vec<_>>(), vec![1]);
+    // What came after the save stays in the history.
+    assert!(saved.changes.iter().any(|c| matches!(&c.action, Action::PlaceBuild(b) if b.build == 2)));
     let _ = std::fs::remove_dir_all(&dir);
 }
 
@@ -482,7 +494,7 @@ fn items_and_rules_follow_the_game() {
     let load_by = by();
     let signed = worlds
         .iter()
-        .map(|(w, to)| (w.clone(), ada.key.sign(&signing_bytes(&load_by, &Action::Restore { to: *to }))))
+        .map(|(w, to)| (w.clone(), ada.key.sign(&signing_bytes(&load_by, &cubewish_rules::game::load_action("start", *to)))))
         .collect();
     game_change(10, load_by, GameAction::LoadSave { name: "start".into(), signed });
     drop(ada);
