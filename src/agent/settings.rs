@@ -154,12 +154,10 @@ pub fn settings_window(
     let mut g = *graphics;
     let mut open = settings.open;
 
-    egui::Window::new(format!("{} Settings", icon::GAUGE))
+    theme::centered(egui::Window::new(format!("{} Settings", icon::GAUGE)), ctx, 0.0)
         .open(&mut open)
         .collapsible(false)
-        .resizable(false)
         .default_width(380.0)
-        .anchor(egui::Align2::CENTER_CENTER, egui::Vec2::ZERO)
         .show(ctx, |ui| {
             let physical = window.physical_size();
             theme::section(ui, "Display");

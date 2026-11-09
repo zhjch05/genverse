@@ -36,7 +36,10 @@ const PLACE_REACH: f32 = 8.0;
 const ON_PIECE: f32 = 1.5;
 /// How long the name of what's in hand shows after picking it.
 const NAME_SECONDS: f32 = 2.0;
+/// A slot's size, in the hotbar and as the inventory screen opens (resizing it scales
+/// its slots between the two bounds).
 const SLOT_SIZE: f32 = 46.0;
+const SLOT_SIZES: std::ops::RangeInclusive<f32> = 32.0..=96.0;
 
 #[derive(Resource)]
 pub struct Inventory {
@@ -231,8 +234,8 @@ fn initials(title: &str) -> String {
 }
 
 /// One slot: the item's tile, its initials and count. Returns its response.
-fn slot(ui: &mut egui::Ui, ledger: &Ledger, item: Option<&str>, chosen: bool, p: &theme::Palette) -> egui::Response {
-    let (rect, response) = ui.allocate_exact_size(egui::vec2(SLOT_SIZE, SLOT_SIZE), egui::Sense::click());
+fn slot(ui: &mut egui::Ui, ledger: &Ledger, item: Option<&str>, chosen: bool, size: f32, p: &theme::Palette) -> egui::Response {
+    let (rect, response) = ui.allocate_exact_size(egui::vec2(size, size), egui::Sense::click());
     let painter = ui.painter_at(rect);
     painter.rect_filled(rect, 6.0, p.overlay);
     let stroke = if chosen { egui::Stroke::new(2.5, p.strong) } else { egui::Stroke::new(1.0, p.line) };
@@ -240,10 +243,11 @@ fn slot(ui: &mut egui::Ui, ledger: &Ledger, item: Option<&str>, chosen: bool, p:
     let Some(item) = item else { return response };
     let title = game::item_title(&ledger.logic, item);
     painter.rect_filled(rect.shrink(8.0), 4.0, tile_color(ledger, item));
-    painter.text(rect.center(), egui::Align2::CENTER_CENTER, initials(&title), egui::FontId::proportional(15.0), egui::Color32::WHITE);
+    let font = |px: f32| egui::FontId::proportional(px * size / SLOT_SIZE);
+    painter.text(rect.center(), egui::Align2::CENTER_CENTER, initials(&title), font(15.0), egui::Color32::WHITE);
     let count = ledger.logic.state.items(&ledger.profile.id, item);
     if count > 1 {
-        painter.text(rect.right_bottom() - egui::vec2(4.0, 3.0), egui::Align2::RIGHT_BOTTOM, count.to_string(), egui::FontId::proportional(13.0), p.strong);
+        painter.text(rect.right_bottom() - egui::vec2(4.0, 3.0), egui::Align2::RIGHT_BOTTOM, count.to_string(), font(13.0), p.strong);
     }
     response.on_hover_text(title)
 }
@@ -275,7 +279,7 @@ pub fn hotbar(mut contexts: EguiContexts, time: Res<Time>, chat: Res<Chat>, ledg
             ui.horizontal(|ui| {
                 ui.spacing_mut().item_spacing.x = 4.0;
                 for i in 0..HOTBAR {
-                    if slot(ui, &ledger, inventory.slots[i].as_deref(), i == inventory.selected, p).clicked() {
+                    if slot(ui, &ledger, inventory.slots[i].as_deref(), i == inventory.selected, SLOT_SIZE, p).clicked() {
                         clicked = Some(i);
                     }
                 }
@@ -290,17 +294,21 @@ pub fn hotbar(mut contexts: EguiContexts, time: Res<Time>, chat: Res<Chat>, ledg
         return Ok(());
     }
     let mut open = true;
-    egui::Window::new("Inventory")
+    // Wide enough for nine slots and their gaps, as it opens; resizing scales them.
+    let width = HOTBAR as f32 * (SLOT_SIZE + 4.0);
+    theme::centered(egui::Window::new("Inventory"), ctx, covered / 2.0)
         .open(&mut open)
         .collapsible(false)
-        .resizable(false)
-        .anchor(egui::Align2::CENTER_CENTER, egui::vec2(-covered / 2.0, 0.0))
+        .default_width(width)
+        .min_width(HOTBAR as f32 * (SLOT_SIZES.start() + 4.0))
+        .max_width(HOTBAR as f32 * (SLOT_SIZES.end() + 4.0))
         .show(ctx, |ui| {
+            let size = (ui.available_width() / HOTBAR as f32 - 4.0).clamp(*SLOT_SIZES.start(), *SLOT_SIZES.end());
             let mut row = |ui: &mut egui::Ui, from: usize| {
                 ui.horizontal(|ui| {
                     ui.spacing_mut().item_spacing.x = 4.0;
                     for i in from..from + HOTBAR {
-                        if slot(ui, &ledger, inventory.slots[i].as_deref(), false, p).clicked() {
+                        if slot(ui, &ledger, inventory.slots[i].as_deref(), false, size, p).clicked() {
                             clicked = Some(i);
                         }
                     }

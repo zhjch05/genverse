@@ -86,11 +86,9 @@ pub fn game_hud(mut contexts: EguiContexts, time: Res<Time>, mut ledger: ResMut<
 
     let Some(panel) = state.panel(&me).cloned() else { return Ok(()) };
     let mut pick: Option<Option<String>> = None;
-    egui::Window::new(&panel.spec.title)
+    theme::centered(egui::Window::new(&panel.spec.title), ctx, covered / 2.0)
         .id(egui::Id::new("game_panel"))
         .collapsible(false)
-        .resizable(false)
-        .anchor(egui::Align2::CENTER_CENTER, egui::vec2(-covered / 2.0, 0.0))
         .default_width(360.0)
         .show(ctx, |ui| {
             if !panel.spec.text.is_empty() {

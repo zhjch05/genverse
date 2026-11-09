@@ -86,6 +86,14 @@ pub const LIGHT: Palette = Palette {
 };
 
 /// The palette for the theme being shown.
+/// Opens a window centered in the view (moved left by `offset` px, as when the builder
+/// panel covers part of it): placed there, not pinned, so it can be dragged and resized
+/// like any window.
+pub fn centered<'a>(window: egui::Window<'a>, ctx: &egui::Context, offset: f32) -> egui::Window<'a> {
+    let center = ctx.viewport_rect().center() - egui::vec2(offset, 0.0);
+    window.pivot(egui::Align2::CENTER_CENTER).default_pos(center)
+}
+
 pub fn palette(ctx: &egui::Context) -> &'static Palette {
     match ctx.theme() {
         Theme::Dark => &DARK,
