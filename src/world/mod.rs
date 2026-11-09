@@ -4,9 +4,9 @@
 //! pool, then spawned as mesh entities. Each loaded chunk keeps its voxels (with a
 //! one-voxel border copied from its neighbors) for collision queries.
 //!
-//! Past the full-detail area, out to twice as far, the terrain is drawn from coarse
-//! chunks ([`lod`]), which have no voxels to collide with: the hero never gets there
-//! before the full detail does.
+//! Past the full-detail area the terrain is drawn from coarser and coarser chunks
+//! ([`lod`]), which have no voxels to collide with: the hero never gets there before
+//! the full detail does.
 //!
 //! Terrain changes are stored as a sparse layer of voxel edits on top of the seed
 //! ([`VoxelWorld::set`]), applied whenever a chunk is (re)built. The edits are what the
@@ -32,7 +32,7 @@ use crate::voxel::{
     query::{Hit, march},
 };
 use ledger::Ledger;
-use lod::{CELL, COARSE, COARSE_SPAN, COARSE_VERTICAL, Lod, SCAN, build_coarse, cell_of_column, coarse_region, wanted};
+use lod::{LEVELS, Node, TOP, VIEW_DISTANCE, build_coarse, coarse_keys, coarse_region, select, span, step};
 use terrain::{Terrain, VOXEL_SIZE, WORLD_HEIGHT};
 
 pub const CHUNK: i32 = 32;
@@ -107,15 +107,18 @@ pub struct VoxelWorld {
     /// Loaded chunks to regenerate from the seed and edits (after the edits were
     /// replaced wholesale, e.g. by a rollback).
     regen: HashSet<IVec3>,
-    /// The level each cell in view is drawn at.
-    cells: HashMap<IVec2, Lod>,
-    /// Cells whose full-detail chunks are all in and shown. Until then they're hidden,
-    /// and the coarse chunk (if any) stays.
-    shown: HashSet<IVec2>,
-    coarse: HashMap<IVec3, Vec<Entity>>,
-    coarse_pending: HashMap<IVec3, Task<Vec<(usize, Mesh)>>>,
+    /// The nodes to draw: each place in view, at the level it's drawn at.
+    wanted: HashSet<Node>,
+    /// The nodes split to get them, for the margin a split node keeps.
+    split: HashSet<Node>,
+    /// Nodes whose chunks are all in and shown. Until then they're hidden, and the
+    /// nodes they replace stay.
+    shown: HashSet<Node>,
+    /// Coarse chunks, by level and chunk coordinates at that level.
+    coarse: HashMap<(u32, IVec3), Vec<Entity>>,
+    coarse_pending: HashMap<(u32, IVec3), Task<Vec<(usize, Mesh)>>>,
     /// Loaded coarse chunks to rebuild, because edits in their region changed.
-    coarse_regen: HashSet<IVec3>,
+    coarse_regen: HashSet<(u32, IVec3)>,
     unsaved: bool,
     /// Set while a terrain preview is applied, so it isn't saved until it's kept.
     pub hold_saves: bool,
@@ -125,29 +128,9 @@ fn chunk_of(p: IVec3) -> IVec3 {
     p.div_euclid(IVec3::splat(CHUNK))
 }
 
-/// The chunk column under `pos`.
-fn column_of(pos: Vec3) -> IVec2 {
-    chunk_of(VoxelWorld::voxel_at(pos)).xz()
-}
-
-/// The full-detail chunks of a cell.
-fn cell_chunks(cell: IVec2) -> impl Iterator<Item = IVec3> {
-    let corner = cell * CELL;
-    (0..CELL).flat_map(move |dz| {
-        (0..CELL).flat_map(move |dx| (0..VERTICAL_CHUNKS).map(move |y| IVec3::new(corner.x + dx, y, corner.y + dz)))
-    })
-}
-
-/// The coarse chunks of a cell, keyed by coarse chunk coordinates.
-fn cell_coarse(cell: IVec2) -> impl Iterator<Item = IVec3> {
-    (0..COARSE_VERTICAL).map(move |y| IVec3::new(cell.x, y, cell.y))
-}
-
-/// The coarse chunks whose region holds any voxel in `lo..=hi`.
-fn coarse_keys(lo: IVec3, hi: IVec3) -> impl Iterator<Item = IVec3> {
-    let span = IVec3::splat(COARSE_SPAN);
-    let (lo, hi) = ((lo - IVec3::splat(COARSE)).div_euclid(span), (hi + IVec3::splat(COARSE)).div_euclid(span));
-    (lo.z..=hi.z).flat_map(move |z| (lo.y..=hi.y).flat_map(move |y| (lo.x..=hi.x).map(move |x| IVec3::new(x, y, z))))
+/// The coarse chunks of `node`, a node at level 1 or up.
+fn node_coarse(node: Node) -> impl Iterator<Item = (u32, IVec3)> {
+    node.chunks().map(move |k| (node.level, k))
 }
 
 /// Offline, game pieces walk on the ground as it's loaded here; where it isn't, they go
@@ -260,9 +243,11 @@ impl VoxelWorld {
 
     /// Queues a rebuild of the loaded coarse chunks whose region holds any of `lo..=hi`.
     fn mark_coarse(&mut self, lo: IVec3, hi: IVec3) {
-        for key in coarse_keys(lo, hi) {
-            if self.coarse.contains_key(&key) {
-                self.coarse_regen.insert(key);
+        for level in 1..LEVELS {
+            for key in coarse_keys(level, lo, hi) {
+                if self.coarse.contains_key(&(level, key)) {
+                    self.coarse_regen.insert((level, key));
+                }
             }
         }
     }
@@ -317,7 +302,8 @@ impl VoxelWorld {
         self.coarse_regen.clear();
         self.dirty.clear();
         self.regen.clear();
-        self.cells.clear();
+        self.wanted.clear();
+        self.split.clear();
         self.shown.clear();
         self.versions.clear();
         self.terrain = terrain;
@@ -401,23 +387,24 @@ impl VoxelWorld {
     /// there are, full-detail ones near and coarse ones farther out.
     #[cfg_attr(target_arch = "wasm32", allow(dead_code))]
     pub fn view_loaded(&self, pos: Vec3) -> (usize, usize) {
-        let center = cell_of_column(column_of(pos));
+        // The nodes streaming chose, which it keeps while the view moves a little (so a
+        // hero moved during loading still finishes); before it has run, the ones it will.
+        let chosen;
+        let nodes = if self.wanted.is_empty() {
+            chosen = select(&[pos.xz()], &default(), |_| false).0;
+            &chosen
+        } else {
+            &self.wanted
+        };
         let (mut loaded, mut total) = (0, 0);
-        for dz in -SCAN..=SCAN {
-            for dx in -SCAN..=SCAN {
-                let cell = center + IVec2::new(dx, dz);
-                // The level streaming chose, which it keeps while the view moves a little
-                // (so a hero moved across a cell during loading still finishes); before it
-                // has run, the level it will choose.
-                let lod = if self.cells.is_empty() { wanted(dx * dx + dz * dz, None) } else { self.cells.get(&cell).copied() };
-                let (have, of) = match lod {
-                    Some(Lod::Near) => count(cell_chunks(cell), |c| self.loaded.contains_key(c)),
-                    Some(Lod::Far) => count(cell_coarse(cell), |k| self.coarse.contains_key(k)),
-                    None => (0, 0),
-                };
-                loaded += have;
-                total += of;
-            }
+        for node in nodes.iter().filter(|n| n.distance(pos.xz()) < VIEW_DISTANCE) {
+            let (have, of) = if node.level == 0 {
+                count(node.chunks(), |c| self.loaded.contains_key(c))
+            } else {
+                count(node_coarse(*node), |k| self.coarse.contains_key(k))
+            };
+            loaded += have;
+            total += of;
         }
         (loaded, total)
     }
@@ -427,39 +414,97 @@ impl VoxelWorld {
         (0..VERTICAL_CHUNKS).all(|y| self.loaded.contains_key(&c.with_y(y)))
     }
 
-    fn spawn_coarse_task(&mut self, key: IVec3) {
-        let terrain = self.terrain;
-        let palette = self.palette.clone();
-        let (min, max) = coarse_region(key);
-        let edits = self.edits_in(min, max);
-        let task = AsyncComputeTaskPool::get().spawn(async move { build_coarse(terrain, &palette, key, &edits) });
-        self.coarse_pending.insert(key, task);
+    /// Whether every chunk of `node` is in.
+    fn node_loaded(&self, node: Node) -> bool {
+        if node.level == 0 {
+            node.chunks().all(|c| self.loaded.contains_key(&c))
+        } else {
+            node_coarse(node).all(|k| self.coarse.contains_key(&k))
+        }
     }
 
-    /// Unloads a cell's full-detail chunks, and cancels any still building.
-    fn drop_near(&mut self, commands: &mut Commands, cell: IVec2) {
-        for c in cell_chunks(cell) {
-            self.dirty.remove(&c);
-            self.regen.remove(&c);
-            self.pending.remove(&c);
-            if let Some(chunk) = self.loaded.remove(&c) {
-                for e in chunk.entities {
+    /// Whether any chunk of `node` is in, to be drawn.
+    fn node_built(&self, node: Node) -> bool {
+        if node.level == 0 {
+            node.chunks().any(|c| self.loaded.contains_key(&c))
+        } else {
+            node_coarse(node).any(|k| self.coarse.contains_key(&k))
+        }
+    }
+
+    fn node_entities(&self, node: Node) -> Vec<Entity> {
+        if node.level == 0 {
+            node.chunks().filter_map(|c| self.loaded.get(&c)).flat_map(|l| l.entities.iter().copied()).collect()
+        } else {
+            node_coarse(node).filter_map(|k| self.coarse.get(&k)).flatten().copied().collect()
+        }
+    }
+
+    /// Whether the wanted nodes over `node` (one that isn't wanted) are all in, so it
+    /// can go: an ancestor of it, or the descendants that tile it. True when there are
+    /// none, out of view.
+    fn covered(&self, node: Node) -> bool {
+        let mut up = node;
+        while up.level < TOP {
+            up = up.parent();
+            if self.wanted.contains(&up) {
+                return self.node_loaded(up);
+            }
+        }
+        self.descendants_loaded(node)
+    }
+
+    fn descendants_loaded(&self, node: Node) -> bool {
+        node.level == 0
+            || node.children().iter().all(|c| {
+                if self.wanted.contains(c) { self.node_loaded(*c) } else { self.descendants_loaded(*c) }
+            })
+    }
+
+    fn spawn_coarse_task(&mut self, level: u32, key: IVec3) {
+        let terrain = self.terrain;
+        let palette = self.palette.clone();
+        let (min, max) = coarse_region(level, key);
+        let edits = self.edits_in(min, max);
+        let task = AsyncComputeTaskPool::get().spawn(async move { build_coarse(terrain, &palette, level, key, &edits) });
+        self.coarse_pending.insert((level, key), task);
+    }
+
+    /// Stops building whatever of `node` is still building.
+    fn cancel(&mut self, node: Node) {
+        if node.level == 0 {
+            for c in node.chunks() {
+                self.pending.remove(&c);
+            }
+        } else {
+            for k in node_coarse(node) {
+                self.coarse_pending.remove(&k);
+            }
+        }
+    }
+
+    /// Unloads a node's chunks, and cancels any still building.
+    fn drop_node(&mut self, commands: &mut Commands, node: Node) {
+        self.cancel(node);
+        if node.level == 0 {
+            for c in node.chunks() {
+                self.dirty.remove(&c);
+                self.regen.remove(&c);
+                if let Some(chunk) = self.loaded.remove(&c) {
+                    for e in chunk.entities {
+                        commands.entity(e).despawn();
+                    }
+                }
+            }
+        } else {
+            for k in node_coarse(node) {
+                self.coarse_regen.remove(&k);
+                for e in self.coarse.remove(&k).unwrap_or_default() {
                     commands.entity(e).despawn();
                 }
             }
         }
-        self.shown.remove(&cell);
-    }
-
-    /// Unloads a cell's coarse chunks, and cancels any still building.
-    fn drop_coarse(&mut self, commands: &mut Commands, cell: IVec2) {
-        for key in cell_coarse(cell) {
-            self.coarse_regen.remove(&key);
-            self.coarse_pending.remove(&key);
-            for e in self.coarse.remove(&key).unwrap_or_default() {
-                commands.entity(e).despawn();
-            }
-        }
+        self.shown.remove(&node);
     }
 
     fn spawn_task(&mut self, c: IVec3, existing: Option<Arc<VoxelGrid>>) {
@@ -497,7 +542,8 @@ fn setup_world(mut commands: Commands, mut materials: ResMut<Assets<VoxelMateria
         versions: default(),
         dirty: default(),
         regen: default(),
-        cells: default(),
+        wanted: default(),
+        split: default(),
         shown: default(),
         coarse: default(),
         coarse_pending: default(),
@@ -539,56 +585,38 @@ fn stream_chunks(
     loaders: Query<&GlobalTransform, With<ChunkLoader>>,
 ) {
     let world = &mut *world;
-    let centers: Vec<IVec2> = loaders.iter().map(|t| cell_of_column(column_of(t.translation()))).collect();
-    let distance = |cell: IVec2| centers.iter().map(|c| (cell - *c).length_squared()).min().unwrap_or(i32::MAX);
+    let points: Vec<Vec2> = loaders.iter().map(|t| t.translation().xz()).collect();
+    let (wanted, split) = select(&points, &world.split, |n| world.node_built(n));
+    (world.wanted, world.split) = (wanted, split);
 
-    // Each cell's level, from its nearest loader.
-    let mut cells: HashMap<IVec2, Lod> = default();
-    for center in &centers {
-        for dz in -SCAN..=SCAN {
-            for dx in -SCAN..=SCAN {
-                let cell = *center + IVec2::new(dx, dz);
-                if !cells.contains_key(&cell)
-                    && let Some(lod) = wanted(distance(cell), world.cells.get(&cell).copied())
-                {
-                    cells.insert(cell, lod);
-                }
-            }
+    // Swap levels once the new nodes are all in, so moving never opens a hole: an old
+    // node goes once what replaces it is in, and a new one shows once nothing old
+    // overlaps it, in the same frame.
+    let mut present: HashSet<Node> = world.loaded.keys().chain(world.pending.keys()).map(|c| Node::of_column(c.xz())).collect();
+    present.extend(world.coarse.keys().chain(world.coarse_pending.keys()).map(|(level, k)| Node::new(*level, k.xz())));
+    let mut stale = Vec::new();
+    for node in present {
+        if world.wanted.contains(&node) {
+            continue;
+        }
+        world.cancel(node);
+        if !world.node_built(node) || world.covered(node) {
+            world.drop_node(&mut commands, node);
+        } else {
+            stale.push(node);
         }
     }
-    world.cells = cells;
-
-    // Swap levels once the new one is all in, so moving never opens a hole.
-    let mut touched: HashSet<IVec2> = world.cells.keys().copied().collect();
-    touched.extend(world.loaded.keys().map(|c| cell_of_column(c.xz())));
-    touched.extend(world.coarse.keys().map(|k| k.xz()));
-    for cell in touched {
-        match world.cells.get(&cell) {
-            Some(Lod::Near) => {
-                if cell_chunks(cell).all(|c| world.loaded.contains_key(&c)) {
-                    if world.shown.insert(cell) {
-                        for c in cell_chunks(cell) {
-                            for e in &world.loaded[&c].entities {
-                                commands.entity(*e).insert(Visibility::Inherited);
-                            }
-                        }
-                    }
-                    world.drop_coarse(&mut commands, cell);
-                }
-            }
-            Some(Lod::Far) => {
-                for c in cell_chunks(cell) {
-                    world.pending.remove(&c);
-                }
-                if cell_coarse(cell).all(|k| world.coarse.contains_key(&k)) {
-                    world.drop_near(&mut commands, cell);
-                }
-            }
-            None => {
-                world.drop_near(&mut commands, cell);
-                world.drop_coarse(&mut commands, cell);
-            }
+    let ready: Vec<Node> = world
+        .wanted
+        .iter()
+        .filter(|n| !world.shown.contains(*n) && world.node_loaded(**n) && !stale.iter().any(|s| s.overlaps(**n)))
+        .copied()
+        .collect();
+    for node in ready {
+        for e in world.node_entities(node) {
+            commands.entity(e).insert(Visibility::Inherited);
         }
+        world.shown.insert(node);
     }
 
     // Regenerated chunks first, then edited ones: the player is looking right at them.
@@ -606,38 +634,38 @@ fn stream_chunks(
             world.spawn_task(c, voxels);
         }
     }
-    let coarse_regen: Vec<IVec3> = world.coarse_regen.iter().copied().filter(|k| !world.coarse_pending.contains_key(k)).collect();
-    for key in coarse_regen {
-        world.coarse_regen.remove(&key);
-        world.spawn_coarse_task(key);
+    let coarse_regen: Vec<(u32, IVec3)> = world.coarse_regen.iter().copied().filter(|k| !world.coarse_pending.contains_key(k)).collect();
+    for (level, key) in coarse_regen {
+        world.coarse_regen.remove(&(level, key));
+        world.spawn_coarse_task(level, key);
     }
 
-    // Queue the nearest missing chunks, full detail before coarse.
+    // Queue the nearest missing chunks, finer before coarser.
+    let distance = |node: Node| points.iter().map(|p| node.distance(*p)).fold(f32::INFINITY, f32::min);
     let mut wanted_chunks = Vec::new();
-    for (cell, lod) in &world.cells {
-        let d = distance(*cell);
-        match lod {
-            Lod::Near => wanted_chunks.extend(
-                cell_chunks(*cell)
-                    .filter(|c| !world.loaded.contains_key(c) && !world.pending.contains_key(c))
-                    .map(|c| (d, false, c)),
-            ),
-            Lod::Far => wanted_chunks.extend(
-                cell_coarse(*cell)
+    for node in &world.wanted {
+        let d = distance(*node);
+        if node.level == 0 {
+            wanted_chunks.extend(
+                node.chunks().filter(|c| !world.loaded.contains_key(c) && !world.pending.contains_key(c)).map(|c| (d, 0, c)),
+            );
+        } else {
+            wanted_chunks.extend(
+                node_coarse(*node)
                     .filter(|k| !world.coarse.contains_key(k) && !world.coarse_pending.contains_key(k))
-                    .map(|k| (d, true, k)),
-            ),
+                    .map(|(level, k)| (d, level, k)),
+            );
         }
     }
-    wanted_chunks.sort_by_key(|(d, coarse, _)| (*d, *coarse));
-    for (_, coarse, c) in wanted_chunks {
+    wanted_chunks.sort_by(|a, b| a.0.total_cmp(&b.0).then(a.1.cmp(&b.1)));
+    for (_, level, c) in wanted_chunks {
         if world.pending.len() + world.coarse_pending.len() >= MAX_IN_FLIGHT {
             break;
         }
-        if coarse {
-            world.spawn_coarse_task(c);
-        } else {
+        if level == 0 {
             world.spawn_task(c, None);
+        } else {
+            world.spawn_coarse_task(level, c);
         }
     }
 }
@@ -698,7 +726,7 @@ fn finish_chunks(
         }
         let translation = (c * CHUNK).as_vec3() * VOXEL_SIZE;
         // Hidden until its whole cell is in; see `stream_chunks`.
-        let visibility = if world.shown.contains(&cell_of_column(c.xz())) { Visibility::Inherited } else { Visibility::Hidden };
+        let visibility = if world.shown.contains(&Node::of_column(c.xz())) { Visibility::Inherited } else { Visibility::Hidden };
         let entities = built
             .meshes
             .into_iter()
@@ -730,9 +758,11 @@ fn finish_chunks(
             done.push((*key, built));
         }
     }
-    for (key, built) in done {
-        world.coarse_pending.remove(&key);
-        let translation = (key * COARSE_SPAN).as_vec3() * VOXEL_SIZE;
+    for ((level, key), built) in done {
+        world.coarse_pending.remove(&(level, key));
+        let translation = (key * span(level)).as_vec3() * VOXEL_SIZE;
+        let node = Node::new(level, key.xz());
+        let visibility = if world.shown.contains(&node) { Visibility::Inherited } else { Visibility::Hidden };
         let entities = built
             .into_iter()
             .map(|(surface, mesh)| {
@@ -740,7 +770,8 @@ fn finish_chunks(
                     WorldChunk,
                     Mesh3d(meshes.add(mesh)),
                     MeshMaterial3d(world.materials[surface].clone()),
-                    Transform::from_translation(translation).with_scale(Vec3::splat(COARSE as f32 * VOXEL_SIZE)),
+                    Transform::from_translation(translation).with_scale(Vec3::splat(step(level) as f32 * VOXEL_SIZE)),
+                    visibility,
                 ));
                 if world.palette.surfaces[surface].is_transparent() {
                     e.insert(NotShadowCaster);
@@ -748,7 +779,7 @@ fn finish_chunks(
                 e.id()
             })
             .collect();
-        if let Some(old) = world.coarse.insert(key, entities) {
+        if let Some(old) = world.coarse.insert((level, key), entities) {
             for e in old {
                 commands.entity(e).despawn();
             }
@@ -772,7 +803,8 @@ mod tests {
             versions: default(),
             dirty: default(),
             regen: default(),
-            cells: default(),
+            wanted: default(),
+            split: default(),
             shown: default(),
             coarse: default(),
             coarse_pending: default(),
@@ -847,24 +879,40 @@ mod tests {
         app
     }
 
-    /// Every cell in view is drawn at exactly one level: its full-detail chunks are
-    /// shown, or its coarse chunks are loaded, never both.
-    fn check_cells(world: &VoxelWorld, center: IVec2) {
-        for dz in -SCAN..=SCAN {
-            for dx in -SCAN..=SCAN {
-                if wanted(dx * dx + dz * dz, None).is_none() {
+    /// How many shown nodes cover each point of an 8 m grid (the points at the middle of
+    /// level-0 nodes, never on an edge).
+    fn coverage(world: &VoxelWorld) -> HashMap<IVec2, u32> {
+        let mut out: HashMap<IVec2, u32> = default();
+        for node in &world.shown {
+            let n = 1 << node.level;
+            for dz in 0..n {
+                for dx in 0..n {
+                    *out.entry(node.xz * n + IVec2::new(dx, dz)).or_default() += 1;
+                }
+            }
+        }
+        out
+    }
+
+    /// Every point within `radius` of all of `from` is drawn once: by one shown node.
+    fn check_drawn_once(world: &VoxelWorld, from: &[Vec2], radius: f32) {
+        let coverage = coverage(world);
+        let reach = (radius / 8.0) as i32 + 1;
+        for z in -reach..=reach {
+            for x in -reach..=reach {
+                let column = (from[0] / 8.0).floor().as_ivec2() + IVec2::new(x, z);
+                let p = column.as_vec2() * 8.0 + 4.0;
+                if from.iter().any(|f| f.distance(p) > radius) {
                     continue;
                 }
-                let cell = center + IVec2::new(dx, dz);
-                let near = world.shown.contains(&cell);
-                let coarse = cell_coarse(cell).all(|k| world.coarse.contains_key(&k));
-                assert!(near != coarse, "cell {cell}: shown {near}, coarse {coarse}");
+                let n = coverage.get(&column).copied().unwrap_or(0);
+                assert_eq!(n, 1, "column {column} is drawn {n} times");
             }
         }
     }
 
     fn run_until_loaded(app: &mut App, pos: Vec3) {
-        for _ in 0..20_000 {
+        for _ in 0..50_000 {
             app.update();
             let (loaded, total) = app.world().resource::<VoxelWorld>().view_loaded(pos);
             if loaded == total {
@@ -880,37 +928,64 @@ mod tests {
         let mut app = streaming_app();
         let loader = app.world_mut().spawn((ChunkLoader, GlobalTransform::default())).id();
         run_until_loaded(&mut app, Vec3::ZERO);
-        // One more frame swaps in the last cells.
+        // One more frame swaps in the last nodes.
         app.update();
-        check_cells(app.world().resource::<VoxelWorld>(), IVec2::ZERO);
+        let inner = VIEW_DISTANCE * 0.9;
+        check_drawn_once(app.world().resource::<VoxelWorld>(), &[Vec2::ZERO], inner);
+        let levels: HashSet<u32> = app.world().resource::<VoxelWorld>().shown.iter().map(|n| n.level).collect();
+        assert_eq!(levels.len(), LEVELS as usize);
 
-        // Walk three cells east: cells change level, and every cell stays drawn on
+        // Walk 48 m east: nodes change level, and every place stays drawn once on
         // every frame while they do.
-        let cell_meters = (CELL * CHUNK) as f32 * VOXEL_SIZE;
-        let pos = Vec3::new(3.0 * cell_meters, 0.0, 0.0);
-        app.world_mut().entity_mut(loader).insert(GlobalTransform::from_translation(pos));
-        for _ in 0..20_000 {
+        let to = Vec2::new(48.0, 0.0);
+        app.world_mut().entity_mut(loader).insert(GlobalTransform::from_translation(to.extend(0.0).xzy()));
+        for _ in 0..50_000 {
             app.update();
             let world = app.world().resource::<VoxelWorld>();
-            for dz in -SCAN..=SCAN {
-                for dx in -SCAN..=SCAN + 3 {
-                    let cell = IVec2::new(dx, dz);
-                    // Only cells in view from both places.
-                    let in_view = |from: IVec2| wanted((cell - from).length_squared(), None).is_some();
-                    if !in_view(IVec2::ZERO) || !in_view(IVec2::new(3, 0)) {
-                        continue;
-                    }
-                    let drawn = world.shown.contains(&cell) || cell_coarse(cell).all(|k| world.coarse.contains_key(&k));
-                    assert!(drawn, "cell {cell} has a hole");
-                }
-            }
-            let (loaded, total) = world.view_loaded(pos);
+            check_drawn_once(world, &[Vec2::ZERO, to], inner - 48.0);
+            let (loaded, total) = world.view_loaded(to.extend(0.0).xzy());
             if loaded == total && world.pending.is_empty() && world.coarse_pending.is_empty() {
                 break;
             }
             std::thread::yield_now();
         }
         app.update();
-        check_cells(app.world().resource::<VoxelWorld>(), IVec2::new(3, 0));
+        check_drawn_once(app.world().resource::<VoxelWorld>(), &[to], inner);
+    }
+}
+
+#[cfg(test)]
+mod mesh_stats {
+    use super::*;
+
+    fn quads(meshes: &[(usize, Mesh)]) -> usize {
+        meshes.iter().map(|(_, m)| m.count_vertices() / 4).sum()
+    }
+
+    /// Prints the quads drawn at each level around a loader, and how long they took.
+    #[test]
+    #[ignore]
+    fn print_mesh_stats() {
+        let terrain = Terrain { seed: SEED, flat: false };
+        let palette = terrain::palette();
+        let (nodes, _) = select(&[Vec2::new(4.0, 4.0)], &default(), |_| false);
+        let mut per_level = [(0usize, 0usize); LEVELS as usize];
+        let t = std::time::Instant::now();
+        for node in nodes {
+            let entry = &mut per_level[node.level as usize];
+            entry.0 += 1;
+            for c in node.chunks() {
+                entry.1 += if node.level == 0 {
+                    quads(&build_chunk(terrain, &palette, c, None, &[]).meshes)
+                } else {
+                    quads(&build_coarse(terrain, &palette, node.level, c, &[]))
+                };
+            }
+        }
+        for (level, (n, q)) in per_level.iter().enumerate() {
+            println!("level {level}: {n} nodes, {q} quads ({} per node)", q / n.max(&1));
+        }
+        let total: usize = per_level.iter().map(|l| l.1).sum();
+        println!("total {total} quads in {:?}, view {VIEW_DISTANCE} m", t.elapsed());
     }
 }

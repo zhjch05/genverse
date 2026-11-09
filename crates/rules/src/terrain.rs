@@ -154,18 +154,7 @@ impl Terrain {
                 for y in min.y..max.y.min(h + 1).max(min.y) {
                     let p = IVec3::new(x, y, z);
                     let depth = h - y;
-                    let patch = || patches.get(local(p));
-                    let id = if depth == 0 && h > 78 {
-                        block::SNOW
-                    } else if beach && depth < 4 {
-                        pick(block::SAND, patch())
-                    } else if depth == 0 {
-                        pick(block::GRASS, fbm(p.as_vec3() / 12.0, self.seed + 41) * 1.4 - 0.2)
-                    } else if depth < 4 {
-                        pick(block::DIRT, patch())
-                    } else {
-                        pick(block::STONE, stones.get(local(p)))
-                    };
+                    let id = self.ground_block(p, depth, beach, || patches.get(local(p)), || stones.get(local(p)));
                     grid.set(local(p), id);
                 }
                 for y in (h + 1).max(min.y)..=SEA_LEVEL.min(max.y - 1) {
@@ -178,11 +167,8 @@ impl Terrain {
             return grid;
         }
         // Trees, one candidate per jittered cell.
-        let cells = |a: i32, b: i32| (a - TREE_REACH).div_euclid(TREE_CELL)..=(b + TREE_REACH).div_euclid(TREE_CELL);
-        for cz in cells(min.z, max.z) {
-            for cx in cells(min.x, max.x) {
-                self.place_tree(&mut grid, min, IVec2::new(cx, cz));
-            }
+        for cell in Self::tree_cells(min.xz(), max.xz()) {
+            self.place_tree(&mut grid, min, cell);
         }
 
         // Grass tufts and flowers on exposed grass.
@@ -206,12 +192,32 @@ impl Terrain {
         grid
     }
 
-    fn place_tree(&self, grid: &mut VoxelGrid, min: IVec3, cell: IVec2) {
+    /// The ground block at `p`, `depth` voxels under the top of its column; `beach`
+    /// when the column is at the shore. `patch` and `stone` give the noise that picks
+    /// among sands and dirts, and among stones, at `p`.
+    fn ground_block(&self, p: IVec3, depth: i32, beach: bool, patch: impl Fn() -> f32, stone: impl Fn() -> f32) -> VoxelId {
+        let h = p.y + depth;
+        if depth == 0 && h > 78 {
+            block::SNOW
+        } else if beach && depth < 4 {
+            pick(block::SAND, patch())
+        } else if depth == 0 {
+            pick(block::GRASS, fbm(p.as_vec3() / 12.0, self.seed + 41) * 1.4 - 0.2)
+        } else if depth < 4 {
+            pick(block::DIRT, patch())
+        } else {
+            pick(block::STONE, stone())
+        }
+    }
+
+    /// The tree of tree cell `cell`, if it has one: the ground voxel its trunk stands on
+    /// and the key that picks its variation.
+    fn tree_in(&self, cell: IVec2) -> Option<(IVec3, IVec3)> {
         let key = IVec3::new(cell.x, 0, cell.y);
         // Groves and open meadows rather than uniform forest.
         let grove = fbm_xz(cell.as_vec2() / 6.0, self.seed + 59);
         if hash01(key, self.seed + 60) > (grove - 0.35) * 1.4 {
-            return;
+            return None;
         }
         let jitter = |k: u32| (hash01(key, self.seed + k) * (TREE_CELL - 6) as f32) as i32 + 3;
         let (x, z) = (cell.x * TREE_CELL + jitter(61), cell.y * TREE_CELL + jitter(62));
@@ -219,21 +225,62 @@ impl Terrain {
         let steep = (self.height(x + 2, z) - self.height(x - 2, z)).abs()
             + (self.height(x, z + 2) - self.height(x, z - 2)).abs();
         if ground <= SEA_LEVEL + 1 || ground > 70 || steep > 5 {
-            return;
+            return None;
         }
+        Some((IVec3::new(x, ground, z), key))
+    }
+
+    /// The tree cells whose trees can reach world columns `min..max`.
+    fn tree_cells(min: IVec2, max: IVec2) -> impl Iterator<Item = IVec2> {
+        let cells = |a: i32, b: i32| (a - TREE_REACH).div_euclid(TREE_CELL)..=(b + TREE_REACH).div_euclid(TREE_CELL);
+        cells(min.y, max.y).flat_map(move |cz| cells(min.x, max.x).map(move |cx| IVec2::new(cx, cz)))
+    }
+
+    fn place_tree(&self, grid: &mut VoxelGrid, min: IVec3, cell: IVec2) {
+        let Some((base, key)) = self.tree_in(cell) else {
+            return;
+        };
         let grid_max = min + grid.size().as_ivec3();
-        if ground + 1 >= grid_max.y || ground + 37 < min.y {
+        if base.y + 1 >= grid_max.y || base.y + 37 < min.y {
             return;
         }
-        self.grow_tree(grid, min, IVec3::new(x, ground, z), key);
+        self.grow_tree(grid, min, base, key);
+    }
+
+    /// The shape of the tree whose 2x2 trunk stands on `base`: the top of its trunk,
+    /// and its crown's leaf blobs as centers and radii.
+    fn tree_shape(&self, base: IVec3, key: IVec3) -> (IVec3, [(Vec3, Vec3); 2]) {
+        let trunk_height = 13 + (hash01(key, self.seed + 63) * 8.0) as i32;
+        let crown = IVec3::new(base.x, base.y + trunk_height, base.z);
+        let radius = 5.5 + hash01(key, self.seed + 65) * 2.5;
+        let blobs = [
+            (crown.as_vec3() + Vec3::new(1.0, 0.0, 1.0), Vec3::new(radius, radius * 0.75, radius)),
+            (crown.as_vec3() + Vec3::new(1.0, radius * 0.6, 1.0), Vec3::splat(radius * 0.65)),
+        ];
+        (crown, blobs)
+    }
+
+    /// Whether the point `q` (in world voxels) is inside a leaf blob, and if so the
+    /// leaves there.
+    fn leaf_at(&self, q: Vec3, (center, radii): (Vec3, Vec3)) -> Option<VoxelId> {
+        // The wobble is within ±0.35, so past that it can't reach.
+        let reach = ((q - center) / radii).length();
+        if reach > 1.35 {
+            return None;
+        }
+        let wobble = (fbm(q / 3.0, self.seed + 66) - 0.5) * 0.7;
+        if reach > 1.0 + wobble {
+            return None;
+        }
+        let shade = fbm(q / 4.0, self.seed + 67) + (q.y - center.y) / radii.y * 0.3;
+        Some(pick(block::LEAVES, 1.0 - shade))
     }
 
     /// Grows a tree whose 2x2 trunk stands on `base` (the ground voxel), into the part
     /// of `grid` (covering world voxels from `min`) it reaches. `key` picks its variation.
     pub fn grow_tree(&self, grid: &mut VoxelGrid, min: IVec3, base: IVec3, key: IVec3) {
         let (x, ground, z) = (base.x, base.y, base.z);
-        let trunk_height = 13 + (hash01(key, self.seed + 63) * 8.0) as i32;
-        let crown = IVec3::new(x, ground + trunk_height, z);
+        let (crown, blobs) = self.tree_shape(base, key);
 
         // 2x2 trunk.
         for y in ground + 1..crown.y {
@@ -244,12 +291,8 @@ impl Terrain {
         }
 
         // A couple of noisy leaf blobs around the crown.
-        let radius = 5.5 + hash01(key, self.seed + 65) * 2.5;
-        let blobs = [
-            (crown.as_vec3() + Vec3::new(1.0, 0.0, 1.0), Vec3::new(radius, radius * 0.75, radius)),
-            (crown.as_vec3() + Vec3::new(1.0, radius * 0.6, 1.0), Vec3::splat(radius * 0.65)),
-        ];
-        for (center, radii) in blobs {
+        for blob in blobs {
+            let (center, radii) = blob;
             // Only visit the part of the blob inside this grid.
             let lo = (center - radii - 2.0).floor().as_ivec3().max(min);
             let hi = (center + radii + 2.0).ceil().as_ivec3().min(min + grid.size().as_ivec3() - 1);
@@ -257,22 +300,104 @@ impl Terrain {
                 for py in lo.y..=hi.y {
                     for px in lo.x..=hi.x {
                         let p = IVec3::new(px, py, pz);
-                        let q = p.as_vec3() + 0.5;
-                        // The wobble is within ±0.35, so past that it can't reach.
-                        let reach = ((q - center) / radii).length();
-                        if reach > 1.35 {
-                            continue;
+                        if let Some(leaves) = self.leaf_at(p.as_vec3() + 0.5, blob) {
+                            set_if_air(grid, min, p, leaves);
                         }
-                        let wobble = (fbm(q / 3.0, self.seed + 66) - 0.5) * 0.7;
-                        if reach > 1.0 + wobble {
-                            continue;
-                        }
-                        let shade = fbm(q / 4.0, self.seed + 67) + (q.y - center.y) / radii.y * 0.3;
-                        set_if_air(grid, min, p, pick(block::LEAVES, 1.0 - shade));
                     }
                 }
             }
         }
+    }
+
+    /// Like [`generate`](Self::generate), in coarse voxels of `step` world voxels on a
+    /// side: coarse cells `min .. min + size`, each standing for the world voxels
+    /// `cell * step ..` of it. Sampled rather than built voxel by voxel, so a coarse
+    /// grid costs about the same whatever its step, for terrain far away.
+    ///
+    /// A cell is ground when most of it is under its columns' mean height, and has the
+    /// block of its topmost ground voxel; water when most of it is under the sea; leaves
+    /// where its center is in a crown, and bark on a trunk while trunks are still a cell
+    /// wide. Tufts and flowers are too small to show.
+    pub fn generate_coarse(&self, min: IVec3, size: UVec3, step: i32) -> VoxelGrid {
+        let mut grid = VoxelGrid::new(size);
+        let max = min + size.as_ivec3();
+        let half = step as f32 / 2.0;
+        // Sample points across a cell's columns, per axis.
+        let samples = step.min(4);
+        let offsets: Vec<i32> = (0..samples).map(|i| (2 * i + 1) * step / (2 * samples)).collect();
+        for cz in min.z..max.z {
+            for cx in min.x..max.x {
+                let mut sum = 0;
+                for dz in &offsets {
+                    for dx in &offsets {
+                        sum += self.height(cx * step + dx, cz * step + dz);
+                    }
+                }
+                let mean = sum as f32 / (samples * samples) as f32;
+                let h = mean.round() as i32;
+                let beach = h <= SEA_LEVEL + 1 && !self.flat;
+                let center = IVec2::new(cx * step + step / 2, cz * step + step / 2);
+                for cy in min.y..max.y {
+                    let bottom = cy * step;
+                    let local = IVec3::new(cx, cy, cz) - min;
+                    if bottom as f32 + half <= mean + 0.5 {
+                        // The cell's topmost ground voxel.
+                        let p = IVec3::new(center.x, (bottom + step - 1).min(h), center.y);
+                        let q = p.as_vec3();
+                        let id = self.ground_block(
+                            p,
+                            h - p.y,
+                            beach,
+                            || value(q / 5.0, self.seed + 40),
+                            || value(q / 4.0, self.seed + 42),
+                        );
+                        grid.set(local, id);
+                    } else if bottom as f32 + half <= SEA_LEVEL as f32 + 1.0 {
+                        grid.set(local, block::WATER);
+                    }
+                }
+            }
+        }
+        if self.flat {
+            return grid;
+        }
+
+        let (lo, hi) = (min * step, max * step);
+        for cell in Self::tree_cells(lo.xz(), hi.xz()) {
+            let Some((base, key)) = self.tree_in(cell) else {
+                continue;
+            };
+            let (crown, blobs) = self.tree_shape(base, key);
+            let set = |grid: &mut VoxelGrid, c: IVec3, id: VoxelId| {
+                let l = c - min;
+                if grid.contains(l) && grid.get(l) == AIR {
+                    grid.set(l, id);
+                }
+            };
+            if step <= 4 {
+                // The trunk's middle, between its two columns.
+                let column = (base.xz() + 1).div_euclid(IVec2::splat(step));
+                for cy in (base.y + 1).div_euclid(step)..=(crown.y - 1).div_euclid(step) {
+                    set(&mut grid, IVec3::new(column.x, cy, column.y), block::BARK[0]);
+                }
+            }
+            for blob in blobs {
+                let (center, radii) = blob;
+                let lo = ((center - radii * 1.35) / step as f32).floor().as_ivec3();
+                let hi = ((center + radii * 1.35) / step as f32).floor().as_ivec3();
+                for cz in lo.z..=hi.z {
+                    for cy in lo.y..=hi.y {
+                        for cx in lo.x..=hi.x {
+                            let c = IVec3::new(cx, cy, cz);
+                            if let Some(leaves) = self.leaf_at((c * step).as_vec3() + half, blob) {
+                                set(&mut grid, c, leaves);
+                            }
+                        }
+                    }
+                }
+            }
+        }
+        grid
     }
 }
 
@@ -284,5 +409,46 @@ fn set_if_air(grid: &mut VoxelGrid, min: IVec3, p: IVec3, id: VoxelId) {
     let l = p - min;
     if grid.contains(l) && matches!(grid.get(l), AIR | block::TUFT) {
         grid.set(l, id);
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// The top ground cell of a coarse column, in coarse cells.
+    fn top(grid: &VoxelGrid, x: i32, z: i32) -> Option<i32> {
+        (0..grid.size().y as i32).rev().find(|y| is_ground(grid.get(IVec3::new(x, *y, z))))
+    }
+
+    #[test]
+    fn coarse_ground_follows_the_fine_ground() {
+        let terrain = Terrain { seed: 1337, flat: false };
+        for step in [2, 4, 8] {
+            let size = UVec3::new(16, (WORLD_HEIGHT / step) as u32, 16);
+            let coarse = terrain.generate_coarse(IVec3::new(-8, 0, 3), size, step);
+            let mut off = 0;
+            for z in 0..16 {
+                for x in 0..16 {
+                    let (wx, wz) = ((x - 8) * step + step / 2, (z + 3) * step + step / 2);
+                    let fine = terrain.height(wx, wz) / step;
+                    let got = top(&coarse, x, z).expect("every column has ground");
+                    off += ((got - fine).abs() > 1) as i32;
+                }
+            }
+            // Steep slopes can differ by more than a cell between a column's mean and
+            // its middle; most columns don't.
+            assert!(off < 16, "step {step}: {off} columns off by more than a cell");
+        }
+    }
+
+    #[test]
+    fn coarse_terrain_has_water_and_trees() {
+        let terrain = Terrain { seed: 1337, flat: false };
+        let grid = terrain.generate_coarse(IVec3::new(-64, 0, -64), UVec3::new(128, 32, 128), 4);
+        let count = |id: VoxelId| grid.cells().iter().filter(|c| **c == id).count();
+        assert!(count(block::WATER) > 0);
+        assert!(block::LEAVES.iter().map(|l| count(*l)).sum::<usize>() > 0);
+        assert!(count(block::BARK[0]) > 0);
     }
 }

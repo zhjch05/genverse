@@ -14,7 +14,7 @@ use genverse_rules::{
 use super::spec::{BuildSpec, BuildStats, VOXEL_SIZE, compile};
 use crate::{
     voxel::{Coarse, DepthBias, Dormant, ModelData, VoxelModel},
-    world::{CHUNK, ChunkLoader, SolidModel, VoxelWorld, ledger::Ledger, lod::VIEW_DISTANCE, terrain::{self, is_solid}},
+    world::{CHUNK, ChunkLoader, SolidModel, VoxelWorld, ledger::Ledger, terrain::{self, is_solid}},
 };
 
 pub struct Draft {
@@ -492,6 +492,11 @@ pub fn placement_for_hit(world: &VoxelWorld, point: Vec3, normal: Vec3, size: Ve
 /// at half resolution, which their small voxels hide at that distance.
 const DETAIL_DISTANCE: f32 = 40.0;
 
+/// Builds this close (plus their own size) are drawn; farther ones sleep. Less than the
+/// terrain's view: past this, a build's small voxels are a few pixels, and waking every
+/// build that far would cost more than the terrain does.
+const BUILD_DISTANCE: f32 = 160.0;
+
 /// Builds out of view go [`Dormant`] (no meshes or lights) and wake as the hero comes
 /// near, like terrain chunks, and far ones are drawn [`Coarse`], so drawing them costs
 /// what is in view, and less the farther it is. Margins keep a build at an edge from
@@ -511,9 +516,9 @@ pub fn stream_creations(
         // However the build sits around its origin, it's within its diagonal of it.
         let size = creation.size.length();
         let mut e = commands.entity(entity);
-        if dormant && distance <= VIEW_DISTANCE + size {
+        if dormant && distance <= BUILD_DISTANCE + size {
             e.remove::<Dormant>();
-        } else if !dormant && distance > VIEW_DISTANCE + size + margin {
+        } else if !dormant && distance > BUILD_DISTANCE + size + margin {
             e.insert(Dormant);
         }
         if coarse && distance <= DETAIL_DISTANCE + size {
@@ -537,7 +542,7 @@ mod stream_tests {
         let far = app.world_mut().spawn((Creation { size }, Transform::from_xyz(200.0, 0.0, 0.0))).id();
         let near = app.world_mut().spawn((Creation { size }, Transform::from_xyz(10.0, 0.0, 0.0), Dormant)).id();
         // Just past the view, inside the margin: stays as it is.
-        let edge = app.world_mut().spawn((Creation { size }, Transform::from_xyz(VIEW_DISTANCE + 10.0, 0.0, 0.0))).id();
+        let edge = app.world_mut().spawn((Creation { size }, Transform::from_xyz(BUILD_DISTANCE + 10.0, 0.0, 0.0))).id();
         let draft = app.world_mut().spawn((Creation { size }, DraftMarker, Transform::from_xyz(300.0, 0.0, 0.0))).id();
         app.update();
         let world = app.world();
