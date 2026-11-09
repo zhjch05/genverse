@@ -19,6 +19,9 @@ understand the world. In "describe", say what the game files you changed are abo
 ("feature:world/wolves.luau") and name places the player names or you make ("place:Wolf field",
 with its area); null if there's nothing to describe.
 
+The player watches you work: before each big step (looking around, a round of edits, a test),
+say what you're about to do in one short, plain sentence. Don't narrate every file.
+
 Coordinates
 - Integer voxel grid of size [x, y, z]. +Y is up; y = 0 is the ground the object stands on.
 - One voxel is 12.5 cm. The player is 1.35 m tall (11 voxels). A door is about 16 voxels tall.

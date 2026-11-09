@@ -27,6 +27,8 @@ mod prefs;
 mod presence;
 mod prompt;
 mod runner;
+mod stream;
+mod activity;
 mod settings;
 mod theme;
 use genverse_rules::build as spec;
@@ -187,7 +189,8 @@ struct Chat {
     provider: Provider,
     input: String,
     messages: Vec<Message>,
-    status: String,
+    /// What the agent has done and said so far on the request it's working on.
+    activity: activity::Feed,
     pending: Option<Pending>,
     /// Set by the T/Enter shortcuts; the panel focuses the input on its next frame.
     focus_input: bool,
@@ -231,7 +234,7 @@ impl Default for Chat {
                     .into(),
                 at: Instant::now(),
             }],
-            status: String::new(),
+            activity: activity::Feed::default(),
             pending: None,
             focus_input: false,
             name: None,
@@ -270,7 +273,7 @@ impl Chat {
         restore: bool,
     ) {
         let job = runner::start(provider, prompt::system(tools.is_some(), rules), request, tools, workspace::current());
-        self.status = format!("{} is working…", provider.label());
+        self.activity = activity::Feed::default();
         self.pending = Some(Pending { job: Mutex::new(job), provider, prompt, repairs, restore });
     }
 
@@ -593,23 +596,26 @@ fn poll_agent(
         return;
     };
     let mut finished = None;
-    let mut status = None;
+    let mut activities = Vec::new();
     if let Ok(job) = pending.job.lock() {
         while let Ok(event) = job.events.try_recv() {
             match event {
-                AgentEvent::Status(s) => status = Some(format!("{} — {s} ({}s)", pending.provider.label(), job.started.elapsed().as_secs())),
+                AgentEvent::Activity(activity) => activities.push(activity),
                 AgentEvent::Finished(result) => finished = Some(*result),
             }
         }
     }
-    if let Some(status) = status {
-        chat.status = status;
+    for activity in activities {
+        chat.activity.apply(activity);
     }
     let Some(result) = finished else {
         return;
     };
     let pending = chat.pending.take().expect("checked above");
-    chat.status.clear();
+    // The feed folds into one line once the work is over.
+    if let Some(worked) = chat.activity.summary() {
+        chat.say(Role::System, worked);
+    }
 
     // An unchanged revision draft goes back to being the original build.
     let mut keep_original = |creations: &mut Creations, chat: &mut Chat| {
@@ -2123,6 +2129,11 @@ fn chat_panel(
                 .show(ui, |ui| {
                     ui.add_space(8.0);
                     show_messages(ui, &chat.messages, &me, mine);
+                    if let Some(pending) = &chat.pending {
+                        let (name, color) = sender(&Role::Agent(pending.provider.label()), &me, mine, p);
+                        ui.add_space(12.0);
+                        chat.activity.show(ui, &name, color);
+                    }
                     ui.add_space(12.0);
                 });
         });

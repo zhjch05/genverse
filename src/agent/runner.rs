@@ -23,6 +23,7 @@ use serde_json::Value;
 use super::{
     mcp::{McpServer, SERVER_NAME},
     spec::{AgentAnswer, SCHEMA},
+    stream::{Activity, Stream},
 };
 
 /// How long one request may take. A world game is designed, built and played through
@@ -47,7 +48,8 @@ impl Provider {
 }
 
 pub enum AgentEvent {
-    Status(String),
+    /// Something it did or said while working, as it happens.
+    Activity(Activity),
     Finished(Box<Result<AgentAnswer, String>>),
 }
 
@@ -55,7 +57,6 @@ pub enum AgentEvent {
 pub struct AgentJob {
     pub events: Receiver<AgentEvent>,
     cancel: Arc<AtomicBool>,
-    pub started: Instant,
 }
 
 impl AgentJob {
@@ -82,7 +83,7 @@ pub fn start(provider: Provider, system: String, prompt: String, tools: Option<&
         let result = run(provider, &system, &prompt, tools.as_ref(), folder, &tx, &flag);
         let _ = tx.send(AgentEvent::Finished(Box::new(result)));
     });
-    AgentJob { events: rx, cancel, started: Instant::now() }
+    AgentJob { events: rx, cancel }
 }
 
 fn scratch_dir() -> Result<PathBuf, String> {
@@ -108,7 +109,8 @@ fn run(
     match provider {
         Provider::Claude => {
             cmd = Command::new("claude");
-            cmd.args(["-p", prompt, "--output-format", "stream-json", "--verbose"])
+            // Partial messages: what it says arrives as it's written, for the live feed.
+            cmd.args(["-p", prompt, "--output-format", "stream-json", "--verbose", "--include-partial-messages"])
                 .args(["--json-schema", SCHEMA, "--system-prompt", system])
                 .args(["--strict-mcp-config", "--setting-sources", ""])
                 .args(["--disable-slash-commands", "--no-session-persistence"]);
@@ -194,6 +196,7 @@ fn run(
     let deadline = Instant::now() + TIMEOUT;
     let mut answer: Option<Value> = None;
     let mut failure: Option<String> = None;
+    let mut stream = Stream::new(&dir);
     loop {
         if cancel.load(Ordering::Relaxed) || Instant::now() > deadline {
             let _ = child.kill();
@@ -208,50 +211,30 @@ fn run(
         let Ok(event) = serde_json::from_str::<Value>(&line) else {
             continue;
         };
-        match provider {
-            Provider::Claude => match event["type"].as_str() {
-                Some("assistant") => {
-                    let tool = event["message"]["content"]
-                        .as_array()
-                        .and_then(|c| c.iter().find(|b| b["type"] == "tool_use"))
-                        .and_then(|b| b["name"].as_str());
-                    let status = match tool {
-                        Some(name) if name.starts_with("mcp__") => {
-                            format!("using {}…", name.rsplit("__").next().unwrap_or(name))
-                        }
-                        Some("Read" | "Glob" | "Grep") => "looking around the world…".into(),
-                        Some("Edit" | "Write") => "editing the game…".into(),
-                        _ => "designing…".into(),
-                    };
-                    let _ = tx.send(AgentEvent::Status(status));
+        let activities = match provider {
+            Provider::Claude => stream.claude(&event),
+            Provider::Codex => stream.codex(&event),
+        };
+        for activity in activities {
+            let _ = tx.send(AgentEvent::Activity(activity));
+        }
+        match (provider, event["type"].as_str()) {
+            (Provider::Claude, Some("result")) => {
+                if event["is_error"].as_bool() == Some(true) {
+                    let why = event["result"].as_str().map(str::to_string).unwrap_or_else(|| {
+                        let kind = event["subtype"].as_str().unwrap_or("error");
+                        format!("Claude reported an error ({kind}: {})", event["errors"].to_string().chars().take(300).collect::<String>())
+                    });
+                    failure = Some(why);
+                } else {
+                    answer = Some(event["structured_output"].clone());
                 }
-                Some("result") => {
-                    if event["is_error"].as_bool() == Some(true) {
-                        let why = event["result"].as_str().map(str::to_string).unwrap_or_else(|| {
-                            let kind = event["subtype"].as_str().unwrap_or("error");
-                            format!("Claude reported an error ({kind}: {})", event["errors"].to_string().chars().take(300).collect::<String>())
-                        });
-                        failure = Some(why);
-                    } else {
-                        answer = Some(event["structured_output"].clone());
-                    }
-                }
-                _ => {}
-            },
-            Provider::Codex => match event["type"].as_str() {
-                Some("item.completed") if event["item"]["type"] == "reasoning" => {
-                    let _ = tx.send(AgentEvent::Status("thinking…".into()));
-                }
-                Some("item.started") if event["item"]["type"] == "mcp_tool_call" => {
-                    let tool = event["item"]["tool"].as_str().unwrap_or("a tool");
-                    let _ = tx.send(AgentEvent::Status(format!("using {tool}…")));
-                }
-                Some("turn.failed") | Some("error") => {
-                    let message = event["error"]["message"].as_str().or(event["message"].as_str());
-                    failure = Some(message.unwrap_or("Codex reported an error").to_string());
-                }
-                _ => {}
-            },
+            }
+            (Provider::Codex, Some("turn.failed" | "error")) => {
+                let message = event["error"]["message"].as_str().or(event["message"].as_str());
+                failure = Some(message.unwrap_or("Codex reported an error").to_string());
+            }
+            _ => {}
         }
     }
     let status = child.wait().map_err(|e| e.to_string())?;
