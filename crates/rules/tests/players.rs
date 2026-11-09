@@ -2,7 +2,7 @@
 //! land changes), through the log: checked, all or nothing, and charged to whoever
 //! installed the game.
 
-use cubewish_rules::{
+use genverse_rules::{
     log::{Action, Provenance, Snapshot, WorldLog, replay, replay_from},
     logic::{
         EntityId, Intent, Scope, Ui,

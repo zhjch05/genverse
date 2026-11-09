@@ -1,4 +1,4 @@
-//! The wire protocol between Cubewish clients and a server.
+//! The wire protocol between Genverse clients and a server.
 //!
 //! A server hosts one game: its worlds, each with its own change log, and the game's
 //! own log (which worlds there are, who runs it). Each player is in one world at a
@@ -25,7 +25,7 @@ use std::{
     time::Duration,
 };
 
-use cubewish_rules::{
+use genverse_rules::{
     game::{GameAction, GameLog},
     log::{Action, Change, Provenance, RULES_VERSION, Snapshot, WorldLog},
     logic::Package,
@@ -128,7 +128,7 @@ pub enum ToClient {
 
 /// What a player signs to log in.
 pub fn hello_bytes(nonce: &str, player: &str, name: &str) -> Vec<u8> {
-    format!("cubewish hello {nonce} {player} {name}").into_bytes()
+    format!("genverse hello {nonce} {player} {name}").into_bytes()
 }
 
 /// Writes one message as a line.

@@ -9,8 +9,8 @@ cargo build
 python3 evals/run.py <saves folder holding the world> <out folder> [ids...]
 ```
 
-Each request runs in its own copy of the world (`CUBEWISH_EVAL_WORLD`, default
-`valley`), four at a time (`CUBEWISH_EVAL_JOBS`). `<out>/<id>/summary.txt` has the
+Each request runs in its own copy of the world (`GENVERSE_EVAL_WORLD`, default
+`valley`), four at a time (`GENVERSE_EVAL_JOBS`). `<out>/<id>/summary.txt` has the
 agent's reply and its `test_game` runs; `run.log` and `saves/` have the rest.
 
 ## Baseline, 2026-11-09

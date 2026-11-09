@@ -1,7 +1,7 @@
 //! The engine can carry a real game: Sokoban, written as a package script, played
 //! through the log and replayed.
 
-use cubewish_rules::{
+use genverse_rules::{
     log::{Action, Provenance, Replay, WORLD, WorldLog, replay},
     logic::{
         EntityId, Intent, Scope,
@@ -39,7 +39,7 @@ pub fn models() -> Vec<ModelSpec> {
 /// `player` stands at `at` when the world's clock runs at `now`, as a server sees them:
 /// regions they walk into hear about it.
 fn stand(log: &mut WorldLog, player: &str, at: [f32; 3], now: u64) {
-    use cubewish_rules::logic::{Clockwork, Effect, Ground, LogicRules, TimerHost};
+    use genverse_rules::logic::{Clockwork, Effect, Ground, LogicRules, TimerHost};
     struct Host<'a> {
         log: &'a mut WorldLog,
         state: Replay,
@@ -50,7 +50,7 @@ fn stand(log: &mut WorldLog, player: &str, at: [f32; 3], now: u64) {
         }
     }
     impl TimerHost for Host<'_> {
-        fn logic(&self) -> &cubewish_rules::logic::Logic {
+        fn logic(&self) -> &genverse_rules::logic::Logic {
             &self.state.logic
         }
         fn next_change(&self) -> u64 {
@@ -101,7 +101,7 @@ fn sokoban_plays_through_the_log() {
     let state = replay(&log);
     assert!(state.problems.is_empty(), "{:?}", state.problems);
     let game = &state.logic.state;
-    let label = |game: &cubewish_rules::logic::GameState| game.get(board).unwrap().components["label"].clone();
+    let label = |game: &genverse_rules::logic::GameState| game.get(board).unwrap().components["label"].clone();
     assert_eq!(label(game), "Sokoban · solved!");
     // 6×8 board: 1 floor/zone + 24 walls + 2 targets + 2 boxes + the pawn.
     assert_eq!(game.len(), 30);
@@ -124,7 +124,7 @@ fn sokoban_plays_through_the_log() {
 fn trials_show_what_a_package_does() {
     let package = sokoban().to_package(1);
     let steps: Vec<String> = ["place board", "east", "east", "jump"].iter().map(|s| s.to_string()).collect();
-    let report = cubewish_rules::logic::trial::play(&package, &steps);
+    let report = genverse_rules::logic::trial::play(&package, &steps);
     println!("{report}");
     // The board, 24 walls, 2 targets and 2 boxes.
     assert!(report.contains("1. place board: ok, 29 change(s)"), "{report}");
@@ -134,6 +134,6 @@ fn trials_show_what_a_package_does() {
     assert!(report.contains("  w...@b.w"), "the pushed box shows on the map:\n{report}");
     let mut broken = sokoban();
     broken.scripts[0].source = "function on_place(ev) spawn(ev.pos, { look = { model = 'barrel' } }) end".into();
-    let report = cubewish_rules::logic::trial::play(&broken.to_package(1), &steps[..1]);
+    let report = genverse_rules::logic::trial::play(&broken.to_package(1), &steps[..1]);
     assert!(report.contains("REFUSED") && report.contains("models (box, floor, target, wall)"), "{report}");
 }

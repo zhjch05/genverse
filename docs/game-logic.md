@@ -201,7 +201,7 @@ Game logic takes the same path as builds today:
 4. The server puts it in order, records it in the log, and others see it.
 
 Builds are already like this: `BuildSpec` and `TerrainSpec` are checked in
-`cubewish_rules`, and `Action::PlaceBuild` / `Action::Terrain` in
+`genverse_rules`, and `Action::PlaceBuild` / `Action::Terrain` in
 [`log.rs`](../crates/rules/src/log.rs) record them. Game logic adds new kinds of spec
 and new `Action`s. It does not add a second path.
 
@@ -218,7 +218,7 @@ and new `Action`s. It does not add a second path.
 
 ### 1. Kernel (Rust, trusted)
 
-General building blocks in `cubewish_rules`. Every genre is put together from them,
+General building blocks in `genverse_rules`. Every genre is put together from them,
 and none of them is specific to one genre:
 
 | Building block | Used for |
@@ -428,7 +428,7 @@ for what to add to the kernel next.
 
 ## Phases
 
-1. **Kernel and log.** Entity/component store in `cubewish_rules`, the world clock,
+1. **Kernel and log.** Entity/component store in `genverse_rules`, the world clock,
    `Action::Intent`, `InstallPackage` and the package store.
 2. **Data-only packages.** Items, crops, creatures, NPCs and shops. No scripts yet.
    (Since retired, except items: scripts do the rest.)

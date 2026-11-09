@@ -34,7 +34,7 @@ game": ask for things, one at a time, the way you'd play with a level editor, an
 Start an empty world (made flat the first time):
 
 ```sh
-CUBEWISH_WORLD=valley cargo run
+GENVERSE_WORLD=valley cargo run
 ```
 
 Press `T` and send these one by one, waiting for each answer (a few minutes: the agent plays
@@ -81,7 +81,7 @@ What to check every time:
 - **History.** `H` lists each version as a change; quitting and starting again keeps it all.
 
 A scripted run of the same, each prompt sent when the one before is answered:
-`CUBEWISH_WORLD=valley CUBEWISH_PROMPT="first request || second request || third" cargo run`.
+`GENVERSE_WORLD=valley GENVERSE_PROMPT="first request || second request || third" cargo run`.
 
 ### The inventory
 
@@ -116,7 +116,7 @@ Two copies of the game on one computer:
 
 ```sh
 cargo run                     # you: /host (or the Game window's Games tab, Host)
-CUBEWISH_AS=Bo CUBEWISH_SERVER=127.0.0.1 cargo run    # Bo, a guest, not an admin
+GENVERSE_AS=Bo GENVERSE_SERVER=127.0.0.1 cargo run    # Bo, a guest, not an admin
 ```
 
 Then, in the hosted game (with the valley's logic, or any):
@@ -134,15 +134,15 @@ The game can play itself; useful after a change:
 
 ```sh
 # Ask for something, then walk east, hit what's in reach, and take a screenshot.
-CUBEWISH_WORLD=valley CUBEWISH_PROMPT="wolves in the field 20 m east of me" \
-  CUBEWISH_PLAY="wait 3; go 15 0; wait 4; hit" \
-  CUBEWISH_SHOT=valley.png CUBEWISH_SHOT_AFTER=540 cargo run
+GENVERSE_WORLD=valley GENVERSE_PROMPT="wolves in the field 20 m east of me" \
+  GENVERSE_PLAY="wait 3; go 15 0; wait 4; hit" \
+  GENVERSE_SHOT=valley.png GENVERSE_SHOT_AFTER=540 cargo run
 ```
 
-`CUBEWISH_PLAY` steps: `go <x> <z>` (puts the hero there), `wait <s>`, `use` (E on the
+`GENVERSE_PLAY` steps: `go <x> <z>` (puts the hero there), `wait <s>`, `use` (E on the
 nearest piece), `hit` (F), `place` (puts down what's in hand) or an item name, a key
-(`north`, `east`, …; sent to the region with keys the hero stands in), `choose <id>`, `close`, `portal`. `CUBEWISH_KEEP=1` places the
-agent's build without a click; `CUBEWISH_SHOW_REQUEST=1` logs what the agent is told.
+(`north`, `east`, …; sent to the region with keys the hero stands in), `choose <id>`, `close`, `portal`. `GENVERSE_KEEP=1` places the
+agent's build without a click; `GENVERSE_SHOW_REQUEST=1` logs what the agent is told.
 
 ## What to look for when something's off
 

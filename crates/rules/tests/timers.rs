@@ -1,7 +1,7 @@
 //! Games move on their own through timers: they go off live, what they do lands in the
 //! log, and replay applies it without running them again.
 
-use cubewish_rules::{
+use genverse_rules::{
     log::{Action, Provenance, Snapshot, WORLD, WorldLog, replay, replay_from},
     logic::{
         Clockwork, Effect, EntityId, Intent, LogicRules, Scope, TimerHost,
@@ -99,15 +99,15 @@ fn run(clock: &mut Clockwork, log: &mut WorldLog, now: u64, players: &[[f32; 3]]
     /// A world as a server keeps it: the log, and its replay.
     struct Host<'a> {
         log: &'a mut WorldLog,
-        state: cubewish_rules::log::Replay,
+        state: genverse_rules::log::Replay,
     }
-    impl cubewish_rules::logic::Ground for Host<'_> {
+    impl genverse_rules::logic::Ground for Host<'_> {
         fn heights(&self, min: [i32; 2], step: i32, count: [i32; 2]) -> Option<Vec<Option<i32>>> {
             self.state.heights(min, step, count)
         }
     }
     impl TimerHost for Host<'_> {
-        fn logic(&self) -> &cubewish_rules::logic::Logic {
+        fn logic(&self) -> &genverse_rules::logic::Logic {
             &self.state.logic
         }
         fn next_change(&self) -> u64 {
@@ -229,7 +229,7 @@ fn a_failing_timer_stops_and_the_others_run() {
     log.push(by("admin", 100), Action::InstallPackage { package: reference, scope: Scope::World });
     log.push(by("ada", 100), Action::Intent { intent: Intent::Place { item: "lamp:lamp".into(), position: [0.0; 3] } });
     let state = replay(&log);
-    let fired = Clockwork::new(100).fire(&state.logic, &cubewish_rules::logic::NoGround, "lamp", 3, 101, 7, &LogicRules::default(), &[], &[]);
+    let fired = Clockwork::new(100).fire(&state.logic, &genverse_rules::logic::NoGround, "lamp", 3, 101, 7, &LogicRules::default(), &[], &[]);
     assert_eq!(fired.notes, vec![("ada".to_string(), "fine".to_string())]);
     assert_eq!(fired.errors.len(), 2, "{:?}", fired.errors);
     assert!(fired.errors[0].contains("\"broken\" stopped") && fired.errors[0].contains("oops"));

@@ -5,8 +5,8 @@ use std::{
     time::{Duration, SystemTime, UNIX_EPOCH},
 };
 
-use cubewish_net::{Client, ClientEvent, ToClient, ToServer};
-use cubewish_rules::{
+use genverse_net::{Client, ClientEvent, ToClient, ToServer};
+use genverse_rules::{
     identity::Keypair,
     log::{Action, BuildState, Provenance, signing_bytes},
     logic::{
@@ -14,7 +14,7 @@ use cubewish_rules::{
         data::{DefSpec, GameSpec, ModelSpec, ScriptSpec},
     },
 };
-use cubewish_server::{ServerConfig, start};
+use genverse_server::{ServerConfig, start};
 
 struct Player {
     key: Keypair,
@@ -80,7 +80,7 @@ fn pond() -> Action {
     });
     Action::Terrain {
         name: "Pond".into(),
-        area: cubewish_rules::sculpt::Area { min: [400, 400], size: [24, 24] },
+        area: genverse_rules::sculpt::Area { min: [400, 400], size: [24, 24] },
         spec: serde_json::from_value(serde_json::json!({ "name": "Pond", "ops": [op] })).unwrap(),
         changed: 500,
     }
@@ -88,7 +88,7 @@ fn pond() -> Action {
 
 #[test]
 fn two_players_share_one_ordered_world() {
-    let dir = std::env::temp_dir().join(format!("cubewish-server-test-{}", std::process::id()));
+    let dir = std::env::temp_dir().join(format!("genverse-server-test-{}", std::process::id()));
     let _ = std::fs::remove_dir_all(&dir);
     let server = start(ServerConfig { data_dir: dir.clone(), port: 0, seed: 1337, flat: false }).unwrap();
     let addr = server.addr.to_string();
@@ -139,14 +139,14 @@ fn two_players_share_one_ordered_world() {
     };
     let edits: std::collections::HashMap<_, _> = fetched
         .iter()
-        .flat_map(|(_, e)| e.iter().map(|[x, y, z, id]| (cubewish_rules::IVec3::new(*x, *y, *z), *id as u8)))
+        .flat_map(|(_, e)| e.iter().map(|[x, y, z, id]| (genverse_rules::IVec3::new(*x, *y, *z), *id as u8)))
         .collect();
-    let chunks: Vec<_> = prints.iter().map(|(c, _)| cubewish_rules::IVec3::from_array(*c)).collect();
-    assert_eq!(cubewish_rules::log::chunk_prints(&edits, &chunks), prints);
+    let chunks: Vec<_> = prints.iter().map(|(c, _)| genverse_rules::IVec3::from_array(*c)).collect();
+    assert_eq!(genverse_rules::log::chunk_prints(&edits, &chunks), prints);
 
     // Presence goes to others, never to the sender, and isn't kept. It carries a rename
     // and a marker color made after joining.
-    let here = cubewish_net::Presence {
+    let here = genverse_net::Presence {
         position: [1.0, 2.0, 3.0],
         status: Some("designing".into()),
         name: "Ada L.".into(),
@@ -169,7 +169,7 @@ fn two_players_share_one_ordered_world() {
     let again = start(ServerConfig { data_dir: dir.clone(), port: 0, seed: 1337, flat: false }).unwrap();
     let dee = Player::join(&again.addr.to_string(), 4, "Dee");
     drop(dee);
-    let saved = cubewish_rules::store::LogFile::open(&dir.join("worlds/main")).unwrap().1.unwrap();
+    let saved = genverse_rules::store::LogFile::open(&dir.join("worlds/main")).unwrap().1.unwrap();
     assert_eq!(saved.changes.len(), 3);
     assert!(saved.changes.iter().all(|c| c.verified()));
     assert!(saved.changes.iter().all(|c| c.by.prompt.is_none()));
@@ -206,7 +206,7 @@ fn models() -> Vec<ModelSpec> {
 
 #[test]
 fn packages_travel_with_the_change_that_installs_them() {
-    let dir = std::env::temp_dir().join(format!("cubewish-packages-{}", std::process::id()));
+    let dir = std::env::temp_dir().join(format!("genverse-packages-{}", std::process::id()));
     let _ = std::fs::remove_dir_all(&dir);
     let server = start(ServerConfig { data_dir: dir.clone(), port: 0, seed: 1337, flat: false }).unwrap();
     let addr = server.addr.to_string();
@@ -241,7 +241,7 @@ fn packages_travel_with_the_change_that_installs_them() {
     };
     assert!(matches!(ada.next(), ToClient::Committed { request: None, .. }));
     // He walks onto it: the server sees him there, and the game gives him his piece.
-    let on_board = cubewish_net::Presence { position: [60.0, 10.0, 60.0], ..Default::default() };
+    let on_board = genverse_net::Presence { position: [60.0, 10.0, 60.0], ..Default::default() };
     bo.client.send(ToServer::Presence(on_board));
     until(&bo, |m| matches!(m, ToClient::Committed { change, request: None, .. } if matches!(&change.action, Action::Timers { package, .. } if package == "sokoban")));
     for (request, key) in [(6, "east"), (7, "east")] {
@@ -255,9 +255,9 @@ fn packages_travel_with_the_change_that_installs_them() {
     // A newcomer gets the package in the log.
     let cy = Player::join(&addr, 3, "Cy");
     drop((ada, bo, cy));
-    let saved = cubewish_rules::store::LogFile::open(&dir.join("worlds/main")).unwrap().1.unwrap();
+    let saved = genverse_rules::store::LogFile::open(&dir.join("worlds/main")).unwrap().1.unwrap();
     assert!(saved.packages.contains_key(&reference.hash));
-    let state = cubewish_rules::log::replay(&saved);
+    let state = genverse_rules::log::replay(&saved);
     assert!(state.problems.is_empty(), "{:?}", state.problems);
     let bo_id = Keypair::from_seed([2; 32]).player_id();
     let game = &state.logic.state;
@@ -269,7 +269,7 @@ fn packages_travel_with_the_change_that_installs_them() {
 
 #[test]
 fn the_server_runs_timers() {
-    let dir = std::env::temp_dir().join(format!("cubewish-timers-{}", std::process::id()));
+    let dir = std::env::temp_dir().join(format!("genverse-timers-{}", std::process::id()));
     let _ = std::fs::remove_dir_all(&dir);
     let server = start(ServerConfig { data_dir: dir.clone(), port: 0, seed: 1337, flat: true }).unwrap();
     let addr = server.addr.to_string();
@@ -307,7 +307,7 @@ fn the_server_runs_timers() {
     for player in [&ada, &bo] {
         match player.next() {
             ToClient::Committed { change, request: None, .. } => {
-                assert_eq!(change.by.player, cubewish_rules::log::WORLD);
+                assert_eq!(change.by.player, genverse_rules::log::WORLD);
                 let Action::Timers { package, effects, .. } = change.action else { panic!("{:?}", change.action) };
                 assert_eq!(package, "bell");
                 assert!(effects.iter().any(|e| matches!(e, Effect::Notify { player, text } if *player == bo_id && text == "Ring!")));
@@ -319,8 +319,8 @@ fn the_server_runs_timers() {
     bo.propose(2, Action::Timers { package: "bell".into(), until: 0, effects: Vec::new() });
     assert!(matches!(bo.next(), ToClient::Rejected { why, .. } if why.contains("only the world")));
     drop((ada, bo));
-    let saved = cubewish_rules::store::LogFile::open(&dir.join("worlds/main")).unwrap().1.unwrap();
-    let state = cubewish_rules::log::replay(&saved);
+    let saved = genverse_rules::store::LogFile::open(&dir.join("worlds/main")).unwrap().1.unwrap();
+    let state = genverse_rules::log::replay(&saved);
     assert!(state.problems.is_empty(), "{:?}", state.problems);
     assert!(state.logic.state.entities().any(|(_, e)| e.components["label"] == "Rang"));
     assert_eq!(state.logic.state.timers().count(), 0);
@@ -329,7 +329,7 @@ fn the_server_runs_timers() {
 
 #[test]
 fn saves_load_for_everyone() {
-    let dir = std::env::temp_dir().join(format!("cubewish-saves-{}", std::process::id()));
+    let dir = std::env::temp_dir().join(format!("genverse-saves-{}", std::process::id()));
     let _ = std::fs::remove_dir_all(&dir);
     let server = start(ServerConfig { data_dir: dir.clone(), port: 0, seed: 1337, flat: true }).unwrap();
     let addr = server.addr.to_string();
@@ -366,8 +366,8 @@ fn saves_load_for_everyone() {
         }
     }
     drop((ada, bo));
-    let saved = cubewish_rules::store::LogFile::open(&dir.join("worlds/main")).unwrap().1.unwrap();
-    let state = cubewish_rules::log::replay(&saved);
+    let saved = genverse_rules::store::LogFile::open(&dir.join("worlds/main")).unwrap().1.unwrap();
+    let state = genverse_rules::log::replay(&saved);
     assert_eq!(state.builds.keys().copied().collect::<Vec<_>>(), vec![1]);
     // What came after the save stays in the history.
     assert!(saved.changes.iter().any(|c| matches!(&c.action, Action::PlaceBuild(b) if b.build == 2)));
@@ -376,8 +376,8 @@ fn saves_load_for_everyone() {
 
 #[test]
 fn a_game_hosts_many_worlds() {
-    use cubewish_rules::game::{GameAction, signing_bytes as game_bytes};
-    let dir = std::env::temp_dir().join(format!("cubewish-game-{}", std::process::id()));
+    use genverse_rules::game::{GameAction, signing_bytes as game_bytes};
+    let dir = std::env::temp_dir().join(format!("genverse-game-{}", std::process::id()));
     let _ = std::fs::remove_dir_all(&dir);
     let server = start(ServerConfig { data_dir: dir.clone(), port: 0, seed: 1337, flat: true }).unwrap();
     let addr = server.addr.to_string();
@@ -426,8 +426,8 @@ fn a_game_hosts_many_worlds() {
     drop((ada, bo));
     // Each world keeps its own log.
     for world in ["main", "arena"] {
-        let log = cubewish_rules::store::LogFile::open(&dir.join("worlds").join(world)).unwrap().1.unwrap();
-        assert_eq!(cubewish_rules::log::replay(&log).builds.len(), 1, "{world}");
+        let log = genverse_rules::store::LogFile::open(&dir.join("worlds").join(world)).unwrap().1.unwrap();
+        assert_eq!(genverse_rules::log::replay(&log).builds.len(), 1, "{world}");
     }
     let _ = std::fs::remove_dir_all(&dir);
 }
@@ -445,8 +445,8 @@ fn until(p: &Player, mut matches: impl FnMut(&ToClient) -> bool) -> ToClient {
 
 #[test]
 fn items_and_rules_follow_the_game() {
-    use cubewish_rules::game::{GameAction, signing_bytes as game_bytes};
-    let dir = std::env::temp_dir().join(format!("cubewish-follow-{}", std::process::id()));
+    use genverse_rules::game::{GameAction, signing_bytes as game_bytes};
+    let dir = std::env::temp_dir().join(format!("genverse-follow-{}", std::process::id()));
     let _ = std::fs::remove_dir_all(&dir);
     let server = start(ServerConfig { data_dir: dir.clone(), port: 0, seed: 1337, flat: true }).unwrap();
     let ada = Player::join(&server.addr.to_string(), 1, "Ada");
@@ -495,7 +495,7 @@ fn items_and_rules_follow_the_game() {
     ada.client.send(ToServer::Enter { world: "arena".into() });
     let ToClient::Welcome { log, .. } = until(&ada, |m| matches!(m, ToClient::Welcome { .. })) else { unreachable!() };
     let me = ada.key.player_id();
-    assert_eq!(cubewish_rules::log::replay(&log).logic.state.items(&me, "farm:seed"), 5);
+    assert_eq!(genverse_rules::log::replay(&log).logic.state.items(&me, "farm:seed"), 5);
 
     // A new version of the farm reaches main, which runs it, though nobody is there.
     let v2 = farm(2);
@@ -510,13 +510,13 @@ fn items_and_rules_follow_the_game() {
     let load_by = by();
     let signed = worlds
         .iter()
-        .map(|(w, to)| (w.clone(), ada.key.sign(&signing_bytes(&load_by, &cubewish_rules::game::load_action("start", *to)))))
+        .map(|(w, to)| (w.clone(), ada.key.sign(&signing_bytes(&load_by, &genverse_rules::game::load_action("start", *to)))))
         .collect();
     game_change(10, load_by, GameAction::LoadSave { name: "start".into(), signed });
     drop(ada);
 
-    let world = |name: &str| cubewish_rules::store::LogFile::open(&dir.join("worlds").join(name)).unwrap().1.unwrap();
-    let (main, arena) = (cubewish_rules::log::replay(&world("main")), cubewish_rules::log::replay(&world("arena")));
+    let world = |name: &str| genverse_rules::store::LogFile::open(&dir.join("worlds").join(name)).unwrap().1.unwrap();
+    let (main, arena) = (genverse_rules::log::replay(&world("main")), genverse_rules::log::replay(&world("arena")));
     assert!(main.problems.is_empty() && arena.problems.is_empty(), "{:?} {:?}", main.problems, arena.problems);
     assert_eq!(main.logic.state.items(&me, "farm:seed"), 0);
     assert_eq!(arena.logic.state.items(&me, "farm:seed"), 5);

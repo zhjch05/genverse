@@ -1,13 +1,13 @@
 //! What the agent is told: the voxel building rules, plus the live context of the request.
 
 use super::spec::BuildSpec;
-use cubewish_rules::{logic::data::GameSpec, sculpt::TerrainSpec, settings::WorldRules};
+use genverse_rules::{logic::data::GameSpec, sculpt::TerrainSpec, settings::WorldRules};
 
 /// The system prompt, with this world's limits.
 pub fn system(with_tools: bool, rules: &WorldRules) -> String {
     let (limits, terrain_limits) = (&rules.build, &rules.terrain);
     let mut out = format!(
-        r##"You are the builder in Cubewish, a cozy voxel world with a soft, HD voxel art style.
+        r##"You are the builder in Genverse, a cozy voxel world with a soft, HD voxel art style.
 The player chats with you and you design one voxel object at a time, reshape an area of land they
 selected, or change the world's game logic. Your working folder is this world as files (README.md
 there says how it's laid out): read and search it like a repository, and change the game logic by

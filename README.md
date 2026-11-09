@@ -1,4 +1,4 @@
-# Cubewish
+# Genverse
 
 A small HD voxel game on Bevy 0.20 ECS: an endless, streamed voxel world and a chibi voxel
 hero you walk around in third person. Voxels are small (25 cm terrain, 5 cm characters) and
@@ -16,7 +16,7 @@ Controls: `WASD`/arrows move, `Shift` runs, `Space` jumps, drag to look, scroll 
 
 ## Reshaping the land (desktop)
 
-Cubewish is AI-native: you don't stack 25 cm voxels by hand, you say what the land should
+Genverse is AI-native: you don't stack 25 cm voxels by hand, you say what the land should
 become. Press `G`, drag across the ground to select an area (a click selects a 6 m square, up
 to 48 m a side), then press `T` and describe it: "a pond with sandy banks", "a winding stone
 path to the hill", "terraced hillside with a few trees".
@@ -33,8 +33,8 @@ go into the world's change log as operations, never voxels (see below). The area
 selected for follow-ups; `Esc` clears it. Agents also get a `sample_terrain` tool for a finer
 height map of part of the area.
 
-Script one: `CUBEWISH_AREA=14 CUBEWISH_PROMPT="a small pond" cargo run` selects a 14 m square
-in front of the hero and sends the message (add `CUBEWISH_KEEP=1` to keep the preview).
+Script one: `GENVERSE_AREA=14 GENVERSE_PROMPT="a small pond" cargo run` selects a 14 m square
+in front of the hero and sends the message (add `GENVERSE_KEEP=1` to keep the preview).
 
 There's no hand editing of single voxels: land only changes through these described edits.
 The edits are a sparse layer on top of the world seed (`src/world/mod.rs`): chunks apply them
@@ -43,11 +43,11 @@ background. Agents' `get_build_site` sees the reshaped terrain too.
 
 ## Games (desktop)
 
-Cubewish has a small game engine that admins program by talking to their agent. Start an
+Genverse has a small game engine that admins program by talking to their agent. Start an
 empty world and ask for a game:
 
 ```sh
-CUBEWISH_WORLD=sokoban cargo run   # a world of your game, flat and empty if it's new
+GENVERSE_WORLD=sokoban cargo run   # a world of your game, flat and empty if it's new
 ```
 
 Then press `T`: "make a basic Sokoban game". The agent answers with a *package*: definitions,
@@ -106,14 +106,14 @@ and installs it for the whole world, live (`crates/rules/src/logic`, design in
   scripts, and a package travels with the change that installs it.
 - `/packages` lists the world's games; admins can `/uninstall <name>` one (its pieces stay,
   asleep).
-- A dedicated server's first world is flat with `--flat` (`CUBEWISH_SERVER=host cargo run`
+- A dedicated server's first world is flat with `--flat` (`GENVERSE_SERVER=host cargo run`
   joins it; the ground follows whichever world you're in).
-- Script a run: `CUBEWISH_WORLD=s CUBEWISH_PROMPT="wolves 20 m east of me" CUBEWISH_PLAY="go 15 0;
+- Script a run: `GENVERSE_WORLD=s GENVERSE_PROMPT="wolves 20 m east of me" GENVERSE_PLAY="go 15 0;
   wait 4; hit" cargo run`. It waits for the agent, then plays the steps.
 
 ## An open world, kept as a log
 
-Cubewish is heading for shared, open worlds: anyone can build and reshape land with their own
+Genverse is heading for shared, open worlds: anyone can build and reshape land with their own
 agent, nothing is lost, and every change says who made it. Everything below works the same in
 single player and on a server.
 
@@ -135,7 +135,7 @@ made it, which agent did if one did, a hash of the request, and when. A selected
 - **Saves are swapped in, not replayed.** A save keeps the world's state as of it
   (`states/<change>.json`); loading it (admins) is a change that carries that state. The world
   is saved first ("before loading …"), so loading that brings it back.
-- **Each world sets its own rules** (`cubewish_rules::settings`), kept in the log so replay
+- **Each world sets its own rules** (`genverse_rules::settings`), kept in the log so replay
   always applies the rules of the time: land mode, spawn, limits on one build or land change,
   budgets, and rate limits.
   - **Land:** open by default, so anyone changes anything outside the protected spawn (24 m
@@ -158,8 +158,8 @@ undo); admins can also **Load** a save.
 Chat commands do the same and more: `/history [n]`, `/undo <id>`, `/rules`,
 `/verify`, `/host`, `/join <host[:port]>`, `/play`, `/leave`, and for admins `/load <save>`, `/land open|parcels`,
 `/rate <changes per minute> [voxels per 10 minutes]` or `/rate off`. Try them from someone else's
-side with `CUBEWISH_AS=Bo cargo run`, a non-admin guest for one run; script them with
-`CUBEWISH_PROMPT="/rate 5; /history"`.
+side with `GENVERSE_AS=Bo cargo run`, a non-admin guest for one run; script them with
+`GENVERSE_PROMPT="/rate 5; /history"`.
 
 **Saves** work like a strategy game's, on a world everyone shares: `/save <name>` bookmarks
 the world as it is (anyone can), `/saves` lists them, and an admin's `/load <name>` puts the
@@ -197,7 +197,7 @@ Two ways to host:
 - **A dedicated server**, for a world that's always up:
 
   ```sh
-  cargo run --release -p cubewish_server -- --port 7878 --data server-data
+  cargo run --release -p genverse_server -- --port 7878 --data server-data
   ```
 
   It's a small program with no graphics (only the rules and protocol crates), so it runs on any
@@ -215,7 +215,7 @@ announcements; typing the address still works then. The first time you host, all
 connections if macOS asks.
 
 To join by address, type `host` or `host:port` next to **Join** in the panel, or use `/join host`, or
-start with `CUBEWISH_SERVER=host cargo run`. **Leave** (`/leave`) goes back to your local world.
+start with `GENVERSE_SERVER=host cargo run`. **Leave** (`/leave`) goes back to your local world.
 If the connection drops, the game reconnects by itself and works out which of your changes
 in flight reached the server. A game and server with different world rules refuse to play
 together instead of drifting apart.
@@ -296,14 +296,14 @@ can bump into and stand on them) and recorded in the world's change log.
 - Every build passes the same limits a server would enforce (`crates/rules/src/build.rs`):
   size ≤ 64³ voxels at 12.5 cm, ≤ 200 shapes, ≤ 24 colors, ≤ 120k voxels, ≤ 60k visible
   faces, ≤ 3k glowing voxels. A rejected build is sent back to the agent once for a fix.
-- Script a build: `CUBEWISH_PROMPT="a red mailbox" CUBEWISH_AGENT=codex cargo run`
-  (add `CUBEWISH_SELECT_LAST=1` to revise the most recent build instead).
+- Script a build: `GENVERSE_PROMPT="a red mailbox" GENVERSE_AGENT=codex cargo run`
+  (add `GENVERSE_SELECT_LAST=1` to revise the most recent build instead).
 
 ## How it fits together
 
 | Piece | Where | Role |
 | --- | --- | --- |
-| World rules | `crates/rules/` (`cubewish_rules`) | Everything that decides what the world is, with no rendering, so a server can share it: voxel models, the terrain generator (`terrain.rs`), terrain changes (`sculpt.rs`), build specs (`build.rs`), the change log and replay (`log.rs`), world rules (`settings.rs`), land (`land.rs`), budgets (`budget.rs`), rate limits (`rate.rs`), player keys (`identity.rs`) |
+| World rules | `crates/rules/` (`genverse_rules`) | Everything that decides what the world is, with no rendering, so a server can share it: voxel models, the terrain generator (`terrain.rs`), terrain changes (`sculpt.rs`), build specs (`build.rs`), the change log and replay (`log.rs`), world rules (`settings.rs`), land (`land.rs`), budgets (`budget.rs`), rate limits (`rate.rs`), player keys (`identity.rs`) |
 | World streaming | `src/world/mod.rs` | Generates and meshes 32³ chunks around each `ChunkLoader` on the async pool; answers voxel queries for collision |
 | Change log | `src/world/ledger.rs` | Loads, migrates, records and saves the log; the player profile; live land and budgets |
 | Protocol | `crates/net` | Client/server messages, the game's background connection, and finding games on the local network (`lan.rs`) |
@@ -329,4 +329,4 @@ On native, saving a model while the game runs reloads it live.
 `assets/models/sakura_island.vox.ron` is the earlier showcase model, kept as a format example;
 spawn it with `VoxelModelSource(asset_server.load("models/sakura_island.vox.ron"))`.
 
-To render a still: `CUBEWISH_SHOT=shot.png CUBEWISH_YAW=0.2 CUBEWISH_PITCH=0.4 cargo run`.
+To render a still: `GENVERSE_SHOT=shot.png GENVERSE_YAW=0.2 GENVERSE_PITCH=0.4 cargo run`.

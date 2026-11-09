@@ -244,7 +244,7 @@ mod tests {
 
     #[test]
     fn appends_and_reads_back() {
-        let dir = std::env::temp_dir().join(format!("cubewish-store-{}", std::process::id()));
+        let dir = std::env::temp_dir().join(format!("genverse-store-{}", std::process::id()));
         let _ = fs::remove_dir_all(&dir);
         fs::create_dir_all(&dir).unwrap();
         let mut log = WorldLog::new(9);

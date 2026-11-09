@@ -21,7 +21,7 @@ use crate::{
     voxel::VoxelId,
     world::{VoxelWorld, ledger::Ledger},
 };
-use cubewish_rules::log::Action;
+use genverse_rules::log::Action;
 
 /// How many changes the panel lists at once.
 const PAGE: usize = 200;
@@ -38,7 +38,7 @@ enum Pick {
     Load(u64),
 }
 
-/// H opens and closes it; `CUBEWISH_HISTORY=1` opens it at start.
+/// H opens and closes it; `GENVERSE_HISTORY=1` opens it at start.
 pub fn toggle_history(
     keys: Res<ButtonInput<KeyCode>>,
     blocked: Res<InputBlocked>,
@@ -47,7 +47,7 @@ pub fn toggle_history(
 ) {
     if !*started {
         *started = true;
-        history.open = std::env::var("CUBEWISH_HISTORY").is_ok();
+        history.open = std::env::var("GENVERSE_HISTORY").is_ok();
     }
     if !blocked.0 && keys.just_pressed(KeyCode::KeyH) {
         history.open = !history.open;

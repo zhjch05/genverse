@@ -17,7 +17,7 @@ use std::time::SystemTime;
 
 use bevy::prelude::*;
 use bevy_egui::{EguiContexts, egui};
-use cubewish_rules::{
+use genverse_rules::{
     build::VOXEL_SIZE as BUILD_VOXEL,
     game::GameAction,
     log::{Action, BuildState, PortalTo},
@@ -362,11 +362,11 @@ impl WorldsWindow {
     }
 }
 
-/// O opens and closes it; `CUBEWISH_WORLDS=1` opens it at start.
+/// O opens and closes it; `GENVERSE_WORLDS=1` opens it at start.
 pub fn toggle_worlds(keys: Res<ButtonInput<KeyCode>>, blocked: Res<InputBlocked>, mut window: ResMut<WorldsWindow>, mut started: Local<bool>) {
     if !*started {
         *started = true;
-        window.open = std::env::var("CUBEWISH_WORLDS").is_ok();
+        window.open = std::env::var("GENVERSE_WORLDS").is_ok();
     }
     if !blocked.0 && keys.just_pressed(KeyCode::KeyO) {
         window.open = !window.open;

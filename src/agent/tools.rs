@@ -10,7 +10,7 @@ use std::fmt::Write;
 use bevy::prelude::*;
 use serde_json::{Value, json};
 
-use cubewish_rules::{
+use genverse_rules::{
     build::BuildLimits,
     logic::{data::GameSpec, trial},
     settings::WorldRules,
@@ -32,7 +32,7 @@ use crate::{
     },
 };
 
-pub const INSTRUCTIONS: &str = "Read-only tools for the Cubewish voxel world. Coordinates are build voxels \
+pub const INSTRUCTIONS: &str = "Read-only tools for the Genverse voxel world. Coordinates are build voxels \
 (12.5 cm) in the frame of the build site: y=0 is the ground there, z=0 is the front row facing the player.";
 
 /// Where the next build goes, frozen while a request runs so tool answers stay consistent.
@@ -200,8 +200,8 @@ fn search(args: &Value, ledger: &Ledger, hero: Option<Vec3>) -> Result<String, S
         _ => hero.map(|h| [h.x, h.z]),
     };
     let limit = args["limit"].as_u64().unwrap_or(20).clamp(1, 100) as usize;
-    let records = cubewish_rules::semantic::records(&ledger.log, &ledger.builds, &ledger.logic);
-    let found = cubewish_rules::semantic::search(&records, text, near, num("radius"), limit);
+    let records = genverse_rules::semantic::records(&ledger.log, &ledger.builds, &ledger.logic);
+    let found = genverse_rules::semantic::search(&records, text, near, num("radius"), limit);
     if found.is_empty() {
         return Ok(format!("Nothing found for \"{text}\" (of {} things in the world).", records.len()));
     }
@@ -212,7 +212,7 @@ fn query(args: &Value, ledger: &Ledger) -> Result<String, String> {
     let code = args["code"].as_str().ok_or("query needs \"code\"")?;
     let package = args["package"].as_str().unwrap_or("world");
     let now = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map_or(0, |d| d.as_secs());
-    let ground = cubewish_rules::log::TerrainGround { terrain: ledger.log.terrain(), edits: &ledger.edits };
+    let ground = genverse_rules::log::TerrainGround { terrain: ledger.log.terrain(), edits: &ledger.edits };
     let (value, changes) = ledger.logic.query(package, &ledger.profile.id, code, now, &ledger.rules.logic, Some(&ground))?;
     let mut out = serde_json::to_string_pretty(&value).unwrap_or_default();
     if changes > 0 {
@@ -258,16 +258,16 @@ pub fn take_looks(mut commands: Commands, mut looks: ResMut<Looks>, mut cameras:
 /// The world's ground and its builds, for a trial's walks.
 struct Land<'a> {
     world: &'a VoxelWorld,
-    builds: &'a cubewish_rules::log::Builds,
+    builds: &'a genverse_rules::log::Builds,
 }
 
-impl cubewish_rules::logic::Ground for Land<'_> {
+impl genverse_rules::logic::Ground for Land<'_> {
     fn heights(&self, min: [i32; 2], step: i32, count: [i32; 2]) -> Option<Vec<Option<i32>>> {
         self.world.heights(min, step, count)
     }
 
-    fn solids(&self, lo: [f32; 2], hi: [f32; 2]) -> Vec<cubewish_rules::logic::solid::Solid<'_>> {
-        cubewish_rules::logic::solid::of_builds(self.builds, lo, hi).collect()
+    fn solids(&self, lo: [f32; 2], hi: [f32; 2]) -> Vec<genverse_rules::logic::solid::Solid<'_>> {
+        genverse_rules::logic::solid::of_builds(self.builds, lo, hi).collect()
     }
 }
 

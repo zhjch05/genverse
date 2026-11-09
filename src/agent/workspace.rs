@@ -7,7 +7,7 @@
 //! ```text
 //! README.md            how the folder works
 //! WORLD.md             the world at a glance: where the player is, places, features
-//! places.jsonl         what everything means (`cubewish_rules::semantic`), one per line
+//! places.jsonl         what everything means (`genverse_rules::semantic`), one per line
 //! builds/<id>.json     each build: name, about, request, position (and <id>.spec.json)
 //! pieces.jsonl         every game piece: id, package, position, components
 //! players.json         players' stats and items
@@ -25,7 +25,7 @@ use std::{
 
 use serde_json::{Value, json};
 
-use cubewish_rules::{
+use genverse_rules::{
     build::BuildSpec,
     logic::data::{DefSpec, GameSpec, ModelSpec, ScriptSpec},
     semantic::{self, Record},
@@ -47,8 +47,8 @@ fn folder(ledger: &Ledger) -> PathBuf {
     let (game, world) = crate::world::ledger::place();
     let world = ledger.online.as_ref().and_then(|o| o.world.clone()).unwrap_or(world);
     let home = std::env::current_dir().map(|d| d.to_string_lossy().to_string()).unwrap_or_default();
-    let home = format!("{:08x}", cubewish_rules::log::fnv1a(home.as_bytes()) as u32);
-    std::env::temp_dir().join("cubewish-agent").join(home).join(clean(&game)).join(clean(&world))
+    let home = format!("{:08x}", genverse_rules::log::fnv1a(home.as_bytes()) as u32);
+    std::env::temp_dir().join("genverse-agent").join(home).join(clean(&game)).join(clean(&world))
 }
 
 fn clean(name: &str) -> String {
@@ -81,7 +81,7 @@ pub fn write(ledger: &Ledger, here: Option<&str>, errors: &[String]) -> Result<P
     put(&dir.join("README.md"), README)?;
     put(&dir.join("docs/game.md"), super::prompt::GAME_DOC)?;
     let mut changes = String::from("# What changed in the scripting API\n\nA package records the API it was written for (`api`); WORLD.md says which are behind.\n");
-    for (version, what) in cubewish_rules::logic::package::API_CHANGES {
+    for (version, what) in genverse_rules::logic::package::API_CHANGES {
         let _ = write!(changes, "\n## {version}\n\n{what}\n");
     }
     put(&dir.join("docs/changes.md"), &changes)?;
@@ -182,12 +182,12 @@ fn overview(ledger: &Ledger, here: Option<&str>, errors: &[String], records: &[R
     for (name, install) in &ledger.logic.installed {
         let Some(package) = ledger.logic.package(install) else { continue };
         let _ = writeln!(out, "Package \"{name}\" (\"{}\", v{}), in packages/{name}/:", package.manifest.title, package.manifest.version);
-        if package.manifest.api < cubewish_rules::logic::package::API {
+        if package.manifest.api < genverse_rules::logic::package::API {
             let _ = writeln!(
                 out,
                 "  ⚠ written for scripting API {} (it's {} now): read docs/changes.md and bring its files up to date when you change it",
                 package.manifest.api,
-                cubewish_rules::logic::package::API
+                genverse_rules::logic::package::API
             );
         }
         for file in package.scripts.keys() {
@@ -196,7 +196,7 @@ fn overview(ledger: &Ledger, here: Option<&str>, errors: &[String], records: &[R
             let _ = writeln!(out, "- {file}: {} ({pieces} pieces)", if about.is_empty() { "(no opening comment)" } else { about });
             // Calls to what the game no longer has: the feature is broken until they go.
             let source = &package.scripts[file];
-            for (name, instead) in cubewish_rules::logic::script::REMOVED {
+            for (name, instead) in genverse_rules::logic::script::REMOVED {
                 if source.contains(&format!("{name}(")) {
                     let _ = writeln!(out, "  ⚠ calls {name}(), which the game no longer has (use {instead}): this feature doesn't work until that's fixed");
                 }
@@ -230,7 +230,7 @@ fn overview(ledger: &Ledger, here: Option<&str>, errors: &[String], records: &[R
 fn history(ledger: &Ledger) -> String {
     let mut out = String::from("# Recent changes\n\n");
     let changes = &ledger.log.changes;
-    for c in changes.iter().filter(|c| !matches!(c.action, cubewish_rules::log::Action::Timers { .. })).rev().take(60).collect::<Vec<_>>().into_iter().rev() {
+    for c in changes.iter().filter(|c| !matches!(c.action, genverse_rules::log::Action::Timers { .. })).rev().take(60).collect::<Vec<_>>().into_iter().rev() {
         let request = c.by.prompt.as_deref().map(|p| format!(" — asked: \"{}\"", p.replace('\n', " "))).unwrap_or_default();
         let agent = c.by.agent.as_deref().map(|a| format!(" via {a}")).unwrap_or_default();
         let _ = writeln!(out, "- {} by {}{agent}: {}{request}", c.id, c.by.player_name, c.action.describe());
@@ -347,7 +347,7 @@ pub fn merge(files: Option<GameSpec>, answer: Option<GameSpec>) -> Option<GameSp
 
 const README: &str = r#"# This world, as files
 
-This folder is a view of the Cubewish world you're working in, written fresh for this
+This folder is a view of the Genverse world you're working in, written fresh for this
 request. Read and search it like a repository: Glob, Grep and Read.
 
 - WORLD.md: where the player is, the ground around them, named places, the game's

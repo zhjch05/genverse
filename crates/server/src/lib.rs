@@ -1,4 +1,4 @@
-//! A headless Cubewish server. It hosts one game (`docs/worlds.md`): the game's own
+//! A headless Genverse server. It hosts one game (`docs/worlds.md`): the game's own
 //! log (which worlds there are, who runs it) and each world's change log. Players
 //! propose changes; it checks each against the world's rules (signature, land, limits,
 //! budgets, rate limits), puts accepted ones in order, and sends them to the players in
@@ -13,13 +13,13 @@
 //! owns the game and handles events in order; each connection has a reader and a
 //! writer thread.
 //!
-//! It also runs the games' timers ([`cubewish_rules::logic::clockwork`]): about twice a
+//! It also runs the games' timers ([`genverse_rules::logic::clockwork`]): about twice a
 //! second it fires those that are due in each loaded world and commits what they did
 //! as one change per package, by [`WORLD`]. A timer that does nothing leaves no trace,
 //! and one anchored to a game piece sleeps while no player is near it.
 //!
 //! On disk (the data directory): `game.json`, and `worlds/<name>/` with each world's
-//! append-only log (`world.jsonl`, [`cubewish_rules::store`]) and its snapshot, saved
+//! append-only log (`world.jsonl`, [`genverse_rules::store`]) and its snapshot, saved
 //! every [`SNAPSHOT_EVERY`] changes so restarting and entering only replay what came
 //! after. A data directory from before games (one `world.jsonl`) becomes the world
 //! `main`. With each land change the server sends fingerprints of the chunks it
@@ -39,8 +39,8 @@ use std::{
     time::{Duration, SystemTime, UNIX_EPOCH},
 };
 
-use cubewish_net::{Presence, ToClient, ToServer, VERSION, hello_bytes, read_messages, write_message};
-use cubewish_rules::{
+use genverse_net::{Presence, ToClient, ToServer, VERSION, hello_bytes, read_messages, write_message};
+use genverse_rules::{
     game::{self, GameAction, GameLog},
     identity::verify,
     log::{
@@ -109,18 +109,18 @@ struct Place {
 }
 
 /// Pieces walk on the world as the server has it.
-impl cubewish_rules::logic::Ground for Place {
+impl genverse_rules::logic::Ground for Place {
     fn heights(&self, min: [i32; 2], step: i32, count: [i32; 2]) -> Option<Vec<Option<i32>>> {
         self.state.heights(min, step, count)
     }
 
-    fn solids(&self, lo: [f32; 2], hi: [f32; 2]) -> Vec<cubewish_rules::logic::solid::Solid<'_>> {
+    fn solids(&self, lo: [f32; 2], hi: [f32; 2]) -> Vec<genverse_rules::logic::solid::Solid<'_>> {
         self.state.solids(lo, hi)
     }
 }
 
-impl cubewish_rules::logic::TimerHost for Place {
-    fn logic(&self) -> &cubewish_rules::logic::Logic {
+impl genverse_rules::logic::TimerHost for Place {
+    fn logic(&self) -> &genverse_rules::logic::Logic {
         &self.state.logic
     }
 
@@ -128,7 +128,7 @@ impl cubewish_rules::logic::TimerHost for Place {
         self.log.changes.last().map_or(1, |c| c.id + 1)
     }
 
-    fn record(&mut self, package: &str, now: u64, effects: Vec<cubewish_rules::logic::Effect>) -> Result<(), String> {
+    fn record(&mut self, package: &str, now: u64, effects: Vec<genverse_rules::logic::Effect>) -> Result<(), String> {
         let action = Action::Timers { package: package.into(), until: now, effects };
         let change = Change { id: self.next_change(), by: Provenance::new(WORLD, "World", None, None, now), action, sig: None };
         self.state.apply(&change, true)?;
@@ -481,7 +481,7 @@ impl Server {
             }
             ToServer::FetchChunks { chunks } => {
                 let Some(place) = world.and_then(|w| self.places.get(&w)) else { return };
-                let chunks: Vec<_> = chunks.into_iter().take(256).map(cubewish_rules::IVec3::from_array).collect();
+                let chunks: Vec<_> = chunks.into_iter().take(256).map(genverse_rules::IVec3::from_array).collect();
                 let edits = chunk_edits(&place.state.edits, &chunks);
                 let _ = out.send(ToClient::Chunks { chunks: edits.into_iter().map(|(c, e)| (c.to_array(), e)).collect() });
             }
@@ -694,7 +694,7 @@ impl Place {
     fn commit(
         &mut self,
         player: Option<String>,
-        by: cubewish_rules::log::Provenance,
+        by: genverse_rules::log::Provenance,
         action: Action,
         sig: String,
         package: Option<Package>,
@@ -717,7 +717,7 @@ impl Place {
             return Err("your clock is more than 10 minutes off from the server's".into());
         }
         // The request text stays on the player's machine; only its hash is shared.
-        let by = cubewish_rules::log::Provenance { prompt: None, ..by };
+        let by = genverse_rules::log::Provenance { prompt: None, ..by };
         let id = self.log.changes.last().map_or(1, |c| c.id + 1);
         let mut change = Change { id, by, action, sig: Some(sig) };
         // A load brings the save's state, which the server keeps; whatever came with the

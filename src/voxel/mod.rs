@@ -31,14 +31,14 @@ use bevy::{
 };
 
 pub use asset::VoxelModelAsset;
-pub use cubewish_rules::voxel::{AIR, ModelData, ModelLight, ModelPart, Palette, Surface, VoxelGrid, VoxelId, noise};
+pub use genverse_rules::voxel::{AIR, ModelData, ModelLight, ModelPart, Palette, Surface, VoxelGrid, VoxelId, noise};
 
 /// Voxels are drawn with the standard PBR material plus [`Bevel`].
 pub type VoxelMaterial = ExtendedMaterial<StandardMaterial, Bevel>;
 
 /// Softly rounded outside edges, drawn by bending normals in `voxel_bevel.wesl`; the
 /// mesher marks which edges of each face turn away from it. The world's rules set the
-/// width ([`cubewish_rules::settings::Look`]); it starts sharp.
+/// width ([`genverse_rules::settings::Look`]); it starts sharp.
 ///
 /// It also draws the mesher's packed vertices: `voxel_vertex.wesl` unpacks them in
 /// every pass, into the fields Bevy's shaders expect from a full vertex layout.

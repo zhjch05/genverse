@@ -13,7 +13,7 @@ use std::{
     time::Duration,
 };
 
-use cubewish_rules::log::RULES_VERSION;
+use genverse_rules::log::RULES_VERSION;
 use serde::{Deserialize, Serialize};
 use socket2::{Domain, Protocol, Socket, Type};
 
@@ -21,7 +21,7 @@ use crate::VERSION;
 
 /// The UDP port beacons go to.
 pub const LAN_PORT: u16 = 7877;
-const MAGIC: &str = "cubewish";
+const MAGIC: &str = "genverse";
 const EVERY: Duration = Duration::from_secs(1);
 
 /// What a hosting game says about its world.

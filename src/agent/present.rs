@@ -1,4 +1,4 @@
-//! Shows what games ask for ([`cubewish_rules::logic::present`]): bursts of particles,
+//! Shows what games ask for ([`genverse_rules::logic::present`]): bursts of particles,
 //! sounds made from numbers, the sky (time of day, fog, sun, rain or snow), and heroes
 //! shown as one of a game's models. Effects and sounds play once each, near the hero;
 //! the sky and looks last while the game says so.
@@ -10,7 +10,7 @@ use bevy::{
     pbr::{DistanceFog, FogFalloff},
     prelude::*,
 };
-use cubewish_rules::{
+use genverse_rules::{
     build::{BuildLimits, compile},
     logic::present::{Fx, Shown, Sound},
 };

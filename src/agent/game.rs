@@ -1,4 +1,4 @@
-//! Playing the games installed in the world (`cubewish_rules::logic`).
+//! Playing the games installed in the world (`genverse_rules::logic`).
 //!
 //! - **Pieces:** every entity the game rules keep is drawn from its `look`: one of its
 //!   package's voxel models, drawn like a build. Pieces with a `label` show it when
@@ -20,11 +20,11 @@
 //! Everything goes through the ledger as intents, tried first so a refusal shows right
 //! away instead of landing in the log.
 //!
-//! Script it: `CUBEWISH_PLAY="sokoban:board; go 40 40; east; east"` puts things down in
+//! Script it: `GENVERSE_PLAY="sokoban:board; go 40 40; east; east"` puts things down in
 //! front of the hero (`place` puts down what's in hand), uses the nearest piece
 //! (`use`), goes through the portal the hero stands at (`portal`) or sends a key to the
 //! region taking keys the hero is in, one step every half second once
-//! the hero has landed and the agent is done with `CUBEWISH_PROMPT`.
+//! the hero has landed and the agent is done with `GENVERSE_PROMPT`.
 
 use std::collections::HashMap;
 
@@ -32,7 +32,7 @@ use bevy::prelude::*;
 use bevy_egui::{EguiContexts, egui};
 use std::f32::consts::FRAC_PI_2;
 
-use cubewish_rules::{
+use genverse_rules::{
     build::{BuildLimits, compile},
     logic::{
         Entity as Piece, EntityId, Intent, Logic, Package,
@@ -588,7 +588,7 @@ pub fn game_labels(
     Ok(())
 }
 
-/// `CUBEWISH_PLAY`: see the module docs.
+/// `GENVERSE_PLAY`: see the module docs.
 pub fn script_play(
     time: Res<Time>,
     world: Res<VoxelWorld>,
@@ -606,7 +606,7 @@ pub fn script_play(
         return;
     }
     if steps.is_none() {
-        let Ok(script) = std::env::var("CUBEWISH_PLAY") else { return };
+        let Ok(script) = std::env::var("GENVERSE_PLAY") else { return };
         if !player.has_landed() {
             return;
         }
@@ -622,7 +622,7 @@ pub fn script_play(
     // The inventory: open or close it, or put hotbar slot N (1-9) in hand.
     if step == "inventory" {
         inventory.open = !inventory.open;
-        info!("CUBEWISH_PLAY inventory: {}", if inventory.open { "open" } else { "closed" });
+        info!("GENVERSE_PLAY inventory: {}", if inventory.open { "open" } else { "closed" });
         return;
     }
     if let Some(n) = step.strip_prefix("slot ").and_then(|n| n.trim().parse::<usize>().ok()) {
@@ -643,7 +643,7 @@ pub fn script_play(
                 hero.translation = down.get_point(hit.distance) + Vec3::Y * 0.05;
                 player.arrive();
             }
-            info!("CUBEWISH_PLAY {step}: hero at {}", hero.translation);
+            info!("GENVERSE_PLAY {step}: hero at {}", hero.translation);
         }
         return;
     }
@@ -651,9 +651,9 @@ pub fn script_play(
     if step == "portal" {
         let to = travel.near().cloned();
         match to.map(|to| travel.portal(&to, &ledger)) {
-            Some(Ok(())) => info!("CUBEWISH_PLAY portal: going"),
-            Some(Err(why)) => info!("CUBEWISH_PLAY portal: {why}"),
-            None => info!("CUBEWISH_PLAY portal: not at a portal (hero at {}, {} portals)", hero.translation, ledger.portals.len()),
+            Some(Ok(())) => info!("GENVERSE_PLAY portal: going"),
+            Some(Err(why)) => info!("GENVERSE_PLAY portal: {why}"),
+            None => info!("GENVERSE_PLAY portal: not at a portal (hero at {}, {} portals)", hero.translation, ledger.portals.len()),
         }
         return;
     }
@@ -674,7 +674,7 @@ pub fn script_play(
             Some(entity) => ledger.act(Intent::Hit { entity }),
             None => Err("nothing in reach to hit".into()),
         }
-    } else if cubewish_rules::logic::KEYS.contains(&step.as_str()) {
+    } else if genverse_rules::logic::KEYS.contains(&step.as_str()) {
         let at = my_pawn(&ledger).unwrap_or(hero.translation).to_array();
         match keys_region_at(&ledger.logic.state, at, now()) {
             Some(entity) => ledger.act(Intent::Key { entity, key: step.clone() }),
@@ -693,8 +693,8 @@ pub fn script_play(
         }
     };
     match &result {
-        Ok(acted) => info!("CUBEWISH_PLAY {step}: ok {:?} {:?}", acted.notes, acted.gained),
-        Err(why) => info!("CUBEWISH_PLAY {step}: {why}"),
+        Ok(acted) => info!("GENVERSE_PLAY {step}: ok {:?} {:?}", acted.notes, acted.gained),
+        Err(why) => info!("GENVERSE_PLAY {step}: {why}"),
     }
     report(result, &ledger, &mut play, &mut chat, now_s);
 }

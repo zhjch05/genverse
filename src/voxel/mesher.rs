@@ -128,7 +128,7 @@ impl Cells {
         self.cells[(i as isize + delta) as usize]
     }
 
-    /// `cubewish_rules::voxel::faces::face_visible`, from the table.
+    /// `genverse_rules::voxel::faces::face_visible`, from the table.
     fn visible(&self, id: VoxelId, neighbor: VoxelId) -> bool {
         neighbor == AIR || (!self.opaque[neighbor as usize] && (self.opaque[id as usize] || neighbor != id))
     }

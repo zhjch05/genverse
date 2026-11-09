@@ -96,7 +96,7 @@ pub fn loading_screen(mut contexts: EguiContexts, time: Res<Time<Real>>, loading
             let card = egui::Rect::from_center_size(rect.center(), egui::vec2(rect.width().min(360.0) - 32.0, 120.0));
             ui.scope_builder(egui::UiBuilder::new().max_rect(card), |ui| {
                 ui.vertical_centered(|ui| {
-                    let title = loading.entering.as_deref().unwrap_or("Cubewish");
+                    let title = loading.entering.as_deref().unwrap_or("Genverse");
                     ui.label(egui::RichText::new(title).size(30.0).strong().color(p.strong));
                     ui.add_space(4.0);
                     let status = if loaded < total {

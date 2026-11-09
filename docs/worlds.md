@@ -32,7 +32,7 @@ On disk, `saves/games/<game>/game.jsonl` and `saves/games/<game>/worlds/<world>/
 (`world.jsonl`, `snapshot.json`). The first run moves the worlds from before into a game
 called `local` (Home becomes its world `home`); nothing is deleted. A server's data
 directory is one game the same way (a `world.jsonl` from before becomes its world
-`main`). `CUBEWISH_GAME` and `CUBEWISH_WORLD` pick where to start.
+`main`). `GENVERSE_GAME` and `GENVERSE_WORLD` pick where to start.
 
 ## The game log
 

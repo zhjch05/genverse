@@ -9,7 +9,7 @@ use bevy::{
     prelude::*,
 };
 
-use cubewish_rules::logic::solid::Areas;
+use genverse_rules::logic::solid::Areas;
 
 use crate::{
     voxel::{VoxelModel, VoxelModelAsset, query::overlaps_box},
@@ -213,19 +213,19 @@ impl Default for FollowCamera {
     fn default() -> Self {
         let env = |k: &str, d: f32| std::env::var(k).ok().and_then(|v| v.parse().ok()).unwrap_or(d);
         Self {
-            yaw: env("CUBEWISH_YAW", 0.6),
-            pitch: env("CUBEWISH_PITCH", 0.35),
-            distance: env("CUBEWISH_DIST", 6.5),
+            yaw: env("GENVERSE_YAW", 0.6),
+            pitch: env("GENVERSE_PITCH", 0.35),
+            distance: env("GENVERSE_DIST", 6.5),
             target: Vec3::ZERO,
         }
     }
 }
 
 fn spawn_player(mut commands: Commands, asset_server: Res<AssetServer>, world: Res<VoxelWorld>) {
-    // Walk outward from the origin to the first dry column. `CUBEWISH_SPAWN=x,z` (meters)
+    // Walk outward from the origin to the first dry column. `GENVERSE_SPAWN=x,z` (meters)
     // starts elsewhere, e.g. to keep test players apart.
     let terrain = world.terrain;
-    let origin = std::env::var("CUBEWISH_SPAWN")
+    let origin = std::env::var("GENVERSE_SPAWN")
         .ok()
         .and_then(|v| v.split_once(',').and_then(|(x, z)| Some((x.trim().parse::<f32>().ok()?, z.trim().parse::<f32>().ok()?))))
         .map_or(IVec2::ZERO, |(x, z)| (Vec2::new(x, z) / VOXEL_SIZE).as_ivec2());

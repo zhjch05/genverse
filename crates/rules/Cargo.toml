@@ -1,8 +1,8 @@
 [package]
-name = "cubewish_rules"
+name = "genverse_rules"
 version = "0.1.0"
 edition = "2024"
-description = "Cubewish's world rules: voxel models, terrain, terrain changes, build specs, game packages, and their limits. No rendering, so a server can share them."
+description = "Genverse's world rules: voxel models, terrain, terrain changes, build specs, game packages, and their limits. No rendering, so a server can share them."
 
 [dependencies]
 bevy_math = "0.20"

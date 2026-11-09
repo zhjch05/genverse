@@ -29,7 +29,7 @@ mod prompt;
 mod runner;
 mod settings;
 mod theme;
-use cubewish_rules::build as spec;
+use genverse_rules::build as spec;
 mod tools;
 mod workspace;
 mod present;
@@ -58,7 +58,7 @@ use crate::{
     },
     world::{VoxelWorld, ledger::Ledger},
 };
-use cubewish_rules::{
+use genverse_rules::{
     land::area_parcels,
     log::Action as LogAction,
     logic::{Scope, data::GameSpec},
@@ -319,8 +319,8 @@ impl Chat {
             }
         };
         let request = prompt::request(history, draft, area.as_deref(), game.as_deref(), &text);
-        // `CUBEWISH_SHOW_REQUEST=1` logs what the agent is told, to see the world through its eyes.
-        if std::env::var("CUBEWISH_SHOW_REQUEST").is_ok() {
+        // `GENVERSE_SHOW_REQUEST=1` logs what the agent is told, to see the world through its eyes.
+        if std::env::var("GENVERSE_SHOW_REQUEST").is_ok() {
             info!("request to the agent:\n{request}");
         }
         self.say(Role::Player, text.clone());
@@ -331,8 +331,8 @@ impl Chat {
 /// Where the player stands, in the world's own meters, and the ground around them: so
 /// "next to me" and "20 m east" become positions a game can use (its scripts hold them),
 /// without anything to put down first.
-fn here_context(world: &VoxelWorld, terrain: cubewish_rules::terrain::Terrain, hero: Vec3, camera: Option<&GlobalTransform>) -> String {
-    use cubewish_rules::logic::Ground;
+fn here_context(world: &VoxelWorld, terrain: genverse_rules::terrain::Terrain, hero: Vec3, camera: Option<&GlobalTransform>) -> String {
+    use genverse_rules::logic::Ground;
     const STEP_M: f32 = 4.0;
     const REACH: i32 = 6;
     let facing = camera.map(|c| c.forward().xz()).filter(|f| f.length() > 0.1).map_or("north", |f| {
@@ -349,7 +349,7 @@ fn here_context(world: &VoxelWorld, terrain: cubewish_rules::terrain::Terrain, h
             Some(h) => h[0]?,
             None => {
                 let h = terrain.height(x, z);
-                if !terrain.flat && h < cubewish_rules::terrain::SEA_LEVEL {
+                if !terrain.flat && h < genverse_rules::terrain::SEA_LEVEL {
                     return None;
                 }
                 h
@@ -449,8 +449,8 @@ fn land_refusal(creations: &Creations, landscape: &Landscape, ledger: &Ledger) -
     Some(format!("⚠ Can't change this land: {why}. Select an area you can change (P shows parcels)."))
 }
 
-/// `CUBEWISH_PROMPT="a red mailbox" cargo run` sends one message once the hero has
-/// landed. Pair with `CUBEWISH_SHOT` to script a build end to end. `CUBEWISH_AREA=12`
+/// `GENVERSE_PROMPT="a red mailbox" cargo run` sends one message once the hero has
+/// landed. Pair with `GENVERSE_SHOT` to script a build end to end. `GENVERSE_AREA=12`
 /// selects a 12 m square of ground in front of the hero (first, or on its own).
 fn auto_prompt(
     mut commands: Commands,
@@ -470,7 +470,7 @@ fn auto_prompt(
     let Ok((player, hero)) = players.single() else {
         return;
     };
-    // `CUBEWISH_PROMPT="first || second || third"`: each once the agent has answered the
+    // `GENVERSE_PROMPT="first || second || third"`: each once the agent has answered the
     // one before, like a player who keeps asking.
     if *sent {
         if chat.pending.is_none() && !queue.is_empty() {
@@ -485,25 +485,25 @@ fn auto_prompt(
         return;
     }
     *sent = true;
-    if std::env::var("CUBEWISH_PARCELS").is_ok() {
+    if std::env::var("GENVERSE_PARCELS").is_ok() {
         overlay.visible = true;
     }
-    if let Some(size) = std::env::var("CUBEWISH_AREA").ok().and_then(|s| s.parse::<f32>().ok()) {
+    if let Some(size) = std::env::var("GENVERSE_AREA").ok().and_then(|s| s.parse::<f32>().ok()) {
         let forward = (hero.rotation * Vec3::NEG_Z).xz().normalize_or_zero();
         let center = hero.translation.xz() + forward * (size / 2.0 + 2.0);
         let half = Vec2::splat(size / 2.0);
         let cell = |p: Vec2| (p / crate::world::terrain::VOXEL_SIZE).floor().as_ivec2();
-        landscape.area = Some(cubewish_rules::sculpt::Area::from_corners(cell(center - half), cell(center + half) - 1));
+        landscape.area = Some(genverse_rules::sculpt::Area::from_corners(cell(center - half), cell(center + half) - 1));
     }
-    if let Ok(text) = std::env::var("CUBEWISH_PROMPT") {
-        if let Ok(provider) = std::env::var("CUBEWISH_AGENT") {
+    if let Ok(text) = std::env::var("GENVERSE_PROMPT") {
+        if let Ok(provider) = std::env::var("GENVERSE_AGENT") {
             chat.provider = if provider == "codex" { Provider::Codex } else { Provider::Claude };
         }
-        // `CUBEWISH_SELECT_LAST=1` targets the most recent build, like clicking it first.
-        if std::env::var("CUBEWISH_SELECT_LAST").is_ok() {
+        // `GENVERSE_SELECT_LAST=1` targets the most recent build, like clicking it first.
+        if std::env::var("GENVERSE_SELECT_LAST").is_ok() {
             creations.selected = creations.placed.last().map(|(e, _)| *e);
         }
-        // Commands, `;`-separated: `CUBEWISH_PROMPT="/rate 2; /history"`.
+        // Commands, `;`-separated: `GENVERSE_PROMPT="/rate 2; /history"`.
         if text.trim_start().starts_with('/') {
             for command in text.split(';') {
                 let cx = &mut commands::Context {
@@ -648,8 +648,8 @@ fn poll_agent(
                             describe_stats(area, &stats)
                         ),
                     );
-                    // `CUBEWISH_KEEP=1` keeps a scripted preview, as if Enter was pressed.
-                    if std::env::var("CUBEWISH_KEEP").is_ok() {
+                    // `GENVERSE_KEEP=1` keeps a scripted preview, as if Enter was pressed.
+                    if std::env::var("GENVERSE_KEEP").is_ok() {
                         keep_terrain(&mut landscape, &mut world, &mut ledger, &mut chat);
                     }
                 }
@@ -703,7 +703,7 @@ fn poll_agent(
             Ok(()) => {
                 let before = (version > 1).then(|| format!("before {} v{version}", game.name).chars().take(40).collect::<String>());
                 if let Some(name) = &before {
-                    ledger.record(None, None, cubewish_rules::log::Action::Save { name: name.clone() });
+                    ledger.record(None, None, genverse_rules::log::Action::Save { name: name.clone() });
                     ledger.keep_saves(&world.edit_list());
                 }
                 match (ledger.install(package, Scope::World, Some(provider), Some(&pending.prompt)), before) {
@@ -722,9 +722,9 @@ fn poll_agent(
     }
     // What things mean, for later requests.
     for meaning in describe {
-        ledger.record(Some(pending.provider.label()), Some(&pending.prompt), cubewish_rules::log::Action::Describe { meaning });
+        ledger.record(Some(pending.provider.label()), Some(&pending.prompt), genverse_rules::log::Action::Describe { meaning });
     }
-    let portal = match answer.portal.as_deref().map(cubewish_rules::log::PortalTo::parse) {
+    let portal = match answer.portal.as_deref().map(genverse_rules::log::PortalTo::parse) {
         Some(Ok(to)) => Some(to),
         Some(Err(why)) => {
             chat.say(Role::System, format!("⚠ The portal can't lead there: {why}."));
@@ -736,7 +736,7 @@ fn poll_agent(
         // A portal for the build that's selected, without changing how it looks.
         if let (Some(to), Some(build)) = (portal, creations.selected().map(|b| b.build)) {
             let label = to.label().to_string();
-            ledger.record(None, None, cubewish_rules::log::Action::SetPortal { build, to: Some(to) });
+            ledger.record(None, None, genverse_rules::log::Action::SetPortal { build, to: Some(to) });
             chat.say(Role::System, format!("It's a portal to {label} now: walk up to it and press E."));
         }
         keep_original(&mut creations, &mut chat);
@@ -770,8 +770,8 @@ fn poll_agent(
             if let Some(draft) = &mut creations.draft {
                 draft.portal = portal;
             }
-            // `CUBEWISH_KEEP=1` places a scripted build where it was drafted, as a click would.
-            if std::env::var("CUBEWISH_KEEP").is_ok() {
+            // `GENVERSE_KEEP=1` places a scripted build where it was drafted, as a click would.
+            if std::env::var("GENVERSE_KEEP").is_ok() {
                 // On the ground under where it was drafted.
                 let column = (at.0.xz() / crate::world::terrain::VOXEL_SIZE).floor().as_ivec2();
                 let ground = (ledger.log.terrain().height(column.x, column.y) + 1) as f32 * crate::world::terrain::VOXEL_SIZE;
@@ -1819,7 +1819,7 @@ fn chat_panel(
                             theme::note(ui, format!("{}×{}×{} · {} voxels · {} faces", s.size.x, s.size.y, s.size.z, s.voxels, s.faces));
                             if let Ok(transform) = transforms.get(draft.entity) {
                                 let yaw = transform.rotation.to_euler(EulerRot::YXZ).0;
-                                let parcels = cubewish_rules::land::build_parcels(transform.translation, yaw, &draft.spec.size);
+                                let parcels = genverse_rules::land::build_parcels(transform.translation, yaw, &draft.spec.size);
                                 theme::note(ui, ledger.parcel_line(&parcels));
                             }
                             if let Some(why) = &draft.denied {

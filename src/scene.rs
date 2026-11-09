@@ -27,8 +27,8 @@ pub struct ScenePlugin;
 impl Plugin for ScenePlugin {
     fn build(&self, app: &mut App) {
         app.add_systems(Startup, setup);
-        // `CUBEWISH_SHOT=out.png [CUBEWISH_YAW=0.5] cargo run` renders one still and exits.
-        if let Ok(path) = std::env::var("CUBEWISH_SHOT") {
+        // `GENVERSE_SHOT=out.png [GENVERSE_YAW=0.5] cargo run` renders one still and exits.
+        if let Ok(path) = std::env::var("GENVERSE_SHOT") {
             app.insert_resource(StillShot { path, frame: 0 })
                 .add_systems(Update, take_still_shot);
         }
@@ -41,9 +41,9 @@ struct StillShot {
     frame: u32,
 }
 
-/// Seconds to wait before the still; `CUBEWISH_SHOT_AFTER` overrides it.
+/// Seconds to wait before the still; `GENVERSE_SHOT_AFTER` overrides it.
 fn shot_delay() -> f32 {
-    std::env::var("CUBEWISH_SHOT_AFTER").ok().and_then(|v| v.parse().ok()).unwrap_or(7.0)
+    std::env::var("GENVERSE_SHOT_AFTER").ok().and_then(|v| v.parse().ok()).unwrap_or(7.0)
 }
 
 fn setup(mut commands: Commands, mut media: ResMut<Assets<ScatteringMedium>>) {

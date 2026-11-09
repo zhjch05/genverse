@@ -21,7 +21,7 @@ use bevy::prelude::*;
 use serde_json::{Value, json};
 use tiny_http::{Header, Response, Server};
 
-pub const SERVER_NAME: &str = "cubewish";
+pub const SERVER_NAME: &str = "genverse";
 
 /// One tool invocation waiting for the game to answer.
 pub struct ToolCall {

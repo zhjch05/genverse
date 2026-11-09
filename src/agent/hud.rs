@@ -1,14 +1,14 @@
-//! What games put in front of the player (`cubewish_rules::logic::ui`): the HUD (the
+//! What games put in front of the player (`genverse_rules::logic::ui`): the HUD (the
 //! UI trees games pin to the screen, their values and bars live) at the bottom left, and
 //! the panel a game opened for them (dialogue, a menu, a shop: any tree), whose buttons
 //! go back to the game as [`Intent::Choose`]. Offline, it also draws what games did to the world:
 //! their builds, and their land changes worked out on the ground as it is here.
 //!
-//! Script it: `CUBEWISH_PLAY="use; choose buy:0; close"` picks in the open panel.
+//! Script it: `GENVERSE_PLAY="use; choose buy:0; close"` picks in the open panel.
 
 use bevy::prelude::*;
 use bevy_egui::{EguiContexts, egui};
-use cubewish_rules::{
+use genverse_rules::{
     log::ground_columns,
     logic::{Intent, Ui, WorldChange},
     sculpt,
@@ -75,8 +75,8 @@ pub fn game_hud(mut contexts: EguiContexts, time: Res<Time>, mut ledger: ResMut<
 
 /// What a tree's live values read: the local player's stats and items.
 struct Live<'a> {
-    state: &'a cubewish_rules::logic::GameState,
-    logic: &'a cubewish_rules::logic::Logic,
+    state: &'a genverse_rules::logic::GameState,
+    logic: &'a genverse_rules::logic::Logic,
     me: &'a str,
 }
 

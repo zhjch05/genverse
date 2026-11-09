@@ -1,4 +1,4 @@
-//! The rules of a Cubewish world, shared by the game and (later) a server.
+//! The rules of a Genverse world, shared by the game and (later) a server.
 //!
 //! Everything that decides what the world *is* lives here, with no rendering: voxel
 //! models and how they rasterize, the terrain generator, terrain changes, agent build

@@ -2564,59 +2564,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "cubewish"
-version = "0.1.0"
-dependencies = [
- "bevy",
- "bevy_egui",
- "cubewish_net",
- "cubewish_rules",
- "cubewish_server",
- "egui-phosphor",
- "getrandom 0.3.4",
- "log",
- "ron",
- "serde",
- "serde_json",
- "tiny_http",
- "tracing",
-]
-
-[[package]]
-name = "cubewish_net"
-version = "0.1.0"
-dependencies = [
- "cubewish_rules",
- "if-addrs",
- "serde",
- "serde_json",
- "socket2",
-]
-
-[[package]]
-name = "cubewish_rules"
-version = "0.1.0"
-dependencies = [
- "bevy_color",
- "bevy_math",
- "ed25519-dalek",
- "mlua",
- "serde",
- "serde_json",
- "sha2",
-]
-
-[[package]]
-name = "cubewish_server"
-version = "0.1.0"
-dependencies = [
- "cubewish_net",
- "cubewish_rules",
- "getrandom 0.3.4",
- "serde_json",
-]
-
-[[package]]
 name = "cursor-icon"
 version = "1.2.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -3200,6 +3147,59 @@ checksum = "85649ca51fd72272d7821adaf274ad91c288277713d9c18820d8499a7ff69e9a"
 dependencies = [
  "typenum",
  "version_check",
+]
+
+[[package]]
+name = "genverse"
+version = "0.1.0"
+dependencies = [
+ "bevy",
+ "bevy_egui",
+ "egui-phosphor",
+ "genverse_net",
+ "genverse_rules",
+ "genverse_server",
+ "getrandom 0.3.4",
+ "log",
+ "ron",
+ "serde",
+ "serde_json",
+ "tiny_http",
+ "tracing",
+]
+
+[[package]]
+name = "genverse_net"
+version = "0.1.0"
+dependencies = [
+ "genverse_rules",
+ "if-addrs",
+ "serde",
+ "serde_json",
+ "socket2",
+]
+
+[[package]]
+name = "genverse_rules"
+version = "0.1.0"
+dependencies = [
+ "bevy_color",
+ "bevy_math",
+ "ed25519-dalek",
+ "mlua",
+ "serde",
+ "serde_json",
+ "sha2",
+]
+
+[[package]]
+name = "genverse_server"
+version = "0.1.0"
+dependencies = [
+ "genverse_net",
+ "genverse_rules",
+ "getrandom 0.3.4",
+ "serde_json",
 ]
 
 [[package]]

@@ -19,13 +19,13 @@
 //! Undos and loads are changes like any other: nothing is replayed.
 
 use bevy::prelude::*;
-use cubewish_rules::{
+use genverse_rules::{
     log::Action,
     logic::Scope,
     settings::{LandMode, Look, RateLimits},
 };
 
-use cubewish_rules::game::GameAction;
+use genverse_rules::game::GameAction;
 
 use super::{
     creations::Creations,
@@ -237,7 +237,7 @@ pub fn run(text: &str, cx: &mut Context) -> String {
             format!("{} for everyone in this world.", bevel_line(bevel))
         }
         // Not the game's own: the world's game logic may answer it (`on_chat`).
-        _ if !cx.ledger.logic.installed.is_empty() => match cx.ledger.act(cubewish_rules::logic::Intent::Chat { text: text.trim().to_string(), at: cx.at }) {
+        _ if !cx.ledger.logic.installed.is_empty() => match cx.ledger.act(genverse_rules::logic::Intent::Chat { text: text.trim().to_string(), at: cx.at }) {
             Ok(acted) if !acted.notes.is_empty() => acted.notes.join("\n"),
             Ok(_) => format!("The game didn't answer \"{}\". {}", text.trim(), help()),
             Err(why) => format!("⚠ {why}"),
@@ -296,7 +296,7 @@ fn portal(cx: &mut Context, to: &str) -> String {
         cx.ledger.record(None, None, Action::SetPortal { build, to: None });
         return "It's an ordinary build again.".into();
     }
-    match cubewish_rules::log::PortalTo::parse(to) {
+    match genverse_rules::log::PortalTo::parse(to) {
         Ok(to) => {
             let label = to.label().to_string();
             cx.ledger.record(None, None, Action::SetPortal { build, to: Some(to) });
@@ -426,7 +426,7 @@ pub fn load_game(ledger: &mut Ledger, edits: &[[i32; 4]], name: &str) -> String 
 
 /// Makes a new local game and goes there.
 pub fn new_game(ledger: &Ledger, travel: &mut Travel, name: &str, flat: bool) -> String {
-    let by = cubewish_rules::log::Provenance::new(&ledger.profile.id, &ledger.profile.name, None, None, 0);
+    let by = genverse_rules::log::Provenance::new(&ledger.profile.id, &ledger.profile.name, None, None, 0);
     match crate::world::ledger::create_game(name, flat, super::worlds::fresh_seed(flat), &by) {
         Ok(game) => {
             travel.next = Some(Trip::Local { game, world: "main".into() });

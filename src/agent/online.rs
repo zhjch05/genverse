@@ -12,8 +12,8 @@
 //!   of our changes in flight made it, and the rest are taken back.
 
 use bevy::prelude::*;
-use cubewish_net::{ClientEvent, ToClient, ToServer};
-use cubewish_rules::{
+use genverse_net::{ClientEvent, ToClient, ToServer};
+use genverse_rules::{
     IVec3,
     log::{Action, Change, chunk_of, chunk_prints, replay, replay_from},
     logic::Effect,
@@ -39,13 +39,13 @@ pub fn host(ledger: &mut Ledger) -> String {
     if ledger.is_online() {
         return "Already online; only your local world can be hosted.".into();
     }
-    let config = cubewish_server::ServerConfig {
+    let config = genverse_server::ServerConfig {
         data_dir: crate::world::ledger::game_dir().into(),
-        port: cubewish_net::DEFAULT_PORT,
+        port: genverse_net::DEFAULT_PORT,
         seed: ledger.log.seed,
         flat: ledger.log.flat,
     };
-    let running = match cubewish_server::start(config) {
+    let running = match genverse_server::start(config) {
         Ok(running) => running,
         Err(e) => return format!("⚠ Couldn't host: {e}"),
     };
@@ -156,7 +156,7 @@ pub fn sync_online(
                 // A reconnect lands in the game's first world: back to where we were.
                 if let Some(wanted) = online.world.clone().filter(|w| *w != name && game.world(w).is_some()) {
                     online.game = Some(game);
-                    online.client.send(cubewish_net::ToServer::Enter { world: wanted });
+                    online.client.send(genverse_net::ToServer::Enter { world: wanted });
                     continue;
                 }
                 let moved = online.shown.is_some() && online.shown.as_deref() != Some(name.as_str());
@@ -316,7 +316,7 @@ fn committed(
                         world.set(*p, *id);
                     }
                     let built = state.last_world.as_ref().is_some_and(|(_, w)| {
-                        w.iter().any(|c| matches!(c, cubewish_rules::logic::WorldChange::Build { .. } | cubewish_rules::logic::WorldChange::Unbuild { .. }))
+                        w.iter().any(|c| matches!(c, genverse_rules::logic::WorldChange::Build { .. } | genverse_rules::logic::WorldChange::Unbuild { .. }))
                     });
                     if built {
                         creations.resync(commands, &state.builds);
@@ -326,9 +326,9 @@ fn committed(
                 (Action::PlaceBuild(b) | Action::UpdateBuild(b), None) => creations.upsert(commands, b),
                 (Action::RemoveBuild { build }, None) => creations.remove(commands, *build),
                 (_, None) => {
-                    // `CUBEWISH_DESYNC=1` drops some of others' land edits, to watch
+                    // `GENVERSE_DESYNC=1` drops some of others' land edits, to watch
                     // fingerprints catch it and the chunks heal.
-                    let drift = std::env::var("CUBEWISH_DESYNC").is_ok();
+                    let drift = std::env::var("GENVERSE_DESYNC").is_ok();
                     for (i, (p, id)) in edits.iter().enumerate() {
                         if drift && i % 7 == 0 {
                             state.edits.remove(p);

@@ -4,8 +4,8 @@
 use std::f32::consts::{FRAC_PI_2, PI};
 
 use bevy::prelude::*;
-pub use cubewish_rules::log::BuildState as SavedCreation;
-use cubewish_rules::{
+pub use genverse_rules::log::BuildState as SavedCreation;
+use genverse_rules::{
     budget::{Footprint, Usage},
     build::BuildLimits,
     log::{Action, parcels_of},
@@ -38,7 +38,7 @@ pub struct Draft {
     /// is recorded as the agent's change.
     pub by_agent: bool,
     /// Where it leads, if the agent made it a portal: linked when it's placed.
-    pub portal: Option<cubewish_rules::log::PortalTo>,
+    pub portal: Option<genverse_rules::log::PortalTo>,
 }
 
 #[derive(Resource, Default)]
@@ -210,7 +210,7 @@ impl Creations {
     pub fn check_draft(&self, transform: &Transform, ledger: &Ledger) -> Option<String> {
         let draft = self.draft.as_ref()?;
         let yaw = transform.rotation.to_euler(EulerRot::YXZ).0;
-        let here = cubewish_rules::land::build_parcels(transform.translation, yaw, &draft.spec.size);
+        let here = genverse_rules::land::build_parcels(transform.translation, yaw, &draft.spec.size);
         let mut parcels = here.clone();
         parcels.extend(draft.replaces.as_ref().map(parcels_of).unwrap_or_default());
         if let Err(why) = ledger.check(&parcels) {

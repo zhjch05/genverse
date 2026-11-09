@@ -10,7 +10,7 @@ use bevy::prelude::*;
 
 fn main() -> AppExit {
     let mut window = Window {
-        title: "Cubewish".into(),
+        title: "Genverse".into(),
         // On the web, size the canvas to the page instead of a fixed resolution.
         fit_canvas_to_parent: true,
         ..default()

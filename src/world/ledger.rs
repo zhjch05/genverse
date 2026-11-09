@@ -1,24 +1,24 @@
-//! The world's change log in the game ([`cubewish_rules::log`]): loading it, recording
+//! The world's change log in the game ([`genverse_rules::log`]): loading it, recording
 //! changes with who made them, and saving.
 //!
 //! Worlds belong to games (`docs/worlds.md`): `saves/games/<game>/game.json` says which
 //! worlds the game has and who runs it, and each world keeps its log in
 //! `saves/games/<game>/worlds/<world>/world.jsonl`, append-only
-//! ([`cubewish_rules::store`]): a change is saved by writing just that change.
+//! ([`genverse_rules::store`]): a change is saved by writing just that change.
 //! Replaying it is the truth; `snapshot.json` beside it holds the whole world as of
 //! some change, so loading replays only what came after. Changes made here, undos and
 //! loads included, are applied on top of the current state, never by replaying
 //! everything. A save keeps the world as of it in `states/<change>.json`, so loading it
-//! swaps that in. `CUBEWISH_GAME` and `CUBEWISH_WORLD` pick where to start (the
+//! swaps that in. `GENVERSE_GAME` and `GENVERSE_WORLD` pick where to start (the
 //! game `local` and its first world by default; a world named there that the game
 //! doesn't have is made, flat and empty). Saves from before games move into `local`
 //! once, and saves from before the log are migrated (the old files are kept as
 //! `.bak`). The local player is `saves/profile.json`: a name and a secret key
 //! whose public half is the player's id, and every change is signed with it. The
-//! world's first player is its admin. `CUBEWISH_AS=Name` plays as a different
+//! world's first player is its admin. `GENVERSE_AS=Name` plays as a different
 //! (non-admin) player for this run, to try the rules from someone else's side.
 //!
-//! Online (`CUBEWISH_SERVER=host:port`), the server's log is the world: changes are
+//! Online (`GENVERSE_SERVER=host:port`), the server's log is the world: changes are
 //! signed and proposed to it instead of recorded here, and what it commits (anyone's)
 //! comes back to be applied. Local saves aren't touched while online.
 //!
@@ -33,7 +33,7 @@ use std::{
 use std::net::SocketAddr;
 
 use bevy::prelude::*;
-use cubewish_rules::{
+use genverse_rules::{
     budget::{Budgets, Footprint, Usage},
     identity::Keypair,
     land::Land,
@@ -51,13 +51,13 @@ use crate::voxel::VoxelId;
 /// The game and world being played, once chosen.
 static CURRENT: std::sync::RwLock<Option<(String, String)>> = std::sync::RwLock::new(None);
 
-pub use cubewish_rules::game::clean_name;
+pub use genverse_rules::game::clean_name;
 
 /// Where games are kept.
 const GAMES: &str = "saves/games";
 
-/// The game and world being played. At first they're `CUBEWISH_GAME` (or `local`) and
-/// `CUBEWISH_WORLD` (or the game's first world); saves from before games move into
+/// The game and world being played. At first they're `GENVERSE_GAME` (or `local`) and
+/// `GENVERSE_WORLD` (or the game's first world); saves from before games move into
 /// `local` then.
 pub fn place() -> (String, String) {
     if let Some(place) = CURRENT.read().ok().and_then(|c| c.clone()) {
@@ -65,9 +65,9 @@ pub fn place() -> (String, String) {
     }
     #[cfg(not(target_arch = "wasm32"))]
     migrate_layout();
-    let game = std::env::var("CUBEWISH_GAME").ok().and_then(|n| clean_name(&n)).unwrap_or("local".into());
+    let game = std::env::var("GENVERSE_GAME").ok().and_then(|n| clean_name(&n)).unwrap_or("local".into());
     let log = read_game(&game);
-    let world = std::env::var("CUBEWISH_WORLD")
+    let world = std::env::var("GENVERSE_WORLD")
         .ok()
         .and_then(|n| clean_name(&n))
         .or_else(|| log.start())
@@ -117,7 +117,7 @@ pub fn game_dir() -> String {
 /// `game`'s log (an empty one if it has none yet).
 #[cfg(not(target_arch = "wasm32"))]
 pub fn read_game(game: &str) -> GameLog {
-    match cubewish_rules::store::read_game(&game_dir_of(game)) {
+    match genverse_rules::store::read_game(&game_dir_of(game)) {
         Ok(Some(log)) => log,
         Ok(None) => GameLog::new(game),
         Err(e) => {
@@ -137,7 +137,7 @@ pub fn read_game(game: &str) -> GameLog {
 
 #[cfg(not(target_arch = "wasm32"))]
 fn write_game(game: &str, log: &GameLog) {
-    if let Err(e) = cubewish_rules::store::write_game(&game_dir_of(game), log) {
+    if let Err(e) = genverse_rules::store::write_game(&game_dir_of(game), log) {
         error!("couldn't save game {game}: {e}");
     }
 }
@@ -172,11 +172,11 @@ fn migrate_layout() {
         // Saves from before the log, or a first run: Home starts from them.
         let cache = read_json::<SavedEdits>(OLD_EDITS).filter(|c| c.seed == crate::world::SEED);
         let log = migrate(crate::world::SEED, cache);
-        if let Ok((mut file, _)) = cubewish_rules::store::LogFile::open(&home) {
+        if let Ok((mut file, _)) = genverse_rules::store::LogFile::open(&home) {
             let _ = file.rewrite(&log);
         }
     }
-    let home_log = cubewish_rules::store::LogFile::open(&home).ok().and_then(|(_, log)| log);
+    let home_log = genverse_rules::store::LogFile::open(&home).ok().and_then(|(_, log)| log);
     let admins = home_log.as_ref().map(|l| l.admins.clone()).filter(|a| !a.is_empty()).unwrap_or(vec![profile.id.clone()]);
     let _ = game.push(by(), GameAction::SetAdmins { admins });
     let (seed, flat) = home_log.map_or((crate::world::SEED, false), |l| (l.seed, l.flat));
@@ -188,7 +188,7 @@ fn migrate_layout() {
         if std::fs::rename(entry.path(), &to).is_err() {
             continue;
         }
-        let Some(summary) = cubewish_rules::store::summary(&to) else { continue };
+        let Some(summary) = genverse_rules::store::summary(&to) else { continue };
         let _ = game.push(by(), GameAction::CreateWorld { name: clean, seed: summary.seed, flat: summary.flat });
     }
     let _ = std::fs::remove_dir("saves/worlds");
@@ -213,7 +213,7 @@ pub fn list_worlds() -> Vec<WorldInfo> {
         .worlds()
         .into_iter()
         .map(|(name, ground)| {
-            let summary = cubewish_rules::store::summary(&game_dir_of(&game).join("worlds").join(&name));
+            let summary = genverse_rules::store::summary(&game_dir_of(&game).join("worlds").join(&name));
             WorldInfo {
                 flat: ground.flat,
                 changes: summary.as_ref().map_or(0, |s| s.changes),
@@ -246,7 +246,7 @@ pub fn list_games() -> Vec<GameInfo> {
         .flatten()
         .filter_map(|e| {
             let name = e.file_name().to_string_lossy().to_string();
-            let log = cubewish_rules::store::read_game(&e.path()).ok().flatten()?;
+            let log = genverse_rules::store::read_game(&e.path()).ok().flatten()?;
             let modified = std::fs::metadata(e.path().join("game.json")).and_then(|m| m.modified()).ok();
             Some(GameInfo { name, worlds: log.worlds().len(), modified })
         })
@@ -320,7 +320,7 @@ pub struct Profile {
     /// The secret key, in hex. Profiles from before keys have none and get one.
     #[serde(default)]
     pub secret: Option<String>,
-    /// A `CUBEWISH_AS` guest, never saved.
+    /// A `GENVERSE_AS` guest, never saved.
     #[serde(skip)]
     pub guest: bool,
 }
@@ -331,7 +331,7 @@ pub struct Ledger {
     pub profile: Profile,
     key: Keypair,
     /// Placed builds as of loading, for the builder to spawn.
-    pub builds: cubewish_rules::log::Builds,
+    pub builds: genverse_rules::log::Builds,
     /// Who owns what, as of the latest change.
     pub land: Land,
     /// The world's rules in force now.
@@ -364,14 +364,14 @@ pub struct Ledger {
     pub edits_version: u64,
     /// What games did to the voxels (builds, land), and who installed them: for the game
     /// to draw.
-    pub pending_world: Vec<(String, Vec<cubewish_rules::logic::WorldChange>)>,
+    pub pending_world: Vec<(String, Vec<genverse_rules::logic::WorldChange>)>,
     /// Why the last change recorded didn't apply, if it didn't.
     refused: Option<String>,
     /// Offline, which timers have run up to when; online, the server runs them.
     clock: Clockwork,
     /// Where the log is saved, offline.
     #[cfg(not(target_arch = "wasm32"))]
-    file: Option<cubewish_rules::store::LogFile>,
+    file: Option<genverse_rules::store::LogFile>,
     /// The server this world lives on, when playing online.
     #[cfg(not(target_arch = "wasm32"))]
     pub online: Option<Online>,
@@ -385,7 +385,7 @@ pub struct Ledger {
 #[cfg(not(target_arch = "wasm32"))]
 pub struct Online {
     pub addr: String,
-    pub client: cubewish_net::Client,
+    pub client: genverse_net::Client,
     /// The world as the server has committed it (voxels included, so remote changes
     /// apply one at a time). None until the server welcomes us.
     pub state: Option<Replay>,
@@ -425,12 +425,12 @@ impl Ground for Keeper<'_> {
         self.ground.heights(min, step, count)
     }
 
-    fn solids(&self, lo: [f32; 2], hi: [f32; 2]) -> Vec<cubewish_rules::logic::solid::Solid<'_>> {
-        cubewish_rules::logic::solid::of_world(&self.ledger.builds, &self.ledger.logic, lo, hi)
+    fn solids(&self, lo: [f32; 2], hi: [f32; 2]) -> Vec<genverse_rules::logic::solid::Solid<'_>> {
+        genverse_rules::logic::solid::of_world(&self.ledger.builds, &self.ledger.logic, lo, hi)
     }
 }
 
-impl cubewish_rules::logic::TimerHost for Keeper<'_> {
+impl genverse_rules::logic::TimerHost for Keeper<'_> {
     fn logic(&self) -> &Logic {
         &self.ledger.logic
     }
@@ -439,7 +439,7 @@ impl cubewish_rules::logic::TimerHost for Keeper<'_> {
         self.ledger.log.changes.last().map_or(1, |c| c.id + 1)
     }
 
-    fn record(&mut self, package: &str, now: u64, effects: Vec<cubewish_rules::logic::Effect>) -> Result<(), String> {
+    fn record(&mut self, package: &str, now: u64, effects: Vec<genverse_rules::logic::Effect>) -> Result<(), String> {
         let ledger = &mut *self.ledger;
         let by = Provenance::new(&ledger.profile.id, &ledger.profile.name, None, None, now);
         ledger.log.push_signed(by, Action::Timers { package: package.into(), until: now, effects }, &ledger.key);
@@ -471,7 +471,7 @@ impl Ledger {
             let request = online.next_request;
             online.next_request += 1;
             online.pending.insert(request, sig.clone());
-            online.client.send(cubewish_net::ToServer::Propose { request, by, action, sig, package });
+            online.client.send(genverse_net::ToServer::Propose { request, by, action, sig, package });
             return request;
         }
         if let Some(package) = package {
@@ -633,15 +633,15 @@ impl Ledger {
         let game = read_game(&game_name());
         for sync in game.sync(&self.logic.installed) {
             match sync {
-                cubewish_rules::game::Sync::Upgrade(package, scope) => {
+                genverse_rules::game::Sync::Upgrade(package, scope) => {
                     let reference = package.reference();
                     self.log.packages.insert(reference.hash.clone(), package);
                     self.record(None, None, Action::InstallPackage { package: reference, scope });
                 }
-                cubewish_rules::game::Sync::Remove(name) => {
+                genverse_rules::game::Sync::Remove(name) => {
                     self.record(None, None, Action::UninstallPackage { name });
                 }
-                cubewish_rules::game::Sync::Adopt(name) => {
+                genverse_rules::game::Sync::Adopt(name) => {
                     let found = self.logic.installed.get(&name).and_then(|i| self.logic.package(i)).cloned();
                     if let Some(found) = found {
                         let _ = self.change_game(GameAction::AddPackage { package: Box::new(found) });
@@ -657,7 +657,7 @@ impl Ledger {
     pub fn act(&mut self, intent: Intent) -> Result<Acted, String> {
         let mut trial = self.logic.clone();
         let next = self.log.changes.last().map_or(1, |c| c.id + 1);
-        let ground = cubewish_rules::log::TerrainGround { terrain: self.log.terrain(), edits: &self.edits };
+        let ground = genverse_rules::log::TerrainGround { terrain: self.log.terrain(), edits: &self.edits };
         let outcome = trial.act(next, &self.profile.id, now(), self.log.seed, &self.rules.logic, &intent, &ground)?;
         let me = &self.profile.id;
         let notes = outcome.notes.into_iter().filter(|(to, _)| to == me).map(|(_, text)| text).collect();
@@ -722,7 +722,7 @@ impl Ledger {
                 return Err(format!("There's a folder for \"{name}\" already ({}).", dir.display()));
             }
             let log = log.unwrap_or(WorldLog { flat, ..WorldLog::new(seed) });
-            let (mut file, _) = cubewish_rules::store::LogFile::open(&dir).map_err(|e| e.to_string())?;
+            let (mut file, _) = genverse_rules::store::LogFile::open(&dir).map_err(|e| e.to_string())?;
             file.rewrite(&log).map_err(|e| format!("Couldn't write {}: {e}", dir.display()))?;
         }
         write_game(&game, &game_log);
@@ -762,7 +762,7 @@ impl Ledger {
                 let last = if world == world_name() {
                     self.log.changes.last().map_or(0, |c| c.id)
                 } else {
-                    cubewish_rules::store::summary(&game_dir_of(&game).join("worlds").join(&world)).map_or(0, |s| s.changes as u64)
+                    genverse_rules::store::summary(&game_dir_of(&game).join("worlds").join(&world)).map_or(0, |s| s.changes as u64)
                 };
                 (world, last)
             })
@@ -779,10 +779,10 @@ impl Ledger {
                 continue;
             }
             let dir = game_dir_of(&game).join("worlds").join(world);
-            let Ok((_, Some(log))) = cubewish_rules::store::LogFile::open(&dir) else { continue };
+            let Ok((_, Some(log))) = genverse_rules::store::LogFile::open(&dir) else { continue };
             let snapshot = read_snapshot(&dir.join("snapshot.json"));
-            let state = cubewish_rules::store::state_of_save(&dir, &log, *last, snapshot.as_ref());
-            if let Err(e) = cubewish_rules::store::write_state(&dir, &Snapshot::at(&log, *last, state)) {
+            let state = genverse_rules::store::state_of_save(&dir, &log, *last, snapshot.as_ref());
+            if let Err(e) = genverse_rules::store::write_state(&dir, &Snapshot::at(&log, *last, state)) {
                 warn!("couldn't keep {world}'s save: {e}");
             }
         }
@@ -808,7 +808,7 @@ impl Ledger {
             let by = Provenance::new(&self.profile.id, &self.profile.name, None, None, now());
             let signed = worlds
                 .iter()
-                .map(|(world, to)| (world.clone(), self.key.sign(&signing_bytes(&by, &cubewish_rules::game::load_action(name, *to)))))
+                .map(|(world, to)| (world.clone(), self.key.sign(&signing_bytes(&by, &genverse_rules::game::load_action(name, *to)))))
                 .collect();
             self.propose_game_by(by, GameAction::LoadSave { name: name.into(), signed })?;
             return Ok(worlds.len());
@@ -830,12 +830,12 @@ impl Ledger {
             #[cfg(not(target_arch = "wasm32"))]
             {
                 let dir = game_dir_of(&game).join("worlds").join(world);
-                let Ok((mut file, Some(mut log))) = cubewish_rules::store::LogFile::open(&dir) else { continue };
+                let Ok((mut file, Some(mut log))) = genverse_rules::store::LogFile::open(&dir) else { continue };
                 if log.changes.last().map_or(0, |c| c.id) <= *to {
                     continue;
                 }
                 let snapshot = read_snapshot(&dir.join("snapshot.json"));
-                let state = Some(Box::new(cubewish_rules::store::state_of_save(&dir, &log, *to, snapshot.as_ref())));
+                let state = Some(Box::new(genverse_rules::store::state_of_save(&dir, &log, *to, snapshot.as_ref())));
                 let by = Provenance::new(&self.profile.id, &self.profile.name, None, None, now());
                 log.push_signed(by, Action::Load { save: *to, name: name.trim().into(), state }, &self.key);
                 file.sync(&log).map_err(|e| e.to_string())?;
@@ -856,7 +856,7 @@ impl Ledger {
         }
         online.world = Some(world.to_string());
         online.arriving_from = from_portal;
-        online.client.send(cubewish_net::ToServer::Enter { world: world.to_string() });
+        online.client.send(genverse_net::ToServer::Enter { world: world.to_string() });
         Ok(())
     }
 
@@ -870,11 +870,11 @@ impl Ledger {
 
     #[cfg(not(target_arch = "wasm32"))]
     fn propose_game_by(&mut self, by: Provenance, action: GameAction) -> Result<u64, String> {
-        let sig = self.key.sign(&cubewish_rules::game::signing_bytes(&by, &action));
+        let sig = self.key.sign(&genverse_rules::game::signing_bytes(&by, &action));
         let online = self.online.as_mut().ok_or("not online")?;
         let request = online.next_request;
         online.next_request += 1;
-        online.client.send(cubewish_net::ToServer::ProposeGame { request, by, action, sig });
+        online.client.send(genverse_net::ToServer::ProposeGame { request, by, action, sig });
         Ok(request)
     }
 
@@ -971,10 +971,10 @@ impl Ledger {
         #[cfg(not(target_arch = "wasm32"))]
         {
             let snapshot = read_snapshot(std::path::Path::new(&snapshot_path()));
-            cubewish_rules::store::state_of_save(std::path::Path::new(&world_dir()), &self.log, save, snapshot.as_ref())
+            genverse_rules::store::state_of_save(std::path::Path::new(&world_dir()), &self.log, save, snapshot.as_ref())
         }
         #[cfg(target_arch = "wasm32")]
-        cubewish_rules::log::state_at(&self.log, save, None)
+        genverse_rules::log::state_at(&self.log, save, None)
     }
 
     /// Offline, keeps the states of the saves just made, with the world's voxel `edits`
@@ -1049,7 +1049,7 @@ impl Ledger {
             return;
         }
         self.profile.name = name.chars().take(32).collect();
-        // A guest (CUBEWISH_AS) is only for this run.
+        // A guest (GENVERSE_AS) is only for this run.
         #[cfg(not(target_arch = "wasm32"))]
         if !self.profile.guest {
             write_json(PROFILE_PATH, &self.profile);
@@ -1140,7 +1140,7 @@ pub fn keep_save(ledger: &Ledger, save: u64, edits: Vec<[i32; 4]>) {
     #[cfg(not(target_arch = "wasm32"))]
     {
         let snapshot = Snapshot::at(&ledger.log, save, ledger.world_state(edits));
-        if let Err(e) = cubewish_rules::store::write_state(std::path::Path::new(&world_dir()), &snapshot) {
+        if let Err(e) = genverse_rules::store::write_state(std::path::Path::new(&world_dir()), &snapshot) {
             error!("couldn't keep the save: {e}");
         }
     }
@@ -1174,7 +1174,7 @@ fn read_json<T: serde::de::DeserializeOwned>(path: &str) -> Option<T> {
 }
 
 /// Loads the log (or migrates old saves into one) and returns it with the voxel edits
-/// it describes. With `CUBEWISH_SERVER`, it joins that server instead.
+/// it describes. With `GENVERSE_SERVER`, it joins that server instead.
 pub fn load(seed: u32) -> (Ledger, HashMap<IVec3, VoxelId>) {
     load_with(seed, true)
 }
@@ -1197,7 +1197,7 @@ fn load_with(seed: u32, join: bool) -> (Ledger, HashMap<IVec3, VoxelId>) {
         let _ = game_log.push(by, GameAction::SetAdmins { admins: vec![profile.id.clone()] });
         write_game(&game, &game_log);
     }
-    // A world named with `CUBEWISH_WORLD` that the game didn't have joins it.
+    // A world named with `GENVERSE_WORLD` that the game didn't have joins it.
     if game_log.world(&world_name()).is_none() {
         let by = Provenance::new(&profile.id, &profile.name, None, None, now());
         if game_log.push(by, GameAction::CreateWorld { name: world_name(), seed: log.seed, flat: log.flat }).is_ok() {
@@ -1303,11 +1303,11 @@ fn empty(log: WorldLog, profile: Profile, key: Keypair) -> Ledger {
     }
 }
 
-/// `CUBEWISH_SERVER=host:port`: joins that server instead of the local world. If it
+/// `GENVERSE_SERVER=host:port`: joins that server instead of the local world. If it
 /// can't be reached, the local world loads instead.
 #[cfg(not(target_arch = "wasm32"))]
 fn connect(profile: &Profile, key: &Keypair) -> Option<Online> {
-    let addr = std::env::var("CUBEWISH_SERVER").ok().filter(|a| !a.trim().is_empty())?;
+    let addr = std::env::var("GENVERSE_SERVER").ok().filter(|a| !a.trim().is_empty())?;
     let (profile, key) = guest().unwrap_or((profile.clone(), key.clone()));
     connect_to(&addr, &profile, &key).map_err(|e| error!("{e}; playing the local world instead")).ok()
 }
@@ -1315,9 +1315,9 @@ fn connect(profile: &Profile, key: &Keypair) -> Option<Online> {
 #[cfg(not(target_arch = "wasm32"))]
 fn connect_to(addr: &str, profile: &Profile, key: &Keypair) -> Result<Online, String> {
     let addr = addr.trim();
-    let addr = if addr.contains(':') { addr.to_string() } else { format!("{addr}:{}", cubewish_net::DEFAULT_PORT) };
+    let addr = if addr.contains(':') { addr.to_string() } else { format!("{addr}:{}", genverse_net::DEFAULT_PORT) };
     let signer = key.clone();
-    let client = cubewish_net::Client::connect(&addr, profile.id.clone(), profile.name.clone(), move |m| signer.sign(m))?;
+    let client = genverse_net::Client::connect(&addr, profile.id.clone(), profile.name.clone(), move |m| signer.sign(m))?;
     info!("joining {addr} as {}", profile.name);
     Ok(Online {
         addr,
@@ -1335,20 +1335,20 @@ fn connect_to(addr: &str, profile: &Profile, key: &Keypair) -> Result<Online, St
     })
 }
 
-/// `CUBEWISH_AS=Name`: a separate player for this run (not saved, never an admin). Its
+/// `GENVERSE_AS=Name`: a separate player for this run (not saved, never an admin). Its
 /// key comes from the name, so the same guest is the same player every run.
 fn guest() -> Option<(Profile, Keypair)> {
     #[cfg(target_arch = "wasm32")]
     return None;
     #[cfg(not(target_arch = "wasm32"))]
-    std::env::var("CUBEWISH_AS").ok().filter(|n| !n.trim().is_empty()).map(|name| {
+    std::env::var("GENVERSE_AS").ok().filter(|n| !n.trim().is_empty()).map(|name| {
         info!("playing as {name}");
         // The game's old name: the key is derived from it, so changing it makes every guest
         // someone new who no longer owns their land.
         let tag = format!("cubelark guest {}", name.trim().to_lowercase());
         let mut seed = [0; 32];
         for (i, chunk) in seed.chunks_mut(8).enumerate() {
-            chunk.copy_from_slice(&cubewish_rules::log::fnv1a(format!("{tag} {i}").as_bytes()).to_le_bytes());
+            chunk.copy_from_slice(&genverse_rules::log::fnv1a(format!("{tag} {i}").as_bytes()).to_le_bytes());
         }
         let key = Keypair::from_seed(seed);
         let profile = Profile { id: key.player_id(), name: name.trim().into(), secret: None, guest: true };
@@ -1389,8 +1389,8 @@ fn load_log(seed: u32) -> (WorldLog, Option<()>, Option<Snapshot>) {
 }
 
 #[cfg(not(target_arch = "wasm32"))]
-fn load_log(seed: u32) -> (WorldLog, Option<cubewish_rules::store::LogFile>, Option<Snapshot>) {
-    use cubewish_rules::store::LogFile;
+fn load_log(seed: u32) -> (WorldLog, Option<genverse_rules::store::LogFile>, Option<Snapshot>) {
+    use genverse_rules::store::LogFile;
     let dir = world_dir();
     let (mut file, log) = match LogFile::open(std::path::Path::new(&dir)) {
         Ok(opened) => opened,
@@ -1431,7 +1431,7 @@ fn migrate(seed: u32, voxels: Option<SavedEdits>) -> WorldLog {
         provider: String,
         position: [f32; 3],
         yaw: f32,
-        spec: cubewish_rules::build::BuildSpec,
+        spec: genverse_rules::build::BuildSpec,
     }
 
     let mut log = WorldLog::new(seed);

@@ -130,7 +130,7 @@ mod tests {
     use std::{f32::consts::FRAC_PI_2, sync::Arc};
 
     use super::*;
-    use cubewish_rules::voxel::{Palette, PaletteEntry, Surface, VoxelGrid};
+    use genverse_rules::voxel::{Palette, PaletteEntry, Surface, VoxelGrid};
 
     /// A 4x2x2 bar of voxels, 0.5 m each, pivoting at its bottom-center.
     fn bar() -> VoxelModel {

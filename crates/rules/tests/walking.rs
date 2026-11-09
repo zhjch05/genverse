@@ -2,7 +2,7 @@
 //! timers, records what they did, and replay never looks for a path again); routines,
 //! wandering and spawners are a few lines of Lua on top.
 
-use cubewish_rules::{
+use genverse_rules::{
     log::{Action, Provenance, Replay, WORLD, WorldLog, replay},
     logic::{
         Clockwork, Effect, EntityId, Ground, Intent, LogicRules, Scope, TimerHost,
@@ -47,12 +47,12 @@ fn tick(clock: &mut Clockwork, log: &mut WorldLog, now: u64, players: &[[f32; 3]
         fn heights(&self, min: [i32; 2], step: i32, count: [i32; 2]) -> Option<Vec<Option<i32>>> {
             self.state.heights(min, step, count)
         }
-        fn solids(&self, lo: [f32; 2], hi: [f32; 2]) -> Vec<cubewish_rules::logic::solid::Solid<'_>> {
+        fn solids(&self, lo: [f32; 2], hi: [f32; 2]) -> Vec<genverse_rules::logic::solid::Solid<'_>> {
             self.state.solids(lo, hi)
         }
     }
     impl TimerHost for Host<'_> {
-        fn logic(&self) -> &cubewish_rules::logic::Logic {
+        fn logic(&self) -> &genverse_rules::logic::Logic {
             &self.state.logic
         }
         fn next_change(&self) -> u64 {
@@ -223,7 +223,7 @@ fn the_world_is_the_game() {
     // In the trial: set up on install, the tester joins, walks into the wolf's region,
     // gets chased, bitten until sent back to camp; then hits the wolf.
     let steps: Vec<String> = ["go 15 0", "wait 12", "go 3 0", "hit wolf"].iter().map(|s| s.to_string()).collect();
-    let report = cubewish_rules::logic::trial::play(&game.to_package(1), &steps);
+    let report = genverse_rules::logic::trial::play(&game.to_package(1), &steps);
     println!("{report}");
     assert!(report.contains("on_start:"), "{report}");
     assert!(report.contains("joined") && report.contains("\"Survive the night.\""), "{report}");
@@ -244,7 +244,7 @@ fn the_world_is_the_game() {
             "shapes":[{"kind":"box","color":"iron","from":[0,0,0],"to":[3,4,3],"radius":null,"wobble":null}]}"##,
     )
     .unwrap();
-    let build = cubewish_rules::log::BuildState {
+    let build = genverse_rules::log::BuildState {
         build: 1,
         name: "Lamp".into(),
         prompt: String::new(),
@@ -472,7 +472,7 @@ fn trials_play_player_scripts_items_and_time() {
         models: vec![model("pad")],
     };
     let steps: Vec<String> = ["place pad", "use key on Chest", "say /home", "hold space 1", "press q", "wait until night"].iter().map(|s| s.to_string()).collect();
-    let report = cubewish_rules::logic::trial::play(&game.to_package(1), &steps);
+    let report = genverse_rules::logic::trial::play(&game.to_package(1), &steps);
     println!("{report}");
     assert!(report.contains("2. use key on Chest") && report.contains("opened with the key"), "{report}");
     assert!(report.contains("heard /home"), "{report}");

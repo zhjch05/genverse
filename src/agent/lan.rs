@@ -1,12 +1,12 @@
 //! Playing together on the local network without typing addresses: games hear each
-//! other's beacons ([`cubewish_net::lan`]), the panel lists the worlds nearby, and a
+//! other's beacons ([`genverse_net::lan`]), the panel lists the worlds nearby, and a
 //! hosting game announces itself. **Play together** listens for a moment, then joins
 //! the world it found, or hosts this one if there was none.
 
 use std::{net::SocketAddr, sync::atomic::Ordering};
 
 use bevy::prelude::*;
-use cubewish_net::lan::{Announcer, Beacon, Listener, is_local};
+use genverse_net::lan::{Announcer, Beacon, Listener, is_local};
 
 use super::{Chat, Role, online};
 use crate::world::ledger::Ledger;

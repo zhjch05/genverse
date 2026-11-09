@@ -2,7 +2,7 @@
 //! name, every script file is a feature whose handlers all run, a new version starts
 //! only its new and changed files, and a file taken out takes its pieces with it.
 
-use cubewish_rules::{
+use genverse_rules::{
     log::{Action, Provenance, WorldLog, replay},
     logic::{
         Intent, Scope,
@@ -147,7 +147,7 @@ fn upgrades_migrate_rename_and_clean_up() {
     // v2, renamed to pack.luau: the wolf and its timer follow, and the migration runs on
     // the wolf and on Ada (who isn't here).
     let mut v2 = change(&[("pack.luau", PACK_V2)], &[], None);
-    v2.rename = Some(vec![cubewish_rules::logic::data::Rename { from: "wolves.luau".into(), to: "pack.luau".into() }]);
+    v2.rename = Some(vec![genverse_rules::logic::data::Rename { from: "wolves.luau".into(), to: "pack.luau".into() }]);
     apply(&mut log, &v2, 110);
     let state = replay(&log);
     assert!(state.problems.is_empty(), "{:?}", state.problems);
@@ -166,7 +166,7 @@ fn upgrades_migrate_rename_and_clean_up() {
 
 #[test]
 fn test_game_tries_a_change_on_a_copy_of_the_world() {
-    use cubewish_rules::logic::{NoGround, trial};
+    use genverse_rules::logic::{NoGround, trial};
     let mut log = WorldLog { flat: true, ..WorldLog::new(7) };
     log.admins = vec!["admin".into()];
     apply(&mut log, &change(&[("wolves.luau", PACK_V1)], &["wolf"], None), 100);

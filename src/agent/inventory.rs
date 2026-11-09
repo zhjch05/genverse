@@ -12,7 +12,7 @@
 use bevy::{prelude::*, window::PrimaryWindow};
 use bevy_egui::{EguiContexts, egui};
 
-use cubewish_rules::logic::{Intent, data, walk::position_at};
+use genverse_rules::logic::{Intent, data, walk::position_at};
 
 use super::{
     Chat,
@@ -219,7 +219,7 @@ fn tile_color(ledger: &Ledger, item: &str) -> egui::Color32 {
         Some(egui::Color32::from_rgb(byte(0)?, byte(2)?, byte(4)?))
     };
     hex.and_then(|h| parse(&h)).unwrap_or_else(|| {
-        let n = cubewish_rules::log::fnv1a(item.as_bytes());
+        let n = genverse_rules::log::fnv1a(item.as_bytes());
         egui::Color32::from_rgb(90 + (n % 120) as u8, 90 + ((n >> 8) % 120) as u8, 90 + ((n >> 16) % 120) as u8)
     })
 }
@@ -274,7 +274,7 @@ pub fn hotbar(mut contexts: EguiContexts, time: Res<Time>, chat: Res<Chat>, ledg
                 ui.label(egui::RichText::new(game::item_title(logic, item)).color(p.strong).strong());
             }
             let today = ledger.logic.time(&ledger.rules.logic, game::now());
-            let season = cubewish_rules::logic::clock::SEASONS[today.season];
+            let season = genverse_rules::logic::clock::SEASONS[today.season];
             ui.label(egui::RichText::new(format!("Day {} · {season}", today.day_of_season + 1)).small().color(p.muted));
             ui.horizontal(|ui| {
                 ui.spacing_mut().item_spacing.x = 4.0;

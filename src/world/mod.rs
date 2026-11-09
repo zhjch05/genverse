@@ -15,7 +15,7 @@
 pub mod ledger;
 pub mod lod;
 
-pub use cubewish_rules::terrain;
+pub use genverse_rules::terrain;
 
 use std::sync::Arc;
 
@@ -152,7 +152,7 @@ fn coarse_keys(lo: IVec3, hi: IVec3) -> impl Iterator<Item = IVec3> {
 
 /// Offline, game pieces walk on the ground as it's loaded here; where it isn't, they go
 /// straight.
-impl cubewish_rules::logic::Ground for VoxelWorld {
+impl genverse_rules::logic::Ground for VoxelWorld {
     fn heights(&self, min: [i32; 2], step: i32, count: [i32; 2]) -> Option<Vec<Option<i32>>> {
         let mut column = vec![AIR; WORLD_HEIGHT as usize];
         let mut out = Vec::with_capacity((count[0] * count[1]).max(0) as usize);
@@ -161,7 +161,7 @@ impl cubewish_rules::logic::Ground for VoxelWorld {
                 if !self.column(min[0] + i * step, min[1] + j * step, &mut column) {
                     return None;
                 }
-                out.push(cubewish_rules::logic::walk::stand_in(&column));
+                out.push(genverse_rules::logic::walk::stand_in(&column));
             }
         }
         Some(out)
@@ -342,7 +342,7 @@ impl VoxelWorld {
 
     /// The edits in the columns of `area`, as replay keeps them: for working out land
     /// changes against the ground as it is here.
-    pub fn edits_in_area(&self, area: cubewish_rules::sculpt::Area) -> std::collections::HashMap<IVec3, VoxelId> {
+    pub fn edits_in_area(&self, area: genverse_rules::sculpt::Area) -> std::collections::HashMap<IVec3, VoxelId> {
         let min = IVec3::new(area.min[0], 0, area.min[1]);
         let max = IVec3::new(area.min[0] + area.size[0], WORLD_HEIGHT, area.min[1] + area.size[1]);
         self.edits_in(min, max).into_iter().collect()

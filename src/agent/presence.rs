@@ -6,8 +6,8 @@
 
 use bevy::{platform::collections::HashMap, prelude::*, window::PrimaryWindow};
 use bevy_egui::{EguiContexts, egui};
-use cubewish_net::{Presence, ToServer};
-use cubewish_rules::{
+use genverse_net::{Presence, ToServer};
+use genverse_rules::{
     log::{Action, fnv1a},
     sculpt::{Area, surface},
 };

@@ -1,4 +1,4 @@
-//! Runs the games' player scripts (`*.player.luau`, [`cubewish_rules::logic::frame`])
+//! Runs the games' player scripts (`*.player.luau`, [`genverse_rules::logic::frame`])
 //! every frame on this player's machine: they steer the hero, pose the games' pieces and
 //! hold the camera. Each installed package's scripts load once per version; one that
 //! fails stops until its package changes, and its error goes to the agent with the next
@@ -7,7 +7,7 @@
 use std::collections::{BTreeMap, HashMap};
 
 use bevy::prelude::*;
-use cubewish_rules::logic::{
+use genverse_rules::logic::{
     EntityId,
     frame::{FrameIn, Hero, Pose, PlayerVm},
 };
@@ -168,7 +168,7 @@ pub fn run_player_scripts(
                         warn!("{name}'s player script sends more than {SENDS_A_SECOND} messages a second; dropping \"{message}\"");
                         continue;
                     }
-                    messages.push(cubewish_rules::logic::Intent::Message { package: name.clone(), name: message, data, at: pos.to_array() });
+                    messages.push(genverse_rules::logic::Intent::Message { package: name.clone(), name: message, data, at: pos.to_array() });
                 }
             }
             Err(why) => {
