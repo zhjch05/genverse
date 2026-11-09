@@ -29,8 +29,6 @@ use std::{
     collections::{BTreeMap, HashMap},
     sync::Arc,
 };
-#[cfg(not(target_arch = "wasm32"))]
-use std::net::SocketAddr;
 
 use bevy::prelude::*;
 use genverse_rules::{
@@ -375,10 +373,10 @@ pub struct Ledger {
     /// The server this world lives on, when playing online.
     #[cfg(not(target_arch = "wasm32"))]
     pub online: Option<Online>,
-    /// Where the server this game hosts listens, and how many players are on it, if it
-    /// hosts one.
+    /// The server this game hosts (where it listens, how many players are on it), if
+    /// it hosts one.
     #[cfg(not(target_arch = "wasm32"))]
-    pub hosting: Option<(SocketAddr, std::sync::Arc<std::sync::atomic::AtomicUsize>)>,
+    pub hosting: Option<genverse_server::Running>,
 }
 
 /// A connection to a server and what's in flight on it.

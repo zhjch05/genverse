@@ -60,7 +60,7 @@ pub fn update_lan(time: Res<Time>, mut lan: ResMut<Lan>, mut ledger: ResMut<Ledg
     if std::mem::take(&mut chat.play_together) {
         lan.play_together(now);
     }
-    let hosting = ledger.hosting.as_ref().map(|(addr, players)| (addr.port(), players.load(Ordering::Relaxed)));
+    let hosting = ledger.hosting.as_ref().map(|server| (server.addr.port(), server.players.load(Ordering::Relaxed)));
 
     // Worlds heard (not our own).
     let heard = lan.listener.as_ref().map(Listener::poll).unwrap_or_default();

@@ -93,7 +93,7 @@ fn setup(mut commands: Commands, mut media: ResMut<Assets<ScatteringMedium>>) {
     // On desktop the builder draws these, with what applies right now.
     #[cfg(target_arch = "wasm32")]
     commands.spawn((
-        Text::new("WASD: move   Shift: run   Space: jump   Drag: look   Scroll: zoom"),
+        Text::new("WASD: move   Shift: run   Space: jump   Drag: look   Scroll: zoom   F5: view"),
         TextFont { font_size: FontSize::Px(14.0), ..default() },
         TextColor(Color::srgba(1.0, 1.0, 1.0, 0.75)),
         Node {

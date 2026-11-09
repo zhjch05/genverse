@@ -1198,7 +1198,7 @@ fn shortcut_hints(
     let look = if landscape.selecting || landscape.draft.is_some() { "Right-drag" } else { "Drag" };
     let builder = if chat.open { "hide builder" } else { "builder" };
     let moving =
-        [("WASD", "move"), ("Shift", "run"), ("Space", "jump"), (look, "look"), ("Scroll", "zoom"), ("Tab", builder), ("F1", "hide hints")];
+        [("WASD", "move"), ("Shift", "run"), ("Space", "jump"), (look, "look"), ("Scroll", "zoom"), ("F5", "view"), ("Tab", builder), ("F1", "hide hints")];
 
     let ctx = contexts.ctx_mut()?;
     let p = theme::palette(ctx);
@@ -1607,17 +1607,20 @@ fn network_section(ui: &mut egui::Ui, chat: &mut Chat, ledger: &Ledger, lan: &la
     ui.horizontal(|ui| {
         let status = match (&online.closed, &ledger.hosting) {
             (Some(_), _) => format!("{} · reconnecting…", online.addr),
-            (None, Some((addr, _))) => format!("Others can join on port {}", addr.port()),
+            (None, Some(server)) => format!("Others can join on port {}", server.addr.port()),
             (None, None) => format!("Playing at {}", online.addr),
         };
         theme::note(ui, status);
-        if ledger.hosting.is_none() {
-            ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                if ui.add(theme::Block::new("Leave", theme::Tone::Danger)).on_hover_text("Back to your local world").clicked() {
-                    *action = Some(Action::Leave);
-                }
-            });
-        }
+        let (label, tip) = if ledger.hosting.is_some() {
+            ("Stop hosting", "Close this world to others and go back to your local world")
+        } else {
+            ("Leave", "Back to your local world")
+        };
+        ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+            if ui.add(theme::Block::new(label, theme::Tone::Danger)).on_hover_text(tip).clicked() {
+                *action = Some(Action::Leave);
+            }
+        });
     });
 }
 
@@ -1762,7 +1765,7 @@ fn chat_panel(
                             let status = match (&ledger.online, &ledger.hosting) {
                                 (None, _) => "Local world".to_string(),
                                 (Some(online), _) if online.closed.is_some() => "Reconnecting…".to_string(),
-                                (Some(_), Some((addr, _))) => format!("Hosting on port {}", addr.port()),
+                                (Some(_), Some(server)) => format!("Hosting on port {}", server.addr.port()),
                                 (Some(online), None) => format!("Online at {}", online.addr),
                             };
                             ui.label(egui::RichText::new(status).size(11.5).color(p.muted));

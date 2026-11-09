@@ -49,23 +49,21 @@ pub fn host(ledger: &mut Ledger) -> String {
         Ok(running) => running,
         Err(e) => return format!("⚠ Couldn't host: {e}"),
     };
-    ledger.hosting = Some((running.addr, running.players));
     let port = running.addr.port();
+    ledger.hosting = Some(running);
     if let Err(e) = ledger.go_online(&format!("127.0.0.1:{port}")) {
         return format!("⚠ {e}");
     }
     let lan = lan_ip().map_or(format!("this computer's address, port {port}"), |ip| format!("{ip}:{port}"));
-    format!("Hosting this world until you quit. Others on your network join with {lan}.")
+    format!("Hosting this world; Leave closes it. Others on your network join with {lan}.")
 }
 
-/// Leaves the server for the local world.
+/// Leaves the server for the local world; a hosted one closes on the way out.
 pub fn leave(ledger: &mut Ledger, travel: &mut super::worlds::Travel) -> String {
     if !ledger.is_online() {
         return "You're in your local world.".into();
     }
-    if ledger.hosting.is_some() {
-        return "You're hosting this world; it closes when you quit.".into();
-    }
+    travel.stop_hosting = ledger.hosting.is_some();
     travel.next = Some(super::worlds::Trip::Local { game: crate::world::ledger::game_name(), world: crate::world::ledger::world_name() });
     String::new()
 }

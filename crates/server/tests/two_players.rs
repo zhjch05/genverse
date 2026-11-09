@@ -524,3 +524,28 @@ fn items_and_rules_follow_the_game() {
     assert!(arena.builds.is_empty(), "the load took the lamp back");
     let _ = std::fs::remove_dir_all(&dir);
 }
+
+#[test]
+fn stopping_disconnects_everyone_and_frees_the_port() {
+    let dir = std::env::temp_dir().join(format!("genverse-stop-test-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&dir);
+    let server = start(ServerConfig { data_dir: dir.clone(), port: 0, seed: 1337, flat: true }).unwrap();
+    let addr = server.addr;
+    let at = format!("127.0.0.1:{}", addr.port());
+    let alice = Player::join(&at, 1, "alice");
+    let players = server.players.clone();
+    server.stop();
+    assert_eq!(players.load(std::sync::atomic::Ordering::Relaxed), 0);
+    // Alice hears the server go.
+    loop {
+        match alice.client.recv_timeout(Duration::from_secs(5)) {
+            Ok(ClientEvent::Closed(_)) => break,
+            Ok(ClientEvent::Message(_)) => continue,
+            Ok(ClientEvent::Refused(why)) => panic!("refused: {why}"),
+            Err(e) => panic!("expected the connection to close: {e}"),
+        }
+    }
+    // The port is free again, and nobody new gets in.
+    assert!(std::net::TcpListener::bind(("0.0.0.0", addr.port())).is_ok());
+    let _ = std::fs::remove_dir_all(&dir);
+}

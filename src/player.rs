@@ -1,5 +1,6 @@
 //! The hero: a voxel character assembled from model parts, a kinematic controller with
-//! voxel collision, procedural walk animation, and a third-person follow camera.
+//! voxel collision, procedural walk animation, and a third-person follow camera that
+//! eases in front of whatever gets between it and the hero (F5 looks out of their eyes).
 
 use std::f32::consts::{PI, TAU};
 
@@ -7,12 +8,16 @@ use bevy::{
     input::mouse::{AccumulatedMouseMotion, AccumulatedMouseScroll, MouseScrollUnit},
     platform::collections::HashMap,
     prelude::*,
+    window::{CursorOptions, PrimaryWindow},
 };
 
 use genverse_rules::logic::solid::Areas;
 
 use crate::{
-    voxel::{VoxelModel, VoxelModelAsset, query::overlaps_box},
+    voxel::{
+        VoxelModel, VoxelModelAsset,
+        query::{march, overlaps_box, raycast},
+    },
     world::{
         ChunkLoader, SolidModel, VoxelWorld,
         terrain::{Terrain, VOXEL_SIZE, is_solid},
@@ -188,11 +193,32 @@ struct Limb {
     rest: Vec3,
 }
 
+/// Where the camera pivots: the hero's eyes, meters above their feet.
+const EYE: f32 = 1.2;
+/// How far in front of the eyes the camera sits in first person (a negative reach).
+const FIRST_PERSON: f32 = -0.15;
+/// Half the width of the camera's probe for things in the way: wide enough that the
+/// corners of the near plane stay out of walls too, not just its center.
+const PROBE: f32 = 0.22;
+/// Room kept between the camera and whatever is in the way.
+const MARGIN: f32 = 0.2;
+
 #[derive(Component)]
 pub struct FollowCamera {
     yaw: f32,
     pitch: f32,
+    /// Meters behind the hero the player asked for (scroll).
     distance: f32,
+    /// `distance` eased, so zooming glides.
+    zoom: f32,
+    /// How far something in the way pulls the camera in from `zoom`, eased: in quickly,
+    /// back out slowly, so it never jumps.
+    pull: f32,
+    /// Looking out of the hero's eyes (F5).
+    first_person: bool,
+    /// A drag holds the cursor, so it doesn't run off the window (desktop only).
+    #[cfg_attr(target_arch = "wasm32", allow(dead_code))]
+    grabbed: bool,
     target: Vec3,
 }
 
@@ -213,10 +239,15 @@ impl FollowCamera {
 impl Default for FollowCamera {
     fn default() -> Self {
         let env = |k: &str, d: f32| std::env::var(k).ok().and_then(|v| v.parse().ok()).unwrap_or(d);
+        let distance = env("GENVERSE_DIST", 4.5);
         Self {
             yaw: env("GENVERSE_YAW", 0.6),
             pitch: env("GENVERSE_PITCH", 0.35),
-            distance: env("GENVERSE_DIST", 6.5),
+            distance,
+            zoom: distance,
+            pull: 0.0,
+            first_person: false,
+            grabbed: false,
             target: Vec3::ZERO,
         }
     }
@@ -618,79 +649,150 @@ fn animate_hero(
     }
 }
 
+/// How far back from `pivot` along `dir` the camera can sit, up to `max`: the nearest
+/// terrain or build hit by five rays (the center and the corners of a small square), less
+/// a little room.
+fn clearance(world: &VoxelWorld, models: &[(&VoxelModel, &GlobalTransform)], pivot: Vec3, dir: Dir3, max: f32) -> f32 {
+    let right = dir.cross(Vec3::Y).normalize_or(Vec3::X);
+    let up = right.cross(*dir);
+    let mut free = max;
+    for (x, y) in [(0.0, 0.0), (1.0, 1.0), (1.0, -1.0), (-1.0, 1.0), (-1.0, -1.0)] {
+        let origin = pivot + (right * x + up * y) * PROBE;
+        // In voxel units, with `t` still in meters. A ray that starts inside something
+        // (the hero against a wall) says nothing about what's behind them.
+        let hit = march(origin / VOXEL_SIZE, *dir / VOXEL_SIZE, 0.0, free, |cell| Some(world.get(cell).is_some_and(is_solid)));
+        if let Some((t, normal)) = hit
+            && normal != IVec3::ZERO
+        {
+            free = free.min(t);
+        }
+        for (model, transform) in models {
+            if let Some(hit) = raycast(model, transform, Ray3d::new(origin, dir), free)
+                && hit.normal != Vec3::ZERO
+            {
+                free = free.min(hit.distance);
+            }
+        }
+    }
+    if free < max { (free - MARGIN).max(0.0) } else { max }
+}
+
 pub fn follow_camera(
     time: Res<Time>,
-    buttons: Res<ButtonInput<MouseButton>>,
-    motion: Res<AccumulatedMouseMotion>,
-    scroll: Res<AccumulatedMouseScroll>,
+    (keys, blocked): (Res<ButtonInput<KeyCode>>, Res<InputBlocked>),
+    (buttons, motion, scroll): (Res<ButtonInput<MouseButton>>, Res<AccumulatedMouseMotion>, Res<AccumulatedMouseScroll>),
     over_ui: Res<PointerOverUi>,
     lock: Res<OrbitLock>,
     world: Res<VoxelWorld>,
     scripted: Res<ScriptedHero>,
+    (solids, areas): (Query<(&VoxelModel, &GlobalTransform), With<SolidModel>>, Res<SolidAreas>),
     players: Query<(&Transform, &Player), Without<FollowCamera>>,
+    mut heroes: Query<&mut Visibility, With<Hero>>,
+    mut cursors: Query<&mut CursorOptions, With<PrimaryWindow>>,
     mut cameras: Query<(&mut FollowCamera, &mut Transform)>,
 ) {
     let rig = scripted.camera.unwrap_or_default();
     let Ok((player, hero)) = players.single() else {
         return;
     };
-    let dt = time.delta_secs();
+    let dt = time.delta_secs().min(1.0 / 20.0);
+    let ease = |rate: f32| 1.0 - (-rate * dt).exp();
     for (mut cam, mut transform) in &mut cameras {
-        if (buttons.pressed(MouseButton::Left) && !lock.0) || buttons.pressed(MouseButton::Right) {
+        // Turning follows the mouse directly, as in any third-person game.
+        let dragging = (buttons.pressed(MouseButton::Left) && !lock.0) || buttons.pressed(MouseButton::Right);
+        if dragging {
             cam.yaw -= motion.delta.x * 0.005;
-            cam.pitch = (cam.pitch + motion.delta.y * 0.004).clamp(-0.3, 1.3);
+            cam.pitch = (cam.pitch + motion.delta.y * 0.004).clamp(-1.2, 1.45);
+        }
+        // Once a press turns into a drag, hold the cursor in place (a click stays a click).
+        #[cfg(not(target_arch = "wasm32"))]
+        {
+            let grab = dragging && (cam.grabbed || (!over_ui.0 && motion.delta.length_squared() > 4.0));
+            if grab != cam.grabbed
+                && let Ok(mut cursor) = cursors.single_mut()
+            {
+                use bevy::window::CursorGrabMode;
+                cursor.grab_mode = if grab { CursorGrabMode::Locked } else { CursorGrabMode::None };
+                cursor.visible = !grab;
+                cam.grabbed = grab;
+            }
+        }
+        #[cfg(target_arch = "wasm32")]
+        let _ = &mut cursors;
+
+        if !blocked.0 && keys.just_pressed(KeyCode::F5) {
+            cam.first_person = !cam.first_person;
         }
         let lines = if over_ui.0 {
             0.0
         } else {
             match scroll.unit {
-            MouseScrollUnit::Line => scroll.delta.y,
-            MouseScrollUnit::Pixel => scroll.delta.y / 40.0,
+                MouseScrollUnit::Line => scroll.delta.y,
+                MouseScrollUnit::Pixel => scroll.delta.y / 40.0,
             }
         };
+        if lines < 0.0 {
+            // Scrolling out leaves first person.
+            cam.first_person = false;
+        }
         cam.distance = (cam.distance * (1.0 - lines * 0.08)).clamp(2.0, 25.0);
 
-        // Track the eased model, not the body, so steps don't jolt the view.
-        let goal = player.translation + Vec3::Y * (1.1 + hero.lag + rig.height.unwrap_or(0.0));
-        if cam.target == Vec3::ZERO {
+        // Track the eased model, not the body, so steps don't jolt the view; follow
+        // tightly across the ground and a little softer up and down.
+        let goal = player.translation + Vec3::Y * (EYE + hero.lag + rig.height.unwrap_or(0.0));
+        if cam.target == Vec3::ZERO || cam.target.distance(goal) > 8.0 {
             cam.target = goal;
         }
-        let blend = 1.0 - (-10.0 * dt).exp();
-        cam.target = cam.target.lerp(goal, blend);
+        let (across, rise) = (ease(25.0), ease(12.0));
+        cam.target = Vec3::new(
+            cam.target.x.lerp(goal.x, across),
+            cam.target.y.lerp(goal.y, rise),
+            cam.target.z.lerp(goal.z, across),
+        );
 
         // A game's player script may hold the camera its own way.
         if let Some(yaw) = rig.yaw {
             cam.yaw = yaw;
         }
         let pitch = rig.pitch.unwrap_or(cam.pitch);
-        let wanted = rig.distance.unwrap_or(cam.distance);
-        // Pull the camera in front of any terrain between it and the hero.
+        let wanted = rig.distance.unwrap_or(if cam.first_person { 0.0 } else { cam.distance });
+        let wanted = if wanted < 0.5 { FIRST_PERSON } else { wanted };
+        cam.zoom += (wanted - cam.zoom) * ease(10.0);
+
         let rotation = Quat::from_euler(EulerRot::YXZ, cam.yaw, -pitch, 0.0);
-        let dir = rotation * Vec3::Z;
-        if wanted < 0.5 {
-            // Out of the hero's eyes, looking where the camera faces.
-            let eye = player.translation + Vec3::Y * 1.2;
-            transform.translation = eye - dir * 0.3;
-            transform.look_at(eye - dir * 2.0, Vec3::Y);
-            continue;
+        let dir = Dir3::new_unchecked((rotation * Vec3::Z).normalize());
+        // Pull in front of anything between the camera and the hero: quickly, so the
+        // view rarely sees inside a wall, but eased rather than a jump; then drift back out.
+        let limit = if cam.zoom > 0.0 {
+            let r = cam.zoom + PROBE;
+            let models: Vec<_> = areas
+                .0
+                .within([cam.target.x - r, cam.target.z - r], [cam.target.x + r, cam.target.z + r])
+                .into_iter()
+                .filter_map(|entity| solids.get(entity).ok())
+                .collect();
+            clearance(&world, &models, cam.target, dir, cam.zoom)
+        } else {
+            cam.zoom
+        };
+        let wanted_pull = cam.zoom - limit;
+        let rate = if wanted_pull > cam.pull { 16.0 } else { 3.5 };
+        cam.pull += (wanted_pull - cam.pull) * ease(rate);
+        cam.pull = cam.pull.clamp(0.0, cam.zoom.max(0.0));
+        let reach = cam.zoom - cam.pull;
+
+        // Up close the hero would fill the view from inside: hide them.
+        if let Ok(mut visibility) = heroes.single_mut() {
+            visibility.set_if_neq(if reach > 0.6 { Visibility::Inherited } else { Visibility::Hidden });
         }
-        let mut distance = wanted;
-        let mut d = 0.3;
-        while d < wanted {
-            let p = VoxelWorld::voxel_at(cam.target + dir * d);
-            if world.get(p).is_some_and(is_solid) {
-                distance = (d - 0.3).max(0.5);
-                break;
-            }
-            d += VOXEL_SIZE * 0.5;
-        }
+
         let shake = if rig.shake > 0.0 {
             let t = time.elapsed_secs() * 37.0;
             Vec3::new(t.sin(), (t * 1.3).cos(), (t * 0.7).sin()) * rig.shake * 0.3
         } else {
             Vec3::ZERO
         };
-        transform.translation = cam.target + dir * distance + shake;
-        transform.look_at(cam.target + shake, Vec3::Y);
+        transform.translation = cam.target + *dir * reach + shake;
+        transform.look_to(-*dir, Vec3::Y);
     }
 }

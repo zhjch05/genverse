@@ -32,7 +32,7 @@ use std::{
     path::{Path, PathBuf},
     sync::{
         Arc,
-        atomic::{AtomicUsize, Ordering},
+        atomic::{AtomicBool, AtomicUsize, Ordering},
         mpsc::{self, Receiver, RecvTimeoutError, Sender},
     },
     thread,
@@ -62,11 +62,29 @@ pub struct ServerConfig {
     pub flat: bool,
 }
 
-/// A running server.
+/// A running server. [`Running::stop`] closes it; dropping it leaves it running.
 pub struct Running {
     pub addr: SocketAddr,
     /// How many players are logged in.
     pub players: Arc<AtomicUsize>,
+    stopping: Arc<AtomicBool>,
+    events: Sender<Event>,
+    threads: Vec<thread::JoinHandle<()>>,
+}
+
+impl Running {
+    /// Stops taking players, disconnects everyone, and waits for the game
+    /// and accept threads to finish, so its logs are closed and the port is free when
+    /// this returns.
+    pub fn stop(mut self) {
+        self.stopping.store(true, Ordering::Relaxed);
+        let _ = self.events.send(Event::Stop);
+        // Wake the accept loop so it sees the flag and lets go of the port.
+        let _ = TcpStream::connect_timeout(&SocketAddr::from(([127, 0, 0, 1], self.addr.port())), Duration::from_secs(1));
+        for thread in self.threads.drain(..) {
+            let _ = thread.join();
+        }
+    }
 }
 
 /// Changes between snapshots.
@@ -76,13 +94,17 @@ pub const SNAPSHOT_EVERY: usize = 50;
 const CLOCK_SLACK: u64 = 600;
 
 enum Event {
-    Connected { conn: u64, out: Sender<ToClient>, nonce: String },
+    Connected { conn: u64, out: Sender<ToClient>, nonce: String, stream: TcpStream },
     Message { conn: u64, message: ToServer },
     Left { conn: u64 },
+    /// The server is closing.
+    Stop,
 }
 
 struct Conn {
     out: Sender<ToClient>,
+    /// Shut down when the server stops, which ends the reader thread.
+    stream: TcpStream,
     nonce: String,
     /// The player's id (public key) and name, once they've said hello.
     player: Option<(String, String)>,
@@ -202,19 +224,25 @@ pub fn start(config: ServerConfig) -> io::Result<Running> {
     let listener = TcpListener::bind(("0.0.0.0", config.port))?;
     let addr = listener.local_addr()?;
     let (events_tx, events) = mpsc::channel();
-    thread::Builder::new().name("accept".into()).spawn(move || accept(listener, events_tx))?;
+    let stopping = Arc::new(AtomicBool::new(false));
+    let accept_events = events_tx.clone();
+    let accept_stopping = stopping.clone();
+    let accepting = thread::Builder::new().name("accept".into()).spawn(move || accept(listener, accept_events, &accept_stopping))?;
     let players = Arc::new(AtomicUsize::new(0));
     let mut server = Server { dir: config.data_dir, game, places: HashMap::new(), conns: HashMap::new(), players: players.clone() };
     // The first world is ready before anyone asks.
     if let Some(start) = server.game.start() {
         server.place(&start)?;
     }
-    thread::Builder::new().name("game".into()).spawn(move || run(server, events))?;
-    Ok(Running { addr, players })
+    let game = thread::Builder::new().name("game".into()).spawn(move || run(server, events))?;
+    Ok(Running { addr, players, stopping, events: events_tx, threads: vec![accepting, game] })
 }
 
-fn accept(listener: TcpListener, events: Sender<Event>) {
+fn accept(listener: TcpListener, events: Sender<Event>, stopping: &AtomicBool) {
     for (conn, stream) in listener.incoming().filter_map(Result::ok).enumerate() {
+        if stopping.load(Ordering::Relaxed) {
+            return;
+        }
         let conn = conn as u64;
         if let Err(e) = serve(conn, stream, events.clone()) {
             eprintln!("connection {conn}: {e}");
@@ -237,7 +265,7 @@ fn serve(conn: u64, stream: TcpStream, events: Sender<Event>) -> io::Result<()> 
     let nonce = random_hex();
     let challenge = ToClient::Challenge { version: VERSION, rules: RULES_VERSION, nonce: nonce.clone() };
     out.send(challenge).map_err(io::Error::other)?;
-    let _ = events.send(Event::Connected { conn, out, nonce });
+    let _ = events.send(Event::Connected { conn, out, nonce, stream: stream.try_clone()? });
     thread::Builder::new().name(format!("read-{conn}")).spawn(move || {
         for message in read_messages::<ToServer>(stream) {
             let Ok(message) = message else { break };
@@ -274,8 +302,8 @@ fn run(mut server: Server, events: Receiver<Event>) {
             Err(RecvTimeoutError::Disconnected) => return,
         };
         match event {
-            Event::Connected { conn, out, nonce } => {
-                server.conns.insert(conn, Conn { out, nonce, player: None, world: None, presence: None });
+            Event::Connected { conn, out, nonce, stream } => {
+                server.conns.insert(conn, Conn { out, stream, nonce, player: None, world: None, presence: None });
             }
             Event::Left { conn } => {
                 if let Some(c) = server.conns.remove(&conn)
@@ -287,6 +315,14 @@ fn run(mut server: Server, events: Receiver<Event>) {
                 }
             }
             Event::Message { conn, message } => server.handle(conn, message),
+            Event::Stop => {
+                for conn in server.conns.values() {
+                    let _ = conn.stream.shutdown(std::net::Shutdown::Both);
+                }
+                server.players.store(0, Ordering::Relaxed);
+                println!("server stopped");
+                return;
+            }
         }
     }
 }

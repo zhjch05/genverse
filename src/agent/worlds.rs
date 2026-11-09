@@ -63,6 +63,8 @@ pub struct Travel {
     back: Option<Trip>,
     /// The portal the hero stands at: its build and where it leads.
     near: Option<(u64, PortalTo)>,
+    /// Close the server we host before the next trip (Leave while hosting).
+    pub stop_hosting: bool,
 }
 
 impl Travel {
@@ -144,6 +146,13 @@ pub fn travel(
         return;
     }
     let leaving = trip_here(&ledger);
+    if std::mem::take(&mut travel.stop_hosting)
+        && let Some(server) = ledger.hosting.take()
+    {
+        // Closed before the trip, so its logs are done with when the local world loads them.
+        server.stop();
+        chat.say(Role::System, "Stopped hosting; the others were disconnected.");
+    }
     match trip {
         Trip::Remote { world: name } => {
             if let Err(why) = ledger.enter_remote(&name, from_portal) {
@@ -151,7 +160,7 @@ pub fn travel(
             }
         }
         _ if ledger.hosting.is_some() => {
-            chat.say(Role::System, "You're hosting this game, so you stay; it closes when you quit.");
+            chat.say(Role::System, "You're hosting this game, so you stay; Leave closes it.");
         }
         Trip::Server(addr) => {
             ledger.online = None;
@@ -376,6 +385,8 @@ pub fn toggle_worlds(keys: Res<ButtonInput<KeyCode>>, blocked: Res<InputBlocked>
 
 enum Do {
     Go(Trip),
+    /// Back to the local game; closes the game we host, if we host one.
+    Leave,
     NewWorld,
     RemoveWorld(String),
     Save,
@@ -488,8 +499,8 @@ pub fn worlds_window(
             ui.horizontal(|ui| {
                 ui.label(egui::RichText::new(format!("You're in {here_world}")).strong().color(p.strong));
                 let hosting = match (&ledger.hosting, &ledger.online) {
-                    (Some((addr, players)), _) => {
-                        format!("hosting on port {} · {} playing", addr.port(), players.load(std::sync::atomic::Ordering::Relaxed))
+                    (Some(server), _) => {
+                        format!("hosting on port {} · {} playing", server.addr.port(), server.players.load(std::sync::atomic::Ordering::Relaxed))
                     }
                     (None, Some(online)) => format!("on {}", online.addr),
                     (None, None) => "on this computer".into(),
@@ -766,15 +777,18 @@ pub fn worlds_window(
                         });
                     }
                     ui.separator();
-                    if ledger.hosting.is_some() {
-                        theme::note(ui, "Hosting this game until you quit.");
-                    } else if online {
-                        if ui.button("Leave").on_hover_text("Back to your own game").clicked() {
-                            todo = Some(Do::Go(Trip::Local { game: game_name(), world: world_name() }));
+                    if online {
+                        let (label, tip) = if ledger.hosting.is_some() {
+                            ("Stop hosting", "Close this game to others and go back to your local world")
+                        } else {
+                            ("Leave", "Back to your own game")
+                        };
+                        if ui.button(label).on_hover_text(tip).clicked() {
+                            todo = Some(Do::Leave);
                         }
                     } else if ui
                         .button(format!("Host {}", game_name()))
-                        .on_hover_text("Others on your network can join every world in it until you quit")
+                        .on_hover_text("Others on your network can join every world in it until you stop hosting")
                         .clicked()
                     {
                         todo = Some(Do::Host);
@@ -794,6 +808,7 @@ pub fn worlds_window(
             travel.next = Some(trip);
             None
         }
+        Do::Leave => Some(super::online::leave(&mut ledger, &mut travel)).filter(|reply| !reply.is_empty()),
         Do::NewWorld => {
             let (name, flat) = (std::mem::take(&mut window.new_name), window.new_flat);
             Some(commands::new_world(&mut ledger, &mut travel, &name, flat))

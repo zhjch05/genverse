@@ -31,8 +31,9 @@ Needs `claude` and/or `codex` on your `PATH`, already logged in, for anything th
 
 ## Controls
 
-`WASD` moves, `Shift` runs, `Space` jumps, drag to look, scroll to zoom. A hint bar at the
-bottom always shows the keys that apply right now (`F1` hides it).
+`WASD` moves, `Shift` runs, `Space` jumps, drag to look, scroll to zoom, `F5` switches to
+first person and back. A hint bar at the bottom always shows the keys that apply right now
+(`F1` hides it).
 
 | Context | Keys |
 | --- | --- |
@@ -205,7 +206,8 @@ Chat commands: `/history [n]`, `/undo <id>`, `/rules`, `/verify`, `/save`, `/sav
 ## Playing together
 
 - **From the game:** **Host** in the panel (`/host`) opens your game on port 7878, running
-  on your own saves. It closes when you quit.
+  on your own saves. **Stop hosting** (or `/leave`) closes it and takes you back to your
+  local world; so does quitting.
 - **On the same network nobody types an address.** Hosts announce themselves over UDP on
   port 7877, and every game lists what it hears with a **Join** button. **Play together**
   (`/play`) joins a world it finds, or hosts yours if there is none. Guest Wi-Fi and VPNs can
