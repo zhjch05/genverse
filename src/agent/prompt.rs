@@ -293,6 +293,13 @@ Keep "build" and "terrain" null unless they also ask for those (on_start can bui
     find(component) -> list of entities that have it, in id order
     near(pos, radius, component) -> entities within radius m (0-128), nearest first, each with
       .distance; component optional
+    ground(x, z) -> the y (meters) a piece stands at there: on the land, or on top of a build or
+      solid piece (under roofs); nil over water. Use it to put things on the ground anywhere,
+      not only where the player stands
+    name(player) -> what the player is called ("Ada"), or nil; for scoreboards and greetings
+    set_time(t): sets the game's time of day (0 midnight, 0.25 dawn, 0.5 noon, 0.75 dusk): ev.time
+      and the day go on from there for every script; set_time(nil) goes back to the world's
+      clock. How the sky looks is sky({time}): set both for a night players see
     spawn(pos, components) -> id     despawn(id)    move(id, pos)
     set(id, name, value)    remove(id, name)       notify(player, text)
     give(player, item, n)   take(player, item, n)  count(player, item)

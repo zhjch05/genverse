@@ -154,6 +154,9 @@ pub enum Effect {
     Heard { upto: u64 },
     /// Keeps a value for the package under `key` (`None` forgets it).
     Store { key: String, value: Option<Value> },
+    /// Sets the game's time of day (0-1) as of `at` (Unix seconds); `None` goes back to the
+    /// world's own clock.
+    Clock { to: Option<f32>, at: u64 },
 }
 
 /// Something one package told the others.
@@ -416,6 +419,8 @@ pub struct GameState {
     builds: BTreeMap<u64, String>,
     /// Where games last put each player (`"*"`: where players appear).
     teleports: BTreeMap<String, Teleport>,
+    /// Players' names, as they signed their changes.
+    names: BTreeMap<String, String>,
     /// How games have players move, when it isn't the usual.
     bodies: BTreeMap<String, Body>,
     /// How games last threw each player.
@@ -430,6 +435,8 @@ pub struct GameState {
     signals: Vec<Signal>,
     /// The last signal each package has heard.
     heard: BTreeMap<String, u64>,
+    /// The time of day a game set, and when (Unix seconds): the game clock runs on from it.
+    clock: Option<(f32, u64)>,
     /// What each package keeps for itself (`remember`), by key.
     stores: BTreeMap<String, BTreeMap<String, Value>>,
     /// Entities by where they stand.
@@ -455,6 +462,8 @@ struct SavedState {
     #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
     teleports: BTreeMap<String, Teleport>,
     #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    names: BTreeMap<String, String>,
+    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
     bodies: BTreeMap<String, Body>,
     #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
     launches: BTreeMap<String, Launch>,
@@ -468,6 +477,8 @@ struct SavedState {
     signals: Vec<Signal>,
     #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
     heard: BTreeMap<String, u64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    clock: Option<(f32, u64)>,
     #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
     stores: BTreeMap<String, BTreeMap<String, Value>>,
 }
@@ -483,6 +494,7 @@ impl From<GameState> for SavedState {
             panels: state.panels,
             builds: state.builds.into_iter().collect(),
             teleports: state.teleports,
+            names: state.names,
             bodies: state.bodies,
             launches: state.launches,
             sky: state.sky,
@@ -490,6 +502,7 @@ impl From<GameState> for SavedState {
             shows: state.shows,
             signals: state.signals,
             heard: state.heard,
+            clock: state.clock,
             stores: state.stores,
         }
     }
@@ -516,6 +529,7 @@ impl From<SavedState> for GameState {
             panels: saved.panels,
             builds: saved.builds.into_iter().collect(),
             teleports: saved.teleports,
+            names: saved.names,
             bodies: saved.bodies,
             launches: saved.launches,
             sky: saved.sky,
@@ -523,6 +537,7 @@ impl From<SavedState> for GameState {
             shows: saved.shows,
             signals: saved.signals,
             heard: saved.heard,
+            clock: saved.clock,
             stores: saved.stores,
         }
     }
@@ -600,6 +615,23 @@ impl GameState {
     /// Where a game last put `player` (`"*"`: where players appear), and when.
     pub fn teleport(&self, player: &str) -> Option<Teleport> {
         self.teleports.get(player).copied()
+    }
+
+    /// The time of day a game set, and when.
+    pub fn clock(&self) -> Option<(f32, u64)> {
+        self.clock
+    }
+
+    /// What `player` is called (their name as they signed their changes).
+    pub fn name(&self, player: &str) -> Option<&str> {
+        self.names.get(player).map(String::as_str)
+    }
+
+    /// Notes what `player` is called: replay does, from each change's author.
+    pub fn set_name(&mut self, player: &str, name: &str) {
+        if self.names.get(player).is_none_or(|n| n != name) && !name.trim().is_empty() {
+            self.names.insert(player.to_string(), name.chars().take(40).collect());
+        }
     }
 
     /// How `player`'s hero moves.
@@ -752,6 +784,7 @@ impl GameState {
             shows: Vec::new(),
             signals: Vec::new(),
             heard: BTreeMap::new(),
+            clock: None,
             stores: BTreeMap::new(),
         }
     }
@@ -840,6 +873,9 @@ impl GameState {
         let excess = self.signals.len().saturating_sub(MAX_SIGNALS);
         self.signals.drain(..excess);
         self.heard.extend(done.heard);
+        if let Some(clock) = done.clock {
+            self.clock = clock;
+        }
         for ((package, key), value) in done.stores {
             let store = self.stores.entry(package.clone()).or_default();
             match value {
@@ -892,6 +928,7 @@ pub struct Batch<'a> {
     shows: Vec<Show>,
     signals: Vec<Signal>,
     heard: BTreeMap<String, u64>,
+    clock: Option<Option<(f32, u64)>>,
     stores: BTreeMap<(String, String), Option<Value>>,
 }
 
@@ -918,6 +955,7 @@ pub struct Mark {
     shows: Vec<Show>,
     signals: Vec<Signal>,
     heard: BTreeMap<String, u64>,
+    clock: Option<Option<(f32, u64)>>,
     stores: BTreeMap<(String, String), Option<Value>>,
 }
 
@@ -939,6 +977,7 @@ pub struct Done {
     shows: Vec<Show>,
     signals: Vec<Signal>,
     heard: BTreeMap<String, u64>,
+    clock: Option<Option<(f32, u64)>>,
     stores: BTreeMap<(String, String), Option<Value>>,
     /// Messages for players: who, and what.
     pub notes: Vec<(String, String)>,
@@ -1020,6 +1059,7 @@ impl Batch<'_> {
             shows: self.shows.clone(),
             signals: self.signals.clone(),
             heard: self.heard.clone(),
+            clock: self.clock,
             stores: self.stores.clone(),
         }
     }
@@ -1047,7 +1087,13 @@ impl Batch<'_> {
         self.shows = mark.shows;
         self.signals = mark.signals;
         self.heard = mark.heard;
+        self.clock = mark.clock;
         self.stores = mark.stores;
+    }
+
+    /// What `player` is called.
+    pub fn name(&self, player: &str) -> Option<&str> {
+        self.base.name(player)
     }
 
     /// What `package` keeps under `key`, as staged.
@@ -1348,6 +1394,13 @@ impl Batch<'_> {
                 self.signals.push(Signal { change: self.change, from: grants.package.clone(), name: name.clone(), data: data.clone() });
                 Ok(None)
             }
+            Effect::Clock { to, at } => {
+                if to.is_some_and(|t| !(0.0..=1.0).contains(&t)) {
+                    return Err("set_time(0-1): 0 midnight, 0.25 dawn, 0.5 noon, 0.75 dusk".into());
+                }
+                self.clock = Some(to.map(|t| (t, *at)));
+                Ok(None)
+            }
             Effect::Heard { upto } => {
                 self.heard.insert(grants.package.clone(), *upto);
                 Ok(None)
@@ -1432,6 +1485,7 @@ impl Batch<'_> {
             shows: self.shows,
             signals: self.signals,
             heard: self.heard,
+            clock: self.clock,
             stores: self.stores,
             notes: self.notes,
             world,

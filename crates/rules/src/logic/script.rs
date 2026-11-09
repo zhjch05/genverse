@@ -591,6 +591,33 @@ pub(super) mod vm {
                 })?,
             )?;
             globals.set(
+                "set_time",
+                scope.create_function(move |_, to: Option<f32>| apply(Effect::Clock { to, at: event.at }).map(|_| ()))?,
+            )?;
+            globals.set("name", scope.create_function(|_, player: String| Ok(world.borrow().name(&player).map(str::to_string)))?)?;
+            globals.set(
+                "ground",
+                scope.create_function(move |_, (x, z): (f32, f32)| {
+                    let Some(ground) = event.ground else { return Ok(None) };
+                    if !(x.is_finite() && z.is_finite()) {
+                        return Err(fail("ground(x, z) takes meters"));
+                    }
+                    let size = crate::terrain::VOXEL_SIZE;
+                    let column = ((x / size).floor() as i32, (z / size).floor() as i32);
+                    let Some(Some(top)) = ground.heights([column.0, column.1], 1, [1, 1]).and_then(|h| h.first().copied()) else {
+                        return Ok(None);
+                    };
+                    // On top of builds and solid pieces there, under roofs.
+                    let mut at = (top + 1) as f32 * size;
+                    for solid in ground.solids([x, z], [x, z]) {
+                        if let Some(runs) = solid.spans().get(&column) {
+                            at = at.max(crate::logic::solid::stand(at, runs));
+                        }
+                    }
+                    Ok(Some(at))
+                })?,
+            )?;
+            globals.set(
                 "emit",
                 scope.create_function(move |lua, (name, data): (String, Value)| {
                     apply(Effect::Emit { name, data: lua.from_value(data)? }).map(|_| ())
@@ -859,7 +886,7 @@ mod tests {
 
     /// A package with one script and a crate model.
     fn package(source: &str) -> Package {
-        let manifest = Manifest { name: "game".into(), version: 1, title: "Game".into(), permissions: vec![Permission::Spawn], depends: Vec::new() , renamed: Default::default()};
+        let manifest = Manifest { name: "game".into(), version: 1, title: "Game".into(), permissions: vec![Permission::Spawn], depends: Vec::new() , renamed: Default::default(), api: 0};
         let crate_model = serde_json::from_str(
             r##"{"name":"Crate","size":[8,8,8],"palette":[{"name":"wood","hex":"#b07a45","material":"matte"}],
                 "shapes":[{"kind":"box","color":"wood","from":[0,0,0],"to":[8,8,8],"radius":null,"wobble":null}]}"##,
@@ -875,7 +902,7 @@ mod tests {
 
     fn act(state: &mut GameState, package: &Package, intent: Intent) -> Result<Vec<(String, String)>, String> {
         let time = WorldTime { day: 0, year: 0, season: 0, day_of_season: 0, time_of_day: 0.0 };
-        let event = Event { change: 9, player: "p", trigger: Trigger::Intent(&intent), time, at: 100, seed: 1 };
+        let event = Event { ground: None, change: 9, player: "p", trigger: Trigger::Intent(&intent), time, at: 100, seed: 1 };
         let models = package.models.keys().cloned().collect();
         let grants = Grants { package: "game".into(), write: Vec::new(), spawn: true, scope: Scope::World, max_entities: 100, models, drawn: true, build: true };
         let mut batch = state.batch(9, "p", 256);

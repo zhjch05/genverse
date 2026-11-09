@@ -138,6 +138,8 @@ impl Plugin for AgentPlugin {
             // How games show things: effects, sounds, the sky, heroes' looks.
             .add_systems(Update, (present::play_shows, present::update_particles, present::apply_sky, present::dress_hero))
             .add_systems(Update, tools::take_looks.after(crate::player::follow_camera))
+            // Before games act, so they read the ground as it is.
+            .add_systems(Update, crate::world::ledger::copy_edits.before(game::script_play).before(game::run_timers))
             // Trips are taken last, once everything else this frame is done with the world.
             .add_systems(PostUpdate, worlds::travel);
         // The games' player scripts: before the hero moves, after the pieces do.

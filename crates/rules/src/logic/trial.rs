@@ -100,6 +100,8 @@ pub fn play_in(package: &Package, steps: &[String], world: Option<Copy>) -> Stri
         Some(w) => (Logic { runtime: None, ..w.logic }, w.rules, w.at, w.now, w.next_change, w.ground),
         None => (Logic::default(), LogicRules::default(), [0.0, empty, 0.0], 1_000, 1, &super::NoGround),
     };
+    // What `ground(x, z)` reads: the world's ground, or the empty trial's flat one.
+    let scripts_ground: &dyn super::Ground = if copied { ground } else { &FlatGround };
     let name = package.manifest.name.clone();
     let old = logic.installed.get(&name).cloned();
     let reference = package.reference();
@@ -140,7 +142,7 @@ pub fn play_in(package: &Package, steps: &[String], world: Option<Copy>) -> Stri
     // The game sets the world up, then the tester comes in.
     change += 1;
     let before = logic.state.len();
-    match logic.prepare_start(change, TESTER, now, 7, &rules, &name, upgrade.as_ref()) {
+    match logic.prepare_start(change, TESTER, now, 7, &rules, &name, upgrade.as_ref(), scripts_ground) {
         Ok(prepared) => {
             let o = logic.commit(prepared);
             if o.effects > 0 {
@@ -189,7 +191,7 @@ pub fn play_in(package: &Package, steps: &[String], world: Option<Copy>) -> Stri
         if let Some(rest) = step.strip_prefix("press ").map(|k| (k, 0.0)).or_else(|| {
             step.strip_prefix("hold ").and_then(|r| r.rsplit_once(' ')).and_then(|(k, s)| Some((k, s.trim().parse::<f32>().ok()?.clamp(0.0, 10.0))))
         }) {
-            let report = play_frames(package, &mut logic, &rules, &mut tester, ground_y, now, &mut change, rest.0, rest.1);
+            let report = play_frames(package, &mut logic, &rules, &mut tester, ground_y, now, &mut change, rest.0, rest.1, scripts_ground);
             let _ = writeln!(out, "{}. {step}: {report}", i + 1);
             continue;
         }
@@ -278,7 +280,7 @@ pub fn play_in(package: &Package, steps: &[String], world: Option<Copy>) -> Stri
             _ => None,
         }
         .unwrap_or_default();
-        let result = intent.and_then(|intent| logic.act(change, TESTER, now, 7, &rules, &intent));
+        let result = intent.and_then(|intent| logic.act(change, TESTER, now, 7, &rules, &intent, scripts_ground));
         tester.follow(&logic.state, false);
         let step = format!("{step}{target}");
         let step = step.as_str();
@@ -527,7 +529,7 @@ fn describe(out: &mut String, state: &GameState, origin: [f32; 3], ground: f32) 
 /// send to the game logic. Says how the hero moved, what the camera did, and what came of it.
 #[cfg(not(target_arch = "wasm32"))]
 #[allow(clippy::too_many_arguments)]
-fn play_frames(package: &Package, logic: &mut Logic, rules: &LogicRules, tester: &mut Tester, ground_y: f32, now: u64, change: &mut u64, keys: &str, seconds: f32) -> String {
+fn play_frames(package: &Package, logic: &mut Logic, rules: &LogicRules, tester: &mut Tester, ground_y: f32, now: u64, change: &mut u64, keys: &str, seconds: f32, ground: &dyn super::Ground) -> String {
     use super::frame::{FrameIn, Hero, PlayerVm};
     let mut vm = match PlayerVm::new(package) {
         Ok(Some(vm)) => vm,
@@ -581,7 +583,7 @@ fn play_frames(package: &Package, logic: &mut Logic, rules: &LogicRules, tester:
         for (name, data) in out.sent {
             *change += 1;
             let intent = Intent::Message { package: package.manifest.name.clone(), name: name.clone(), data, at: hero.pos };
-            said.push(match logic.act(*change, TESTER, now, 7, rules, &intent) {
+            said.push(match logic.act(*change, TESTER, now, 7, rules, &intent, ground) {
                 Ok(o) => {
                     let notes: Vec<String> = o.notes.iter().map(|(_, t)| format!("\"{t}\"")).collect();
                     format!("sent \"{name}\": {} change(s){}", o.effects, if notes.is_empty() { String::new() } else { format!(", said {}", notes.join(", ")) })
@@ -599,4 +601,13 @@ fn play_frames(package: &Package, logic: &mut Logic, rules: &LogicRules, tester:
     let extra = format!("{}{}", if poses > 0 { format!("; posed pieces {poses} time(s)") } else { String::new() }, if shows > 0 { format!("; {shows} effect(s)/sound(s)") } else { String::new() });
     let said = if said.is_empty() { String::new() } else { format!("; {}", said.join("; ")) };
     format!("{moved}{camera}{extra}{said}")
+}
+
+/// An empty trial's ground: flat everywhere, as its world is.
+struct FlatGround;
+
+impl super::Ground for FlatGround {
+    fn heights(&self, _min: [i32; 2], _step: i32, count: [i32; 2]) -> Option<Vec<Option<i32>>> {
+        Some(vec![Some(FLAT_GROUND); (count[0] * count[1]).max(0) as usize])
+    }
 }

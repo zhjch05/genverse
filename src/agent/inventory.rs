@@ -273,7 +273,7 @@ pub fn hotbar(mut contexts: EguiContexts, time: Res<Time>, chat: Res<Chat>, ledg
             {
                 ui.label(egui::RichText::new(game::item_title(logic, item)).color(p.strong).strong());
             }
-            let today = ledger.rules.logic.clock.at(game::now());
+            let today = ledger.logic.time(&ledger.rules.logic, game::now());
             let season = cubewish_rules::logic::clock::SEASONS[today.season];
             ui.label(egui::RichText::new(format!("Day {} · {season}", today.day_of_season + 1)).small().color(p.muted));
             ui.horizontal(|ui| {

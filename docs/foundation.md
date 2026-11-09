@@ -17,11 +17,11 @@ Two rules decide what goes in the engine:
 
 Each step ends by rerunning the request set in [`evals/`](../evals/README.md).
 
-Status: all six steps are built. Still to do:
-- step 3: `ground(x, z)` for game scripts, players' names, and setting the time of day
-  for the game logic (the sky can already hold a time of day as players see it);
-- step 5: scripts declaring the API version they were written for;
-- player scripts and effects on the web build.
+Status: all six steps are built, including `ground(x, z)`, `name(player)`,
+`set_time(t)`, and packages recording the scripting API they were written for. One
+thing is left: game scripts and player scripts don't run in the web build yet. The Lua
+engine used here (mlua with Luau) doesn't build for the browser, so that needs a Lua
+that does. It's a project of its own.
 
 ## 1. The world as a workspace
 

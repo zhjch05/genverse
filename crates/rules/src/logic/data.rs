@@ -144,7 +144,8 @@ impl GameSpec {
         // Agents' packages may place builds and reshape land, within the installer's budget.
         let permissions = vec![Permission::Spawn, Permission::Build];
         let renamed = self.rename.iter().flatten().map(|r| (r.from.clone(), r.to.clone())).collect();
-        let manifest = Manifest { name: ns.clone(), version, title: self.title.clone(), permissions, depends: Vec::new(), renamed };
+        // A version made now is written for the API as it is now.
+        let manifest = Manifest { name: ns.clone(), version, title: self.title.clone(), permissions, depends: Vec::new(), renamed, api: super::package::API };
         let scripts = self.scripts.iter().map(|s| (s.name.clone(), s.source.clone())).collect();
         let models = self.models.iter().map(|m| (m.name.clone(), m.build.clone())).collect();
         Package { manifest, defs, scripts, models }

@@ -356,7 +356,7 @@ mod tests {
     use crate::logic::{Manifest, Permission};
 
     fn package(files: &[(&str, &str)]) -> Package {
-        let manifest = Manifest { name: "game".into(), version: 1, title: "Game".into(), permissions: vec![Permission::Spawn], depends: Vec::new(), renamed: Default::default() };
+        let manifest = Manifest { name: "game".into(), version: 1, title: "Game".into(), permissions: vec![Permission::Spawn], depends: Vec::new(), renamed: Default::default(), api: 0 };
         Package { manifest, defs: BTreeMap::new(), scripts: files.iter().map(|(n, s)| (n.to_string(), s.to_string())).collect(), models: BTreeMap::new() }
     }
 

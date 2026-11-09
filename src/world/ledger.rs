@@ -358,6 +358,10 @@ pub struct Ledger {
     /// Saved changes that no longer applied when the world loaded (a game calling what
     /// the engine no longer has): for the player, and the agent, to know.
     pub load_problems: Vec<String>,
+    /// The world's voxel edits, copied from the voxels when they change: the ground
+    /// games read (`ground(x, z)`), the same as replay's.
+    pub edits: std::collections::HashMap<IVec3, VoxelId>,
+    pub edits_version: u64,
     /// What games did to the voxels (builds, land), and who installed them: for the game
     /// to draw.
     pub pending_world: Vec<(String, Vec<cubewish_rules::logic::WorldChange>)>,
@@ -488,6 +492,8 @@ impl Ledger {
     fn advance(&mut self) -> Result<(), String> {
         let Some(change) = self.log.changes.last().cloned() else { return Ok(()) };
         let mut state = Replay::new(&self.log);
+        // The ground games read is the seed's with these edits, as in replay.
+        state.edits = std::mem::take(&mut self.edits);
         state.builds = std::mem::take(&mut self.builds);
         state.land = std::mem::take(&mut self.land);
         state.rules = std::mem::take(&mut self.rules);
@@ -516,6 +522,7 @@ impl Ledger {
         if let Some(world) = state.last_world.take().filter(|(_, w)| !w.is_empty()) {
             self.pending_world.push(world);
         }
+        self.edits = std::mem::take(&mut state.edits);
         self.builds = state.builds;
         self.land = state.land;
         self.rules = state.rules;
@@ -650,7 +657,8 @@ impl Ledger {
     pub fn act(&mut self, intent: Intent) -> Result<Acted, String> {
         let mut trial = self.logic.clone();
         let next = self.log.changes.last().map_or(1, |c| c.id + 1);
-        let outcome = trial.act(next, &self.profile.id, now(), self.log.seed, &self.rules.logic, &intent)?;
+        let ground = cubewish_rules::log::TerrainGround { terrain: self.log.terrain(), edits: &self.edits };
+        let outcome = trial.act(next, &self.profile.id, now(), self.log.seed, &self.rules.logic, &intent, &ground)?;
         let me = &self.profile.id;
         let notes = outcome.notes.into_iter().filter(|(to, _)| to == me).map(|(_, text)| text).collect();
         if outcome.effects == 0 {
@@ -1281,6 +1289,8 @@ fn empty(log: WorldLog, profile: Profile, key: Keypair) -> Ledger {
         version: 0,
         heard: Vec::new(),
         load_problems: Vec::new(),
+        edits: default(),
+        edits_version: u64::MAX,
         pending_world: Vec::new(),
         refused: None,
         clock: Clockwork::default(),
@@ -1455,4 +1465,12 @@ fn migrate(seed: u32, voxels: Option<SavedEdits>) -> WorldLog {
         }
     }
     log
+}
+
+/// Keeps the ledger's copy of the voxel edits current: the ground games read.
+pub fn copy_edits(world: Res<crate::world::VoxelWorld>, mut ledger: ResMut<Ledger>) {
+    if ledger.edits_version != world.edits_version {
+        ledger.edits = world.edit_map();
+        ledger.edits_version = world.edits_version;
+    }
 }

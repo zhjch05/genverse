@@ -250,8 +250,11 @@ impl Upgrade {
 }
 
 /// What a package's rules are asked about.
-#[derive(Clone, Debug)]
+#[derive(Clone)]
 pub struct Event<'a> {
+    /// The ground, for `ground(x, z)`: the seed's terrain with the world's edits (the
+    /// same live and in replay). `None` where it isn't known.
+    pub ground: Option<&'a dyn Ground>,
     pub change: u64,
     /// Who acted; empty for a timer.
     pub player: &'a str,
@@ -349,16 +352,28 @@ pub struct Logic {
 }
 
 impl Logic {
+    /// The game's time at `at`: the world's clock, or where a game set it.
+    pub fn time(&self, rules: &LogicRules, at: u64) -> WorldTime {
+        match self.state.clock() {
+            None => rules.clock.at(at),
+            Some((to, set)) => {
+                let day = rules.clock.day_seconds.max(1) as f64;
+                let shift = ((to - rules.clock.at(set).time_of_day).rem_euclid(1.0) as f64 * day) as u64;
+                rules.clock.at(at + shift)
+            }
+        }
+    }
+
     /// Runs `code` with `package`'s API on the world as it is, as `player`, and returns
     /// what it returns (as JSON) and what it would have changed. Nothing is kept: it's
     /// for looking around, and for trying things out.
-    pub fn query(&self, package: &str, player: &str, code: &str, at: u64, rules: &LogicRules) -> Result<(serde_json::Value, u32), String> {
+    pub fn query(&self, package: &str, player: &str, code: &str, at: u64, rules: &LogicRules, ground: Option<&dyn Ground>) -> Result<(serde_json::Value, u32), String> {
         let install = self.installed.get(package).ok_or(format!("no package {package} is installed"))?;
         let package = self.package(install).ok_or(format!("package {package} is missing"))?;
         let grants = grants(package, install, rules);
         let change = u64::MAX;
         let mut batch = self.state.batch(change, player, rules.max_effects);
-        let event = Event { change, player, trigger: Trigger::Query { code }, time: rules.clock.at(at), at, seed: fnv1a(code.as_bytes()) };
+        let event = Event { ground, change, player, trigger: Trigger::Query { code }, time: self.time(rules, at), at, seed: fnv1a(code.as_bytes()) };
         script::run(package, &event, &mut batch, &grants)?;
         Ok((batch.answer.take().unwrap_or(serde_json::Value::Null), batch.applied))
     }
@@ -420,15 +435,17 @@ impl Logic {
     /// and applies what it does, or nothing if any of it isn't allowed. What it does to
     /// the world's voxels comes back in [`Outcome::world`], unapplied: replay applies it
     /// ([`crate::log::Replay`]), through [`Self::prepare`].
-    pub fn act(&mut self, change: u64, player: &str, at: u64, world_seed: u32, rules: &LogicRules, intent: &Intent) -> Result<Outcome, String> {
-        let prepared = self.prepare(change, player, at, world_seed, rules, intent)?;
+    #[allow(clippy::too_many_arguments)]
+    pub fn act(&mut self, change: u64, player: &str, at: u64, world_seed: u32, rules: &LogicRules, intent: &Intent, ground: &dyn Ground) -> Result<Outcome, String> {
+        let prepared = self.prepare(change, player, at, world_seed, rules, intent, ground)?;
         Ok(self.commit(prepared))
     }
 
     /// What an intent would do, checked, without doing it.
-    pub fn prepare(&self, change: u64, player: &str, at: u64, world_seed: u32, rules: &LogicRules, intent: &Intent) -> Result<Prepared, String> {
+    #[allow(clippy::too_many_arguments)]
+    pub fn prepare(&self, change: u64, player: &str, at: u64, world_seed: u32, rules: &LogicRules, intent: &Intent, ground: &dyn Ground) -> Result<Prepared, String> {
         if let Intent::Choose { choice } = intent {
-            return self.choose(change, player, at, world_seed, rules, intent, choice.as_deref());
+            return self.choose(change, player, at, world_seed, rules, intent, choice.as_deref(), ground);
         }
         let position = intent.position(&self.state)?;
         let package = match intent {
@@ -446,7 +463,7 @@ impl Logic {
         let mut batch = self.state.batch(change, player, rules.max_effects);
         let runtime = self.runtime.clone().unwrap_or_else(|| Arc::new(Rules));
         let seed = fnv1a(format!("{world_seed}/{change}/{}", install.package.name).as_bytes());
-        let event = Event { change, player, trigger: Trigger::Intent(intent), time: rules.clock.at(at), at, seed };
+        let event = Event { ground: Some(ground), change, player, trigger: Trigger::Intent(intent), time: self.time(rules, at), at, seed };
         runtime.handle(package, &event, &mut batch, &grants)?;
         Ok(self.prepared(batch, package, install, None))
     }
@@ -463,6 +480,7 @@ impl Logic {
         rules: &LogicRules,
         intent: &Intent,
         choice: Option<&str>,
+        ground: &dyn Ground,
     ) -> Result<Prepared, String> {
         let panel = self.state.panel(player).ok_or("there's no panel open")?;
         let Some(install) = self.installed.get(&panel.package) else {
@@ -496,7 +514,7 @@ impl Logic {
             Some(_) => {
                 let runtime = self.runtime.clone().unwrap_or_else(|| Arc::new(Rules));
                 let seed = fnv1a(format!("{world_seed}/{change}/{}", install.package.name).as_bytes());
-                let event = Event { change, player, trigger: Trigger::Intent(intent), time: rules.clock.at(at), at, seed };
+                let event = Event { ground: Some(ground), change, player, trigger: Trigger::Intent(intent), time: self.time(rules, at), at, seed };
                 runtime.handle(package, &event, &mut batch, &grants)?;
             }
         }
@@ -559,6 +577,7 @@ impl Logic {
         rules: &LogicRules,
         name: &str,
         upgrade: Option<&Upgrade>,
+        ground: &dyn Ground,
     ) -> Result<Prepared, String> {
         let install = self.installed.get(name).ok_or(format!("{name} isn't installed"))?;
         let package = self.package(install).ok_or(format!("package {name} is missing"))?;
@@ -590,7 +609,7 @@ impl Logic {
         let runtime = self.runtime.clone().unwrap_or_else(|| Arc::new(Rules));
         let seed = fnv1a(format!("{world_seed}/{change}/{name}/start").as_bytes());
         let trigger = Trigger::Start { upgrade: upgrade.is_some(), only: upgrade.map(|u| u.changed.as_slice()), from: upgrade.map(|u| u.from) };
-        let event = Event { change, player, trigger, time: rules.clock.at(at), at, seed };
+        let event = Event { ground: Some(ground), change, player, trigger, time: self.time(rules, at), at, seed };
         runtime.handle(package, &event, &mut batch, &grants)?;
         Ok(self.prepared(batch, package, install, None))
     }

@@ -197,7 +197,7 @@ impl Clockwork {
         for (i, signal) in unheard.iter().enumerate() {
             let seed = fnv1a(format!("{world_seed}/{change}/{package}/signal/{i}").as_bytes());
             let trigger = Trigger::Signal { from: &signal.from, name: &signal.name, data: &signal.data };
-            let event = Event { change, player: "", trigger, time: rules.clock.at(now), at: now, seed };
+            let event = Event { ground: Some(ground), change, player: "", trigger, time: logic.time(rules, now), at: now, seed };
             let mark = batch.mark();
             if let Err(why) = runtime.handle(found, &event, &mut batch, &grants) {
                 batch.rollback(mark);
@@ -216,7 +216,7 @@ impl Clockwork {
                 Seen::Exit(entity, p) => (p, Trigger::Exit { entity: *entity }),
             };
             let seed = fnv1a(format!("{world_seed}/{change}/{package}/seen/{i}").as_bytes());
-            let event = Event { change, player, trigger, time: rules.clock.at(now), at: now, seed };
+            let event = Event { ground: Some(ground), change, player, trigger, time: logic.time(rules, now), at: now, seed };
             let mark = batch.mark();
             if let Err(why) = runtime.handle(found, &event, &mut batch, &grants) {
                 batch.rollback(mark);
@@ -240,7 +240,7 @@ impl Clockwork {
                             Heard::Arrived { entity, stuck } => ("", Trigger::Arrive { entity: *entity, stuck: *stuck }, "on_arrive"),
                             Heard::Caught { entity, player } => (player.as_str(), Trigger::Catch { entity: *entity }, "on_catch"),
                         };
-                        let event = Event { change, player, trigger, time: rules.clock.at(now), at: now, seed };
+                        let event = Event { ground: Some(ground), change, player, trigger, time: logic.time(rules, now), at: now, seed };
                         let mark = batch.mark();
                         if let Err(why) = runtime.handle(found, &event, &mut batch, &grants) {
                             batch.rollback(mark);
@@ -257,7 +257,7 @@ impl Clockwork {
                 continue;
             }
             let trigger = Trigger::Timer { name, data: &timer.data, missed: n - 1 };
-            let event = Event { change, player: "", trigger, time: rules.clock.at(now), at: now, seed };
+            let event = Event { ground: Some(ground), change, player: "", trigger, time: logic.time(rules, now), at: now, seed };
             let mark = batch.mark();
             if let Err(why) = runtime.handle(found, &event, &mut batch, &grants) {
                 batch.rollback(mark);

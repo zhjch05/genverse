@@ -80,6 +80,11 @@ pub fn write(ledger: &Ledger, here: Option<&str>, errors: &[String]) -> Result<P
     let records = semantic::records(&ledger.log, &ledger.builds, &ledger.logic);
     put(&dir.join("README.md"), README)?;
     put(&dir.join("docs/game.md"), super::prompt::GAME_DOC)?;
+    let mut changes = String::from("# What changed in the scripting API\n\nA package records the API it was written for (`api`); WORLD.md says which are behind.\n");
+    for (version, what) in cubewish_rules::logic::package::API_CHANGES {
+        let _ = write!(changes, "\n## {version}\n\n{what}\n");
+    }
+    put(&dir.join("docs/changes.md"), &changes)?;
     put(&dir.join("WORLD.md"), &overview(ledger, here, errors, &records))?;
     let mut places = String::new();
     for r in &records {
@@ -177,6 +182,14 @@ fn overview(ledger: &Ledger, here: Option<&str>, errors: &[String], records: &[R
     for (name, install) in &ledger.logic.installed {
         let Some(package) = ledger.logic.package(install) else { continue };
         let _ = writeln!(out, "Package \"{name}\" (\"{}\", v{}), in packages/{name}/:", package.manifest.title, package.manifest.version);
+        if package.manifest.api < cubewish_rules::logic::package::API {
+            let _ = writeln!(
+                out,
+                "  ⚠ written for scripting API {} (it's {} now): read docs/changes.md and bring its files up to date when you change it",
+                package.manifest.api,
+                cubewish_rules::logic::package::API
+            );
+        }
         for file in package.scripts.keys() {
             let about = records.iter().find(|r| r.of == format!("feature:{name}/{file}")).map(|r| r.about.as_str()).unwrap_or_default();
             let pieces = ledger.logic.state.entities().filter(|(_, e)| e.package == *name && e.components.get("feature").and_then(|f| f.as_str()) == Some(file.as_str())).count();

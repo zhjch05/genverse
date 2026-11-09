@@ -212,7 +212,8 @@ fn query(args: &Value, ledger: &Ledger) -> Result<String, String> {
     let code = args["code"].as_str().ok_or("query needs \"code\"")?;
     let package = args["package"].as_str().unwrap_or("world");
     let now = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map_or(0, |d| d.as_secs());
-    let (value, changes) = ledger.logic.query(package, &ledger.profile.id, code, now, &ledger.rules.logic)?;
+    let ground = cubewish_rules::log::TerrainGround { terrain: ledger.log.terrain(), edits: &ledger.edits };
+    let (value, changes) = ledger.logic.query(package, &ledger.profile.id, code, now, &ledger.rules.logic, Some(&ground))?;
     let mut out = serde_json::to_string_pretty(&value).unwrap_or_default();
     if changes > 0 {
         out.push_str(&format!("\n(It would have made {changes} change(s); none were kept.)"));

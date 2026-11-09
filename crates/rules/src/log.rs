@@ -853,6 +853,10 @@ impl Replay {
         // The server's own changes (timers, players carrying things between worlds)
         // count as an admin's: no player can sign as the world.
         let admin = self.admins.contains(&by.player) || by.player == WORLD;
+        // Games know players by name.
+        if by.player != WORLD {
+            self.logic.state.set_name(&by.player, &by.player_name);
+        }
         // Rate limits count changes that add to the world, by their voxels.
         let cost = match &change.action {
             Action::PlaceBuild(b) | Action::UpdateBuild(b) => Some(build_usage(&b.spec).voxels),
@@ -980,7 +984,7 @@ impl Replay {
                 if from.is_none() || upgrade.is_some() {
                     let start = self
                         .logic
-                        .prepare_start(change.id, &by.player, by.at, self.seed, &self.rules.logic, &package.name, upgrade.as_ref())
+                        .prepare_start(change.id, &by.player, by.at, self.seed, &self.rules.logic, &package.name, upgrade.as_ref(), self)
                         .and_then(|prepared| {
                             let world = self.apply_world(&prepared.installer, &prepared.world, voxels)?;
                             Ok((prepared, world))
@@ -1006,7 +1010,7 @@ impl Replay {
             }
             Action::UninstallPackage { name } => self.logic.uninstall(&by.player, admin, &self.rules.logic, name)?,
             Action::Intent { intent } => {
-                let prepared = self.logic.prepare(change.id, &by.player, by.at, self.seed, &self.rules.logic, intent)?;
+                let prepared = self.logic.prepare(change.id, &by.player, by.at, self.seed, &self.rules.logic, intent, self)?;
                 made = self.apply_world(&prepared.installer, &prepared.world, voxels)?;
                 self.last_world = Some((prepared.installer.clone(), prepared.world.clone()));
                 self.logic.commit(prepared);
@@ -1082,12 +1086,30 @@ impl Replay {
 /// top (a replay without voxels knows only the seed's).
 impl crate::logic::Ground for Replay {
     fn heights(&self, min: [i32; 2], step: i32, count: [i32; 2]) -> Option<Vec<Option<i32>>> {
-        let terrain = Terrain { seed: self.seed, flat: self.flat };
+        TerrainGround { terrain: Terrain { seed: self.seed, flat: self.flat }, edits: &self.edits }.heights(min, step, count)
+    }
+
+    fn solids(&self, lo: [f32; 2], hi: [f32; 2]) -> Vec<crate::logic::solid::Solid<'_>> {
+        crate::logic::solid::of_world(&self.builds, &self.logic, lo, hi)
+    }
+}
+
+/// The ground as the seed makes it with voxel edits on top: what replay knows, and what
+/// a game knows of it live (from the same edits), so both see the same ground.
+pub struct TerrainGround<'a> {
+    pub terrain: Terrain,
+    pub edits: &'a HashMap<IVec3, VoxelId>,
+}
+
+impl crate::logic::Ground for TerrainGround<'_> {
+    fn heights(&self, min: [i32; 2], step: i32, count: [i32; 2]) -> Option<Vec<Option<i32>>> {
+        let terrain = self.terrain;
+        let flat = terrain.flat;
         let step = step.max(1);
         let max = [min[0] + count[0] * step, min[1] + count[1] * step];
         // The edits in the sampled columns, by column.
         let mut edited: HashMap<(i32, i32), Vec<(i32, VoxelId)>> = HashMap::new();
-        for (p, id) in &self.edits {
+        for (p, id) in self.edits {
             let (dx, dz) = (p.x - min[0], p.z - min[1]);
             if p.x >= min[0] && p.z >= min[1] && p.x < max[0] && p.z < max[1] && dx % step == 0 && dz % step == 0 {
                 edited.entry((p.x, p.z)).or_default().push((p.y, *id));
@@ -1098,7 +1120,7 @@ impl crate::logic::Ground for Replay {
             for i in 0..count[0] {
                 let (x, z) = (min[0] + i * step, min[1] + j * step);
                 let h = terrain.height(x, z);
-                let sea = !self.flat && h < crate::terrain::SEA_LEVEL;
+                let sea = !flat && h < crate::terrain::SEA_LEVEL;
                 let Some(edits) = edited.get(&(x, z)) else {
                     out.push((!sea).then_some(h));
                     continue;
@@ -1108,7 +1130,7 @@ impl crate::logic::Ground for Replay {
                     .map(|y| {
                         if y <= h {
                             crate::terrain::block::STONE[0]
-                        } else if !self.flat && y <= crate::terrain::SEA_LEVEL {
+                        } else if !flat && y <= crate::terrain::SEA_LEVEL {
                             crate::terrain::block::WATER
                         } else {
                             crate::voxel::AIR
@@ -1126,9 +1148,6 @@ impl crate::logic::Ground for Replay {
         Some(out)
     }
 
-    fn solids(&self, lo: [f32; 2], hi: [f32; 2]) -> Vec<crate::logic::solid::Solid<'_>> {
-        crate::logic::solid::of_world(&self.builds, &self.logic, lo, hi)
-    }
 }
 
 /// The columns a terrain change in `area` reads, generated from the seed with `edits`

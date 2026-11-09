@@ -49,7 +49,30 @@ pub struct Manifest {
     /// follow ([`super::Upgrade`]).
     #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
     pub renamed: BTreeMap<String, String>,
+    /// The scripting API it was written for ([`API`]); 0 for packages from before
+    /// versions were kept.
+    #[serde(default, skip_serializing_if = "is_zero")]
+    pub api: u32,
 }
+
+fn is_zero(v: &u32) -> bool {
+    *v == 0
+}
+
+/// The scripting API games are written for now. It goes up when something games call
+/// changes or goes away; `API_CHANGES` says what, so old packages can be brought up to
+/// date.
+pub const API: u32 = 2;
+
+/// What changed in each API version, newest last.
+pub const API_CHANGES: &[(u32, &str)] = &[(
+    2,
+    "wander() and the wander component are gone: walk() to a spot and pick the next in on_arrive. \
+     spawner() is gone: an every() timer that spawns while find() says there are too few. Zones are \
+     regions with keys = true. New: player scripts (*.player.luau), send/on_message, on_chat, near, \
+     ground, name, set_time, emit/on_signal, remember/recall, effect, sound, sky, appearance, body, \
+     launch, fly; look takes scale, tint, glow and hidden.",
+)];
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(tag = "kind", rename_all = "snake_case")]
@@ -193,7 +216,7 @@ pub(crate) mod tests {
                 version,
                 title: "Farming".into(),
                 permissions: vec![Permission::Spawn],
-                depends: Vec::new(), renamed: Default::default(),
+                depends: Vec::new(), renamed: Default::default(), api: 0,
             },
             models: BTreeMap::new(),
             defs: BTreeMap::from([

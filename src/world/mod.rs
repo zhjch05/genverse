@@ -98,6 +98,8 @@ pub struct VoxelWorld {
     pending: HashMap<IVec3, PendingChunk>,
     /// Edited voxels, grouped by the chunk that owns them.
     edits: HashMap<IVec3, HashMap<IVec3, VoxelId>>,
+    /// Goes up whenever the edits change, so copies of them know to catch up.
+    pub edits_version: u64,
     /// Bumped on every edit that touches a chunk (including its border).
     versions: HashMap<IVec3, u32>,
     /// Loaded chunks whose meshes are out of date.
@@ -224,6 +226,7 @@ impl VoxelWorld {
         if p.y < 1 || p.y >= WORLD_HEIGHT {
             return false;
         }
+        self.edits_version += 1;
         match edit {
             Some(id) => {
                 self.edits.entry(chunk_of(p)).or_default().insert(p, id);
@@ -279,6 +282,7 @@ impl VoxelWorld {
         let owners: HashSet<IVec3> = self.edits.keys().chain(next.keys()).copied().collect();
         let changed: Vec<IVec3> = owners.into_iter().filter(|c| !same(&self.edits, &next, *c)).collect();
         self.edits = next;
+        self.edits_version += 1;
         // A chunk's padded grid also holds its neighbors' border voxels.
         for owner in changed {
             for z in -1..=1 {
@@ -321,11 +325,17 @@ impl VoxelWorld {
         for (p, id) in edits {
             self.edits.entry(chunk_of(p)).or_default().insert(p, id);
         }
+        self.edits_version += 1;
         self.unsaved = false;
         self.hold_saves = false;
     }
 
     /// Every edit, as `[x, y, z, block]`, for snapshots.
+    /// Every edit, by voxel.
+    pub fn edit_map(&self) -> std::collections::HashMap<IVec3, VoxelId> {
+        self.edits.values().flat_map(|chunk| chunk.iter().map(|(p, id)| (*p, *id))).collect()
+    }
+
     pub fn edit_list(&self) -> Vec<[i32; 4]> {
         self.edits.values().flat_map(|chunk| chunk.iter().map(|(p, id)| [p.x, p.y, p.z, *id as i32])).collect()
     }
@@ -483,6 +493,7 @@ fn setup_world(mut commands: Commands, mut materials: ResMut<Assets<VoxelMateria
         loaded: default(),
         pending: default(),
         edits,
+        edits_version: 0,
         versions: default(),
         dirty: default(),
         regen: default(),
@@ -757,6 +768,7 @@ mod tests {
             loaded: default(),
             pending: default(),
             edits: default(),
+            edits_version: 0,
             versions: default(),
             dirty: default(),
             regen: default(),

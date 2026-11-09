@@ -387,7 +387,7 @@ fn agents_query_the_world_without_changing_it() {
     }
     let state = replay(&log);
     let rules = LogicRules::default();
-    let ask = |code: &str| state.logic.query("town", "ada", code, 200, &rules).unwrap();
+    let ask = |code: &str| state.logic.query("town", "ada", code, 200, &rules, None).unwrap();
     // The package's own names, and what's near: nearest first, with how far.
     assert_eq!(ask("return #find('walker')").0, 3);
     let near = ask("local n = near({x = 21, y = 9, z = 20}, 15, 'walker') return {#n, n[1].distance < n[2].distance}").0;
@@ -396,7 +396,7 @@ fn agents_query_the_world_without_changing_it() {
     let (_, changes) = ask("despawn(find('walker')[1].id) return nil");
     assert_eq!(changes, 1);
     assert_eq!(state.logic.state.len(), 3);
-    assert!(state.logic.query("town", "ada", "return near({x = 0, y = 0, z = 0}, 500)", 200, &rules).unwrap_err().contains("0-128"));
+    assert!(state.logic.query("town", "ada", "return near({x = 0, y = 0, z = 0}, 500)", 200, &rules, None).unwrap_err().contains("0-128"));
 }
 
 #[test]
@@ -434,13 +434,13 @@ fn packages_tell_each_other_and_keep_values() {
     let state = replay(&log);
     assert!(state.problems.is_empty(), "{:?}", state.problems);
     let rules = LogicRules::default();
-    let ask = |package: &str, code: &str| state.logic.query(package, "ada", code, 200, &rules).unwrap().0;
+    let ask = |package: &str, code: &str| state.logic.query(package, "ada", code, 200, &rules, None).unwrap().0;
     assert_eq!(ask("bells", "return recall('rings')"), 2);
     assert_eq!(ask("town", "return recall('heard')"), "bells:rang:2");
     // Heard once: nothing new next time.
     assert!(state.logic.state.unheard("town").next().is_none());
     // A script from before calling what the game no longer has hears what to use instead.
-    let old = state.logic.query("town", "ada", "wander('1.0', {radius = 5}) return nil", 200, &rules).unwrap_err();
+    let old = state.logic.query("town", "ada", "wander('1.0', {radius = 5}) return nil", 200, &rules, None).unwrap_err();
     assert!(old.contains("isn't in the game any more"), "{old}");
 }
 
@@ -479,4 +479,56 @@ fn trials_play_player_scripts_items_and_time() {
     assert!(report.contains("4.0 m up at most, steered in 30"), "{report}");
     assert!(report.contains("sent \"dash\": 1 change(s), said \"dash north\""), "{report}");
     assert!(report.contains("time of day 0.85"), "{report}");
+}
+
+#[test]
+fn scripts_read_the_ground() {
+    let game = GameSpec {
+        remove: None, rename: None,
+        name: "town".into(),
+        title: "Town".into(),
+        defs: vec![DefSpec { name: "walker".into(), kind: "fixture".into(), title: "Walker".into(), ..Default::default() }],
+        scripts: vec![ScriptSpec { name: "main.luau".into(), source: WALKER.into() }],
+        models: vec![model("walker")],
+    };
+    let mut log = world(&game);
+    log.push(by("ada", 100), Action::Intent { intent: Intent::Place { item: "town:walker".into(), position: [20.0, Y, 20.0] } });
+    let state = replay(&log);
+    let rules = LogicRules::default();
+    // The flat world's ground, where pieces stand.
+    let (y, _) = state.logic.query("town", "ada", "return ground(5, 5)", 200, &rules, Some(&state)).unwrap();
+    assert_eq!(y, serde_json::json!(Y));
+    // Nothing known: nil.
+    let (none, _) = state.logic.query("town", "ada", "return ground(5, 5)", 200, &rules, None).unwrap();
+    assert!(none.is_null());
+}
+
+#[test]
+fn games_know_names_and_set_the_time() {
+    let game = GameSpec {
+        remove: None, rename: None,
+        name: "town".into(),
+        title: "Town".into(),
+        defs: vec![DefSpec { name: "walker".into(), kind: "fixture".into(), title: "Walker".into(), ..Default::default() }],
+        scripts: vec![ScriptSpec { name: "main.luau".into(), source: r#"
+            function on_place(ev) spawn(ev.pos, { look = { model = "walker" }, label = "Clock" }) end
+            function on_interact(ev) set_time(0.85) end
+        "#.into() }],
+        models: vec![model("walker")],
+    };
+    let mut log = world(&game);
+    let placed = log.push(by("ada", 100), Action::Intent { intent: Intent::Place { item: "town:walker".into(), position: [20.0, Y, 20.0] } });
+    let state = replay(&log);
+    let rules = LogicRules::default();
+    let ask = |state: &Replay, code: &str| state.logic.query("town", "ada", code, 5000, &rules, None).unwrap().0;
+    // Players are known by the names they signed their changes with.
+    assert_eq!(ask(&state, "return name('ada')"), "ada");
+    assert!(ask(&state, "return name('nobody')").is_null());
+    // The game sets night; its clock runs on from there.
+    log.push(by("ada", 5000), Action::Intent { intent: Intent::Interact { entity: EntityId { change: placed, n: 0 } } });
+    let state = replay(&log);
+    let t = state.logic.time(&rules, 5000).time_of_day;
+    assert!((t - 0.85).abs() < 0.01, "{t}");
+    let later = state.logic.time(&rules, 5000 + rules.clock.day_seconds as u64 / 10).time_of_day;
+    assert!((later - 0.95).abs() < 0.01, "{later}");
 }
