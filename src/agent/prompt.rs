@@ -145,7 +145,7 @@ live at once for everyone. Keep "build" and "terrain" null unless they also ask 
     find(component) -> list of entities that have it, in id order
     spawn(pos, components) -> id     despawn(id)    move(id, pos)
     set(id, name, value)    remove(id, name)       notify(player, text)
-    give(player, item, n)   take(item, n)          count(player, item)
+    give(player, item, n)   take(player, item, n)  count(player, item)
     random() -> 0..1        random_int(a, b)       (no os, io, print or math.random)
     after(seconds, name, data, near)   on_timer once, seconds from now (1 or more)
     every(seconds, name, data, near)   on_timer every that many seconds    cancel(name)

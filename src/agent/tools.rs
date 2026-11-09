@@ -123,7 +123,8 @@ pub fn definitions(rules: &WorldRules) -> Value {
                 what each step did (changes, messages, refusals and script errors) and a map and list of the \
                 pieces afterwards. Steps: \"place <fixture>\" (puts it down; each 32 m apart), a key (\"enter\", \
                 \"north\", \"south\", \"east\", \"west\", \"action\", \"reset\", \"leave\"; sent to the zone \
-                the tester's pawn or last placement is in), \"interact\" (the nearest labeled piece), or \"wait \
+                the tester's pawn or last placement is in), \"interact\" (the nearest labeled piece) or \"interact <label or model>\" (the nearest \
+                one of those), \"wait \
                 <seconds>\" (time passes and timers go off; every step takes a second), \"choose <choice id>\" \
                 (a pick in the open panel) or \"close\". Use it to \
                 play your game through, including winning, and fix what fails.",

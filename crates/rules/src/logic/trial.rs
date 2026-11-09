@@ -35,7 +35,7 @@ pub fn pawn_of(state: &GameState, player: &str) -> Option<[f32; 3]> {
 /// Plays `package` through `steps` and says what happened. Steps are `place <item>`
 /// (each 32 m from the last), a key (`enter`, `north`, ..., sent to the zone the
 /// tester's pawn or last placement is in), `interact` (the labeled entity nearest
-/// them), or `wait <seconds>` (timers go off as they would). Each step takes a second.
+/// them; `interact <label or model>` for a particular one), `choose <id>`, `close`, or `wait <seconds>` (timers go off as they would). Each step takes a second.
 pub fn play(package: &Package, steps: &[String]) -> String {
     let mut out = String::new();
     if let Err(errors) = package.check() {
@@ -103,13 +103,39 @@ pub fn play(package: &Package, steps: &[String]) -> String {
                     .map(|(id, _)| id)
             });
             near.map(|entity| Intent::Interact { entity }).ok_or("nothing labeled to interact with".into())
+        } else if let Some(label) = step.strip_prefix("interact ") {
+            // The entity with that label (or that model) nearest the tester.
+            let label = label.trim();
+            let near = here.and_then(|at| {
+                logic
+                    .state
+                    .entities()
+                    .filter(|(_, e)| {
+                        e.components.get("label").and_then(|l| l.as_str()).is_some_and(|l| l.eq_ignore_ascii_case(label))
+                            || e.components.get("look").and_then(|l| l["model"].as_str()).is_some_and(|m| m.eq_ignore_ascii_case(label))
+                    })
+                    .min_by(|a, b| distance(a.1.position, at).total_cmp(&distance(b.1.position, at)))
+                    .map(|(id, _)| id)
+            });
+            near.map(|entity| Intent::Interact { entity }).ok_or(format!("nothing labeled or modeled \"{label}\""))
         } else {
             Err(format!(
-                "unknown step \"{step}\" (use \"place <item>\", a key: {}, \"interact\", \"choose <choice id>\", \"close\" or \"wait <seconds>\")",
+                "unknown step \"{step}\" (use \"place <item>\", a key: {}, \"interact\", \"interact <label>\", \"choose <choice id>\", \"close\" or \"wait <seconds>\")",
                 KEYS.join(", ")
             ))
         };
+        // Which entity an interaction reached, so a report says what was pressed.
+        let target = match &intent {
+            Ok(Intent::Interact { entity }) => logic.state.get(*entity).map(|e| {
+                let label = e.components.get("label").and_then(|l| l.as_str()).unwrap_or("unlabeled");
+                format!(" ({label}, {}.{})", entity.change, entity.n)
+            }),
+            _ => None,
+        }
+        .unwrap_or_default();
         let result = intent.and_then(|intent| logic.act(change, TESTER, now, 7, &rules, &intent));
+        let step = format!("{step}{target}");
+        let step = step.as_str();
         let _ = match result {
             Ok(o) if o.effects == 0 => writeln!(out, "{}. {step}: nothing changed", i + 1),
             Ok(o) => {

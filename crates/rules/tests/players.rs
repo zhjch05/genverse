@@ -222,10 +222,38 @@ fn trials_show_panels_stats_and_builds() {
     println!("{report}");
     assert!(report.contains("3. choose room: ok"), "{report}");
     assert!(report.contains("inn:gold = 7"), "{report}");
-    let steps: Vec<String> = ["place inn", "interact"].iter().map(|s| s.to_string()).collect();
+    let steps: Vec<String> = ["place inn", "interact innkeeper", "choose buy:0"].iter().map(|s| s.to_string()).collect();
     let report = trial::play(&spec.to_package(1), &steps);
     assert!(report.contains("Panel open: \"The innkeeper\" (inn)"), "{report}");
+    // Says what was pressed, and what the panel does offer.
+    assert!(report.contains("2. interact innkeeper (Innkeeper, "), "{report}");
+    assert!(report.contains("\"buy:0\" isn't a choice in \"The innkeeper\" (it offers room, bye)"), "{report}");
     let spec = game("mason", vec![fixture("mason")], Some(MASON), vec![model("wall", [16, 16, 4]), model("post", [4, 8, 4])]);
     let report = trial::play(&spec.to_package(1), &["place mason".to_string()]);
     assert!(report.contains("built wall") && report.contains("reshaped 16x16 columns"), "{report}");
+}
+
+/// `take` reads like `give`: with the player first, as long as it's the player acting.
+#[test]
+fn take_reads_like_give() {
+    let script = r#"
+function on_place(ev)
+  spawn(ev.pos, { look = { model = "keeper" }, label = "Purse", purse = true })
+end
+function on_interact(ev)
+  give(ev.player, "coin", 5)
+  take(ev.player, "coin", 2)
+  take("coin")
+  if ev.pos.x > 100 then take("someone else", "coin") end
+end
+"#;
+    let spec = game("inn", vec![fixture("inn")], Some(script), vec![model("keeper", [6, 12, 6])]);
+    let steps: Vec<String> = ["place inn", "interact"].iter().map(|s| s.to_string()).collect();
+    let report = trial::play(&spec.to_package(1), &steps);
+    assert!(report.contains("inn:coin ×2"), "{report}");
+    let script = script.replace("ev.pos.x > 100", "true");
+    let spec = game("inn", vec![fixture("inn")], Some(&script), vec![model("keeper", [6, 12, 6])]);
+    let report = trial::play(&spec.to_package(1), &steps);
+    assert!(report.contains("take: only from the player acting"), "{report}");
+    assert!(!report.contains("stack traceback"), "{report}");
 }

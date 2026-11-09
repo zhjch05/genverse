@@ -30,7 +30,7 @@
 //! find(component)               -- every entity with it, in id order
 //! spawn(pos, components) -> id
 //! despawn(id)   move(id, pos)   set(id, name, value)   remove(id, name)
-//! give(player, item, n)   take(item, n)   count(player, item)
+//! give(player, item, n)   take(player, item, n)   count(player, item)
 //! notify(player, text)
 //! random() -> 0..1   random_int(a, b)
 //! after(seconds, name, data, near)  -- on_timer once, `seconds` from now (at least 1)
@@ -91,7 +91,7 @@ pub fn run(_package: &Package, _event: &Event, _world: &mut Batch, _grants: &Gra
 
 /// An error's first lines: Luau adds a traceback the player doesn't need.
 fn first_lines(text: &str) -> String {
-    text.lines().take(2).collect::<Vec<_>>().join(" ")
+    text.lines().take_while(|l| !l.starts_with("stack traceback")).take(2).collect::<Vec<_>>().join(" ")
 }
 
 /// Runs the handler for `event` in `package`'s scripts, if they have one.
@@ -263,8 +263,26 @@ mod vm {
             )?;
             globals.set(
                 "take",
-                scope.create_function(|_, (item, n): (String, Option<u32>)| {
-                    apply(Effect::Take { item: full(&item), count: n.unwrap_or(1) }).map(|_| ())
+                // take(item, n), or take(player, item, n) like give: only from the player acting.
+                scope.create_function(|_, args: mlua::Variadic<Value>| {
+                    let text = |v: Option<&Value>| v.and_then(|v| v.as_string().map(|s| s.to_string_lossy()));
+                    let (item, n) = match (text(args.first()), text(args.get(1))) {
+                        (Some(player), Some(item)) => {
+                            if player != event.player {
+                                return Err(fail(format!("take: only from the player acting ({}), not {player}", event.player)));
+                            }
+                            (item, args.get(2))
+                        }
+                        (Some(item), _) => (item, args.get(1)),
+                        _ => return Err(fail("take: take(item, n) or take(player, item, n)")),
+                    };
+                    let count = match n {
+                        None | Some(Value::Nil) => 1,
+                        Some(Value::Integer(n)) if *n >= 0 => *n as u32,
+                        Some(Value::Number(n)) if *n >= 0.0 && n.fract() == 0.0 => *n as u32,
+                        Some(_) => return Err(fail("take: n is a whole number")),
+                    };
+                    apply(Effect::Take { item: full(&item), count }).map(|_| ())
                 })?,
             )?;
             globals.set(

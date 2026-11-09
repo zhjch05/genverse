@@ -405,7 +405,10 @@ impl Logic {
             None => {
                 batch.apply(&grants, &Effect::Show { player: player.into(), panel: None })?;
             }
-            Some(choice) if !panel.spec.choices.iter().any(|c| c.id == choice) => return Err(format!("\"{choice}\" isn't a choice here")),
+            Some(choice) if !panel.spec.choices.iter().any(|c| c.id == choice) => {
+                let offered: Vec<&str> = panel.spec.choices.iter().map(|c| c.id.as_str()).collect();
+                return Err(format!("\"{choice}\" isn't a choice in \"{}\" (it offers {})", panel.spec.title, offered.join(", ")));
+            }
             Some(choice) if panel.spec.id.starts_with("shop:") => {
                 let shop = &panel.spec.id["shop:".len()..];
                 let Some(data::Def::Shop { sells, .. }) = data::defs(package).get(shop).cloned() else {
