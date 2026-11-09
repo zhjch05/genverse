@@ -5,7 +5,7 @@
 use cubewish_rules::{
     log::{Action, Provenance, Snapshot, WorldLog, replay, replay_from},
     logic::{
-        EntityId, Intent, Scope, Widget,
+        EntityId, Intent, Scope, Ui,
         data::{DefSpec, GameSpec, ModelSpec, ScriptSpec},
         entity::SCRIPT_BUILDS,
         trial,
@@ -91,11 +91,11 @@ fn stats_hud_and_panels() {
     let game = &state.logic.state;
     assert_eq!(game.stat("ada", "inn:hp").map(|s| (s.value, s.max)), Some((3.0, Some(10.0))));
     let panel = game.panel("ada").expect("the innkeeper talks");
-    assert_eq!((panel.spec.id.as_str(), panel.spec.choices.len(), panel.spec.entity), ("inn", 2, Some(keeper)));
+    assert_eq!((panel.spec.id.as_str(), panel.spec.body.buttons().len(), panel.spec.entity), ("inn", 2, Some(keeper)));
     // Everyone sees the quest; only Ada her HP.
     assert_eq!(game.hud("ada").count(), 3);
-    assert!(game.hud("ada").any(|(_, w)| matches!(w, Widget::Items { item, .. } if item == "inn:key")));
-    assert!(matches!(game.hud("bo").collect::<Vec<_>>().as_slice(), [(_, Widget::Text { .. })]));
+    assert!(game.hud("ada").any(|(_, w)| matches!(w, Ui::Value { item: Some(item), .. } if item == "inn:key")));
+    assert!(matches!(game.hud("bo").collect::<Vec<_>>().as_slice(), [(_, Ui::Text { .. })]));
     assert!(game.panel("bo").is_none());
 
     // A choice that isn't offered is refused; renting a room twice runs out of gold.
@@ -218,4 +218,49 @@ end
     let report = trial::play(&spec.to_package(1), &steps);
     assert!(report.contains("take: only from the player acting"), "{report}");
     assert!(!report.contains("stack traceback"), "{report}");
+}
+
+/// A shop as a UI tree, written in Lua: a title, the player's coins live, a row per thing
+/// sold (its tile, a buy button), and buying through on_choose.
+const MARKET: &str = r##"
+local STOCK = { torch = 2, rope = 3 }
+function on_start(ev)
+  spawn({x = 0, y = 8.75, z = 0}, { look = { model = "keeper" }, label = "Trader", trader = true })
+end
+function on_join(ev)
+  give(ev.player, "coin", 5)
+  hud(ev.player, "coins", { kind = "value", label = "Coins", item = "coin" })
+end
+local function shop(player, entity)
+  local rows = { { kind = "text", text = "Market", style = "title" }, { kind = "value", label = "You have", item = "coin" } }
+  for item, price in pairs(STOCK) do
+    table.insert(rows, { kind = "row", items = {
+      { kind = "item", item = item },
+      { kind = "button", id = "buy:" .. item, label = "Buy", detail = price .. " coins" } } })
+  end
+  show(player, { id = "market", title = "Trader", entity = entity, body = { kind = "column", items = rows } })
+end
+function on_interact(ev) shop(ev.player, ev.entity) end
+function on_choose(ev)
+  local item = ev.choice:match("^buy:(.+)$")
+  if not item then return end
+  take(ev.player, "coin", STOCK[item])
+  give(ev.player, item, 1)
+  shop(ev.player, ev.entity)
+end
+"##;
+
+#[test]
+fn panels_are_ui_trees() {
+    let defs = ["coin", "torch", "rope"].map(|n| DefSpec { name: n.into(), kind: "item".into(), title: n.into(), ..Default::default() }).to_vec();
+    let spec = game("market", defs, Some(MARKET), vec![model("keeper", [6, 12, 6])]);
+    let steps: Vec<String> = ["interact trader", "choose buy:torch", "choose buy:rope", "choose buy:torch"].iter().map(|s| s.to_string()).collect();
+    let report = trial::play(&spec.to_package(1), &steps);
+    println!("{report}");
+    assert!(report.contains("2. choose buy:torch") && report.contains("3. choose buy:rope: ok"), "{report}");
+    // 5 coins: a torch (2) and a rope (3), then nothing left for another torch.
+    assert!(report.contains("4. choose buy:torch") && report.contains("REFUSED"), "{report}");
+    assert!(report.contains("market:torch ×1") && report.contains("market:rope ×1"), "{report}");
+    assert!(report.contains("Panel open: \"Trader\" (market): Market You have (market:coin)"), "{report}");
+    assert!(report.contains("[buy:torch: Buy]"), "{report}");
 }

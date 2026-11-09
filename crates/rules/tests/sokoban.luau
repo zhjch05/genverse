@@ -41,7 +41,7 @@ end
 function on_place(ev)
   local board_id = spawn(ev.pos, {
     board = { origin = ev.pos },
-    zone = { size = { W, H } },
+    region = { size = { W, H }, keys = true },
     label = "Sokoban",
     look = { model = "floor" },
   })
@@ -72,20 +72,24 @@ local function solved(board_id)
   return true
 end
 
+-- Walking onto the board gives the player a piece to push boxes with.
+function on_enter(ev)
+  local board = get(ev.entity)
+  if not board or not board.c.board or pawn_of(ev.entity, ev.player) then return end
+  for row = 1, H do
+    for col = 1, W do
+      if cell(col, row) == "@" then
+        spawn(at(board, col, row), { piece = { board = ev.entity, col = col, row = row }, pawn = ev.player })
+      end
+    end
+  end
+end
+
 function on_key(ev)
   local board = get(ev.entity)
   if not board or not board.c.board then return end
   local pawn = pawn_of(ev.entity, ev.player)
-  if ev.key == "enter" then
-    if pawn then return end
-    for row = 1, H do
-      for col = 1, W do
-        if cell(col, row) == "@" then
-          spawn(at(board, col, row), { piece = { board = ev.entity, col = col, row = row }, pawn = ev.player })
-        end
-      end
-    end
-  elseif ev.key == "leave" then
+  if ev.key == "leave" then
     if pawn then despawn(pawn.id) end
   elseif ev.key == "reset" then
     for _, b in ipairs(find("box")) do

@@ -2,7 +2,7 @@
 //! through the log and replayed.
 
 use cubewish_rules::{
-    log::{Action, Provenance, WorldLog, replay},
+    log::{Action, Provenance, Replay, WORLD, WorldLog, replay},
     logic::{
         EntityId, Intent, Scope,
         data::{DefSpec, GameSpec, ModelSpec, ScriptSpec},
@@ -36,6 +36,39 @@ pub fn models() -> Vec<ModelSpec> {
 }
 
 
+/// `player` stands at `at` when the world's clock runs at `now`, as a server sees them:
+/// regions they walk into hear about it.
+fn stand(log: &mut WorldLog, player: &str, at: [f32; 3], now: u64) {
+    use cubewish_rules::logic::{Clockwork, Effect, Ground, LogicRules, TimerHost};
+    struct Host<'a> {
+        log: &'a mut WorldLog,
+        state: Replay,
+    }
+    impl Ground for Host<'_> {
+        fn heights(&self, _min: [i32; 2], _step: i32, _count: [i32; 2]) -> Option<Vec<Option<i32>>> {
+            None
+        }
+    }
+    impl TimerHost for Host<'_> {
+        fn logic(&self) -> &cubewish_rules::logic::Logic {
+            &self.state.logic
+        }
+        fn next_change(&self) -> u64 {
+            self.log.changes.last().unwrap().id + 1
+        }
+        fn record(&mut self, package: &str, now: u64, effects: Vec<Effect>) -> Result<(), String> {
+            let id = self.log.push(by(WORLD, now), Action::Timers { package: package.into(), until: now, effects });
+            let change = self.log.changes.iter().find(|c| c.id == id).unwrap().clone();
+            self.state.apply(&change, false).map(|_| ())
+        }
+    }
+    let seed = log.seed;
+    let state = replay(log);
+    let mut clock = Clockwork::new(now - 1);
+    let run = clock.run(&mut Host { log, state }, now, seed, &LogicRules::default(), &[(player.to_string(), at)]);
+    assert!(run.errors.is_empty(), "{:?}", run.errors);
+}
+
 fn by(player: &str, at: u64) -> Provenance {
     Provenance::new(player, player, None, None, at)
 }
@@ -57,7 +90,8 @@ fn sokoban_plays_through_the_log() {
         t += 1;
         log.push(by("ada", t), Action::Intent { intent: Intent::Key { entity: board, key: key.into() } })
     };
-    key(&mut log, "enter");
+    // Ada walks onto the board: she gets her piece.
+    stand(&mut log, "ada", [40.0, 9.0, 40.0], 2);
     // East twice pushes the first box onto its target; north into the wall does nothing;
     // round to the second box and down onto its target.
     for k in ["east", "east", "north", "north", "west", "south", "south"] {
@@ -89,13 +123,14 @@ fn sokoban_plays_through_the_log() {
 #[test]
 fn trials_show_what_a_package_does() {
     let package = sokoban().to_package(1);
-    let steps: Vec<String> = ["place board", "enter", "east", "east", "jump"].iter().map(|s| s.to_string()).collect();
+    let steps: Vec<String> = ["place board", "east", "east", "jump"].iter().map(|s| s.to_string()).collect();
     let report = cubewish_rules::logic::trial::play(&package, &steps);
     println!("{report}");
     // The board, 24 walls, 2 targets and 2 boxes.
     assert!(report.contains("1. place board: ok, 29 change(s)"), "{report}");
-    assert!(report.contains("4. east: ok"), "{report}");
-    assert!(report.contains("5. jump: REFUSED"), "{report}");
+    assert!(report.contains("entered the Sokoban"), "walking on gets the piece:\n{report}");
+    assert!(report.contains("3. east: ok"), "{report}");
+    assert!(report.contains("4. jump: REFUSED"), "{report}");
     assert!(report.contains("  w...@b.w"), "the pushed box shows on the map:\n{report}");
     let mut broken = sokoban();
     broken.scripts[0].source = "function on_place(ev) spawn(ev.pos, { look = { model = 'barrel' } }) end".into();

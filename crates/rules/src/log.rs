@@ -128,6 +128,54 @@ pub struct BuildState {
     pub yaw: f32,
 }
 
+/// The placed builds, by id, kept indexed by where they stand.
+#[derive(Clone, Debug, Default, PartialEq)]
+pub struct Builds {
+    all: BTreeMap<u64, BuildState>,
+    areas: crate::logic::solid::Areas<u64>,
+    /// Each build's model, as a key that's the same for the same model.
+    models: BTreeMap<u64, u64>,
+}
+
+impl std::ops::Deref for Builds {
+    type Target = BTreeMap<u64, BuildState>;
+
+    fn deref(&self) -> &Self::Target {
+        &self.all
+    }
+}
+
+impl Builds {
+    pub fn insert(&mut self, id: u64, build: BuildState) -> Option<BuildState> {
+        let reach = crate::logic::solid::Solid { spec: &build.spec, model: 0, position: build.position, yaw: build.yaw }.reach();
+        self.areas.put(id, build.position, reach);
+        if self.all.get(&id).is_none_or(|old| old.spec != build.spec) {
+            self.models.insert(id, fnv1a(&serde_json::to_vec(&build.spec).unwrap_or_default()));
+        }
+        self.all.insert(id, build)
+    }
+
+    pub fn remove(&mut self, id: &u64) -> Option<BuildState> {
+        self.areas.take(*id);
+        self.models.remove(id);
+        self.all.remove(id)
+    }
+
+    pub fn clear(&mut self) {
+        *self = Self::default();
+    }
+
+    /// Builds that may reach into the ground from `lo` to `hi` (x, z).
+    pub fn within(&self, lo: [f32; 2], hi: [f32; 2]) -> impl Iterator<Item = (u64, &BuildState)> {
+        self.areas.within(lo, hi).into_iter().filter_map(|id| Some((id, self.all.get(&id)?)))
+    }
+
+    /// Build `id`'s model key.
+    pub fn model(&self, id: u64) -> Option<u64> {
+        self.models.get(&id).copied()
+    }
+}
+
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 #[serde(tag = "kind", rename_all = "snake_case")]
 pub enum Action {
@@ -450,7 +498,7 @@ pub struct Replay {
     pub seed: u32,
     pub flat: bool,
     pub admins: Vec<String>,
-    pub builds: BTreeMap<u64, BuildState>,
+    pub builds: Builds,
     /// Voxel edits on top of the seed.
     pub edits: HashMap<IVec3, VoxelId>,
     pub land: Land,
@@ -1056,6 +1104,10 @@ impl crate::logic::Ground for Replay {
             }
         }
         Some(out)
+    }
+
+    fn solids(&self, lo: [f32; 2], hi: [f32; 2]) -> Vec<crate::logic::solid::Solid<'_>> {
+        crate::logic::solid::of_world(&self.builds, &self.logic, lo, hi)
     }
 }
 

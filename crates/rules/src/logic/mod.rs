@@ -14,7 +14,9 @@ pub mod data;
 pub mod entity;
 pub mod package;
 pub mod script;
+pub mod solid;
 pub mod trial;
+pub mod ui;
 pub mod walk;
 
 use std::{collections::BTreeMap, sync::Arc};
@@ -26,7 +28,8 @@ pub use clock::{ClockRules, WorldTime};
 pub use clockwork::{Clockwork, Fired, Run, Seen, TimerHost};
 pub use walk::{Ground, NoGround};
 pub use data::Def;
-pub use entity::{Batch, Choice, Effect, Entity, EntityId, GameState, Grants, Panel, PanelSpec, Stat, Timer, Widget};
+pub use entity::{Batch, Effect, Entity, EntityId, GameState, Grants, Panel, Stat, Timer};
+pub use ui::{PanelSpec, Ui};
 pub use package::{Manifest, Package, PackageRef, Permission};
 
 use crate::{land::parcel_of, log::fnv1a, terrain::VOXEL_SIZE};
@@ -123,7 +126,8 @@ pub enum Intent {
     /// Puts an item down somewhere (plants a seed, sets up a game board): how entities
     /// begin.
     Place { item: String, position: [f32; 3] },
-    /// A key pressed inside a `zone` (see [`entity`]), or entering and leaving it.
+    /// A movement key from a player on their pawn in a region that takes keys (see
+    /// [`entity`]). "enter" is only in old logs: walking in is `on_enter` now.
     Key { entity: EntityId, key: String },
     /// A choice made in the panel the player has open (dialogue, a menu, a shop), or
     /// closing it (`None`). It goes to the package whose panel it is.
@@ -441,8 +445,8 @@ impl Logic {
             None => {
                 batch.apply(&grants, &Effect::Show { player: player.into(), panel: None })?;
             }
-            Some(choice) if !panel.spec.choices.iter().any(|c| c.id == choice) => {
-                let offered: Vec<&str> = panel.spec.choices.iter().map(|c| c.id.as_str()).collect();
+            Some(choice) if !panel.spec.body.buttons().contains(&choice) => {
+                let offered = panel.spec.body.buttons();
                 return Err(format!("\"{choice}\" isn't a choice in \"{}\" (it offers {})", panel.spec.title, offered.join(", ")));
             }
             Some(_) => {

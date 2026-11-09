@@ -2,14 +2,14 @@
 
 Status: 2026-11-08. Built: the kernel and log (phase 1), data packages (phase 2), and
 server-side Luau scripts with permissions and limits (phase 3), plus engine components
-for games (`look`, `label`, `zone`, `pawn`). Pieces are drawn only as their
+for games (`look`, `label`, `region`, `pawn`). Pieces are drawn only as their
 package's voxel models, built like builds, and agents test packages in a throwaway
 world (`trial`, the `test_game` tool) before answering. Changed from this proposal: a game's rules apply
 to the whole world, and only admins change them; an intent goes only to the package that
 owns its item or entity; scripts change the world through a checked batch as they run,
 rather than returning a list of intents. Timers replace per-tick events (see
-[Timers](#timers)). Also built: players' stats, HUD widgets, and panels (dialogue, menus,
-shops, with `Intent::Choose`), and games changing the world's voxels
+[Timers](#timers)). Also built: players' stats, a HUD and panels (dialogue, menus,
+shops, with `Intent::Choose`), both UI trees ([`ui`](../crates/rules/src/logic/ui.rs)), and games changing the world's voxels
 (`build`, `unbuild`, `terrain`) through the world's own rules, charged to the installer's
 land and budget, all or nothing (see [`entity`](../crates/rules/src/logic/entity.rs) and
 [testing-games.md](testing-games.md)). Also built: pieces that move on their own (walking
@@ -228,7 +228,7 @@ and none of them is specific to one genre:
 | Spawners | mobs, fish, visitors |
 | NPC schedules and paths | villagers walking their day |
 | Seeded random numbers | dice, loot, weather |
-| UI described as data: dialogue, menus, HUD widgets, shops | all of the above |
+| UI described as data: dialogue, menus, HUD, shops | all of the above |
 
 Voxel changes still go through build and terrain operations, so budgets, land rules
 and rate limits apply to them as they do now.

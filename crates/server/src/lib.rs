@@ -113,6 +113,10 @@ impl cubewish_rules::logic::Ground for Place {
     fn heights(&self, min: [i32; 2], step: i32, count: [i32; 2]) -> Option<Vec<Option<i32>>> {
         self.state.heights(min, step, count)
     }
+
+    fn solids(&self, lo: [f32; 2], hi: [f32; 2]) -> Vec<cubewish_rules::logic::solid::Solid<'_>> {
+        self.state.solids(lo, hi)
+    }
 }
 
 impl cubewish_rules::logic::TimerHost for Place {

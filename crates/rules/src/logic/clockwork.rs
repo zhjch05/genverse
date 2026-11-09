@@ -73,6 +73,15 @@ pub enum Seen {
     Exit(EntityId, String),
 }
 
+/// The region taking players' keys (`keys = true`) that `at` is in, if any: a player
+/// standing there on their pawn moves with `on_key`.
+pub fn keys_region_at(state: &GameState, at: [f32; 3], now: u64) -> Option<EntityId> {
+    state
+        .entities()
+        .find(|(_, e)| e.components.get("region").is_some_and(|r| r["keys"] == true) && in_region(e, at, now))
+        .map(|(id, _)| id)
+}
+
 /// Whether `at` is inside `e`'s region, as it stands at `now`.
 fn in_region(e: &Entity, at: [f32; 3], now: u64) -> bool {
     let Some(region) = e.components.get("region") else { return false };

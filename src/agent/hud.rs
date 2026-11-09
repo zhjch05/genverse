@@ -1,7 +1,7 @@
-//! What games put in front of the player (`cubewish_rules::logic::entity`): the HUD
-//! (bars and counters for their stats, lines of text) at the top of the view, and the
-//! panel a game opened for them (dialogue, a menu, a shop), whose choices go back to the
-//! game as [`Intent::Choose`]. Offline, it also draws what games did to the world:
+//! What games put in front of the player (`cubewish_rules::logic::ui`): the HUD (the
+//! UI trees games pin to the screen, their values and bars live) at the bottom left, and
+//! the panel a game opened for them (dialogue, a menu, a shop: any tree), whose buttons
+//! go back to the game as [`Intent::Choose`]. Offline, it also draws what games did to the world:
 //! their builds, and their land changes worked out on the ground as it is here.
 //!
 //! Script it: `CUBEWISH_PLAY="use; choose buy:0; close"` picks in the open panel.
@@ -10,7 +10,7 @@ use bevy::prelude::*;
 use bevy_egui::{EguiContexts, egui};
 use cubewish_rules::{
     log::ground_columns,
-    logic::{Intent, Widget, WorldChange},
+    logic::{Intent, Ui, WorldChange},
     sculpt,
 };
 
@@ -22,16 +22,17 @@ use super::{
 };
 use crate::world::{VoxelWorld, ledger::Ledger};
 
-/// The widgets on the local player's screen, and the panel they have open.
+/// What the local player's screen shows of the games, and the panel they have open.
 pub fn game_hud(mut contexts: EguiContexts, time: Res<Time>, mut ledger: ResMut<Ledger>, mut play: ResMut<Play>, mut chat: ResMut<Chat>) -> Result {
     let ctx = contexts.ctx_mut()?;
     let p = theme::palette(ctx);
     let covered = chat.covered * ctx.viewport_rect().width();
     let me = ledger.profile.id.clone();
     let state = &ledger.logic.state;
+    let live = Live { state, me: &me, logic: &ledger.logic };
 
-    let widgets: Vec<(String, Widget)> = state.hud(&me).map(|(id, w)| (id.to_string(), w.clone())).collect();
-    if !widgets.is_empty() {
+    let pinned: Vec<(String, Ui)> = state.hud(&me).map(|(id, w)| (id.to_string(), w.clone())).collect();
+    if !pinned.is_empty() {
         egui::Area::new("game_hud".into())
             .anchor(egui::Align2::LEFT_BOTTOM, egui::vec2(16.0, -170.0))
             .interactable(false)
@@ -43,42 +44,8 @@ pub fn game_hud(mut contexts: EguiContexts, time: Res<Time>, mut ledger: ResMut<
                     .inner_margin(egui::Margin::symmetric(12, 8))
                     .show(ui, |ui| {
                         ui.set_width(220.0);
-                        for (id, widget) in &widgets {
-                            let stat = |name: &str| state.stat(&me, name);
-                            match widget {
-                                Widget::Bar { label, stat: name, color } => {
-                                    let s = stat(name);
-                                    let (value, max) = s.map_or((0.0, 1.0), |s| (s.value, s.max.unwrap_or(s.value.max(1.0))));
-                                    ui.horizontal(|ui| {
-                                        ui.label(egui::RichText::new(label).color(p.text));
-                                        ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                                            ui.label(egui::RichText::new(format!("{} / {}", number(value), number(max))).small().color(p.muted));
-                                        });
-                                    });
-                                    bar(ui, (value / max) as f32, color.as_deref().and_then(hex).unwrap_or(p.primary), id);
-                                }
-                                Widget::Counter { label, stat: name } => {
-                                    let value = stat(name).map_or(0.0, |s| s.value);
-                                    ui.horizontal(|ui| {
-                                        ui.label(egui::RichText::new(label).color(p.text));
-                                        ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                                            ui.label(egui::RichText::new(number(value)).strong().color(p.strong));
-                                        });
-                                    });
-                                }
-                                Widget::Items { label, item } => {
-                                    let n = state.items(&me, item);
-                                    ui.horizontal(|ui| {
-                                        ui.label(egui::RichText::new(label).color(p.text));
-                                        ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                                            ui.label(egui::RichText::new(n.to_string()).strong().color(p.strong));
-                                        });
-                                    });
-                                }
-                                Widget::Text { text } => {
-                                    ui.label(egui::RichText::new(text).color(p.text));
-                                }
-                            }
+                        for (_, node) in &pinned {
+                            draw(ui, node, &live, p);
                         }
                     });
             });
@@ -91,19 +58,8 @@ pub fn game_hud(mut contexts: EguiContexts, time: Res<Time>, mut ledger: ResMut<
         .collapsible(false)
         .default_width(360.0)
         .show(ctx, |ui| {
-            if !panel.spec.text.is_empty() {
-                ui.label(egui::RichText::new(&panel.spec.text).color(p.text));
-                ui.add_space(8.0);
-            }
-            for choice in &panel.spec.choices {
-                ui.horizontal(|ui| {
-                    if ui.add(egui::Button::new(&choice.label).min_size(egui::vec2(220.0, 0.0))).clicked() {
-                        pick = Some(Some(choice.id.clone()));
-                    }
-                    if !choice.detail.is_empty() {
-                        ui.label(egui::RichText::new(&choice.detail).small().color(p.muted));
-                    }
-                });
+            if let Some(id) = draw(ui, &panel.spec.body, &live, p) {
+                pick = Some(Some(id));
             }
             ui.add_space(6.0);
             if ui.button("Close").clicked() {
@@ -117,6 +73,84 @@ pub fn game_hud(mut contexts: EguiContexts, time: Res<Time>, mut ledger: ResMut<
     Ok(())
 }
 
+/// What a tree's live values read: the local player's stats and items.
+struct Live<'a> {
+    state: &'a cubewish_rules::logic::GameState,
+    logic: &'a cubewish_rules::logic::Logic,
+    me: &'a str,
+}
+
+/// Draws a game's UI tree; returns the id of a button pressed.
+fn draw(ui: &mut egui::Ui, node: &Ui, live: &Live, p: &theme::Palette) -> Option<String> {
+    let line = |ui: &mut egui::Ui, label: &str, value: String| {
+        ui.horizontal(|ui| {
+            ui.label(egui::RichText::new(label).color(p.text));
+            ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                ui.label(egui::RichText::new(value).strong().color(p.strong));
+            });
+        });
+    };
+    match node {
+        Ui::Text { text, style } => {
+            let text = egui::RichText::new(text);
+            let text = match style.as_deref() {
+                Some("title") => text.strong().size(17.0).color(p.strong),
+                Some("small") => text.small().color(p.text),
+                Some("muted") => text.color(p.muted),
+                _ => text.color(p.text),
+            };
+            ui.label(text);
+        }
+        Ui::Value { label, stat, item } => {
+            let value = match (stat, item) {
+                (Some(stat), _) => number(live.state.stat(live.me, stat).map_or(0.0, |s| s.value)),
+                (None, Some(item)) => live.state.items(live.me, item).to_string(),
+                _ => String::new(),
+            };
+            line(ui, label, value);
+        }
+        Ui::Bar { label, stat, color } => {
+            let s = live.state.stat(live.me, stat);
+            let (value, max) = s.map_or((0.0, 1.0), |s| (s.value, s.max.unwrap_or(s.value.max(1.0))));
+            if !label.is_empty() {
+                ui.horizontal(|ui| {
+                    ui.label(egui::RichText::new(label).color(p.text));
+                    ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                        ui.label(egui::RichText::new(format!("{} / {}", number(value), number(max))).small().color(p.muted));
+                    });
+                });
+            }
+            bar(ui, (value / max) as f32, color.as_deref().and_then(hex).unwrap_or(p.primary));
+        }
+        Ui::Item { item } => {
+            let title = super::game::item_title(live.logic, item);
+            line(ui, &title, live.state.items(live.me, item).to_string());
+        }
+        Ui::Button { id, label, detail } => {
+            let mut pressed = None;
+            ui.horizontal(|ui| {
+                if ui.add(egui::Button::new(label).min_size(egui::vec2(180.0, 0.0))).clicked() {
+                    pressed = Some(id.clone());
+                }
+                if !detail.is_empty() {
+                    ui.label(egui::RichText::new(detail).small().color(p.muted));
+                }
+            });
+            return pressed;
+        }
+        Ui::Row { items } => {
+            return ui.horizontal_wrapped(|ui| items.iter().fold(None, |pressed, n| draw(ui, n, live, p).or(pressed))).inner;
+        }
+        Ui::Column { items } => {
+            return ui.vertical(|ui| items.iter().fold(None, |pressed, n| draw(ui, n, live, p).or(pressed))).inner;
+        }
+        Ui::Space => {
+            ui.add_space(8.0);
+        }
+    }
+    None
+}
+
 fn number(v: f64) -> String {
     if v.fract().abs() < 1e-9 { format!("{v:.0}") } else { format!("{v:.1}") }
 }
@@ -127,7 +161,7 @@ fn hex(text: &str) -> Option<egui::Color32> {
     Some(egui::Color32::from_rgb((v >> 16) as u8, (v >> 8) as u8, v as u8))
 }
 
-fn bar(ui: &mut egui::Ui, share: f32, color: egui::Color32, _id: &str) {
+fn bar(ui: &mut egui::Ui, share: f32, color: egui::Color32) {
     let p = theme::palette(ui.ctx());
     let (rect, _) = ui.allocate_exact_size(egui::vec2(ui.available_width(), 10.0), egui::Sense::hover());
     ui.painter().rect_filled(rect, 4.0, p.input);

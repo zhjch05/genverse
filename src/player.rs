@@ -9,6 +9,8 @@ use bevy::{
     prelude::*,
 };
 
+use cubewish_rules::logic::solid::Areas;
+
 use crate::{
     voxel::{VoxelModel, VoxelModelAsset, query::overlaps_box},
     world::{
@@ -34,11 +36,13 @@ impl Plugin for PlayerPlugin {
             .init_resource::<Pawned>()
             .init_resource::<PointerOverUi>()
             .init_resource::<OrbitLock>()
+            .init_resource::<SolidAreas>()
             .add_systems(Startup, spawn_player)
             .add_systems(
                 Update,
                 (
                     build_hero_parts,
+                    index_solids,
                     move_player,
                     animate_hero,
                     follow_camera,
@@ -277,6 +281,31 @@ impl Obstacles<'_> {
     }
 }
 
+/// Solid models by the ground they reach, so the hero only looks at the ones near it.
+#[derive(Resource, Default)]
+struct SolidAreas(Areas<Entity>);
+
+/// How far from where a model stands it might touch the hero this frame.
+fn reach(model: &VoxelModel) -> f32 {
+    model.grid.size().as_vec3().length() * model.voxel_size + 2.0
+}
+
+fn index_solids(
+    mut areas: ResMut<SolidAreas>,
+    moved: Query<
+        (Entity, &VoxelModel, &GlobalTransform),
+        (With<SolidModel>, Or<(Added<SolidModel>, Changed<GlobalTransform>, Changed<VoxelModel>)>),
+    >,
+    mut gone: RemovedComponents<SolidModel>,
+) {
+    for entity in gone.read() {
+        areas.0.take(entity);
+    }
+    for (entity, model, transform) in &moved {
+        areas.0.put(entity, transform.translation().to_array(), reach(model));
+    }
+}
+
 fn move_player(
     time: Res<Time>,
     keys: Res<ButtonInput<KeyCode>>,
@@ -285,6 +314,7 @@ fn move_player(
     world: Res<VoxelWorld>,
     cameras: Query<&FollowCamera>,
     solids: Query<(&VoxelModel, &GlobalTransform), With<SolidModel>>,
+    areas: Res<SolidAreas>,
     mut players: Query<(&mut Player, &mut Transform)>,
 ) {
     let dt = time.delta_secs().min(1.0 / 20.0);
@@ -297,21 +327,39 @@ fn move_player(
         let here = transform.translation;
         let obstacles = Obstacles {
             world: &world,
-            models: solids
-                .iter()
-                .filter(|(model, t)| {
-                    let reach = model.grid.size().as_vec3().length() * model.voxel_size + 2.0;
-                    t.translation().distance(here) < reach
-                })
+            models: areas
+                .0
+                .within([here.x, here.z], [here.x, here.z])
+                .into_iter()
+                .filter_map(|entity| solids.get(entity).ok())
+                .filter(|(model, t)| t.translation().distance(here) < reach(model))
                 .collect(),
         };
-        // Drop into place once the ground under the spawn point has loaded.
-        if !player.spawned {
-            while obstacles.collides(transform.translation) {
-                transform.translation.y += VOXEL_SIZE;
+        // Inside something solid (a build or a game's gate appeared there, or the hero
+        // arrived in one): step out to the nearest free spot, sideways before up onto it;
+        // buried deeper (spawning under ground), straight up.
+        if pawned.0.is_none() && obstacles.collides(transform.translation) {
+            let here = transform.translation;
+            let out = (1..=8)
+                .flat_map(|r| {
+                    let r = r as f32 * VOXEL_SIZE;
+                    (0..8).map(move |i| Quat::from_rotation_y(i as f32 * TAU / 8.0) * Vec3::X * r)
+                })
+                .chain((1..=16).map(|h| Vec3::Y * (h as f32 * VOXEL_SIZE)))
+                .find(|step| !obstacles.collides(here + *step));
+            match out {
+                Some(step) => transform.translation += step,
+                None => {
+                    while obstacles.collides(transform.translation) {
+                        transform.translation.y += VOXEL_SIZE;
+                    }
+                }
             }
-            player.spawned = true;
+            player.velocity = Vec3::ZERO;
+            info!("hero stepped out of something solid, to {}", transform.translation);
         }
+        // The ground under the spawn point has loaded: it's in place.
+        player.spawned = true;
 
         // A game moves the hero: glide to its spot, facing the way it goes (or jump
         // straight there from afar, as when a game holds the hero at startup).

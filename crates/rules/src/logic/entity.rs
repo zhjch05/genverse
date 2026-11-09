@@ -8,12 +8,12 @@
 //!   models (see [`super::Package::models`]), standing on its position, turned by
 //!   quarter turns. Nothing else draws game pieces, so they all share the world's style.
 //! - `label`: a name shown over it when a player is near.
-//! - `zone`: `{"size": [w, d]}`, a rectangle centered on it. A player who walks in hands
-//!   their movement keys to its package (as [`super::Intent::Key`]) instead of walking.
 //! - `pawn`: a player id. That player's hero stands where this entity is, so a game
 //!   moves its players by moving their pawns.
 //! - `walk`, `chase`: pieces that move on their own (see [`super::walk`]).
-//! - `region`: `{"radius": r}` or `{"size": [w, d]}` around it: players walking in and out
+//! - `region`: `{"radius": r}` or `{"size": [w, d]}` around it, and `"keys": true` to
+//!   take the movement keys of a player standing in it on their pawn (as
+//!   [`super::Intent::Key`]): players walking in and out
 //!   tell its package (`on_enter`, `on_exit`). It needs no look.
 //! - `world`: `{"building": false}`: while a piece with it stands, only admins build and
 //!   reshape land; the world is the game. It needs no look.
@@ -39,7 +39,12 @@ use std::collections::BTreeMap;
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 
-use super::{Scope, package::split_name};
+use super::{
+    Scope,
+    package::split_name,
+    solid::Areas,
+    ui::{MAX_HUD, PanelSpec, Ui},
+};
 use crate::sculpt::{Area, TerrainSpec};
 
 /// The most one component's value may weigh, as JSON.
@@ -120,7 +125,7 @@ pub enum Effect {
         max: Option<f64>,
     },
     /// Pins a widget to a player's screen (`"*"`: everyone's), or takes it off (`None`).
-    Hud { player: String, id: String, widget: Option<Widget> },
+    Hud { player: String, id: String, widget: Option<Ui> },
     /// Opens a panel for a player (dialogue, a menu, a shop), or closes theirs (`None`).
     Show { player: String, panel: Option<PanelSpec> },
     /// Places one of the package's voxel models as a build: solid, like any build.
@@ -149,48 +154,6 @@ pub struct Stat {
     pub max: Option<f64>,
 }
 
-/// Something pinned to a player's screen.
-#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
-#[serde(tag = "kind", rename_all = "snake_case")]
-pub enum Widget {
-    /// A bar filled to the stat's share of its maximum.
-    Bar {
-        label: String,
-        stat: String,
-        #[serde(default)]
-        color: Option<String>,
-    },
-    /// A label and the stat's value.
-    Counter { label: String, stat: String },
-    /// A label and how many of an item the player carries (coins, keys).
-    Items { label: String, item: String },
-    Text { text: String },
-}
-
-/// A panel as a package asks for it.
-#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
-pub struct PanelSpec {
-    /// The package's name for it, given back with the choice made.
-    pub id: String,
-    pub title: String,
-    #[serde(default)]
-    pub text: String,
-    #[serde(default)]
-    pub choices: Vec<Choice>,
-    /// What it's about (the shopkeeper): where it's open.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub entity: Option<EntityId>,
-}
-
-#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
-pub struct Choice {
-    pub id: String,
-    pub label: String,
-    /// A note beside it ("5 gold").
-    #[serde(default, skip_serializing_if = "String::is_empty")]
-    pub detail: String,
-}
-
 /// An open panel: what the package asked for, and whose it is.
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 pub struct Panel {
@@ -199,9 +162,6 @@ pub struct Panel {
     pub spec: PanelSpec,
 }
 
-/// The most choices a panel may offer, and widgets one player may have.
-pub const MAX_CHOICES: usize = 12;
-pub const MAX_WIDGETS: usize = 16;
 /// Builds a package places get ids from here up, so they never meet players' own.
 pub const SCRIPT_BUILDS: u64 = 1 << 52;
 
@@ -259,7 +219,7 @@ impl Timer {
 }
 
 /// Components the engine itself reads.
-pub const RESERVED: [&str; 9] = ["look", "label", "zone", "pawn", "walk", "chase", "region", "world", "feature"];
+pub const RESERVED: [&str; 8] = ["look", "label", "pawn", "walk", "chase", "region", "world", "feature"];
 
 /// Checks an engine component's value, phrased for the agent that wrote it.
 fn check_reserved(name: &str, value: &Value, grants: &Grants) -> Result<(), String> {
@@ -271,14 +231,17 @@ fn check_reserved(name: &str, value: &Value, grants: &Grants) -> Result<(), Stri
         "look" => {
             let model = value["model"].as_str().is_some_and(|m| grants.models.iter().any(|g| g == m));
             let turn = value["turn"].is_null() || value["turn"].as_u64().is_some_and(|t| t < 4);
-            model && turn
+            let solid = value["solid"].is_null() || value["solid"].is_boolean();
+            model && turn && solid
         }
         "label" => value.as_str().is_some_and(|l| l.chars().count() <= 60),
-        "zone" => sizes("size", 2, 128.0),
         "pawn" => value.as_str().is_some_and(|p| !p.is_empty() && p.len() <= 128),
         "feature" => value.as_str().is_some_and(|s| s.len() <= 64),
         "walk" | "chase" => return super::walk::check(name, value),
-        "region" => value["radius"].as_f64().is_some_and(|r| r > 0.0 && r <= 64.0) || sizes("size", 2, 128.0),
+        "region" => {
+            (value["radius"].as_f64().is_some_and(|r| r > 0.0 && r <= 64.0) || sizes("size", 2, 128.0))
+                && (value["keys"].is_null() || value["keys"].is_boolean())
+        }
         "world" => value.as_object().is_some_and(|o| o.keys().all(|k| k == "building")) && !value["building"].is_null(),
         _ => true,
     };
@@ -287,12 +250,11 @@ fn check_reserved(name: &str, value: &Value, grants: &Grants) -> Result<(), Stri
     } else {
         Err(match name {
             "look" => format!(
-                "\"look\" is {{\"model\": one of the package's models ({}), \"turn\": 0-3}}",
+                "\"look\" is {{\"model\": one of the package's models ({}), \"turn\": 0-3, \"solid\": true to block walking}}",
                 if grants.models.is_empty() { "it has none".to_string() } else { grants.models.join(", ") }
             ),
             "label" => "\"label\" is text of up to 60 characters".into(),
-            "zone" => "\"zone\" is {\"size\": [w, d]} (meters, 0-128)".into(),
-            "region" => "\"region\" is {\"radius\": 0-64 m} or {\"size\": [w, d]} (meters, 0-128)".into(),
+            "region" => "\"region\" is {\"radius\": 0-64 m} or {\"size\": [w, d]} (meters, 0-128), and \"keys\": true to take the keys".into(),
             "world" => "\"world\" is {\"building\": true or false}".into(),
             _ => "\"pawn\" is a player id".into(),
         })
@@ -357,14 +319,16 @@ pub struct GameState {
     timers: BTreeMap<(String, String), Timer>,
     /// Players' stats, by player and stat.
     stats: BTreeMap<String, BTreeMap<String, Stat>>,
-    /// Widgets on players' screens, by player (`"*"`: everyone) and `package:id`.
-    hud: BTreeMap<String, BTreeMap<String, Widget>>,
+    /// What's pinned to players' screens, by player (`"*"`: everyone) and `package:id`.
+    hud: BTreeMap<String, BTreeMap<String, Ui>>,
     /// The panel each player has open.
     panels: BTreeMap<String, Panel>,
     /// Builds packages placed, and which package.
     builds: BTreeMap<u64, String>,
     /// Where games last put each player (`"*"`: where players appear).
     teleports: BTreeMap<String, Teleport>,
+    /// Entities by where they stand.
+    areas: Areas<EntityId>,
 }
 
 /// [`GameState`] as saved in snapshots: JSON maps need string keys.
@@ -378,7 +342,7 @@ struct SavedState {
     #[serde(default)]
     stats: BTreeMap<String, BTreeMap<String, Stat>>,
     #[serde(default)]
-    hud: BTreeMap<String, BTreeMap<String, Widget>>,
+    hud: BTreeMap<String, BTreeMap<String, Ui>>,
     #[serde(default)]
     panels: BTreeMap<String, Panel>,
     #[serde(default)]
@@ -408,8 +372,13 @@ impl From<SavedState> for GameState {
         for (_, e) in &saved.entities {
             *counts.entry(e.package.clone()).or_default() += 1;
         }
+        let mut areas = Areas::default();
+        for (id, e) in &saved.entities {
+            areas.put(*id, e.position, 0.0);
+        }
         Self {
             entities: saved.entities.into_iter().collect(),
+            areas,
             counts,
             items: saved.items,
             timers: saved.timers.into_iter().map(|(p, n, t)| ((p, n), t)).collect(),
@@ -429,6 +398,12 @@ impl GameState {
 
     pub fn entities(&self) -> impl Iterator<Item = (EntityId, &Entity)> {
         self.entities.iter().map(|(id, e)| (*id, e))
+    }
+
+    /// Entities standing on the ground from `lo` to `hi` (x, z), and maybe a few more
+    /// near it.
+    pub fn within(&self, lo: [f32; 2], hi: [f32; 2]) -> impl Iterator<Item = (EntityId, &Entity)> {
+        self.areas.within(lo, hi).into_iter().filter_map(|id| Some((id, self.entities.get(&id)?)))
     }
 
     pub fn len(&self) -> usize {
@@ -464,7 +439,7 @@ impl GameState {
     }
 
     /// The widgets on `player`'s screen: everyone's, then their own.
-    pub fn hud(&self, player: &str) -> impl Iterator<Item = (&str, &Widget)> {
+    pub fn hud(&self, player: &str) -> impl Iterator<Item = (&str, &Ui)> {
         ["*", player].into_iter().flat_map(|p| self.hud.get(p).into_iter().flatten()).map(|(id, w)| (id.as_str(), w))
     }
 
@@ -602,8 +577,14 @@ impl GameState {
     pub fn commit(&mut self, done: Done) {
         for (id, entity) in done.touched {
             match entity {
-                Some(e) => self.entities.insert(id, e),
-                None => self.entities.remove(&id),
+                Some(e) => {
+                    self.areas.put(id, e.position, 0.0);
+                    self.entities.insert(id, e)
+                }
+                None => {
+                    self.areas.take(id);
+                    self.entities.remove(&id)
+                }
             };
         }
         for (package, delta) in done.counts {
@@ -677,7 +658,7 @@ pub struct Batch<'a> {
     /// Every effect staged, in order: what a timer's firing records in the log.
     pub effects: Vec<Effect>,
     stats: BTreeMap<(String, String), Stat>,
-    hud: BTreeMap<(String, String), Option<Widget>>,
+    hud: BTreeMap<(String, String), Option<Ui>>,
     panels: BTreeMap<String, Option<Panel>>,
     /// Builds placed (`Some(package)`) and removed (`None`).
     builds: BTreeMap<u64, Option<String>>,
@@ -699,7 +680,7 @@ pub struct Mark {
     timers: BTreeMap<(String, String), Option<Timer>>,
     effects: usize,
     stats: BTreeMap<(String, String), Stat>,
-    hud: BTreeMap<(String, String), Option<Widget>>,
+    hud: BTreeMap<(String, String), Option<Ui>>,
     panels: BTreeMap<String, Option<Panel>>,
     builds: BTreeMap<u64, Option<String>>,
     built: u64,
@@ -713,7 +694,7 @@ pub struct Done {
     items: BTreeMap<(String, String), u32>,
     timers: BTreeMap<(String, String), Option<Timer>>,
     stats: BTreeMap<(String, String), Stat>,
-    hud: BTreeMap<(String, String), Option<Widget>>,
+    hud: BTreeMap<(String, String), Option<Ui>>,
     panels: BTreeMap<String, Option<Panel>>,
     builds: BTreeMap<u64, Option<String>>,
     teleports: BTreeMap<String, Teleport>,
@@ -973,22 +954,16 @@ impl Batch<'_> {
             }
             Effect::Hud { player, id, widget } => {
                 if id.is_empty() || id.len() > 40 {
-                    return Err("a widget's id is 1 to 40 characters".into());
+                    return Err("a HUD entry's id is 1 to 40 characters".into());
                 }
-                if let Some(w) = widget {
-                    let text = match w {
-                        Widget::Bar { label, stat, .. } | Widget::Counter { label, stat } | Widget::Items { label, item: stat } => {
-                            grants.readable(stat)?;
-                            label
-                        }
-                        Widget::Text { text } => text,
-                    };
-                    if text.chars().count() > 120 {
-                        return Err("a widget's text is at most 120 characters".into());
+                if let Some(ui) = widget {
+                    ui.check()?;
+                    for name in ui.names() {
+                        grants.readable(name)?;
                     }
                     let mine = self.base.hud.get(player).map_or(0, |h| h.len());
-                    if mine >= MAX_WIDGETS {
-                        return Err(format!("a screen holds at most {MAX_WIDGETS} widgets"));
+                    if mine >= MAX_HUD {
+                        return Err(format!("a screen holds at most {MAX_HUD} HUD entries"));
                     }
                 }
                 let key = format!("{}:{id}", grants.package);
@@ -998,14 +973,12 @@ impl Batch<'_> {
             Effect::Show { player, panel } => {
                 let panel = match panel {
                     Some(spec) => {
-                        if spec.title.chars().count() > 60 || spec.text.chars().count() > 1200 {
-                            return Err("a panel's title is at most 60 characters, its text 1200".into());
+                        if spec.title.chars().count() > 60 {
+                            return Err("a panel's title is at most 60 characters".into());
                         }
-                        if spec.choices.len() > MAX_CHOICES {
-                            return Err(format!("a panel offers at most {MAX_CHOICES} choices"));
-                        }
-                        if spec.choices.iter().any(|c| c.id.is_empty() || c.label.chars().count() > 60 || c.detail.chars().count() > 40) {
-                            return Err("each choice has an id, a label of up to 60 characters, and a detail of up to 40".into());
+                        spec.body.check()?;
+                        for name in spec.body.names() {
+                            grants.readable(name)?;
                         }
                         Some(Panel { package: grants.package.clone(), spec: spec.clone() })
                     }

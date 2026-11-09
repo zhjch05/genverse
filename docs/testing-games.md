@@ -16,12 +16,13 @@ What covers what:
 
 | Test | Checks |
 |---|---|
-| `crates/rules/tests/players.rs` `stats_hud_and_panels` | stats with a maximum, HUD for one player and for everyone (bar, text, item counter), a dialogue panel, choices that aren't offered refused, running out of gold refused, closing |
+| `crates/rules/tests/players.rs` `stats_hud_and_panels` | stats with a maximum, HUD for one player and for everyone (bar, text, item counter), a dialogue panel, buttons that aren't offered refused, running out of gold refused, closing |
 | `players.rs` `games_build_with_the_installers_budget` | a script places a solid build and digs land; both are charged to whoever installed the game; removing its build; over budget, nothing changes at all (two walls, budget one); snapshots keep games' builds |
 | `players.rs` `trials_show_panels_stats_and_builds` | the agent's `test_game` report shows stats, HUD, the open panel, and builds |
+| `players.rs` `panels_are_ui_trees` | a Lua shop panel built as a tree (rows of item tiles and buttons), a button choosing, live values |
 | `crates/rules/tests/timers.rs` | timers, including through the same path builds take |
 | `crates/rules/tests/features.rs` | a world's logic growing request by request: a change adds files by name, every file's handlers run, an unchanged file isn't set up again, removing a file takes its pieces and timers; migrations (`ev.from`, `players()`), renames keeping pieces and timers; `test_game` on a copy of the world |
-| `crates/rules/tests/walking.rs` | walks (one change, `on_arrive`); `routines_wandering_and_spawners_are_lua`: a spawner, wandering and a daily routine written in Lua; `the_world_is_the_game`: `on_start`, `on_join`, regions, chases, bites, teleport to camp, `on_hit`, building locked for players |
+| `crates/rules/tests/walking.rs` | walks (one change, `on_arrive`); `walks_go_around_solid_pieces`: a `look.solid` fence turns a walk aside (unit tests in `walk.rs` and `solid.rs`: around a wall, onto a low deck, never inside a build); `routines_wandering_and_spawners_are_lua`: a spawner, wandering and a daily routine written in Lua; `the_world_is_the_game`: `on_start`, `on_join`, regions, chases, bites, teleport to camp, `on_hit`, building locked for players |
 | `crates/server/tests/two_players.rs` | everything above through a real server: items and stats travel between worlds, game saves |
 
 ## 2. By hand, alone (15 minutes)
@@ -140,7 +141,7 @@ CUBEWISH_WORLD=valley CUBEWISH_PROMPT="wolves in the field 20 m east of me" \
 
 `CUBEWISH_PLAY` steps: `go <x> <z>` (puts the hero there), `wait <s>`, `use` (E on the
 nearest piece), `hit` (F), `place` (puts down what's in hand) or an item name, a key
-(`enter`, `north`, …), `choose <id>`, `close`, `portal`. `CUBEWISH_KEEP=1` places the
+(`north`, `east`, …; sent to the region with keys the hero stands in), `choose <id>`, `close`, `portal`. `CUBEWISH_KEEP=1` places the
 agent's build without a click; `CUBEWISH_SHOW_REQUEST=1` logs what the agent is told.
 
 ## What to look for when something's off

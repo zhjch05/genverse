@@ -17,16 +17,6 @@ const SPACING: f32 = 32.0;
 /// How far around the last spot the map reaches, in meters.
 const MAP_REACH: f32 = 14.0;
 
-/// The zone (an entity's `zone` rectangle, centered on it) at `at`, if any.
-pub fn zone_at(state: &GameState, at: [f32; 3]) -> Option<EntityId> {
-    state.entities().find_map(|(id, e)| {
-        let size = e.components.get("zone")?["size"].as_array()?;
-        let (w, d) = (size.first()?.as_f64()? as f32, size.get(1)?.as_f64()? as f32);
-        let inside = (at[0] - e.position[0]).abs() <= w / 2.0 && (at[2] - e.position[2]).abs() <= d / 2.0;
-        inside.then_some(id)
-    })
-}
-
 /// Where `player`'s pawn stands, if a game has given them one.
 pub fn pawn_of(state: &GameState, player: &str) -> Option<[f32; 3]> {
     state.entities().find(|(_, e)| e.components.get("pawn").and_then(|p| p.as_str()) == Some(player)).map(|(_, e)| e.position)
@@ -74,7 +64,7 @@ fn nearest(state: &GameState, at: [f32; 3], label: Option<&str>) -> Option<Entit
 /// Plays `package` through `steps` and says what happened. The game is installed
 /// (`on_start` runs) and the tester comes into the world at the spawn point (or 0, 0).
 /// Steps are `place <item>` (each 32 m from the last; the tester stands there after), a
-/// key (`enter`, `north`, ..., sent to the zone the tester's pawn or last placement is
+/// key (`north`, ..., sent to the region taking keys the tester's pawn or last placement is
 /// in), `interact` (the labeled entity nearest them; `interact <label or model>` for a
 /// particular one), `hit` / `hit <label>` (attacks it), `go <x> <z>` (walks there, meters),
 /// `choose <id>`, `close`, or `wait <seconds>` (timers go off as they would, and pieces
@@ -209,9 +199,9 @@ pub fn play_in(package: &Package, steps: &[String], world: Option<Copy>) -> Stri
             tester.at = at;
             Ok(Intent::Place { item, position: at })
         } else if KEYS.contains(&step) {
-            match pawn_of(&logic.state, TESTER).or(spot).and_then(|at| zone_at(&logic.state, at)) {
+            match super::clockwork::keys_region_at(&logic.state, tester.here(&logic.state), now) {
                 Some(entity) => Ok(Intent::Key { entity, key: step.into() }),
-                None => Err("no zone there to send keys to".to_string()),
+                None => Err("the tester isn't in a region that takes keys (keys = true)".to_string()),
             }
         } else if let Some(choice) = step.strip_prefix("choose ") {
             Ok(Intent::Choose { choice: Some(choice.trim().to_string()) })
@@ -279,8 +269,7 @@ pub fn play_in(package: &Package, steps: &[String], world: Option<Copy>) -> Stri
         let _ = writeln!(out, "  HUD {id}: {}", serde_json::to_string(widget).unwrap_or_default());
     }
     if let Some(panel) = logic.state.panel(TESTER) {
-        let choices: Vec<String> = panel.spec.choices.iter().map(|c| format!("{} ({})", c.id, c.label)).collect();
-        let _ = writeln!(out, "  Panel open: \"{}\" ({}): {} Choices: {}", panel.spec.title, panel.spec.id, panel.spec.text, choices.join(", "));
+        let _ = writeln!(out, "  Panel open: \"{}\" ({}): {}", panel.spec.title, panel.spec.id, panel.spec.body.summary());
     }
     let origin = pawn_of(&logic.state, TESTER).and(spot).or(spot).unwrap_or(tester.here(&logic.state));
     describe(&mut out, &logic.state, origin, ground_y);
@@ -301,6 +290,13 @@ struct Trial<'a> {
 impl super::Ground for Trial<'_> {
     fn heights(&self, min: [i32; 2], step: i32, count: [i32; 2]) -> Option<Vec<Option<i32>>> {
         self.ground.heights(min, step, count)
+    }
+
+    /// The ground's builds, and the trial's own solid pieces.
+    fn solids(&self, lo: [f32; 2], hi: [f32; 2]) -> Vec<super::solid::Solid<'_>> {
+        let mut solids = self.ground.solids(lo, hi);
+        solids.extend(super::solid::of_pieces(self.logic, lo, hi));
+        solids
     }
 }
 
@@ -424,11 +420,11 @@ fn describe(out: &mut String, state: &GameState, origin: [f32; 3], ground: f32) 
     }
     let model = |e: &super::Entity| e.components.get("look").and_then(|l| l["model"].as_str()).unwrap_or("-").to_string();
     let cell = |p: [f32; 3]| (((p[0] - origin[0]).floor()) as i32, ((p[2] - origin[2]).floor()) as i32);
-    // What shows in each cell: a pawn, else a piece. Zones (a board under everything)
-    // are in the list, not on the map.
+    // What shows in each cell: a pawn, else a piece. Regions taking keys (a board under
+    // everything) are in the list, not on the map.
     let mut cells: BTreeMap<(i32, i32), (u8, char)> = BTreeMap::new();
     let mut legend: BTreeMap<char, String> = BTreeMap::new();
-    for (_, e) in near.iter().filter(|(_, e)| !e.components.contains_key("zone")) {
+    for (_, e) in near.iter().filter(|(_, e)| !e.components.get("region").is_some_and(|r| r["keys"] == true)) {
         let (rank, ch) = if e.components.contains_key("pawn") {
             (2, '@')
         } else {

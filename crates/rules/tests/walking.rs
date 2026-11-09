@@ -47,6 +47,9 @@ fn tick(clock: &mut Clockwork, log: &mut WorldLog, now: u64, players: &[[f32; 3]
         fn heights(&self, min: [i32; 2], step: i32, count: [i32; 2]) -> Option<Vec<Option<i32>>> {
             self.state.heights(min, step, count)
         }
+        fn solids(&self, lo: [f32; 2], hi: [f32; 2]) -> Vec<cubewish_rules::logic::solid::Solid<'_>> {
+            self.state.solids(lo, hi)
+        }
     }
     impl TimerHost for Host<'_> {
         fn logic(&self) -> &cubewish_rules::logic::Logic {
@@ -275,4 +278,41 @@ fn routines_wandering_and_spawners_are_lua() {
     assert!(state.problems.is_empty(), "{:?}", state.problems);
     let baker = state.logic.state.entities().find(|(_, e)| e.components.contains_key("vale:baker")).map(|(_, e)| e.clone()).unwrap();
     assert_eq!(baker.position, [10.0, Y, 0.0]);
+}
+
+const FENCED: &str = r#"
+function on_place(ev)
+  spawn({ x = ev.pos.x + 3, y = ev.pos.y, z = ev.pos.z }, { look = { model = "fence", solid = true } })
+  spawn(ev.pos, { look = { model = "walker" }, label = "Walker" })
+end
+function on_interact(ev)
+  local me = get(ev.entity)
+  walk(ev.entity, { x = me.pos.x + 6, y = me.pos.y, z = me.pos.z }, 2)
+end
+"#;
+
+#[test]
+fn walks_go_around_solid_pieces() {
+    let mut fence = model("fence");
+    // 25 cm thick, 2 m tall, 6 m long across the way.
+    fence.build.size = vec![2, 16, 48];
+    fence.build.shapes[0].to = vec![2.0, 16.0, 48.0];
+    let game = GameSpec {
+        remove: None, rename: None,
+        name: "yard".into(),
+        title: "Yard".into(),
+        defs: vec![DefSpec { name: "walker".into(), kind: "fixture".into(), title: "Walker".into(), ..Default::default() }],
+        scripts: vec![ScriptSpec { name: "main.luau".into(), source: FENCED.into() }],
+        models: vec![model("walker"), fence],
+    };
+    let mut log = world(&game);
+    let placed = log.push(by("ada", 100), Action::Intent { intent: Intent::Place { item: "yard:walker".into(), position: [20.0, Y, 20.0] } });
+    let walker = EntityId { change: placed, n: 1 };
+    log.push(by("ada", 101), Action::Intent { intent: Intent::Interact { entity: walker } });
+    let mut clock = Clockwork::new(100);
+    assert!(tick(&mut clock, &mut log, 102, &[[20.0, Y, 20.0]]).is_empty());
+    let state = replay(&log);
+    let path = state.logic.state.get(walker).unwrap().components["walk"]["path"].as_array().unwrap().clone();
+    let z = |p: &serde_json::Value| p[2].as_f64().unwrap() as f32;
+    assert!(path.iter().any(|p| (z(p) - 20.0).abs() >= 3.0), "around the fence's end: {path:?}");
 }

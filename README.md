@@ -52,7 +52,7 @@ CUBEWISH_WORLD=sokoban cargo run   # a world of your game, flat and empty if it'
 
 Then press `T`: "make a basic Sokoban game". The agent answers with a *package*: definitions,
 voxel models and Luau scripts. Before answering, it plays the game itself in an empty test
-world with the `test_game` tool (steps like `place board`, `enter`, `east`), which reports what
+world with the `test_game` tool (steps like `place board`, `go 40 40`, `east`), which reports what
 each step did plus a map of the pieces, and fixes what fails. The game then checks the package
 and installs it for the whole world, live (`crates/rules/src/logic`, design in
 `docs/game-logic.md`). Only admins change a world's games; everyone plays them.
@@ -69,7 +69,7 @@ and installs it for the whole world, live (`crates/rules/src/logic`, design in
 - **Inventory:** what you carry fills a Minecraft-like hotbar (1-9 picks what's in hand, I opens
   the rest). Right-click the ground puts what's in hand down (the game's `on_place`); on a piece
   in reach, uses it there (`on_use`).
-- **Play:** walk onto a board. A game takes over your keys inside its *zone*. WASD or the arrow
+- **Play:** walk onto a board. A game takes over your keys inside its *region with keys*. WASD or the arrow
   keys move you a tile (W is away from the camera), `R` resets, `E` is the game's action, and
   `Esc` leaves. Your hero stands on the *pawn* the game moves. Labeled pieces show their name
   nearby, and `E` uses the one in reach.
@@ -77,13 +77,15 @@ and installs it for the whole world, live (`crates/rules/src/logic`, design in
   sees the world's games and the script errors players hit lately, so "fix it" is enough. A new
   version replaces the running one for everyone, and what's already placed keeps going. A
   version that doesn't pass the checks is never installed.
-- **The engine:** scripts answer players' *intents* (put this here, use that, a key in a
-  zone). Each action runs them fresh in a sandboxed Luau VM: no files, OS or clock, a seeded
+- **The engine:** scripts answer players' *intents* (put this here, use that, a key on a
+  board). Each action runs them fresh in a sandboxed Luau VM: no files, OS or clock, a seeded
   random number generator, and limits on steps, memory and changes. Through a small API
   (`get`, `find`, `spawn`, `move`, `set`, `notify`, ...) they change only their own entities
   and items, and every change is checked as it happens. The engine draws entities from their
-  `look` (one of the package's models), names them with `label`, and acts on `zone` and
-  `pawn`.
+  `look` (one of the package's models), names them with `label`, and acts on `region` and
+  `pawn`. Builds, and pieces whose look is `solid`, block the hero and walking pieces (walks go
+  around them, onto low ones, under roofs). HUD and panels are UI trees the scripts build (text, values, bars, items,
+  buttons, rows and columns), drawn by one renderer.
 - **One world, many requests:** the world's game logic grows with each request ("wolves in
   the hills", "a merchant", "torches scare wolves"): the agent sends only what changes, each
   script file is a feature whose handlers all run, and taking a file out takes its pieces.

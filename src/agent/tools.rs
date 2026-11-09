@@ -128,7 +128,7 @@ pub fn definitions(rules: &WorldRules) -> Value {
                 passes: timers, walks, chases and spawners run; pieces more than 64 m from the tester sleep), \
                 \"choose <choice id>\" (a pick in the open panel), \"close\", \"place <fixture>\" (puts it down, \
                 each 32 m apart; the tester stands there after), or a key (\"enter\", \"north\", \"south\", \"east\", \
-                \"west\", \"action\", \"reset\", \"leave\"; sent to the zone the tester is in). Every step takes a \
+                \"west\", \"action\", \"reset\", \"leave\"; sent to the region taking keys the tester's pawn is in). Every step takes a \
                 second. Use it to play your game through as a player would, winning and losing, and fix what fails.",
             "inputSchema": {
                 "type": "object",
@@ -140,6 +140,22 @@ pub fn definitions(rules: &WorldRules) -> Value {
             },
         },
     ])
+}
+
+/// The world's ground and its builds, for a trial's walks.
+struct Land<'a> {
+    world: &'a VoxelWorld,
+    builds: &'a cubewish_rules::log::Builds,
+}
+
+impl cubewish_rules::logic::Ground for Land<'_> {
+    fn heights(&self, min: [i32; 2], step: i32, count: [i32; 2]) -> Option<Vec<Option<i32>>> {
+        self.world.heights(min, step, count)
+    }
+
+    fn solids(&self, lo: [f32; 2], hi: [f32; 2]) -> Vec<cubewish_rules::logic::solid::Solid<'_>> {
+        cubewish_rules::logic::solid::of_builds(self.builds, lo, hi).collect()
+    }
 }
 
 /// Plays a change to the world's game logic (on top of what the world runs under that
@@ -155,13 +171,14 @@ fn test_game(args: &Value, ledger: &Ledger, world: &VoxelWorld, hero: Option<Vec
     let spec = change.onto(base.as_ref());
     let version = logic.installed.get(&spec.name).map_or(1, |i| i.package.version + 1);
     let now = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map_or(0, |d| d.as_secs());
+    let land = Land { world, builds: &ledger.builds };
     let copy = hero.map(|at| trial::Copy {
         logic: logic.clone(),
         rules: ledger.rules.logic,
         at: at.to_array(),
         now,
         next_change: ledger.log.changes.last().map_or(1, |c| c.id + 1),
-        ground: world,
+        ground: &land,
     });
     let report = trial::play_in(&spec.to_package(version), &steps[..steps.len().min(300)], copy);
     let report = match &base {

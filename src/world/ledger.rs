@@ -331,7 +331,7 @@ pub struct Ledger {
     pub profile: Profile,
     key: Keypair,
     /// Placed builds as of loading, for the builder to spawn.
-    pub builds: BTreeMap<u64, BuildState>,
+    pub builds: cubewish_rules::log::Builds,
     /// Who owns what, as of the latest change.
     pub land: Land,
     /// The world's rules in force now.
@@ -416,6 +416,10 @@ struct Keeper<'a> {
 impl Ground for Keeper<'_> {
     fn heights(&self, min: [i32; 2], step: i32, count: [i32; 2]) -> Option<Vec<Option<i32>>> {
         self.ground.heights(min, step, count)
+    }
+
+    fn solids(&self, lo: [f32; 2], hi: [f32; 2]) -> Vec<cubewish_rules::logic::solid::Solid<'_>> {
+        cubewish_rules::logic::solid::of_world(&self.ledger.builds, &self.ledger.logic, lo, hi)
     }
 }
 

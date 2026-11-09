@@ -7,8 +7,8 @@
 //!   game's spawn point.
 //! - What you carry is the [inventory](super::inventory)'s: a hotbar, and right-click
 //!   to put down or use what's in hand.
-//! - **Zones:** walking into an entity's `zone` tells its game ("enter"). When the game
-//!   gives you a `pawn`, your hero stands on it and the movement keys go to the game as
+//! - **Keys:** when a game gives you a `pawn` in one of its regions that takes keys
+//!   (`keys = true`), your hero stands on it and the movement keys go to the game as
 //!   world directions (WASD or arrows, turned to the camera: W is away from it), with R
 //!   to reset, E for action and Esc to leave.
 //! - What the rules say back ("Solved!") shows at the top of the view. Script errors also
@@ -20,10 +20,10 @@
 //! Everything goes through the ledger as intents, tried first so a refusal shows right
 //! away instead of landing in the log.
 //!
-//! Script it: `CUBEWISH_PLAY="sokoban:board; enter; east; east"` puts things down in
+//! Script it: `CUBEWISH_PLAY="sokoban:board; go 40 40; east; east"` puts things down in
 //! front of the hero (`place` puts down what's in hand), uses the nearest piece
 //! (`use`), goes through the portal the hero stands at (`portal`) or sends a key to the
-//! zone the hero is in, one step every half second once
+//! region taking keys the hero is in, one step every half second once
 //! the hero has landed and the agent is done with `CUBEWISH_PROMPT`.
 
 use std::collections::HashMap;
@@ -37,7 +37,8 @@ use cubewish_rules::{
     logic::{
         Entity as Piece, EntityId, Intent, Logic, Package,
         data,
-        trial::{self, pawn_of},
+        clockwork::keys_region_at,
+        trial::pawn_of,
         walk::{position_at, walking_at},
     },
 };
@@ -47,7 +48,7 @@ use crate::{
     player::{FollowCamera, InputBlocked, Pawned, Player},
     voxel::{DepthBias, ModelData, VoxelModel},
     world::{
-        VoxelWorld,
+        SolidModel, VoxelWorld,
         ledger::{Acted, Ledger},
     },
 };
@@ -65,10 +66,8 @@ const REPEAT_EVERY: f32 = 0.16;
 pub struct Play {
     /// The piece E would use: the nearest labeled one within reach.
     pub near: Option<EntityId>,
-    /// The zone whose game has the local player's pawn: it gets the movement keys.
+    /// The region taking keys where the local player's pawn is: it gets the movement keys.
     pub playing: Option<EntityId>,
-    /// The zone the hero stood in last frame, to notice walking in.
-    inside: Option<EntityId>,
     /// The direction key held, since when, and when it last repeated.
     held: Option<(KeyCode, f32, f32)>,
     /// A short note at the top of the view, and when it appeared.
@@ -87,7 +86,6 @@ impl Play {
     pub fn leave_world(&mut self) {
         self.near = None;
         self.playing = None;
-        self.inside = None;
         self.held = None;
     }
 }
@@ -219,10 +217,19 @@ pub fn sync_pieces(
         let (look, _) = describe(logic, e);
         let turn = if let Look::Model { turn, .. } = look { turn } else { 0 };
         let mut transform = placement(e, turn, &Look::Hidden);
+        // Solid while it stands still: the hero bumps into it as into a build.
+        let solid = e.components.get("look").is_some_and(|l| l["solid"] == true)
+            && !e.components.contains_key("walk")
+            && !e.components.contains_key("chase");
         if let Some((entity, old)) = play.pieces.remove(&id) {
             if old == look {
                 let transform = placement(e, turn, &look);
                 commands.entity(entity).insert(transform);
+                if solid {
+                    commands.entity(entity).insert(SolidModel);
+                } else {
+                    commands.entity(entity).remove::<SolidModel>();
+                }
                 keep.insert(id, (entity, look));
                 continue;
             }
@@ -234,6 +241,9 @@ pub fn sync_pieces(
                 if let Some(data) = play.models.get(logic, package, model) {
                     // Pieces stand on the ground, so their faces often meet it, as builds' do.
                     entity.insert((VoxelModel::from(data), DepthBias(500.0)));
+                    if solid {
+                        entity.insert(SolidModel);
+                    }
                 }
             }
             other => {
@@ -367,10 +377,6 @@ fn my_pawn(ledger: &Ledger) -> Option<Vec3> {
     pawn_of(&ledger.logic.state, &ledger.profile.id).map(Vec3::from_array)
 }
 
-/// The zone at `at`, if any.
-fn zone_at(logic: &Logic, at: Vec3) -> Option<EntityId> {
-    trial::zone_at(&logic.state, at.to_array())
-}
 
 /// The key's world direction, turned so W is away from the camera.
 fn direction(key: KeyCode, yaw: f32) -> Option<&'static str> {
@@ -393,9 +399,9 @@ fn direction(key: KeyCode, yaw: f32) -> Option<&'static str> {
     Some(["north", "east", "south", "west"][(facing + turn) % 4])
 }
 
-/// Zones and pawns: walking into a zone tells its game; while the game has your pawn,
-/// your hero stands on it and the movement keys go to the game.
-pub fn play_zones(
+/// Pawns and regions that take keys: while a game has your pawn in one, your hero
+/// stands on it and the movement keys go to the game.
+pub fn play_keys(
     time: Res<Time>,
     keys: Res<ButtonInput<KeyCode>>,
     blocked: Res<InputBlocked>,
@@ -403,26 +409,15 @@ pub fn play_zones(
     mut ledger: ResMut<Ledger>,
     mut play: ResMut<Play>,
     mut chat: ResMut<Chat>,
-    heroes: Query<&Transform, With<Player>>,
     cameras: Query<&FollowCamera>,
 ) {
-    let Ok(hero) = heroes.single() else { return };
     let now_s = time.elapsed_secs();
     pawned.0 = my_pawn(&ledger);
-    let inside = zone_at(&ledger.logic, pawned.0.unwrap_or(hero.translation));
-    play.playing = inside.filter(|_| pawned.0.is_some());
-    let entered = inside.is_some() && inside != play.inside;
-    play.inside = inside;
-    let Some(zone) = inside.filter(|_| !blocked.0) else { return };
-    let key = |name: &str| Intent::Key { entity: zone, key: name.into() };
-    if entered && pawned.0.is_none() {
-        let result = ledger.act(key("enter"));
-        report(result, &ledger, &mut play, &mut chat, now_s);
-        return;
-    }
-    if play.playing.is_none() {
-        return;
-    }
+    // On their pawn in a region that takes keys, the player's moves go to its game;
+    // walking in is the game's to notice (`on_enter`), as for any region.
+    play.playing = pawned.0.and_then(|at| keys_region_at(&ledger.logic.state, at.to_array(), now()));
+    let Some(region) = play.playing.filter(|_| !blocked.0) else { return };
+    let key = |name: &str| Intent::Key { entity: region, key: name.into() };
     let yaw = cameras.single().map_or(0.0, |c| c.yaw());
     let arrows = [KeyCode::KeyW, KeyCode::KeyA, KeyCode::KeyS, KeyCode::KeyD, KeyCode::ArrowUp, KeyCode::ArrowLeft, KeyCode::ArrowDown, KeyCode::ArrowRight];
     let mut send = None;
@@ -640,9 +635,10 @@ pub fn script_play(
             None => Err("nothing in reach to hit".into()),
         }
     } else if cubewish_rules::logic::KEYS.contains(&step.as_str()) {
-        match zone_at(&ledger.logic, my_pawn(&ledger).unwrap_or(hero.translation)) {
+        let at = my_pawn(&ledger).unwrap_or(hero.translation).to_array();
+        match keys_region_at(&ledger.logic.state, at, now()) {
             Some(entity) => ledger.act(Intent::Key { entity, key: step.clone() }),
-            None => Err("not in a game's zone".into()),
+            None => Err("not in a region that takes keys".into()),
         }
     } else {
         // In a row 2 m ahead of the hero.

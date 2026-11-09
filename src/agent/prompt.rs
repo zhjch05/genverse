@@ -164,8 +164,8 @@ Keep "build" and "terrain" null unless they also ask for those (on_start can bui
     on_place(ev)     ev.item (local name) was put down at ev.pos (right-click with it in hand)
     on_use(ev)       ev.item used on ev.entity (right-click on a piece in reach with it in hand)
     on_interact(ev)  E on ev.entity (an entity of yours with a "label")
-    on_key(ev)       ev.key inside ev.entity's zone: "enter" (walked in), "leave" (Esc),
-                     "north" (-z), "south" (+z), "east" (+x), "west" (-x), "action" (E), "reset" (R)
+    on_key(ev)       ev.key from a player with a pawn in ev.entity's region with keys: "leave"
+                     (Esc), "north" (-z), "south" (+z), "east" (+x), "west" (-x), "action" (E), "reset" (R)
     on_timer(ev)     your timer ev.name went off, with ev.data (what you gave it); ev.missed is
                      how many more times a repeating timer went by unrun (catch up, don't loop)
     on_arrive(ev)    ev.entity got where walk() sent it, at ev.pos; ev.stuck
@@ -176,7 +176,7 @@ Keep "build" and "terrain" null unless they also ask for those (on_start can bui
     on_catch(ev)     ev.entity, chasing ev.player, caught up with them (again every 2 s while
                      it's in reach and still chasing)
     on_hit(ev)       ev.player attacked ev.entity with F (it must have a label to be in reach)
-  ev also has player (id; nil for timers), pos ({x,y,z} meters; for keys, the zone's), day,
+  ev also has player (id; nil for timers), pos ({x,y,z} meters; for keys, the region's), day,
   time (0..1 of the day), now (seconds).
   The world API (component names without ":" are your package's):
     get(id) -> {id, pos, owner, walking, c = components} or nil (pos: where it is now)
@@ -198,10 +198,12 @@ Keep "build" and "terrain" null unless they also ask for those (on_start can bui
     while find() says there are too few.
   The players and the world:
     region(id, {radius = 8}) or region(id, {w = 10, d = 6}): an area around a piece (it may be an
-      unseen piece with no look) that calls on_enter / on_exit as players cross it
+      unseen piece with no look) that calls on_enter / on_exit as players cross it. With
+      keys = true, a player with a pawn in it plays with the keys (on_key) instead of walking:
+      a grid game gives the pawn in on_enter and takes it away on "leave"
     teleport(player, pos): puts that player there; spawn_point(pos): where players appear
     building(false): only admins build while your game runs (true gives building back)
-    Builds don't block walking yet: send pieces around them yourself if it matters.
+    Walks go around builds and solid pieces, up onto low ones (a deck, a floor) and under roofs.
   Timers are how the game moves on its own (countdowns, crops, NPCs taking turns, a monster
   stepping). Nothing runs between them, so make them as slow as the game allows: a timer per
   thing that changes, or one "every" that updates many things, never a fast loop that does
@@ -211,11 +213,10 @@ Keep "build" and "terrain" null unless they also ask for those (on_start can bui
   everywhere. A timer with the same name replaces the old one; name them per entity if
   needed ("grow:" .. id). Up to 256 waiting per package; a timer that errors is stopped.
   Engine components on your entities:
-    look = {model = "crate", turn = 0}: drawn as that model of yours standing on pos, turned by
-      quarter turns (0-3); positions snap to the 12.5 cm voxel grid
+    look = {model = "crate", turn = 0, solid = true}: drawn as that model of yours standing on
+      pos, turned by quarter turns (0-3); positions snap to the 12.5 cm voxel grid. solid: players
+      and walking pieces can't go through it (a gate, a crate, a fence) while it isn't moving
     label = "text": shown over it nearby; E on it calls on_interact
-    zone = {size = {w, d}}: a rectangle centered on pos; a player walking in sends "enter", and
-      while they have a pawn there, their movement keys come to on_key instead of walking
     pawn = player id: that player's hero stands on this entity; move it to move them
     walk, chase, region, world, feature: set through the functions above (feature for you),
       not by hand
@@ -224,15 +225,18 @@ Keep "build" and "terrain" null unless they also ask for those (on_start can bui
     set_stat(player, name, value, max)       add_stat(player, name, delta) -> new value
       stats stay between 0 and max (max optional: hp 10/10, gold uncapped); they follow the
       player between the game's worlds, with their items
-    hud(player, id, widget): pinned to the player's screen ("*" for everyone); nil takes it off:
-      {kind = "bar", label = "HP", stat = "hp", color = "#d84a4a"}
-      {kind = "counter", label = "Gold", stat = "gold"}   {kind = "text", text = "Find the key"}
-      {kind = "items", label = "Coins", item = "coin"}: how many of an item they carry
-    show(player, {id = "inn", title = "The innkeeper", text = "...", entity = id,
-      choices = {{id = "room", label = "Rent a room", detail = "5 gold"}, ...}})
-      opens a panel (dialogue, a menu): their pick calls on_choose(ev) with ev.choice, ev.panel
-      (its id) and ev.entity; it stays open until you show another or close(player). Up to 12
-      choices; the player can always close it.
+    UI is a tree of nodes, drawn for you; values and bars stay live by themselves:
+      {kind = "text", text = "...", style = "title"|"small"|"muted"}
+      {kind = "value", label = "Gold", stat = "gold"} (or item = "coin": how many they carry)
+      {kind = "bar", label = "HP", stat = "hp", color = "#d84a4a"}   {kind = "item", item = "coin"}
+      {kind = "button", id = "buy", label = "Buy a torch", detail = "2 coins"}
+      {kind = "row", items = {...}}   {kind = "column", items = {...}}   {kind = "space"}
+      Up to 80 nodes, 6 deep.
+    hud(player, id, ui): pinned to the player's screen ("*" for everyone); nil takes it off
+    show(player, {id = "shop", title = "The merchant", entity = id, body = ui}): opens a panel
+      (dialogue, a shop, a quest log); a button calls on_choose(ev) with ev.choice (its id),
+      ev.panel and ev.entity. It stays open until you show another or close(player); the
+      player can always close it.
   The world's voxels (whoever installed the game answers for it: their land and budget):
     build(model, pos, turn) -> build id: places one of your models as a real, solid build
       (walls, a bridge, a house that appears); unbuild(id) removes one you placed. The player

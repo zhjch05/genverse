@@ -240,7 +240,11 @@ fn packages_travel_with_the_change_that_installs_them() {
         other => panic!("{other:?}"),
     };
     assert!(matches!(ada.next(), ToClient::Committed { request: None, .. }));
-    for (request, key) in [(5, "enter"), (6, "east"), (7, "east")] {
+    // He walks onto it: the server sees him there, and the game gives him his piece.
+    let on_board = cubewish_net::Presence { position: [60.0, 10.0, 60.0], ..Default::default() };
+    bo.client.send(ToServer::Presence(on_board));
+    until(&bo, |m| matches!(m, ToClient::Committed { change, request: None, .. } if matches!(&change.action, Action::Timers { package, .. } if package == "sokoban")));
+    for (request, key) in [(6, "east"), (7, "east")] {
         bo.propose(request, Action::Intent { intent: Intent::Key { entity: board, key: key.into() } });
         assert!(matches!(bo.next(), ToClient::Committed { request: Some(r), .. } if r == request));
     }

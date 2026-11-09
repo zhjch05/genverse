@@ -18,8 +18,9 @@
 //! function on_place(ev) end     -- ev.item put down at ev.pos
 //! function on_interact(ev) end  -- E on ev.entity
 //! function on_use(ev) end       -- ev.item used on ev.entity
-//! function on_key(ev) end       -- ev.key in ev.entity's zone: "north", "south",
-//!                               -- "east", "west", "action", "reset", "enter", "leave"
+//! function on_key(ev) end       -- ev.key from a player on their pawn in ev.entity's
+//!                               -- region (keys = true): "north", "south", "east",
+//!                               -- "west", "action", "reset", "leave"
 //! function on_timer(ev) end     -- timer ev.name went off, with ev.data; ev.missed
 //!                               -- more times went by unrun (nobody was here)
 //! function on_choose(ev) end    -- ev.player picked ev.choice in the panel ev.panel
@@ -38,7 +39,7 @@
 //!
 //! `ev` also has `player` (nil for timers), `pos` (`{x, y, z}` in meters), `day` and
 //! `time` (0..1 of the day), and `now` (seconds). The world, as the package sees it (names without a `:` are the package's own;
-//! `look`, `label`, `zone` and `pawn` are the engine's, see [`super::entity`]):
+//! `look`, `label`, `region` and `pawn` are the engine's, see [`super::entity`]):
 //!
 //! ```lua
 //! get(id)                       -- {id, pos, owner, c = components} or nil
@@ -89,6 +90,8 @@
 //!
 //! ```lua
 //! region(id, {radius = 8})  or  region(id, {w = 10, d = 6})   -- on_enter / on_exit; nil stops
+//!                           -- keys = true: a player standing on their pawn in it moves
+//!                           -- with on_key (north, south, east, west, action, reset, leave)
 //! chase(id, player, {speed = 2.5, reach = 1.5})   -- runs after them; on_catch; chase(id) stops
 //! teleport(player, pos)     -- puts their hero there (a respawn, a trap, a door)
 //! spawn_point(pos)          -- where players appear when they come into the world
@@ -161,6 +164,25 @@ mod vm {
 
     fn fail(text: impl Into<String>) -> Error {
         Error::runtime(text.into())
+    }
+
+    /// Names the stats and items a UI tree shows with the package's namespace, and turns
+    /// Lua's empty tables (which come as objects) into empty lists of children.
+    fn name_ui(ui: &mut serde_json::Value, full: &dyn Fn(&str) -> String) {
+        let Some(node) = ui.as_object_mut() else { return };
+        for key in ["stat", "item"] {
+            if let Some(name) = node.get(key).and_then(|v| v.as_str()).map(full) {
+                node.insert(key.into(), name.into());
+            }
+        }
+        if node.get("items").is_some_and(|v| v.as_object().is_some_and(|o| o.is_empty())) {
+            node.insert("items".into(), serde_json::json!([]));
+        }
+        if let Some(items) = node.get_mut("items").and_then(|v| v.as_array_mut()) {
+            for child in items {
+                name_ui(child, full);
+            }
+        }
     }
 
     fn id_text(id: EntityId) -> String {
@@ -374,17 +396,13 @@ mod vm {
             )?;
             globals.set(
                 "hud",
-                scope.create_function(|lua, (player, id, widget): (String, String, Value)| {
-                    let widget: Option<crate::logic::Widget> = match widget {
+                scope.create_function(|lua, (player, id, ui): (String, String, Value)| {
+                    let widget: Option<crate::logic::Ui> = match ui {
                         Value::Nil => None,
-                        w => {
-                            let mut w: serde_json::Value = lua.from_value(w)?;
-                            for key in ["stat", "item"] {
-                                if let Some(name) = w[key].as_str() {
-                                    w[key] = full(name).into();
-                                }
-                            }
-                            Some(serde_json::from_value(w).map_err(|e| fail(format!("hud: {e}")))?)
+                        ui => {
+                            let mut ui: serde_json::Value = lua.from_value(ui)?;
+                            name_ui(&mut ui, &full);
+                            Some(serde_json::from_value(ui).map_err(|e| fail(format!("hud: {e}")))?)
                         }
                     };
                     apply(Effect::Hud { player, id, widget }).map(|_| ())
@@ -402,6 +420,7 @@ mod vm {
                     if panel["choices"].as_object().is_some_and(|o| o.is_empty()) {
                         panel["choices"] = serde_json::json!([]);
                     }
+                    name_ui(&mut panel["body"], &full);
                     let panel: crate::logic::PanelSpec = serde_json::from_value(panel).map_err(|e| fail(format!("show: {e}")))?;
                     apply(Effect::Show { player, panel: Some(panel) }).map(|_| ())
                 })?,
@@ -497,11 +516,14 @@ mod vm {
                         return apply(Effect::Remove { entity: id, component: "region".into() }).map(|_| ());
                     };
                     let spec: serde_json::Value = lua.from_value(Value::Table(spec))?;
-                    let value = match (spec["radius"].as_f64(), spec["w"].as_f64(), spec["d"].as_f64()) {
+                    let mut value = match (spec["radius"].as_f64(), spec["w"].as_f64(), spec["d"].as_f64()) {
                         (Some(r), _, _) => serde_json::json!({ "radius": r }),
                         (None, Some(w), Some(d)) => serde_json::json!({ "size": [w, d] }),
-                        _ => return Err(fail("region: {radius = r} or {w = width, d = depth}")),
+                        _ => return Err(fail("region: {radius = r} or {w = width, d = depth}, and keys = true to take the keys")),
                     };
+                    if spec["keys"].as_bool() == Some(true) {
+                        value["keys"] = true.into();
+                    }
                     apply(Effect::Set { entity: id, component: "region".into(), value }).map(|_| ())
                 })?,
             )?;
