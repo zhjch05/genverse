@@ -31,8 +31,7 @@ Needs `claude` and/or `codex` on your `PATH`, already logged in, for anything th
 
 ## Controls
 
-`WASD` moves, `Shift` runs, `Space` jumps, drag to look, scroll to zoom, `F5` switches to
-first person and back. A hint bar at the bottom always shows the keys that apply right now
+`WASD` moves, `Shift` runs, `Space` jumps, drag to look, scroll to zoom. A hint bar at the bottom always shows the keys that apply right now
 (`F1` hides it).
 
 | Context | Keys |

@@ -1,6 +1,6 @@
 //! The hero: a voxel character assembled from model parts, a kinematic controller with
 //! voxel collision, procedural walk animation, and a third-person follow camera that
-//! eases in front of whatever gets between it and the hero (F5 looks out of their eyes).
+//! eases in front of whatever gets between it and the hero.
 
 use std::f32::consts::{PI, TAU};
 
@@ -204,7 +204,8 @@ struct Limb {
 
 /// Where the camera pivots: the hero's eyes, meters above their feet.
 const EYE: f32 = 1.2;
-/// How far in front of the eyes the camera sits in first person (a negative reach).
+/// How far in front of the eyes the camera sits when a game holds it there (a
+/// negative reach).
 const FIRST_PERSON: f32 = -0.15;
 /// Half the width of the camera's probe for things in the way: wide enough that the
 /// corners of the near plane stay out of walls too, not just its center.
@@ -223,8 +224,6 @@ pub struct FollowCamera {
     /// How far something in the way pulls the camera in from `zoom`, eased: in quickly,
     /// back out slowly, so it never jumps.
     pull: f32,
-    /// Looking out of the hero's eyes (F5).
-    first_person: bool,
     /// A drag holds the cursor, so it doesn't run off the window (desktop only).
     #[cfg_attr(target_arch = "wasm32", allow(dead_code))]
     grabbed: bool,
@@ -255,7 +254,6 @@ impl Default for FollowCamera {
             distance,
             zoom: distance,
             pull: 0.0,
-            first_person: false,
             grabbed: false,
             target: Vec3::ZERO,
         }
@@ -690,7 +688,7 @@ fn clearance(world: &VoxelWorld, models: &[(&VoxelModel, &GlobalTransform)], piv
 
 pub fn follow_camera(
     time: Res<Time>,
-    (binds, blocked): (Res<Bindings>, Res<InputBlocked>),
+    binds: Res<Bindings>,
     (motion, scroll): (Res<AccumulatedMouseMotion>, Res<AccumulatedMouseScroll>),
     over_ui: Res<PointerOverUi>,
     lock: Res<OrbitLock>,
@@ -732,9 +730,6 @@ pub fn follow_camera(
         #[cfg(target_arch = "wasm32")]
         let _ = &mut cursors;
 
-        if !blocked.0 && binds.just_pressed("view") {
-            cam.first_person = !cam.first_person;
-        }
         let lines = if over_ui.0 {
             0.0
         } else {
@@ -743,10 +738,6 @@ pub fn follow_camera(
                 MouseScrollUnit::Pixel => scroll.delta.y / 40.0,
             }
         };
-        if lines < 0.0 {
-            // Scrolling out leaves first person.
-            cam.first_person = false;
-        }
         cam.distance = (cam.distance * (1.0 - lines * 0.08)).clamp(2.0, 25.0);
 
         // Track the eased model, not the body, so steps don't jolt the view; follow
@@ -767,7 +758,7 @@ pub fn follow_camera(
             cam.yaw = yaw;
         }
         let pitch = rig.pitch.unwrap_or(cam.pitch);
-        let wanted = rig.distance.unwrap_or(if cam.first_person { 0.0 } else { cam.distance });
+        let wanted = rig.distance.unwrap_or(cam.distance);
         let wanted = if wanted < 0.5 { FIRST_PERSON } else { wanted };
         cam.zoom += (wanted - cam.zoom) * ease(10.0);
 

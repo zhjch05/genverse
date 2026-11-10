@@ -1430,14 +1430,13 @@ fn shortcut_hints(
         "Drag".to_string()
     };
     let builder = if chat.open { "hide builder" } else { "builder" };
-    let (movement, run, jump, view, panel, hints) = (binds.movement(), k("run"), k("jump"), k("view"), k("builder"), k("hints"));
+    let (movement, run, jump, panel, hints) = (binds.movement(), k("run"), k("jump"), k("builder"), k("hints"));
     let moving = [
         (movement.as_str(), "move"),
         (run.as_str(), "run"),
         (jump.as_str(), "jump"),
         (look.as_str(), "look"),
         ("Scroll", "zoom"),
-        (view.as_str(), "view"),
         (panel.as_str(), builder),
         (hints.as_str(), "hide hints"),
     ];

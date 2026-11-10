@@ -181,7 +181,6 @@ pub static ACTIONS: &[Action] = &[
     action("Moving", "right", "Walk right", &["d", "right"]),
     action("Moving", "run", "Run while held", &["shift"]),
     action("Moving", "jump", "Jump", &["space"]),
-    action("Moving", "view", "Switch between first and third person", &["f5"]),
     action("Playing", "use", "Use the piece or portal in reach (in a grid game: its action)", &["e"]),
     action("Playing", "hit", "Hit the piece in reach", &["f"]),
     action("Playing", "reset", "Reset the grid game you're in", &["r"]),
