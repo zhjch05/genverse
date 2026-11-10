@@ -29,7 +29,6 @@ use crate::{
     build::BuildSpec,
     identity::{Keypair, verify},
     land::{Land, area_parcels, build_parcels},
-    land::Parcel,
     logic::{Effect, GameState, Install, Intent, Logic, Package, PackageRef, Runtime, Scope, WorldChange},
     rate::Rates,
     sculpt::{self, Area, Columns, TerrainSpec},
@@ -86,7 +85,7 @@ pub const WORLD: &str = "world";
 
 /// Bumped when the rules change in a way that rasterizes the same log differently, or
 /// games can do something an older copy would refuse (2: `travel` and `portal`).
-pub const RULES_VERSION: u32 = 2;
+pub const RULES_VERSION: u32 = 3;
 
 /// Who made a change, and how.
 #[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
@@ -192,9 +191,9 @@ pub enum Action {
         #[serde(default)]
         changed: usize,
     },
-    /// Claims free parcels (by parcel coordinates) for the author.
+    /// Retired: claimed free parcels for the author. Old logs have it; it changes nothing.
     ClaimParcels { parcels: Vec<[i32; 2]> },
-    /// Gives up the author's parcels.
+    /// Retired, like [`Action::ClaimParcels`].
     ReleaseParcels { parcels: Vec<[i32; 2]> },
     /// Puts back what an earlier change of the same player replaced (admins may undo
     /// anyone's), if nothing has changed there since ([`crate::undo`]). Undoing an undo
@@ -546,6 +545,51 @@ pub struct Replay {
     pub reloaded: bool,
 }
 
+/// The columns under a build.
+pub fn area_of(build: &BuildState) -> Area {
+    crate::land::build_area(Vec3::from_array(build.position), build.yaw, &build.spec.size)
+}
+
+/// Where a change would change the world, to hold it off where someone is working.
+#[derive(Clone, Debug, PartialEq)]
+pub enum Touches {
+    /// Nowhere in particular: games' doings, saves, rules.
+    Nothing,
+    Areas(Vec<Area>),
+    /// All of it: loading a save.
+    Everywhere,
+}
+
+impl Replay {
+    /// Where `action` would change the world as it is now.
+    pub fn touches(&self, action: &Action) -> Touches {
+        let build = |id: &u64| self.builds.get(id).map(area_of);
+        let areas: Vec<Area> = match action {
+            Action::PlaceBuild(b) | Action::UpdateBuild(b) => std::iter::once(area_of(b)).chain(build(&b.build)).collect(),
+            Action::RemoveBuild { build: id } | Action::SetPortal { build: id, .. } => build(id).into_iter().collect(),
+            Action::Terrain { area, .. } => vec![*area],
+            Action::Undo { change } => self
+                .undoable
+                .get(change)
+                .map(|record| {
+                    record
+                        .ops
+                        .iter()
+                        .flat_map(|op| match op {
+                            crate::undo::Op::Build { from, to, .. } => [from, to].into_iter().flatten().map(|p| area_of(&p.build)).collect(),
+                            crate::undo::Op::Land { area, .. } => vec![*area],
+                            _ => Vec::new(),
+                        })
+                        .collect()
+                })
+                .unwrap_or_default(),
+            Action::Load { .. } | Action::Restore { .. } | Action::Rollback { .. } => return Touches::Everywhere,
+            _ => return Touches::Nothing,
+        };
+        if areas.is_empty() { Touches::Nothing } else { Touches::Areas(areas) }
+    }
+}
+
 pub fn parcels_of(build: &BuildState) -> Vec<IVec2> {
     build_parcels(Vec3::from_array(build.position), build.yaw, &build.spec.size)
 }
@@ -598,7 +642,8 @@ pub struct WorldState {
     pub undoable: Vec<(u64, UndoRecord)>,
 }
 
-/// A claimed parcel, in a [`WorldState`].
+/// A claimed parcel, in a [`WorldState`] saved while land could be claimed. Read and
+/// ignored.
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 pub struct SavedParcel {
     pub at: [i32; 2],
@@ -742,10 +787,7 @@ impl Replay {
                         position: *position,
                         yaw: *yaw,
                     };
-                    let claims = self.land.authorize(installer, &parcels_of(&build))?;
-                    if !claims.is_empty() {
-                        return Err(format!("{package} builds only on land that whoever installed it has"));
-                    }
+                    self.land.authorize(installer, &parcels_of(&build)).map_err(|e| format!("{package}: {e}"))?;
                     let footprint = Footprint { owner: installer.into(), parcels: parcels_of(&build), usage: build_usage(spec) };
                     budgets.check(&footprint, None, &self.rules.budgets).map_err(|e| format!("{package}: {e}"))?;
                     budgets.add(&footprint);
@@ -753,10 +795,7 @@ impl Replay {
                 }
                 WorldChange::Unbuild { id } => removed.push(*id),
                 WorldChange::Terrain { package, area, spec } => {
-                    let claims = self.land.authorize(installer, &area_parcels(*area))?;
-                    if !claims.is_empty() {
-                        return Err(format!("{package} reshapes only land that whoever installed it has"));
-                    }
+                    self.land.authorize(installer, &area_parcels(*area)).map_err(|e| format!("{package}: {e}"))?;
                     // What it costs is its area, so the cost is the same with or without voxels.
                     let cost = terrain_footprint(installer, (area.size[0] * area.size[1]).max(0) as usize);
                     budgets.check(&cost, None, &self.rules.budgets).map_err(|e| format!("{package}: {e}"))?;
@@ -766,7 +805,7 @@ impl Replay {
                         let columns = ground_columns(terrain, *area, &self.edits);
                         let edit = sculpt::compile(spec, *area, terrain, columns, &self.rules.terrain, &self.rules.content)
                             .map_err(|errors| format!("{package}'s land change: {}", errors.join("; ")))?;
-                        let (_, edits) = self.land.authorize_terrain(installer, *area, edit.edits).expect("authorized above");
+                        let edits = self.land.authorize_terrain(installer, *area, edit.edits).expect("authorized above");
                         made.extend(edits);
                     }
                 }
@@ -799,19 +838,12 @@ impl Replay {
     pub fn state(&self) -> WorldState {
         let mut edits: Vec<[i32; 4]> = self.edits.iter().map(|(p, id)| [p.x, p.y, p.z, *id as i32]).collect();
         edits.sort_unstable();
-        let mut parcels: Vec<SavedParcel> = self
-            .land
-            .parcels
-            .iter()
-            .map(|(at, p)| SavedParcel { at: at.to_array(), owner: p.owner.clone(), owner_name: p.owner_name.clone(), builders: p.builders.clone() })
-            .collect();
-        parcels.sort_by_key(|p| p.at);
         let mut terrain: Vec<(String, usize)> = self.budgets.players.iter().filter(|(_, u)| u.terrain > 0).map(|(p, u)| (p.clone(), u.terrain)).collect();
         terrain.sort();
         WorldState {
             rules: self.rules.clone(),
             builds: self.builds.keys().filter_map(|id| self.placed(*id)).collect(),
-            parcels,
+            parcels: Vec::new(),
             terrain,
             installed: self.logic.installed.values().cloned().collect(),
             game: self.logic.state.clone(),
@@ -825,11 +857,7 @@ impl Replay {
     /// too if `voxels`.
     pub fn load_state(&mut self, state: &WorldState, voxels: bool) {
         self.rules = state.rules.clone();
-        self.land = Land::new(self.admins.clone(), self.rules.spawn.clone(), self.rules.land);
-        for p in &state.parcels {
-            let parcel = Parcel { owner: p.owner.clone(), owner_name: p.owner_name.clone(), builders: p.builders.clone() };
-            self.land.parcels.insert(IVec2::from_array(p.at), parcel);
-        }
+        self.land = Land::new(self.admins.clone(), self.rules.spawn.clone());
         self.builds.clear();
         self.footprints.clear();
         self.portals.clear();
@@ -862,7 +890,7 @@ impl Replay {
     /// The world before any change: the log's seed, admins and starting rules.
     pub fn new(log: &WorldLog) -> Self {
         let rules = log.rules.clone();
-        let land = Land::new(log.admins.clone(), rules.spawn.clone(), rules.land);
+        let land = Land::new(log.admins.clone(), rules.spawn.clone());
         let logic = Logic { packages: log.packages.clone(), ..Default::default() };
         Self { seed: log.seed, flat: log.flat, terrain_version: log.terrain_version, recipe: log.recipe, admins: log.admins.clone(), land, rules, logic, ..Default::default() }
     }
@@ -875,7 +903,6 @@ impl Replay {
         self.last_cells.clear();
         self.reloaded = false;
         let by = &change.by;
-        let parcels = |list: &[[i32; 2]]| list.iter().map(|p| IVec2::from_array(*p)).collect::<Vec<_>>();
         // The server's own changes (timers, players carrying things between worlds)
         // count as an admin's: no player can sign as the world.
         let admin = self.admins.contains(&by.player) || by.player == WORLD;
@@ -923,9 +950,8 @@ impl Replay {
                     parcels: parcels_of(b),
                     usage: build_usage(&b.spec),
                 };
-                let claims = self.land.authorize(&by.player, &touched)?;
+                self.land.authorize(&by.player, &touched)?;
                 self.budgets.check(&new, old, &self.rules.budgets)?;
-                self.land.claim(&by.player, &by.player_name, &claims);
                 if let Some(old) = self.footprints.remove(&b.build) {
                     self.budgets.remove(&old);
                 }
@@ -951,7 +977,7 @@ impl Replay {
             }
             Action::Terrain { name, area, spec, changed } => {
                 let cost = terrain_footprint(&by.player, *changed);
-                let claims = self.land.authorize(&by.player, &area_parcels(*area))?;
+                self.land.authorize(&by.player, &area_parcels(*area))?;
                 self.budgets.check(&cost, None, &self.rules.budgets)?;
                 let mut cells = Vec::new();
                 if voxels {
@@ -960,8 +986,7 @@ impl Replay {
                     let ground = columns.clone();
                     let edit = sculpt::compile(spec, *area, terrain, columns, &self.rules.terrain, &self.rules.content)
                         .map_err(|errors| format!("\"{name}\" {}", errors.join("; ")))?;
-                    let (_, edits) =
-                        self.land.authorize_terrain(&by.player, *area, edit.edits).expect("authorized above");
+                    let edits = self.land.authorize_terrain(&by.player, *area, edit.edits).expect("authorized above");
                     cells = edits
                         .iter()
                         .map(|(p, id)| Cell { p: p.to_array(), from: (self.edits.get(p).copied(), ground.original(*p).unwrap_or(*id)), to: (Some(*id), *id) })
@@ -970,15 +995,11 @@ impl Replay {
                     made = edits;
                 }
                 self.budgets.add(&cost);
-                self.land.claim(&by.player, &by.player_name, &claims);
                 let op = Op::Land { owner: by.player.clone(), area: *area, cost: *changed, charge: true, cells };
                 self.remember(change.id, &by.player, false, vec![op]);
             }
-            Action::ClaimParcels { parcels: list } => {
-                let claims = self.land.authorize(&by.player, &parcels(list))?;
-                self.land.claim(&by.player, &by.player_name, &claims);
-            }
-            Action::ReleaseParcels { parcels: list } => self.land.release(&by.player, &parcels(list)),
+            // Claims are retired: old logs still have them, and they change nothing.
+            Action::ClaimParcels { .. } | Action::ReleaseParcels { .. } => {}
             Action::LegacyVoxels { edits } => {
                 if voxels {
                     made = edits.iter().map(|[x, y, z, id]| (IVec3::new(*x, *y, *z), *id as VoxelId)).collect();
@@ -987,14 +1008,13 @@ impl Replay {
             }
             Action::SetRules { rules } if admin => {
                 let op = Op::Rules { from: Box::new(self.rules.clone()), to: Box::new(rules.clone()) };
-                self.land.mode = rules.land;
                 self.land.spawn = rules.spawn.clone();
                 self.rules = rules.clone();
                 self.remember(change.id, &by.player, false, vec![op]);
             }
             Action::SetRules { .. } => return Err("only admins change the rules".into()),
             Action::InstallPackage { package, scope } => {
-                let claims = self.land.authorize(&by.player, &scope.parcels())?;
+                self.land.authorize(&by.player, &scope.parcels())?;
                 let from = self.logic.installed.get(&package.name).cloned();
                 self.logic.install(&by.player, admin, &self.rules.logic, package, scope)?;
                 // New to the world, or a new version: the game sets it up (`on_start`,
@@ -1030,7 +1050,6 @@ impl Replay {
                         }
                     }
                 }
-                self.land.claim(&by.player, &by.player_name, &claims);
                 let to = self.logic.installed.get(&package.name).cloned();
                 self.remember(change.id, &by.player, false, vec![Op::Install { name: package.name.clone(), from, to }]);
             }
@@ -1281,9 +1300,9 @@ mod tests {
         log.rules.land = crate::settings::LandMode::Parcels;
         log.push(by("ada"), away(lamp(1)));
         let to = |name: &str| Some(PortalTo::parse(name).unwrap());
-        // Bo can't change Ada's build, so he can't make it a portal.
+        // Anyone who can edit makes any build a portal, and the latest says where to.
         log.push(by("bo"), Action::SetPortal { build: 1, to: to("bos-world") });
-        assert!(portals(&log).is_empty());
+        assert_eq!(portals(&log)[&1], PortalTo::World { name: "bos-world".into() });
         log.push(by("ada"), Action::SetPortal { build: 1, to: to("Sokoban") });
         assert_eq!(portals(&log)[&1], PortalTo::World { name: "sokoban".into() });
         assert_eq!(PortalTo::parse("host.example:7780"), Ok(PortalTo::Server { addr: "host.example:7780".into() }));
@@ -1471,6 +1490,7 @@ mod tests {
     #[test]
     fn replay_enforces_land() {
         let mut log = WorldLog::new(1337);
+        // A world from when land was claimed: the mode and the claims change nothing now.
         log.rules.land = crate::settings::LandMode::Parcels;
         log.push(by("a"), lamp(1));
         // Lamp 1 stands at the origin, in the spawn: only admins may, so it's refused...
@@ -1480,31 +1500,23 @@ mod tests {
         let land = replay_land(&log);
         assert!(land.problems.is_empty() && land.builds.len() == 1);
 
-        // b claims land by building on it; c can't build there, a (admin) can.
+        // b builds away from the spawn and claims there; c builds on the same spot,
+        // because anyone who can edit the world changes any of it.
         let mut away = lamp(2);
         if let Action::PlaceBuild(b) = &mut away {
             b.position = [100.0, 10.0, 100.0];
         }
         log.push(by("b"), away.clone());
+        log.push(by("b"), Action::ClaimParcels { parcels: vec![[12, 12]] });
         let mut c = away.clone();
         if let Action::PlaceBuild(b) = &mut c {
             b.build = 3;
         }
         log.push(by("c"), c);
+        log.push(by("c"), Action::RemoveBuild { build: 2 });
         let land = replay_land(&log);
-        assert_eq!(land.builds.keys().copied().collect::<Vec<_>>(), vec![1, 2]);
-        assert!(land.problems[0].contains("belongs to b"), "{:?}", land.problems);
-        assert!(land.land.parcels.values().all(|p| p.owner == "b"));
-
-        // An admin opens the world: from then on anyone builds anywhere but the spawn.
-        let rules = WorldRules { land: crate::settings::LandMode::Open, ..log.rules.clone() };
-        log.push(by("a"), Action::SetRules { rules });
-        let mut d = away.clone();
-        if let Action::PlaceBuild(b) = &mut d {
-            b.build = 4;
-        }
-        log.push(by("d"), d);
-        assert!(replay_land(&log).builds.contains_key(&4));
+        assert!(land.problems.is_empty(), "{:?}", land.problems);
+        assert_eq!(land.builds.keys().copied().collect::<Vec<_>>(), vec![1, 3]);
         // Only admins change rules.
         log.push(by("d"), Action::SetRules { rules: WorldRules::default() });
         assert!(replay_land(&log).problems.last().unwrap().contains("only admins"));
@@ -1661,7 +1673,8 @@ mod tests {
         assert!(state.problems[0].contains("only an admin") && state.problems[1].contains("someone else"));
         assert_eq!(state.logic.installed["farm"].scope, Scope::World);
 
-        // Parcels mode: installing on free land claims it, like building there would.
+        // Installing on some parcels leaves them as they were; only its installer
+        // takes it out.
         let mut log = WorldLog::new(1337);
         log.rules.logic.mode = LogicMode::Open;
         log.rules.land = crate::settings::LandMode::Parcels;
@@ -1669,7 +1682,6 @@ mod tests {
         log.push(at("a", 0), mine.clone());
         log.push(at("b", 1), Action::UninstallPackage { name: "farm".into() });
         let state = replay(&log);
-        assert_eq!(state.land.parcels.get(&IVec2::new(20, 20)).map(|p| p.owner.as_str()), Some("a"), "{:?}", state.problems);
         assert!(state.problems[0].contains("someone else"), "{:?}", state.problems);
 
         // A locked world refuses everyone, admins included, until the rules change.

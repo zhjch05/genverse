@@ -26,7 +26,7 @@ use genverse_rules::{
     log::{Action, PortalTo},
     logic::Scope,
     sculpt::{Area, TerrainSpec},
-    settings::{LandMode, Look, RateLimits},
+    settings::{Look, RateLimits},
 };
 use serde_json::Value;
 
@@ -382,7 +382,6 @@ pub static OPS: &[Op] = &[
     .settled()
     .ask()
     .note("The world is saved first, so loading that save brings it back."),
-    op("land", "open|parcels", "Whether land is open or claimed by parcel", &[word("mode", "open or parcels")], land).admin(),
     op(
         "rate",
         "<per min> [voxels/10 min] | off",
@@ -885,18 +884,6 @@ fn portal(cx: &mut Context, args: &Args) -> Reply {
     Ok(format!("It's a portal to {label} now: walk up to it and press E."))
 }
 
-fn land(cx: &mut Context, args: &Args) -> Reply {
-    let land = match args.text("mode").as_deref() {
-        Some("open") => LandMode::Open,
-        Some("parcels") => LandMode::Parcels,
-        _ => return Err("Usage: /land open|parcels".into()),
-    };
-    let mut rules = cx.ledger.rules.clone();
-    rules.land = land;
-    cx.record(Action::SetRules { rules });
-    Ok(format!("Land is now {}.", if land == LandMode::Open { "open to everyone" } else { "claimed by parcels" }))
-}
-
 fn rate(cx: &mut Context, args: &Args) -> Reply {
     const USAGE: &str = "Usage: /rate <changes per minute> [voxels per 10 minutes], or /rate off";
     let rates = match (args.text("per_minute").as_deref(), args.text("voxels")) {
@@ -948,10 +935,7 @@ fn bevel_line(bevel: f32) -> String {
 fn rules(cx: &mut Context, _: &Args) -> Reply {
     let ledger = &*cx.ledger;
     let r = &ledger.rules;
-    let land = match r.land {
-        LandMode::Open => "open: anyone changes anything outside the spawn",
-        LandMode::Parcels => "parcels: land is claimed, and owners change it",
-    };
+    let land = "open: anyone who can edit changes anything outside the spawn, and land someone is working on waits for them";
     Ok(format!(
         "Land is {land}. Spawn: {:.0} m around the start. One build: up to {} voxels a side, {} voxels, {} faces. \
          One land change: areas up to {:.0} m, {} voxels. {} {}. Admins: {}.",
@@ -1353,8 +1337,8 @@ cover!(action_cover, ACTION_COVER, Action {
     Action::UpdateBuild(..) => Cover::Op("change_build"),
     Action::RemoveBuild { .. } => Cover::Op("remove_build"),
     Action::Terrain { .. } => Cover::Op("change_land"),
-    Action::ClaimParcels { .. } => Cover::Later("the land panel's Claim"),
-    Action::ReleaseParcels { .. } => Cover::Later("the land panel's Release"),
+    Action::ClaimParcels { .. } => Cover::Never("retired: land isn't claimed any more, and old logs' claims change nothing"),
+    Action::ReleaseParcels { .. } => Cover::Never("retired, like claims"),
     Action::Undo { .. } => Cover::Op("undo"),
     Action::Revert { .. } => Cover::Never("only in old logs"),
     Action::Rollback { .. } => Cover::Never("only in old logs"),

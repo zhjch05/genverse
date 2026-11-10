@@ -182,8 +182,9 @@ Hover a build or reshaped ground to see who changed it last.
   `/load <name>` puts the world back exactly, game state included, for everyone. Nothing is
   deleted. `/fork <save> <world>` starts a new world from a save.
 - **Rules per world** (`/rules`), kept in the log:
-  - **Land:** open by default, with a protected 24 m spawn. `/land parcels` switches to
-    8 × 8 m plots owned by whoever changed them first.
+  - **Land:** anyone who can edit changes any of it, except a protected 24 m spawn. Land
+    someone is working on (their agent changing it, a preview open, a build draft) waits
+    for them: others' changes there are refused until they keep it or put it back.
   - **Budgets:** builds, voxels and glow per parcel and per player.
   - **Rate limits:** off by default, set with `/rate 10 200000` (changes a minute, voxels per
     10 minutes). Admins are exempt.

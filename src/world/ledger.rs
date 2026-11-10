@@ -405,6 +405,9 @@ pub struct Online {
     pub shown: Option<String>,
     /// Coming from this world through a portal: arrive by a portal back to it.
     pub arriving_from: Option<String>,
+    /// The others in this world, by id: their name, what they're doing, and when we
+    /// heard it. The land they're working on waits for them ([`Ledger::held`]).
+    pub others: HashMap<String, (String, genverse_net::Presence, std::time::Instant)>,
 }
 
 /// Online, changes are known by request number until the server commits them; these
@@ -933,9 +936,22 @@ impl Ledger {
         self.rates.check(&self.rules.rates, &self.profile.id, now(), cost)
     }
 
-    /// Whether the local player may change `parcels`; returns the free ones the change
-    /// would claim, or why not.
-    pub fn check(&self, parcels: &[IVec2]) -> Result<Vec<IVec2>, String> {
+    /// Whether someone else is working on any of `areas` right now: the server would
+    /// refuse a change there, so it's refused here first, saying who.
+    #[cfg(not(target_arch = "wasm32"))]
+    pub fn held(&self, areas: Vec<genverse_rules::sculpt::Area>) -> Result<(), String> {
+        let Some(online) = &self.online else { return Ok(()) };
+        let live = online.others.values().filter(|(_, _, at)| at.elapsed() < genverse_net::LOCK_TTL).map(|(name, p, _)| (name.as_str(), p));
+        genverse_net::held(&genverse_rules::log::Touches::Areas(areas), live)
+    }
+
+    #[cfg(target_arch = "wasm32")]
+    pub fn held(&self, _: Vec<genverse_rules::sculpt::Area>) -> Result<(), String> {
+        Ok(())
+    }
+
+    /// Whether the local player may change `parcels`, or why not.
+    pub fn check(&self, parcels: &[IVec2]) -> Result<(), String> {
         if !self.is_admin() && !self.logic.building_allowed() {
             return Err("This world is a game right now: only admins build here.".into());
         }
@@ -1351,6 +1367,7 @@ fn connect_to(addr: &str, profile: &Profile, key: &Keypair) -> Result<Online, St
         world: None,
         shown: None,
         arriving_from: None,
+        others: HashMap::new(),
     })
 }
 

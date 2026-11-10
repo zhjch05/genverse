@@ -188,7 +188,7 @@ pub fn draw_game_world(mut commands: Commands, mut ledger: ResMut<Ledger>, mut w
                     let ground = ground_columns(world.terrain, area, &world.edits_in_area(area));
                     match sculpt::compile(&spec, area, world.terrain, ground, &ledger.rules.terrain, &ledger.rules.content) {
                         Ok(edit) => {
-                            if let Ok((_, edits)) = ledger.land.authorize_terrain(&installer, area, edit.edits) {
+                            if let Ok(edits) = ledger.land.authorize_terrain(&installer, area, edit.edits) {
                                 for (p, id) in edits {
                                     world.set(p, id);
                                 }

@@ -247,5 +247,14 @@ new building block, in Rust, for every world.
   kind of change has an op, the answer schema lists what the rules take), adding
   something the agent can't reach takes writing down why.
 
-Next: chords as bindings (Ctrl/Cmd+Z is the one key left outside); parcels as ops; granular permissions for what a joined
+- **Land is shared, work is held:** like a shared document, anyone who can edit a world
+  changes any of it but the protected spawn; land isn't claimed any more (old logs'
+  claims change nothing). What someone is in the middle of waits for them: the area
+  their agent is changing or they're previewing a change to, with a margin, and the
+  ground under a build draft. It's held live, from the presence players already share,
+  never in the log: renewed every 20 s, gone a minute after it stops (or when they
+  leave), and the server refuses others' changes there, saying who and why. A
+  selection alone holds nothing.
+
+Next: chords as bindings (Ctrl/Cmd+Z is the one key left outside); granular permissions for what a joined
 player may change; the Settings and Game windows as panels.

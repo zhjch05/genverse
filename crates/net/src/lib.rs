@@ -27,14 +27,16 @@ use std::{
 
 use genverse_rules::{
     game::{GameAction, GameLog},
-    log::{Action, Change, Provenance, RULES_VERSION, Snapshot, WorldLog},
+    land::footprint,
+    log::{Action, Change, Provenance, RULES_VERSION, Snapshot, Touches, WorldLog},
     logic::Package,
     sculpt::Area,
 };
+use genverse_rules::bevy_math::Vec2;
 use serde::{Deserialize, Serialize};
 
 /// Bumped when the protocol changes incompatibly.
-pub const VERSION: u32 = 6;
+pub const VERSION: u32 = 7;
 pub const DEFAULT_PORT: u16 = 7878;
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
@@ -91,6 +93,58 @@ pub struct Presence {
     /// their id gives them.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub color: Option<u8>,
+}
+
+/// A player holds the land they're working on (the area their agent is changing or
+/// they're previewing a change to, the ground under their draft) for as long as their
+/// presence says so and a little after: like a shared document, anyone may change
+/// anything, but not what someone is in the middle of. A selection alone holds nothing.
+/// Locks are live, never in the log; the server refuses others' changes there.
+pub const LOCK_TTL: Duration = Duration::from_secs(60);
+/// How often a player holding a lock says so again, so it doesn't run out.
+pub const LOCK_RENEW: Duration = Duration::from_secs(20);
+/// Columns held around a selected area: a land change's trees and rocks reach that far
+/// past it.
+pub const LOCK_MARGIN: i32 = 12;
+
+impl Presence {
+    /// The land this player is working on, held from others.
+    pub fn locks(&self) -> Vec<Area> {
+        let working = self.previewing || self.status.is_some();
+        let area = self.area.filter(|_| working).map(|a| a.grown(LOCK_MARGIN));
+        let draft = self.draft.map(|([x, _, z], yaw, [w, _, d])| footprint(Vec2::new(x, z), yaw, Vec2::new(w, d)).grown(1));
+        area.into_iter().chain(draft).collect()
+    }
+
+    /// What they're doing there, in a few words: "previewing a land change".
+    pub fn working(&self) -> String {
+        let what = match (self.area.is_some(), self.previewing, self.draft.is_some()) {
+            (_, _, true) => "placing a build there",
+            (true, true, _) => "previewing a land change there",
+            _ => "changing that land",
+        };
+        match &self.status {
+            Some(status) => format!("{what} ({})", status.trim_end_matches('…').to_lowercase()),
+            None => what.into(),
+        }
+    }
+}
+
+/// Whose live lock, if anyone's, stands in the way of a change touching `touches`.
+/// `holders` are the other players here, with their names and presence.
+pub fn held<'a>(touches: &Touches, holders: impl IntoIterator<Item = (&'a str, &'a Presence)>) -> Result<(), String> {
+    for (name, presence) in holders {
+        let locks = presence.locks();
+        let blocked = match touches {
+            Touches::Nothing => false,
+            Touches::Everywhere => !locks.is_empty(),
+            Touches::Areas(areas) => areas.iter().any(|a| locks.iter().any(|l| l.overlaps(*a))),
+        };
+        if blocked {
+            return Err(format!("{name} is {}: it's free again once they keep it, put it back or clear it", presence.working()));
+        }
+    }
+    Ok(())
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
@@ -264,6 +318,28 @@ mod tests {
     use std::net::TcpListener;
 
     use super::*;
+
+    #[test]
+    fn work_holds_the_land_under_it() {
+        let selecting = Presence { area: Some(Area { min: [100, 100], size: [40, 40] }), previewing: true, status: Some("Claude Code is designing…".into()), ..Default::default() };
+        let drafting = Presence { draft: Some(([50.0, 10.0, 50.0], 0.0, [4.0, 3.0, 4.0])), ..Default::default() };
+        let idle = Presence::default();
+        assert!(idle.locks().is_empty());
+        // Selecting land holds nothing until work starts on it.
+        let looking = Presence { area: selecting.area, ..Default::default() };
+        assert!(looking.locks().is_empty());
+        assert_eq!(Presence { status: Some("…".into()), ..looking }.locks().len(), 1);
+        let near = Touches::Areas(vec![Area { min: [145, 100], size: [4, 4] }]);
+        let far = Touches::Areas(vec![Area { min: [400, 400], size: [4, 4] }]);
+        let why = held(&near, [("Ada", &selecting)]).unwrap_err();
+        assert!(why.starts_with("Ada is previewing a land change there (claude code is designing)"), "{why}");
+        assert_eq!(held(&far, [("Ada", &selecting), ("Bo", &drafting), ("Cy", &idle)]), Ok(()));
+        // A draft holds the ground under it: 50 m is column 200.
+        assert!(held(&Touches::Areas(vec![Area { min: [200, 200], size: [1, 1] }]), [("Bo", &drafting)]).is_err());
+        assert!(held(&Touches::Everywhere, [("Bo", &drafting)]).is_err());
+        assert_eq!(held(&Touches::Everywhere, [("Cy", &idle)]), Ok(()));
+        assert_eq!(held(&Touches::Nothing, [("Ada", &selecting)]), Ok(()));
+    }
 
     #[test]
     fn mismatched_rules_are_refused_not_retried() {

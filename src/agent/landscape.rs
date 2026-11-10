@@ -20,7 +20,6 @@ use genverse_rules::{
     land::{Access, PARCEL, area_parcels},
     log::{Action, terrain_footprint},
     undo::Cell,
-    settings::LandMode,
 };
 use genverse_rules::sculpt::{self, Area, Columns, SculptStats, TerrainEdit, TerrainSpec, level_of, surface};
 
@@ -256,7 +255,7 @@ pub enum PreviewError {
 /// Compiles `spec` against the loaded ground and keeps the edits the land rules allow,
 /// exactly as replaying the change log will.
 fn prepare(world: &VoxelWorld, ledger: &Ledger, spec: &TerrainSpec, area: Area) -> Result<TerrainEdit, PreviewError> {
-    let refused = ledger.check(&area_parcels(area)).err();
+    let refused = ledger.check(&area_parcels(area)).and_then(|_| ledger.held(vec![area])).err();
     if let Some(why) = refused {
         return Err(PreviewError::Refused(why));
     }
@@ -265,7 +264,7 @@ fn prepare(world: &VoxelWorld, ledger: &Ledger, spec: &TerrainSpec, area: Area) 
     })?;
     let mut edit =
         sculpt::compile(spec, area, world.terrain, columns, &ledger.rules.terrain, &ledger.rules.content).map_err(PreviewError::Invalid)?;
-    let (_, edits) =
+    let edits =
         ledger.land.authorize_terrain(&ledger.profile.id, area, edit.edits).map_err(PreviewError::Refused)?;
     edit.stats.changed = edits.len();
     edit.edits = edits;
@@ -277,45 +276,17 @@ fn prepare(world: &VoxelWorld, ledger: &Ledger, spec: &TerrainSpec, area: Area) 
     Ok(edit)
 }
 
-/// Who may change the parcels under `area`, in a few words for the panel and the agent.
+/// Who may change the land under `area`, in a few words for the panel and the agent.
 pub fn land_summary(ledger: &Ledger, area: Area) -> String {
-    if ledger.land.mode == LandMode::Open {
-        let spawn = area_parcels(area).into_iter().any(|p| ledger.land.in_spawn(p));
-        return match (spawn, ledger.land.is_admin(&ledger.profile.id)) {
-            (false, _) => "Open world: anyone can change this land".into(),
-            (true, true) => "Part of this is the protected spawn (you're an admin)".into(),
-            (true, false) => "Part of this is the protected spawn, which only admins change".into(),
-        };
+    if let Err(why) = ledger.held(vec![area]) {
+        return format!("{} {}", egui_phosphor::regular::LOCK_SIMPLE, why[..1].to_uppercase() + &why[1..]);
     }
-    let (mut yours, mut free, mut spawn) = (0, 0, 0);
-    let mut others: Vec<String> = Vec::new();
-    for parcel in area_parcels(area) {
-        match ledger.land.access(&ledger.profile.id, parcel) {
-            Access::Yours | Access::Shared => yours += 1,
-            Access::Free => free += 1,
-            Access::Spawn => spawn += 1,
-            Access::Taken { owner_name } => {
-                if !others.contains(&owner_name) {
-                    others.push(owner_name);
-                }
-            }
-        }
+    let spawn = area_parcels(area).into_iter().any(|p| ledger.land.in_spawn(p));
+    match (spawn, ledger.land.is_admin(&ledger.profile.id)) {
+        (false, _) => "Anyone who can edit this world can change this land".into(),
+        (true, true) => "Part of this is the protected spawn (you're an admin)".into(),
+        (true, false) => "Part of this is the protected spawn, which only admins change".into(),
     }
-    let mut parts = Vec::new();
-    if yours > 0 {
-        parts.push(format!("{yours} yours"));
-    }
-    if free > 0 {
-        parts.push(format!("{free} unclaimed"));
-    }
-    if spawn > 0 {
-        parts.push(format!("{spawn} in the protected spawn"));
-    }
-    if !others.is_empty() {
-        parts.push(format!("owned by {}", others.join(", ")));
-    }
-    let admin = if ledger.land.is_admin(&ledger.profile.id) { " (you're an admin)" } else { "" };
-    format!("Parcels: {}{admin}", parts.join(", "))
 }
 
 fn apply(world: &mut VoxelWorld, edits: &[(IVec3, VoxelId)]) -> Vec<Before> {
@@ -706,7 +677,7 @@ pub fn describe_stats(area: Area, s: &SculptStats) -> String {
     parts.join(" · ")
 }
 
-/// P shows who owns the land around the hero.
+/// P outlines the protected spawn around the hero.
 #[derive(Resource, Default)]
 pub struct ParcelOverlay {
     pub visible: bool,
@@ -752,7 +723,7 @@ pub fn draw_parcels(
         for dz in -OVERLAY_RADIUS..=OVERLAY_RADIUS {
             for dx in -OVERLAY_RADIUS..=OVERLAY_RADIUS {
                 let parcel = here + IVec2::new(dx, dz);
-                let access = ledger.land.access(&ledger.profile.id, parcel);
+                let access = ledger.land.access(parcel);
                 if access == Access::Free {
                     continue;
                 }
@@ -778,10 +749,7 @@ pub fn draw_parcels(
     }
     for (access, points) in &cache.lines {
         let (r, g, b) = match access {
-            Access::Yours => (0.3, 1.0, 0.4),
-            Access::Shared => (0.2, 0.9, 0.9),
             Access::Spawn => (0.45, 0.6, 1.0),
-            Access::Taken { .. } => (1.0, 0.35, 0.3),
             Access::Free => continue,
         };
         bold.linestrip(points.iter().copied(), Color::LinearRgba(LinearRgba::rgb(r * 2.0, g * 2.0, b * 2.0)));

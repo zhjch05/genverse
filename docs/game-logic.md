@@ -83,7 +83,7 @@ A game isn't only something players put down. Installed, it can be the whole wor
   as it walks, or flies (`fly(id, pos)`: a straight line, for boats and lifts).
 - **It owns the world's rules.** `building(false)` puts an unseen piece with
   `world = {building = false}` in the world: while its package is installed, only admins
-  build, reshape land or claim parcels.
+  build or reshape land.
 
 Agents test it as a player: `test_game` installs the package (running `on_start`), brings
 the tester in at the spawn point (`on_join`), and steps include `go <x> <z>` and `hit`.

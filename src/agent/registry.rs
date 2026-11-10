@@ -94,7 +94,6 @@ pub static SETTINGS: &[Setting] = &[
     rule("hero.run_speed", "/hero/run_speed", number(0.5, 40.0), "How fast heroes run, in meters a second"),
     rule("hero.jump_speed", "/hero/jump_speed", number(0.0, 30.0), "How fast a jump leaves the ground, in meters a second (7.5 goes a little over a meter high)"),
     rule("hero.gravity", "/hero/gravity", number(1.0, 100.0), "How fast heroes fall, in meters a second each second"),
-    rule("world.land", "/land", Kind::Choice(&["open", "parcels"]), "Whether land is open to everyone or claimed parcel by parcel"),
     rule("world.spawn.radius_m", "/spawn/radius_m", number(0.0, 256.0), "How far around the start only admins build, in meters"),
     rule("world.look.bevel", "/look/bevel", number(0.0, 0.3), "How far voxels' edges are rounded, as a share of a voxel (0 is sharp cubes)"),
     rule("world.build.max_size", "/build/max_size", whole(8, 256), "The longest side of one build, in build voxels (8 to a meter)"),
@@ -138,6 +137,7 @@ pub static SETTINGS: &[Setting] = &[
 pub const NOT_SETTINGS: &[(Store, &str, &str)] = &[
     (Store::Rules, "/spawn/center", "where the world starts: moving it would move the protected spawn off what's built there"),
     (Store::Rules, "/logic/clock/epoch", "when day 0 began: games set the time of day with set_time"),
+    (Store::Rules, "/land", "retired: land was claimed parcel by parcel; now anyone who can edit changes it, and work in progress is locked live"),
     (Store::Rules, "/content", "the world's blocks: a list, changed with the block and removeblock ops"),
 ];
 

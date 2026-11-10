@@ -71,6 +71,8 @@ pub fn allowed(ledger: &Ledger, position: Vec3, yaw: f32, size: &[i64], stats: B
     let mut parcels = here.clone();
     parcels.extend(old.map(parcels_of).unwrap_or_default());
     ledger.check(&parcels)?;
+    let areas = std::iter::once(genverse_rules::land::build_area(position, yaw, size)).chain(old.map(genverse_rules::log::area_of));
+    ledger.held(areas.collect())?;
     let old = old.and_then(|r| ledger.footprints.get(&r.build));
     let new = Footprint {
         owner: old.map_or(ledger.profile.id.clone(), |o| o.owner.clone()),
@@ -222,6 +224,7 @@ impl Creations {
         let index = self.placed.iter().position(|(e, _)| *e == entity).ok_or("nothing is selected")?;
         ledger
             .check(&parcels_of(&self.placed[index].1))
+            .and_then(|_| ledger.held(vec![genverse_rules::log::area_of(&self.placed[index].1)]))
             .and_then(|_| ledger.check_rate(0))
             .map_err(|why| format!("Can't delete it: {why}."))?;
         self.selected = None;
@@ -430,7 +433,7 @@ impl Creations {
     pub fn delete(&mut self, ledger: &mut Ledger, build: u64, by: Asked) -> Result<String, String> {
         self.not_the_draft(build)?;
         let before = ledger.builds.get(&build).cloned().ok_or(format!("There's no build {build}."))?;
-        ledger.check(&parcels_of(&before)).and_then(|_| ledger.check_rate(0)).map_err(|why| format!("Can't remove it: {why}."))?;
+        ledger.check(&parcels_of(&before)).and_then(|_| ledger.held(vec![genverse_rules::log::area_of(&before)])).and_then(|_| ledger.check_rate(0)).map_err(|why| format!("Can't remove it: {why}."))?;
         let change = ledger.record_checked(by.map(|b| b.0), by.map(|b| b.1), Action::RemoveBuild { build })?;
         let name = before.name.clone();
         self.history.push(Change::Deleted { before, change });

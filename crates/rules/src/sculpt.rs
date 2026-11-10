@@ -87,6 +87,17 @@ impl Area {
         local.cmpge(IVec2::ZERO).all() && local.cmplt(self.size()).all()
     }
 
+    /// Whether any column is in both.
+    pub fn overlaps(&self, other: Area) -> bool {
+        let (a, b) = (self.min(), other.min());
+        a.cmplt(b + other.size()).all() && b.cmplt(a + self.size()).all()
+    }
+
+    /// The area with `by` more columns on every side.
+    pub fn grown(self, by: i32) -> Self {
+        Self { min: (self.min() - by).to_array(), size: (self.size() + 2 * by).max(IVec2::ZERO).to_array() }
+    }
+
     /// The center of column `(x, z)` in the area frame, in meters.
     pub fn to_local(self, column: IVec2) -> Vec2 {
         ((column - self.min()).as_vec2() + 0.5) * VOXEL_SIZE

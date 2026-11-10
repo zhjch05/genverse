@@ -25,4 +25,4 @@ pub mod terrain;
 pub mod undo;
 pub mod voxel;
 
-pub use bevy_math::IVec3;
+pub use bevy_math::{self, IVec3};

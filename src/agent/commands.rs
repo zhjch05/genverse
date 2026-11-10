@@ -6,7 +6,7 @@
 //! - `/save <name>`, `/saves`, `/fork <save> <world>`; admins `/load <name>`.
 //! - `/worlds`, `/world <name>`, `/games`, `/game <name>`, `/newgame`, `/savegame`,
 //!   `/portal`; admins `/newworld`, `/removeworld`, `/loadgame`.
-//! - `/packages`; admins `/uninstall <name>`, `/land`, `/rate`, `/bevel`.
+//! - `/packages`; admins `/uninstall <name>`, `/rate`, `/bevel`.
 //!
 //! A command the game itself doesn't know goes to the world's game logic (`on_chat`).
 

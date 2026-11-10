@@ -110,7 +110,8 @@ pub fn color_of(player: &str, peers: &Peers, me: &str, mine: u8) -> Color {
     peers.0.get(player).map_or_else(|| marker_color(default_marker(player)), |p| p.color)
 }
 
-/// Sends our presence when it changes (at most ten times a second).
+/// Sends our presence when it changes (at most ten times a second), and again now and
+/// then while it holds land, so the hold doesn't run out ([`genverse_net::LOCK_RENEW`]).
 pub fn send_presence(
     time: Res<Time>,
     ledger: Res<Ledger>,
@@ -147,7 +148,8 @@ pub fn send_presence(
         name: ledger.profile.name.clone(),
         color: Some(chat.marker(&ledger.profile.id)),
     };
-    if last.1.as_ref() != Some(&presence) {
+    let renew = !presence.locks().is_empty() && time.elapsed_secs() - last.0 >= genverse_net::LOCK_RENEW.as_secs_f32();
+    if last.1.as_ref() != Some(&presence) || renew {
         online.client.send(ToServer::Presence(presence.clone()));
         *last = (time.elapsed_secs(), Some(presence));
     }
@@ -237,10 +239,12 @@ pub fn draw_peers(
     }
 }
 
-/// Name tags (and what their agent is doing) above other players.
+/// Name tags (and what their agent is doing) above other players, and a tag on the land
+/// each is working on: it waits for them.
 pub fn name_tags(
     mut contexts: EguiContexts,
     peers: Res<Peers>,
+    world: Res<VoxelWorld>,
     cameras: Query<(&Camera, &GlobalTransform), With<Camera3d>>,
     avatars: Query<&Transform>,
 ) -> Result {
@@ -249,6 +253,38 @@ pub fn name_tags(
     }
     let Ok((camera, camera_transform)) = cameras.single() else { return Ok(()) };
     let ctx = contexts.ctx_mut()?;
+    for (id, peer) in &peers.0 {
+        let p = &peer.presence;
+        let middle = match (p.area, p.draft) {
+            (_, Some((at, _, size))) => Some(Vec3::from_array(at) + Vec3::Y * (size[1] + 0.4)),
+            (Some(area), None) => {
+                let c = area.min() + area.size() / 2;
+                ground_at(&world, c).map(|y| Vec3::new(c.x as f32 + 0.5, 0.0, c.y as f32 + 0.5) * VOXEL_SIZE + Vec3::Y * (y + 0.6))
+            }
+            _ => None,
+        };
+        let Some(spot) = middle else { continue };
+        if (spot - camera_transform.translation()).dot(*camera_transform.forward()) <= 0.0 {
+            continue;
+        }
+        let Ok(at) = camera.world_to_viewport(camera_transform, spot) else { continue };
+        let [r, g, b, _] = peer.color.to_srgba().to_u8_array();
+        egui::Area::new(egui::Id::new(("held", id)))
+            .fixed_pos(egui::pos2(at.x, at.y))
+            .pivot(egui::Align2::CENTER_BOTTOM)
+            .interactable(false)
+            .show(ctx, |ui| {
+                egui::Frame::new()
+                    .fill(egui::Color32::from_black_alpha(170))
+                    .stroke(egui::Stroke::new(1.5, egui::Color32::from_rgb(r, g, b)))
+                    .corner_radius(5.0)
+                    .inner_margin(egui::Margin::symmetric(7, 2))
+                    .show(ui, |ui| {
+                        let text = format!("{} {} is working here", egui_phosphor::regular::LOCK_SIMPLE, peer.name);
+                        ui.label(egui::RichText::new(text).color(egui::Color32::from_gray(235)).small());
+                    });
+            });
+    }
     for (id, peer) in &peers.0 {
         let Ok(t) = avatars.get(peer.avatar) else { continue };
         let head = t.translation + Vec3::Y * 1.9;

@@ -130,6 +130,7 @@ pub fn sync_online(
                 }
                 online.closed = Some(why);
                 *retry_at = Some(time.elapsed_secs() + backoff(online.attempts));
+                online.others.clear();
                 peers.clear(&mut commands);
             }
             ClientEvent::Refused(why) => {
@@ -142,15 +143,25 @@ pub fn sync_online(
             ClientEvent::Message(ToClient::Challenge { .. }) => {}
             ClientEvent::Message(ToClient::Bye { why }) => chat.say(Role::System, format!("⚠ The server says: {why}")),
             ClientEvent::Message(ToClient::Presence { player, name, presence }) => {
+                if let Some(online) = &mut ledger.online {
+                    let shown = if presence.name.trim().is_empty() { name.clone() } else { presence.name.trim().to_string() };
+                    online.others.insert(player.clone(), (shown, presence.clone(), std::time::Instant::now()));
+                }
                 peers.seen(&mut commands, &assets, player, name, presence);
             }
-            ClientEvent::Message(ToClient::Gone { player }) => peers.gone(&mut commands, &player),
+            ClientEvent::Message(ToClient::Gone { player }) => {
+                if let Some(online) = &mut ledger.online {
+                    online.others.remove(&player);
+                }
+                peers.gone(&mut commands, &player);
+            }
             ClientEvent::Message(ToClient::Chunks { chunks }) => {
                 heal(&mut ledger, &mut world, chunks);
             }
             ClientEvent::Message(ToClient::Welcome { game, world: name, log, snapshot }) => {
                 peers.clear(&mut commands);
                 let Some(online) = &mut ledger.online else { continue };
+                online.others.clear();
                 // A reconnect lands in the game's first world: back to where we were.
                 if let Some(wanted) = online.world.clone().filter(|w| *w != name && game.world(w).is_some()) {
                     online.game = Some(game);

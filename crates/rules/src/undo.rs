@@ -9,7 +9,7 @@
 //! can loading a save (load the save made before it instead). Only the latest
 //! [`UNDO_DEPTH`] changes keep their records.
 
-use bevy_math::{IVec2, IVec3};
+use bevy_math::IVec3;
 use serde::{Deserialize, Serialize};
 
 use crate::{
@@ -127,7 +127,6 @@ impl Replay {
         // Everything is checked first; the world changes only after.
         let mut budgets = self.budgets.clone();
         let mut logic = None;
-        let mut claims = Vec::new();
         for op in &ops {
             match op {
                 Op::Build { id, from, to } => {
@@ -136,7 +135,7 @@ impl Replay {
                     }
                     let mut touched = from.as_ref().map(|p| parcels_of(&p.build)).unwrap_or_default();
                     touched.extend(to.as_ref().map(|p| parcels_of(&p.build)).unwrap_or_default());
-                    claims.extend(self.land.authorize(player, &touched)?);
+                    self.land.authorize(player, &touched)?;
                     let old = from.as_ref().map(|p| footprint(p));
                     if let Some(new) = to.as_ref().map(|p| footprint(p)) {
                         budgets.check(&new, old.as_ref(), &self.rules.budgets)?;
@@ -150,7 +149,7 @@ impl Replay {
                     if voxels && cells.iter().any(|c| self.edits.get(&c.pos()).copied() != c.from.0) {
                         return Err("the ground there has changed since".into());
                     }
-                    claims.extend(self.land.authorize(player, &area_parcels(*area))?);
+                    self.land.authorize(player, &area_parcels(*area))?;
                     let cost = terrain_footprint(owner, *cost);
                     if *charge {
                         budgets.check(&cost, None, &self.rules.budgets)?;
@@ -184,8 +183,6 @@ impl Replay {
         if let Some(logic) = logic {
             self.logic = logic;
         }
-        let claims: Vec<IVec2> = claims;
-        self.land.claim(player, &by.player_name, &claims);
         let mut made = Vec::new();
         let mut done = Vec::new();
         for op in ops {
@@ -220,7 +217,6 @@ impl Replay {
                     done.push(Op::Land { owner, area, cost, charge, cells });
                 }
                 Op::Rules { from, to } => {
-                    self.land.mode = to.land;
                     self.land.spawn = to.spawn.clone();
                     self.rules = (*to).clone();
                     done.push(Op::Rules { from, to });

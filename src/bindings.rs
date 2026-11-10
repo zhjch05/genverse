@@ -203,7 +203,7 @@ pub static ACTIONS: &[Action] = &[
     action("Building", "turn_right", "Turn the draft a quarter turn right", &["e"]),
     action("Building", "raise", "Raise the draft", &["r"]),
     action("Building", "lower", "Lower the draft", &["f"]),
-    action("Building", "parcels", "Show who owns the land", &["p"]),
+    action("Building", "parcels", "Outline the protected spawn", &["p"]),
     action("Pointing", "click", "Place the draft, select a build, drag out an area of ground", &["mouse_left"]),
     action("Pointing", "cancel", "Drop the draft, clear the selection", &["mouse_right"]),
     action("Pointing", "use_held", "Put down what's in hand, or use it on the piece pointed at", &["mouse_right"]),

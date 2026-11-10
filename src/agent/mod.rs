@@ -70,7 +70,7 @@ use genverse_rules::{
     land::area_parcels,
     log::Action as LogAction,
     logic::{Scope, data::GameSpec},
-    settings::{LandMode, WorldRules},
+    settings::WorldRules,
 };
 use creations::{
     Adjust, Creation, Creations, DraftMarker, load_creations, outline_creations, placement_for_hit, stream_creations,
@@ -543,8 +543,8 @@ fn land_refusal(creations: &Creations, landscape: &Landscape, ledger: &Ledger) -
         return None;
     }
     let area = landscape.target()?;
-    let why = ledger.check(&area_parcels(area)).err()?;
-    Some(format!("⚠ Can't change this land: {why}. Select an area you can change (P shows parcels)."))
+    let why = ledger.check(&area_parcels(area)).and_then(|_| ledger.held(vec![area])).err()?;
+    Some(format!("⚠ Can't change this land: {why}. Select an area you can change."))
 }
 
 /// `GENVERSE_PROMPT="a red mailbox" cargo run` sends one message once the hero has
@@ -628,6 +628,7 @@ fn auto_prompt(
         chat.input = prompts.remove(0);
         *queue = prompts;
         if let Some(why) = land_refusal(&creations, &landscape, &ledger) {
+            info!("prompt refused: {why}");
             chat.input.clear();
             chat.say(Role::System, why);
             return;
@@ -1021,7 +1022,7 @@ fn shortcuts(
         return;
     }
 
-    // P: show who owns the land around you.
+    // P: outline the protected spawn around you.
     if binds.just_pressed("parcels") {
         overlay.visible = !overlay.visible;
         return;
@@ -1847,8 +1848,6 @@ enum Action {
     Deny,
     SelectArea,
     ClearArea,
-    Claim,
-    Release,
     Join,
     JoinLan(String),
     PlayTogether,
@@ -2153,18 +2152,6 @@ fn chat_panel(
                                 if ui.add(theme::Block::new("Clear", theme::Tone::Plain)).on_hover_text("Esc").clicked() {
                                     action = Some(Action::ClearArea);
                                 }
-                                if ledger.land.mode == LandMode::Parcels {
-                                    if ui
-                                        .add(theme::Block::new(format!("{} Claim", icon::FLAG), theme::Tone::Primary))
-                                        .on_hover_text("Make the unclaimed parcels here yours, so only you can change them")
-                                        .clicked()
-                                    {
-                                        action = Some(Action::Claim);
-                                    }
-                                    if ui.add(theme::Block::new("Release", theme::Tone::Plain)).on_hover_text("Give up your parcels here").clicked() {
-                                        action = Some(Action::Release);
-                                    }
-                                }
                             });
                             theme::note(ui, "Describe what it should become: a pond, a path, a hill…");
                         });
@@ -2439,38 +2426,6 @@ fn chat_panel(
             let reply = ops::said(online::leave(&mut ledger, &mut travel));
             if !reply.is_empty() {
                 chat.say(Role::System, reply);
-            }
-        }
-        Some(Action::Claim) => {
-            if let Some(area) = landscape.area {
-                let message = match ledger.check(&area_parcels(area)) {
-                    Ok(claims) if claims.is_empty() => "Nothing here to claim.".to_string(),
-                    Ok(claims) => {
-                        let parcels = claims.iter().map(|p| p.to_array()).collect();
-                        ledger.record(None, None, LogAction::ClaimParcels { parcels });
-                        format!("Claimed {} parcel(s); only you (and admins) can change them now.", claims.len())
-                    }
-                    Err(why) => format!("Can't claim it: {why}."),
-                };
-                chat.say(Role::System, message);
-            }
-        }
-        Some(Action::Release) => {
-            if let Some(area) = landscape.area {
-                let id = ledger.profile.id.clone();
-                let mine: Vec<[i32; 2]> = area_parcels(area)
-                    .into_iter()
-                    .filter(|p| ledger.land.parcels.get(p).is_some_and(|parcel| parcel.owner == id))
-                    .map(|p| p.to_array())
-                    .collect();
-                let message = if mine.is_empty() {
-                    "You don't own any parcels here.".to_string()
-                } else {
-                    let n = mine.len();
-                    ledger.record(None, None, LogAction::ReleaseParcels { parcels: mine });
-                    format!("Released {n} parcel(s).")
-                };
-                chat.say(Role::System, message);
             }
         }
         Some(Action::Allow) => {

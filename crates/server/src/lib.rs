@@ -110,8 +110,9 @@ struct Conn {
     player: Option<(String, String)>,
     /// The world they're in, once they've said hello.
     world: Option<String>,
-    /// What others see of them, once they've sent it.
-    presence: Option<Presence>,
+    /// What others see of them, once they've sent it, and when it last came: the land
+    /// it holds ([`Presence::locks`]) is held until a while after that.
+    presence: Option<(Presence, std::time::Instant)>,
 }
 
 /// One world of the game, loaded.
@@ -407,7 +408,7 @@ impl Server {
                 .conns
                 .values()
                 .filter(|c| c.world.as_deref() == Some(name.as_str()))
-                .filter_map(|c| Some((c.player.as_ref()?.0.clone(), c.presence.as_ref()?.position)))
+                .filter_map(|c| Some((c.player.as_ref()?.0.clone(), c.presence.as_ref()?.0.position)))
                 .collect();
             let Some(place) = self.places.get_mut(&name) else { continue };
             for change in place.run_timers(now, &players) {
@@ -455,10 +456,10 @@ impl Server {
                 && c.world.as_deref() == Some(world)
                 && let (Some((player, name)), Some(presence)) = (&c.player, &c.presence)
             {
-                let _ = out.send(ToClient::Presence { player: player.clone(), name: name.clone(), presence: presence.clone() });
+                let _ = out.send(ToClient::Presence { player: player.clone(), name: name.clone(), presence: presence.0.clone() });
             }
         }
-        if let (Some((player, name)), Some(presence)) = (me, self.conns.get(&conn).and_then(|c| c.presence.clone())) {
+        if let (Some((player, name)), Some(presence)) = (me, self.conns.get(&conn).and_then(|c| c.presence.as_ref().map(|p| p.0.clone()))) {
             self.tell_world(world, conn, ToClient::Presence { player, name, presence });
         }
         Ok(())
@@ -512,7 +513,7 @@ impl Server {
             ToServer::Presence(presence) => {
                 let Some(c) = self.conns.get_mut(&conn) else { return };
                 let (Some((player, name)), Some(world)) = (c.player.clone(), c.world.clone()) else { return };
-                c.presence = Some(presence.clone());
+                c.presence = Some((presence.clone(), std::time::Instant::now()));
                 self.tell_world(&world, conn, ToClient::Presence { player, name, presence });
             }
             ToServer::FetchChunks { chunks } => {
@@ -522,6 +523,10 @@ impl Server {
                 let _ = out.send(ToClient::Chunks { chunks: edits.into_iter().map(|(c, e)| (c.to_array(), e)).collect() });
             }
             ToServer::Propose { request, by, action, sig, package } => {
+                if let Err(why) = self.held(conn, &action) {
+                    let _ = out.send(ToClient::Rejected { request, why });
+                    return;
+                }
                 let result = match world.as_ref().and_then(|w| self.places.get_mut(w)) {
                     Some(place) => place.commit(player, by, action, sig, package),
                     None => Err("say hello first".into()),
@@ -547,6 +552,22 @@ impl Server {
                 }
             },
         }
+    }
+
+    /// Whether someone else in `conn`'s world is working where `action` would change it.
+    fn held(&self, conn: u64, action: &Action) -> Result<(), String> {
+        let Some(c) = self.conns.get(&conn) else { return Ok(()) };
+        let (Some((me, _)), Some(world)) = (&c.player, &c.world) else { return Ok(()) };
+        let Some(place) = self.places.get(world) else { return Ok(()) };
+        let touches = place.state.touches(action);
+        let holders = self.conns.values().filter_map(|o| {
+            let (player, name) = o.player.as_ref()?;
+            let (presence, at) = o.presence.as_ref()?;
+            let live = at.elapsed() < genverse_net::LOCK_TTL && o.world.as_ref() == Some(world) && player != me;
+            let name = if presence.name.trim().is_empty() { name.as_str() } else { presence.name.trim() };
+            live.then_some((name, presence))
+        });
+        genverse_net::held(&touches, holders)
     }
 
     /// Checks a change to the game and makes it.

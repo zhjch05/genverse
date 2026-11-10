@@ -14,7 +14,7 @@ pub enum LandMode {
     /// Anyone may change any land outside the spawn.
     #[default]
     Open,
-    /// Land is claimed parcel by parcel, and only owners (and their builders) change it.
+    /// Retired: land was claimed parcel by parcel. Read from old rules; changes nothing.
     Parcels,
 }
 
@@ -85,6 +85,7 @@ impl HeroRules {
 #[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
 #[serde(default)]
 pub struct WorldRules {
+    /// Retired ([`LandMode::Parcels`]): kept so rules signed with it still verify.
     pub land: LandMode,
     pub spawn: Spawn,
     pub build: BuildLimits,

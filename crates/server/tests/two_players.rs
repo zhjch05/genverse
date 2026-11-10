@@ -87,6 +87,57 @@ fn pond() -> Action {
 }
 
 #[test]
+fn land_someone_is_working_on_waits_for_them() {
+    let dir = std::env::temp_dir().join(format!("genverse-server-locks-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&dir);
+    let server = start(ServerConfig { data_dir: dir.clone(), port: 0, seed: 1337, flat: false }).unwrap();
+    let addr = server.addr.to_string();
+    let ada = Player::join(&addr, 1, "Ada");
+    let bo = Player::join(&addr, 2, "Bo");
+
+    // Ada selects the pond's land and her agent starts on it.
+    let working = genverse_net::Presence {
+        area: Some(genverse_rules::sculpt::Area { min: [400, 400], size: [24, 24] }),
+        status: Some("Claude Code is designing…".into()),
+        ..Default::default()
+    };
+    ada.client.send(ToServer::Presence(working));
+    assert!(matches!(bo.next(), ToClient::Presence { .. }));
+
+    // Bo can't change it, or build right next to it, but can build away from it.
+    bo.propose(1, pond());
+    assert!(matches!(bo.next(), ToClient::Rejected { request: 1, why } if why.starts_with("Ada is") && why.contains("claude code is designing")));
+    bo.propose(2, lamp(2, 100.0, 103.5));
+    assert!(matches!(bo.next(), ToClient::Rejected { request: 2, .. }));
+    bo.propose(3, lamp(3, 140.0, 140.0));
+    assert!(matches!(bo.next(), ToClient::Committed { request: Some(3), .. }));
+    assert!(matches!(ada.next(), ToClient::Committed { .. }));
+    // Ada herself isn't held off by her own lock.
+    ada.propose(4, pond());
+    assert!(matches!(ada.next(), ToClient::Committed { request: Some(4), .. }));
+    assert!(matches!(bo.next(), ToClient::Committed { .. }));
+
+    // She keeps it and clears the selection: the land is free again, for anything.
+    ada.client.send(ToServer::Presence(genverse_net::Presence::default()));
+    assert!(matches!(bo.next(), ToClient::Presence { .. }));
+    bo.propose(5, lamp(5, 100.0, 103.5));
+    assert!(matches!(bo.next(), ToClient::Committed { request: Some(5), .. }));
+
+    // A draft holds the ground under it, and leaving lets it go.
+    let drafting = genverse_net::Presence { draft: Some(([120.0, 10.0, 120.0], 0.0, [3.0, 3.0, 3.0])), ..Default::default() };
+    ada.client.send(ToServer::Presence(drafting));
+    assert!(matches!(bo.next(), ToClient::Presence { .. }));
+    bo.propose(6, lamp(6, 120.0, 120.0));
+    assert!(matches!(bo.next(), ToClient::Rejected { request: 6, why } if why.contains("placing a build")));
+    drop(ada);
+    assert!(matches!(bo.next(), ToClient::Gone { .. }));
+    bo.propose(7, lamp(7, 120.0, 120.0));
+    assert!(matches!(bo.next(), ToClient::Committed { request: Some(7), .. }));
+    drop((bo, server));
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+#[test]
 fn two_players_share_one_ordered_world() {
     let dir = std::env::temp_dir().join(format!("genverse-server-test-{}", std::process::id()));
     let _ = std::fs::remove_dir_all(&dir);
