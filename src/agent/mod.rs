@@ -77,7 +77,7 @@ use creations::{
     Adjust, Creation, Creations, DraftMarker, load_creations, outline_creations, placement_for_hit, stream_creations,
 };
 use landscape::{
-    AreaGizmos, Landscape, ParcelOverlay, PreviewError, draw_parcels, configure_area_gizmos, describe_stats, land_summary, draw_area, highlight_area, select_area,
+    AreaGizmos, Landscape, SpawnOverlay, PreviewError, draw_spawn, configure_area_gizmos, describe_stats, land_summary, draw_area, highlight_area, select_area,
 };
 use mcp::McpServer;
 use runner::{AgentEvent, AgentJob, Provider};
@@ -105,7 +105,7 @@ impl Plugin for AgentPlugin {
             .init_resource::<Creations>()
             .init_resource::<BuildSite>()
             .init_resource::<Landscape>()
-            .init_resource::<ParcelOverlay>()
+            .init_resource::<SpawnOverlay>()
             .init_resource::<presence::Peers>()
             .init_resource::<history::History>()
             .init_resource::<inventory::Inventory>()
@@ -138,14 +138,14 @@ impl Plugin for AgentPlugin {
                     (game::script_play.after(auto_prompt), game::run_timers, game::play_keys, game::sync_pieces, game::walk_pieces, game::follow_teleports, game::follow_travels, game::follow_body, game::sync_game_actions, game::use_pieces, worlds::use_portals, hud::draw_game_world, history::follow_ledger)
                         .chain(),
                     worlds::toggle_worlds,
-                    (inventory::sync_inventory, inventory::inventory_keys, inventory::use_held, shortcuts, select_area, follow_cursor, check_clearance, click_in_world, outline_creations, draw_area, highlight_area, draw_parcels)
+                    (inventory::sync_inventory, inventory::inventory_keys, inventory::use_held, shortcuts, select_area, follow_cursor, check_clearance, click_in_world, outline_creations, draw_area, highlight_area, draw_spawn)
                         .chain(),
                 ),
             )
             .add_systems(EguiPrimaryContextPass, (install_icon_font, chat_panel, shortcut_hints, game::game_labels, inventory::hotbar, loading::loading_screen).chain())
             .add_systems(
                 EguiPrimaryContextPass,
-                (presence::name_tags, presence::hover_credit, history::history_window, fps::fps_overlay, settings::settings_window, worlds::portal_prompt),
+                (presence::name_tags, landscape::spawn_label, presence::hover_credit, history::history_window, fps::fps_overlay, settings::settings_window, worlds::portal_prompt),
             )
             .add_systems(EguiPrimaryContextPass, (worlds::worlds_window, hud::game_hud))
             // Esc: before what it would cancel, so it sees the frame as the key found it.
@@ -583,7 +583,7 @@ fn auto_prompt(
     mut chat: ResMut<Chat>,
     mut creations: ResMut<Creations>,
     mut landscape: ResMut<Landscape>,
-    mut overlay: ResMut<ParcelOverlay>,
+    mut overlay: ResMut<SpawnOverlay>,
     mut world: ResMut<VoxelWorld>,
     mut ledger: ResMut<Ledger>,
     mut travel: ResMut<worlds::Travel>,
@@ -609,7 +609,7 @@ fn auto_prompt(
         return;
     }
     *sent = true;
-    if std::env::var("GENVERSE_PARCELS").is_ok() {
+    if std::env::var("GENVERSE_SPAWN_AREA").is_ok() {
         overlay.visible = true;
     }
     if let Some(size) = std::env::var("GENVERSE_AREA").ok().and_then(|s| s.parse::<f32>().ok()) {
@@ -1019,7 +1019,7 @@ fn shortcuts(
     mut landscape: ResMut<Landscape>,
     mut world: ResMut<VoxelWorld>,
     mut ledger: ResMut<Ledger>,
-    mut overlay: ResMut<ParcelOverlay>,
+    mut overlay: ResMut<SpawnOverlay>,
     mut transforms: Query<&mut Transform, With<DraftMarker>>,
 ) {
     if blocked.0 {
@@ -1050,8 +1050,15 @@ fn shortcuts(
     }
 
     // P: outline the protected spawn around you.
-    if binds.just_pressed("parcels") {
+    if binds.just_pressed("spawn_area") {
         overlay.visible = !overlay.visible;
+        if overlay.visible {
+            let size = ledger.land.spawn_area().size_m();
+            chat.say(
+                Role::System,
+                format!("The blue outline is the spawn area, {:.0} × {:.0} m around the start: only admins build or reshape the ground there. {} hides it.", size.x, size.y, binds.label("spawn_area")),
+            );
+        }
         return;
     }
 
@@ -1389,7 +1396,7 @@ fn shortcut_hints(
             (k("chat"), "describe a build"),
             (k("select_area"), "reshape the ground"),
             (m("click", "Click"), "select a build"),
-            (k("parcels"), "land"),
+            (k("spawn_area"), "spawn area"),
             (k("history"), "history"),
         ],
         None if inventory.held().is_some() => vec![
@@ -1406,7 +1413,7 @@ fn shortcut_hints(
             (k("select_area"), "reshape the ground"),
             (m("click", "Click"), "select a build"),
             (m("copy", "Middle-click"), "copy a build"),
-            (k("parcels"), "land"),
+            (k("spawn_area"), "spawn area"),
             (k("history"), "history"),
             (k("game_window"), "worlds"),
             ("Esc".into(), "menu"),

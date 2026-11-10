@@ -94,7 +94,7 @@ pub static SETTINGS: &[Setting] = &[
     rule("hero.run_speed", "/hero/run_speed", number(0.5, 40.0), "How fast heroes run, in meters a second"),
     rule("hero.jump_speed", "/hero/jump_speed", number(0.0, 30.0), "How fast a jump leaves the ground, in meters a second (7.5 goes a little over a meter high)"),
     rule("hero.gravity", "/hero/gravity", number(1.0, 100.0), "How fast heroes fall, in meters a second each second"),
-    rule("world.spawn.radius_m", "/spawn/radius_m", number(0.0, 256.0), "How far around the start only admins build, in meters"),
+    rule("world.spawn.radius_m", "/spawn/radius_m", number(0.0, 256.0), "How far around the start only admins build, in meters; the spawn area grows out to whole 8 m plots (P shows it)"),
     rule("world.look.bevel", "/look/bevel", number(0.0, 0.3), "How far voxels' edges are rounded, as a share of a voxel (0 is sharp cubes)"),
     rule("world.build.max_size", "/build/max_size", whole(8, 256), "The longest side of one build, in build voxels (8 to a meter)"),
     rule("world.build.max_shapes", "/build/max_shapes", whole(1, 4096), "The most shapes in one build"),

@@ -203,7 +203,7 @@ pub static ACTIONS: &[Action] = &[
     action("Building", "turn_right", "Turn the draft a quarter turn right", &["e"]),
     action("Building", "raise", "Raise the draft", &["r"]),
     action("Building", "lower", "Lower the draft", &["f"]),
-    action("Building", "parcels", "Outline the protected spawn", &["p"]),
+    action("Building", "spawn_area", "Show the spawn area: the ground around the start where only admins build", &["p"]),
     action("Pointing", "click", "Place the draft, select a build, drag out an area of ground", &["mouse_left"]),
     action("Pointing", "cancel", "Drop the draft, clear the selection", &["mouse_right"]),
     action("Pointing", "use_held", "Put down what's in hand, or use it on the piece pointed at", &["mouse_right"]),
@@ -438,6 +438,8 @@ impl Bindings {
     /// game's, while it's off) wait for them.
     pub fn restore<'a>(&mut self, kept: impl IntoIterator<Item = (&'a str, Vec<&'a str>)>) {
         for (name, inputs) in kept {
+            // Called "parcels" while land was claimed parcel by parcel.
+            let name = if name == "parcels" { "spawn_area" } else { name };
             if self.all().iter().any(|a| a.name == name) {
                 self.bound.insert(name.to_string(), inputs.into_iter().filter_map(Input::named).collect());
             } else if name.contains(':') {

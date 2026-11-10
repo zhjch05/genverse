@@ -100,6 +100,16 @@ impl Land {
         lo.cmple(center + r).all() && hi.cmpge(center - r).all()
     }
 
+    /// The protected spawn as the columns it covers: every parcel reaching into the
+    /// square of `radius_m` around the center, which together make one rectangle. What
+    /// the spawn area overlay draws.
+    pub fn spawn_area(&self) -> Area {
+        let r = (self.spawn.radius_m / VOXEL_SIZE).ceil() as i32;
+        let center = IVec2::from_array(self.spawn.center);
+        let (lo, hi) = (parcel_of(center - r), parcel_of(center + r));
+        Area::from_corners(lo * PARCEL, hi * PARCEL + PARCEL - 1)
+    }
+
     pub fn access(&self, parcel: IVec2) -> Access {
         if self.in_spawn(parcel) { Access::Spawn } else { Access::Free }
     }
@@ -148,5 +158,20 @@ mod tests {
         assert_eq!(build_parcels(corner, 0.0, &[32, 8, 8]).len(), 4);
         let center = Vec3::new(12.0, 0.0, 12.0);
         assert_eq!(build_parcels(center, std::f32::consts::FRAC_PI_2, &[32, 8, 8]), vec![IVec2::new(1, 1)]);
+    }
+
+    #[test]
+    fn the_spawn_area_is_exactly_the_protected_parcels() {
+        for (center, radius_m) in [([0, 0], 24.0), ([37, -90], 3.0), ([5, 5], 0.0), ([-200, 64], 100.0)] {
+            let land = Land { admins: Vec::new(), spawn: Spawn { center, radius_m } };
+            let area = land.spawn_area();
+            for z in -12..=12 {
+                for x in -12..=12 {
+                    let parcel = IVec2::new(x, z);
+                    let inside = area.contains(parcel * PARCEL) && area.contains(parcel * PARCEL + PARCEL - 1);
+                    assert_eq!(land.in_spawn(parcel), inside, "{center:?} {radius_m}: parcel {parcel}");
+                }
+            }
+        }
     }
 }

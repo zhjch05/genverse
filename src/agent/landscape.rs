@@ -17,7 +17,7 @@ use bevy::{
     window::PrimaryWindow,
 };
 use genverse_rules::{
-    land::{Access, PARCEL, area_parcels},
+    land::area_parcels,
     log::{Action, terrain_footprint},
     undo::Cell,
 };
@@ -677,83 +677,113 @@ pub fn describe_stats(area: Area, s: &SculptStats) -> String {
     parts.join(" · ")
 }
 
-/// P outlines the protected spawn around the hero.
+/// The spawn area: the ground around the start where only admins build or reshape.
+/// P shows it as one outline along the ground, with a label saying what it is.
 #[derive(Resource, Default)]
-pub struct ParcelOverlay {
+pub struct SpawnOverlay {
     pub visible: bool,
+    /// The outline, and the area and land version it was made for. Remade when either
+    /// changes, and now and then as the ground around it loads.
+    border: Vec<Vec3>,
+    made_for: Option<(Area, u64)>,
+    age: u32,
 }
 
-/// How far around the hero the overlay reaches, in parcels.
-const OVERLAY_RADIUS: i32 = 5;
-
-/// The overlay's outlines, rebuilt when the hero crosses into another parcel or the
-/// land changes.
-#[derive(Default)]
-pub struct ParcelOutlines {
-    key: Option<(IVec2, u64)>,
-    lines: Vec<(Access, Vec<Vec3>)>,
-}
-
-pub fn draw_parcels(
-    overlay: Res<ParcelOverlay>,
-    ledger: Res<Ledger>,
-    world: Res<VoxelWorld>,
-    players: Query<&Transform, With<crate::player::Player>>,
-    mut cache: Local<ParcelOutlines>,
-    mut bold: Gizmos<AreaGizmos>,
-) {
-    let Ok(hero) = players.single() else {
-        return;
-    };
-    if !overlay.visible {
-        cache.key = None;
-        return;
-    }
-    let here = genverse_rules::land::parcel_of(VoxelWorld::voxel_at(hero.translation).xz());
-    if cache.key != Some((here, ledger.version)) {
-        cache.key = Some((here, ledger.version));
-        cache.lines.clear();
-        let mut column = vec![AIR; WORLD_HEIGHT as usize];
-        let mut height = |c: IVec2| {
-            world.column(c.x, c.y, &mut column).then(|| {
-                let (g, w, _) = surface(&column);
-                (g.max(w) + 1) as f32 * VOXEL_SIZE + 0.1
-            })
-        };
-        for dz in -OVERLAY_RADIUS..=OVERLAY_RADIUS {
-            for dx in -OVERLAY_RADIUS..=OVERLAY_RADIUS {
-                let parcel = here + IVec2::new(dx, dz);
-                let access = ledger.land.access(parcel);
-                if access == Access::Free {
-                    continue;
-                }
-                // Inset by a voxel so neighbors' outlines don't overlap.
-                let (lo, hi) = (parcel * PARCEL + 1, parcel * PARCEL + PARCEL - 1);
-                let corners = [lo, IVec2::new(hi.x, lo.y), hi, IVec2::new(lo.x, hi.y), lo];
-                let mut points = Vec::new();
-                for edge in corners.windows(2) {
-                    let (a, b) = (edge[0], edge[1]);
-                    for s in (0..(b - a).abs().max_element()).step_by(2) {
-                        let c = a + (b - a).signum() * s;
-                        if let Some(y) = height(c) {
-                            points.push(Vec3::new(c.x as f32 + 0.5, 0.0, c.y as f32 + 0.5) * VOXEL_SIZE + Vec3::Y * y);
-                        }
-                    }
-                }
-                if let Some(&first) = points.first() {
-                    points.push(first);
-                }
-                cache.lines.push((access, points));
-            }
+/// Where the corner of four columns sits on the ground: the highest of them, a little
+/// above it.
+fn ground_corner(world: &VoxelWorld, column: &mut [VoxelId], c: IVec2) -> Option<Vec3> {
+    let mut top = None::<i32>;
+    for q in [c, c - IVec2::X, c - IVec2::Y, c - IVec2::ONE] {
+        if world.column(q.x, q.y, column) {
+            let (g, w, _) = surface(column);
+            top = Some(top.unwrap_or(0).max(g.max(w)));
         }
     }
-    for (access, points) in &cache.lines {
-        let (r, g, b) = match access {
-            Access::Spawn => (0.45, 0.6, 1.0),
-            Access::Free => continue,
-        };
-        bold.linestrip(points.iter().copied(), Color::LinearRgba(LinearRgba::rgb(r * 2.0, g * 2.0, b * 2.0)));
+    top.map(|y| Vec3::new(c.x as f32 * VOXEL_SIZE, (y + 1) as f32 * VOXEL_SIZE + 0.1, c.y as f32 * VOXEL_SIZE))
+}
+
+/// Sky blue, brighter than white so bloom lifts it off the grass.
+const SPAWN_COLOR: (f32, f32, f32) = (0.45, 0.75, 1.0);
+
+pub fn draw_spawn(mut overlay: ResMut<SpawnOverlay>, ledger: Res<Ledger>, world: Res<VoxelWorld>, mut bold: Gizmos<AreaGizmos>) {
+    if !overlay.visible {
+        overlay.made_for = None;
+        return;
     }
+    let area = ledger.land.spawn_area();
+    if overlay.made_for != Some((area, ledger.version)) || overlay.age >= 60 {
+        let mut column = vec![AIR; WORLD_HEIGHT as usize];
+        overlay.border = perimeter(area, 2).into_iter().filter_map(|c| ground_corner(&world, &mut column, c)).collect();
+        overlay.made_for = Some((area, ledger.version));
+        overlay.age = 0;
+    }
+    overlay.age += 1;
+    let (r, g, b) = SPAWN_COLOR;
+    let color = Color::LinearRgba(LinearRgba::rgb(r * 2.5, g * 2.5, b * 2.5));
+    bold.linestrip(overlay.border.iter().copied(), color);
+    // A post at each corner, so the shape reads from a distance.
+    let (min, size) = (area.min(), area.size());
+    let mut column = vec![AIR; WORLD_HEIGHT as usize];
+    for corner in [min, min + IVec2::new(size.x, 0), min + size, min + IVec2::new(0, size.y)] {
+        if let Some(base) = ground_corner(&world, &mut column, corner) {
+            bold.line(base, base + Vec3::Y * 3.0, color);
+        }
+    }
+}
+
+/// The spawn area's label, on its outline where it's nearest the hero.
+pub fn spawn_label(
+    mut contexts: bevy_egui::EguiContexts,
+    overlay: Res<SpawnOverlay>,
+    ledger: Res<Ledger>,
+    heroes: Query<&Transform, With<crate::player::Player>>,
+    cameras: Query<(&Camera, &GlobalTransform), With<Camera3d>>,
+) -> Result {
+    if !overlay.visible {
+        return Ok(());
+    }
+    let (Ok(hero), Ok((camera, eye))) = (heroes.single(), cameras.single()) else { return Ok(()) };
+    let Some(&nearest) = overlay.border.iter().min_by(|a, b| a.distance_squared(hero.translation).total_cmp(&b.distance_squared(hero.translation))) else {
+        return Ok(());
+    };
+    let spot = nearest + Vec3::Y * 1.2;
+    if (spot - eye.translation()).dot(*eye.forward()) <= 0.0 {
+        return Ok(());
+    }
+    let Ok(at) = camera.world_to_viewport(eye, spot) else { return Ok(()) };
+    let inside = ledger.land.spawn_area().contains((hero.translation.xz() / VOXEL_SIZE).floor().as_ivec2());
+    let admin = ledger.land.is_admin(&ledger.profile.id);
+    let note = match (inside, admin) {
+        (_, true) => "only admins build here (you're one)",
+        (true, false) => "only admins build here: step outside to build",
+        (false, false) => "only admins build inside",
+    };
+    let ctx = contexts.ctx_mut()?;
+    // Off the screen, egui would pin it to the edge, pointing at nothing.
+    if !ctx.viewport_rect().shrink(40.0).contains(bevy_egui::egui::pos2(at.x, at.y)) {
+        return Ok(());
+    }
+    let p = super::theme::palette(ctx);
+    let (r, g, b) = SPAWN_COLOR;
+    let edge = bevy_egui::egui::Color32::from_rgb((r * 255.0) as u8, (g * 255.0) as u8, (b * 255.0) as u8);
+    bevy_egui::egui::Area::new("spawn_label".into())
+        .fixed_pos(bevy_egui::egui::pos2(at.x, at.y))
+        .pivot(bevy_egui::egui::Align2::CENTER_BOTTOM)
+        .interactable(false)
+        .show(ctx, |ui| {
+            bevy_egui::egui::Frame::new()
+                .fill(p.overlay)
+                .stroke(bevy_egui::egui::Stroke::new(1.5, edge))
+                .corner_radius(super::theme::ROUND)
+                .inner_margin(bevy_egui::egui::Margin::symmetric(8, 3))
+                .show(ui, |ui| {
+                    ui.horizontal(|ui| {
+                        ui.label(bevy_egui::egui::RichText::new(format!("{} Spawn area", egui_phosphor::regular::SHIELD_CHECK)).strong().color(p.strong));
+                        ui.label(bevy_egui::egui::RichText::new(note).small().color(p.muted));
+                    });
+                });
+        });
+    Ok(())
 }
 
 #[cfg(test)]

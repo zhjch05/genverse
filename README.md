@@ -37,7 +37,7 @@ first person and back. A hint bar at the bottom always shows the keys that apply
 
 | Context | Keys |
 | --- | --- |
-| Anywhere | `Esc` game menu (closes open windows first) · `T`/`Enter` talk to the agent · `G` select ground to reshape · click a build to select it · middle-click copies it · `P` land · `H` history · `O` worlds · `Tab` hide the builder panel · `Ctrl/Cmd+Z` undo · `Ctrl/Cmd+Shift+Z` redo |
+| Anywhere | `Esc` game menu (closes open windows first) · `T`/`Enter` talk to the agent · `G` select ground to reshape · click a build to select it · middle-click copies it · `P` show the spawn area (where only admins build) · `H` history · `O` worlds · `Tab` hide the builder panel · `Ctrl/Cmd+Z` undo · `Ctrl/Cmd+Shift+Z` redo |
 | Draft following the cursor | click to place · `Q`/`E` turn · `R`/`F` raise/lower · `Esc`/right-click cancel |
 | Selected build | `M` or double-click move · `Delete`/`Backspace` delete · `T` change it · `Esc`/right-click deselect |
 | Selecting ground | drag across the ground · right-drag look · `G`/`Esc` stop |
@@ -182,7 +182,7 @@ Hover a build or reshaped ground to see who changed it last.
   `/load <name>` puts the world back exactly, game state included, for everyone. Nothing is
   deleted. `/fork <save> <world>` starts a new world from a save.
 - **Rules per world** (`/rules`), kept in the log:
-  - **Land:** anyone who can edit changes any of it, except a protected 24 m spawn. Land
+  - **Land:** anyone who can edit changes any of it, except the spawn area around the start (`P` outlines it). Land
     someone is working on (their agent changing it, a preview open, a build draft) waits
     for them: others' changes there are refused until they keep it or put it back.
   - **Budgets:** builds, voxels and glow per parcel and per player.
