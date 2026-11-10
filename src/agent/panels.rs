@@ -339,6 +339,8 @@ pub struct Panels {
     loaded: BTreeMap<String, Arc<Result<Panel, String>>>,
     open: Vec<String>,
     state: HashMap<String, State>,
+    /// Ops asked for from outside a panel (the game menu), run with the panels' next.
+    queued: Vec<Asked>,
 }
 
 impl Panels {
@@ -370,6 +372,21 @@ impl Panels {
         self.open.retain(|open| *open != id);
         self.state.remove(&id);
         Ok(format!("Closed \"{id}\"."))
+    }
+
+    /// Runs `op` as the player next frame, as a panel's button would.
+    pub fn ask(&mut self, op: &str, args: Value) {
+        self.queued.push((op.to_string(), args));
+    }
+
+    pub fn any_open(&self) -> bool {
+        !self.open.is_empty()
+    }
+
+    /// Closes every open panel, as Esc does.
+    pub fn close_all(&mut self) {
+        self.open.clear();
+        self.state.clear();
     }
 
     /// Every panel, in a line.
@@ -710,10 +727,10 @@ pub fn panel_windows(
     (keys, buttons): (Res<ButtonInput<KeyCode>>, Res<ButtonInput<MouseButton>>),
     players: Query<&Transform, With<Player>>,
 ) -> Result {
-    if panels.open.is_empty() {
+    if panels.open.is_empty() && panels.queued.is_empty() {
         return Ok(());
     }
-    let mut asked: Vec<Asked> = Vec::new();
+    let mut asked: Vec<Asked> = std::mem::take(&mut panels.queued);
     // A panel waiting for a key: the next one pressed is bound (Esc cancels). A left
     // click is how the panel itself is used, so it's bound from the chat instead.
     let waiting: Vec<(String, String)> = panels.state.iter().filter_map(|(id, state)| Some((id.clone(), state.capturing.clone()?))).collect();
@@ -748,7 +765,7 @@ pub fn panel_windows(
             Ok(panel) => (panel.title.clone(), panel.width.unwrap_or(380.0)),
             Err(_) => (id.clone(), 380.0),
         };
-        egui::Window::new(title).id(egui::Id::new(("panel", &id))).open(&mut open).default_width(width.clamp(200.0, 900.0)).default_height(520.0).vscroll(true).show(ctx, |ui| {
+        theme::centered(egui::Window::new(title), ctx, 0.0).id(egui::Id::new(("panel", &id))).collapsible(false).open(&mut open).default_width(width.clamp(200.0, 900.0)).default_height(520.0).vscroll(true).show(ctx, |ui| {
             match panel.as_ref() {
                 Ok(panel) => draw(ui, &panel.body, &mut Vec::new(), &shown, state, &mut asked, &id),
                 Err(why) => {

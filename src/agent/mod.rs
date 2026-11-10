@@ -24,6 +24,7 @@ mod lan;
 mod landscape;
 mod loading;
 mod mcp;
+mod menu;
 mod ops;
 mod panels;
 mod online;
@@ -117,6 +118,7 @@ impl Plugin for AgentPlugin {
             .init_resource::<tools::Looks>()
             .init_resource::<worlds::Travel>()
             .init_resource::<worlds::WorldsWindow>()
+            .init_resource::<menu::GameMenu>()
             .init_gizmo_group::<AreaGizmos>()
             .init_gizmo_group::<presence::RingGizmos>()
             .add_systems(Startup, (attach_interface.after(graphics::spawn_screen), settings::load_settings))
@@ -146,6 +148,29 @@ impl Plugin for AgentPlugin {
                 (presence::name_tags, presence::hover_credit, history::history_window, fps::fps_overlay, settings::settings_window, worlds::portal_prompt),
             )
             .add_systems(EguiPrimaryContextPass, (worlds::worlds_window, hud::game_hud))
+            // Esc: before what it would cancel, so it sees the frame as the key found it.
+            .add_systems(
+                Update,
+                menu::toggle_menu
+                    .before(block_game_input)
+                    .before(shortcuts)
+                    .before(inventory::inventory_keys)
+                    .before(game::play_keys)
+                    .before(history::toggle_history)
+                    .before(worlds::toggle_worlds),
+            )
+            .add_systems(Update, menu::follow_menu)
+            .add_systems(EguiPrimaryContextPass, menu::paused_banner.after(shortcut_hints))
+            // Over everything else, so drawn last.
+            .add_systems(
+                EguiPrimaryContextPass,
+                menu::menu_window
+                    .after(panels::panel_windows)
+                    .after(settings::settings_window)
+                    .after(history::history_window)
+                    .after(worlds::worlds_window)
+                    .after(loading::loading_screen),
+            )
             // How games show things: effects, sounds, the sky, heroes' looks.
             .add_systems(Update, (present::play_shows, present::update_particles, present::apply_sky, present::dress_hero))
             .add_systems(Update, tools::take_looks.after(crate::player::follow_camera))
@@ -723,11 +748,13 @@ fn start_tool_server(mut commands: Commands, ledger: Res<Ledger>) {
 fn block_game_input(
     egui: Res<EguiWantsInput>,
     chat: Res<Chat>,
+    menu: Res<menu::GameMenu>,
     windows: Query<&Window, With<PrimaryWindow>>,
     mut blocked: ResMut<InputBlocked>,
     mut over_ui: ResMut<PointerOverUi>,
 ) {
-    blocked.0 = egui.wants_keyboard_input();
+    // The hero doesn't move under the game menu.
+    blocked.0 = egui.wants_keyboard_input() || menu.open;
     // egui only knows about its windows and popups; the panel is drawn on the background,
     // so the pointer counts as over it by its rectangle.
     let cursor = windows.single().ok().and_then(|w| w.cursor_position());
@@ -1382,6 +1409,7 @@ fn shortcut_hints(
             (k("parcels"), "land"),
             (k("history"), "history"),
             (k("game_window"), "worlds"),
+            ("Esc".into(), "menu"),
         ],
     };
     let actions: Vec<(&str, &str)> = actions.iter().map(|(keys, what)| (keys.as_str(), *what)).collect();

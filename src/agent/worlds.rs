@@ -94,10 +94,18 @@ impl Travel {
 }
 
 /// The world we're in, by name.
-fn world_of(ledger: &Ledger) -> String {
+pub(super) fn world_of(ledger: &Ledger) -> String {
     match &ledger.online {
         Some(online) => online.world.clone().unwrap_or_default(),
         None => world_name(),
+    }
+}
+
+/// The game we're in, by name: the server's address while its game isn't known yet.
+pub(super) fn game_of(ledger: &Ledger) -> String {
+    match &ledger.online {
+        Some(online) => online.game.as_ref().map_or(online.addr.clone(), |g| g.name.clone()),
+        None => game_name(),
     }
 }
 
@@ -492,17 +500,15 @@ pub fn worlds_window(
     let (worlds, games) = window.rows.take().unwrap_or_default();
     let online = ledger.is_online();
     let here_world = world_of(&ledger);
-    let game = match &ledger.online {
-        Some(online) => online.game.as_ref().map_or(online.addr.clone(), |g| g.name.clone()),
-        None => game_name(),
-    };
+    let game = game_of(&ledger);
     let admin = ledger.land.is_admin(&ledger.profile.id);
     let hero = heroes.single().map(|t| t.translation).unwrap_or_default();
     let mut todo = None;
     let mut open = true;
 
-    egui::Window::new(format!("{} {game}", icon::GLOBE_HEMISPHERE_WEST))
+    theme::centered(egui::Window::new(format!("{} {game}", icon::GLOBE_HEMISPHERE_WEST)), ctx, 0.0)
         .id(egui::Id::new("game_window"))
+        .collapsible(false)
         .open(&mut open)
         .default_width(580.0)
         .default_height(480.0)

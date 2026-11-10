@@ -365,6 +365,9 @@ pub struct Ledger {
     pub pending_world: Vec<(String, Vec<genverse_rules::logic::WorldChange>)>,
     /// Why the last change recorded didn't apply, if it didn't.
     refused: Option<String>,
+    /// Offline, the games wait while the player is in the game menu: like an admin's
+    /// pause (`rules.logic.paused`), but only here and not in the log.
+    pub hold: bool,
     /// Offline, which timers have run up to when; online, the server runs them.
     clock: Clockwork,
     /// Where the log is saved, offline.
@@ -667,6 +670,9 @@ impl Ledger {
     /// nothing is recorded. A key that changes nothing (walking into a wall) isn't
     /// recorded either.
     pub fn act(&mut self, intent: Intent) -> Result<Acted, String> {
+        if self.rules.logic.paused {
+            return Err(genverse_rules::log::PAUSED.into());
+        }
         let mut trial = self.logic.clone();
         let next = self.log.changes.last().map_or(1, |c| c.id + 1);
         let ground = genverse_rules::log::TerrainGround { terrain: self.log.terrain(), edits: &self.edits };
@@ -709,6 +715,10 @@ impl Ledger {
             return Vec::new();
         }
         let now = now();
+        if self.hold || self.rules.logic.paused {
+            self.clock.hold(now);
+            return Vec::new();
+        }
         let mut clock = std::mem::take(&mut self.clock);
         let (seed, rules) = (self.log.seed, self.rules.logic);
         let run = clock.run(&mut Keeper { ledger: self, ground }, now, seed, &rules, players);
@@ -1328,6 +1338,7 @@ fn empty(log: WorldLog, profile: Profile, key: Keypair) -> Ledger {
         edits_version: u64::MAX,
         pending_world: Vec::new(),
         refused: None,
+        hold: false,
         clock: Clockwork::default(),
         #[cfg(not(target_arch = "wasm32"))]
         file: None,

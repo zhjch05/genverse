@@ -121,6 +121,7 @@ pub static SETTINGS: &[Setting] = &[
     rule("world.logic.mode", "/logic/mode", Kind::Choice(&["open", "admin_only", "locked"]), "Who may install and change game packages: anyone, admins, or nobody"),
     rule("world.logic.max_entities", "/logic/max_entities", whole(0, 1_000_000), "The most game pieces one package has"),
     rule("world.logic.max_effects", "/logic/max_effects", whole(1, 100_000), "The most changes one player action causes, over all packages"),
+    rule("world.logic.paused", "/logic/paused", Kind::Flag, "Games stand still for everyone: timers wait and game actions are refused (/pause switches it)"),
     rule("world.clock.day_seconds", "/logic/clock/day_seconds", whole(10, 604_800), "How long a game day lasts, in real seconds"),
     rule("world.clock.days_per_season", "/logic/clock/days_per_season", whole(1, 1_000), "How many game days a season lasts"),
     graphic("graphics.antialias", "/antialias", Kind::Choice(&["Off", "Fxaa", "Taa"]), "How edges are smoothed"),
@@ -177,6 +178,8 @@ fn rules_json(rules: &WorldRules) -> Value {
     for (part, value) in [("look", json!(rules.look)), ("logic", json!(rules.logic)), ("hero", json!(rules.hero))] {
         all[part] = value;
     }
+    // Left out of the log while off.
+    all["logic"]["paused"] = json!(rules.logic.paused);
     all
 }
 

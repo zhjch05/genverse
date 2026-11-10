@@ -309,6 +309,9 @@ pub static OPS: &[Op] = &[
         .settled()
         .note("Undoes one of the player's changes (anyone's, if they're an admin), if nothing has changed there since."),
     op("rules", "", "This world's rules", &[], rules),
+    op("pause", "[on|off]", "Pause the games for everyone in this world, or resume them", &[word("on", "on or off; left out, it switches").opt()], pause)
+        .admin()
+        .note("The world's setting world.logic.paused: timers wait and players' game actions are refused until it's resumed. Building and talking go on. Recorded like any rule change, so undo takes it back."),
     op("verify", "", "Check every change is signed by its player", &[], verify),
     op("play", "", "Join a world on your network, or open this one", &[], play).chat_only(),
     op("host", "", "Open this game, every world in it, to others", &[], host).settled().ask().last(),
@@ -930,6 +933,31 @@ fn rate_line(rates: &RateLimits) -> String {
 
 fn bevel_line(bevel: f32) -> String {
     if bevel > 0.0 { format!("Voxel edges are rounded ({bevel})") } else { "Voxels have sharp edges".into() }
+}
+
+/// Pauses the world's games, or resumes them: the `world.logic.paused` rule.
+fn pause(cx: &mut Context, args: &Args) -> Reply {
+    if !cx.ledger.land.is_admin(&cx.ledger.profile.id) {
+        return Err("Only this world's admins pause it.".into());
+    }
+    let paused = cx.ledger.rules.logic.paused;
+    let want = match args.text("on").map(|s| s.to_lowercase()).as_deref() {
+        None => !paused,
+        Some("on" | "yes" | "true" | "pause") => true,
+        Some("off" | "no" | "false" | "resume") => false,
+        Some(other) => return Err(format!("/pause on pauses, /pause off resumes; \"{other}\" is neither.")),
+    };
+    if want == paused {
+        return Ok(if paused { "The world is already paused." } else { "The world isn't paused." }.into());
+    }
+    let mut rules = cx.ledger.rules.clone();
+    rules.logic.paused = want;
+    cx.record(Action::SetRules { rules });
+    Ok(if want {
+        "Paused the world for everyone: games stand still until you resume them (/pause).".into()
+    } else {
+        "Resumed the world: games go on.".into()
+    })
 }
 
 fn rules(cx: &mut Context, _: &Args) -> Reply {

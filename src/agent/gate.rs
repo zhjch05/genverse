@@ -66,6 +66,7 @@ const RAW_INPUT: &[(&str, &str, &str)] = &[
     ("agent/game.rs", "KeyCode::Escape", "Esc leaves a grid game, as it leaves everything"),
     ("agent/inventory.rs", "KeyCode::Escape", "Esc closes the inventory"),
     ("agent/panels.rs", "KeyCode::Escape", "Esc stops waiting for a key to bind"),
+    ("agent/menu.rs", "KeyCode::Escape", "Esc closes windows, then opens the game menu, once nothing else takes it"),
     ("agent/mod.rs", "KeyCode::KeyZ", "Ctrl/Cmd+Z: a chord, and bindings are single inputs so far"),
     ("agent/mod.rs", "KeyCode::ControlLeft", "the chord's modifier"),
     ("agent/mod.rs", "KeyCode::ControlRight", "the chord's modifier"),

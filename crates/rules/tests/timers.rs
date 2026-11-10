@@ -249,3 +249,50 @@ fn trials_wait_for_timers() {
     assert!(report.contains("2. wait 10: games acted"), "{report}");
     assert!(report.contains("\"Ring!\""), "{report}");
 }
+
+#[test]
+fn a_pause_skips_what_came_due_and_refuses_game_actions() {
+    let mut log = WorldLog { flat: true, ..WorldLog::new(7) };
+    log.admins = vec!["admin".into()];
+    let package = lamp(LAMP).to_package(1);
+    let reference = package.reference();
+    log.add_package(package);
+    log.push(by("admin", 100), Action::InstallPackage { package: reference, scope: Scope::World });
+    let place = Intent::Place { item: "lamp:lamp".into(), position: [4.0, 9.0, 4.0] };
+    let placed = log.push(by("ada", 100), Action::Intent { intent: place.clone() });
+    let id = EntityId { change: placed, n: 0 };
+    let blinks = |log: &WorldLog| replay(log).logic.state.get(id).unwrap().components["lamp:lamp"]["blinks"].as_u64().unwrap();
+
+    let mut clock = Clockwork::new(100);
+    run(&mut clock, &mut log, 102, &[]);
+    assert_eq!(blinks(&log), 1);
+
+    // An admin pauses: game actions are refused, for anyone.
+    let mut rules = replay(&log).rules;
+    rules.logic.paused = true;
+    log.push(by("admin", 103), Action::SetRules { rules: rules.clone() });
+    log.push(by("ada", 104), Action::Intent { intent: place });
+    let state = replay(&log);
+    assert!(state.problems.iter().any(|p| p.contains("paused")), "{:?}", state.problems);
+
+    // While paused the keeper holds the clock: 103..150 is skipped, not saved up. The
+    // ring, a one-time timer that came due, goes off once on resuming; the blinks don't
+    // catch up.
+    for now in [110, 130, 150] {
+        clock.hold(now);
+    }
+    rules.logic.paused = false;
+    log.push(by("admin", 150), Action::SetRules { rules });
+    assert_eq!(run(&mut clock, &mut log, 150, &[]), vec!["Ring!".to_string()]);
+    assert_eq!(blinks(&log), 1);
+    run(&mut clock, &mut log, 152, &[]);
+    assert_eq!(blinks(&log), 2);
+}
+
+#[test]
+fn rules_without_a_pause_read_and_write_as_before() {
+    let json = serde_json::to_value(LogicRules::default()).unwrap();
+    assert!(json.get("paused").is_none(), "{json}");
+    let old: LogicRules = serde_json::from_value(serde_json::json!({ "max_entities": 5 })).unwrap();
+    assert!(!old.paused);
+}

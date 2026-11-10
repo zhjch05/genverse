@@ -37,7 +37,7 @@ first person and back. A hint bar at the bottom always shows the keys that apply
 
 | Context | Keys |
 | --- | --- |
-| Anywhere | `T`/`Enter` talk to the agent · `G` select ground to reshape · click a build to select it · middle-click copies it · `P` land · `H` history · `O` worlds · `Tab` hide the builder panel · `Ctrl/Cmd+Z` undo · `Ctrl/Cmd+Shift+Z` redo |
+| Anywhere | `Esc` game menu (closes open windows first) · `T`/`Enter` talk to the agent · `G` select ground to reshape · click a build to select it · middle-click copies it · `P` land · `H` history · `O` worlds · `Tab` hide the builder panel · `Ctrl/Cmd+Z` undo · `Ctrl/Cmd+Shift+Z` redo |
 | Draft following the cursor | click to place · `Q`/`E` turn · `R`/`F` raise/lower · `Esc`/right-click cancel |
 | Selected build | `M` or double-click move · `Delete`/`Backspace` delete · `T` change it · `Esc`/right-click deselect |
 | Selecting ground | drag across the ground · right-drag look · `G`/`Esc` stop |
@@ -188,6 +188,11 @@ Hover a build or reshaped ground to see who changed it last.
   - **Budgets:** builds, voxels and glow per parcel and per player.
   - **Rate limits:** off by default, set with `/rate 10 200000` (changes a minute, voxels per
     10 minutes). Admins are exempt.
+  - **Pause:** `/pause` (or **Pause world for everyone** in the `Esc` menu) stops a world's
+    games for everyone in it: timers wait, and game actions (use, hit, board keys) are
+    refused until an admin resumes. Building and talking go on. Playing alone, the `Esc`
+    menu pauses the games by itself, without recording anything; online, it only stops
+    your hero.
 
 **History** (`H`) lists every change, newest first, filterable by player, with Undo and Load.
 
@@ -199,7 +204,7 @@ servers. Ask the agent for "a stone arch, a portal to sokoban" and it builds a p
 (`host:port`). Items travel between a game's worlds. Packages belong to the game: install
 once, then turn them on per world in the Rules tab. Design: [docs/worlds.md](docs/worlds.md).
 
-Chat commands: `/history [n]`, `/undo <id>`, `/rules`, `/verify`, `/save`, `/saves`, `/load`,
+Chat commands: `/history [n]`, `/undo <id>`, `/rules`, `/pause`, `/verify`, `/save`, `/saves`, `/load`,
 `/fork`, `/land`, `/rate`, `/worlds`, `/world`, `/newworld`, `/games`, `/game`, `/newgame`,
 `/savegame`, `/loadgame`, `/portal`, `/packages`, `/uninstall`, `/host`, `/join`, `/play`,
 `/leave`.
@@ -252,6 +257,7 @@ screenshots:
 | `GENVERSE_PLAY="go 15 0; wait 4; hit"` | plays steps once the agent is done |
 | `GENVERSE_AS=Bo` | plays as a non-admin guest for one run |
 | `GENVERSE_SERVER=host` | joins a server |
+| `GENVERSE_MENU=1` | opens the game menu (Esc) at start |
 | `GENVERSE_SHOT=out.png` (+ `_YAW`, `_PITCH`, `_DIST`, `_AFTER`) | renders one still and exits |
 | `GENVERSE_QUALITY=low\|medium\|high\|ultra` | graphics quality |
 

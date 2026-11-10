@@ -176,6 +176,9 @@ impl Builds {
     }
 }
 
+/// Why a game action is refused while an admin has the world paused.
+pub const PAUSED: &str = "The world is paused: games stand still until an admin resumes them (/pause).";
+
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 #[serde(tag = "kind", rename_all = "snake_case")]
 pub enum Action {
@@ -1054,6 +1057,7 @@ impl Replay {
                 self.remember(change.id, &by.player, false, vec![Op::Install { name: package.name.clone(), from, to }]);
             }
             Action::UninstallPackage { name } => self.logic.uninstall(&by.player, admin, &self.rules.logic, name)?,
+            Action::Intent { .. } if self.rules.logic.paused => return Err(PAUSED.into()),
             Action::Intent { intent } => {
                 let prepared = self.logic.prepare(change.id, &by.player, by.at, self.seed, &self.rules.logic, intent, self)?;
                 made = self.apply_world(&prepared.installer, &prepared.world, voxels)?;

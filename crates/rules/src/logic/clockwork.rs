@@ -124,6 +124,16 @@ impl Clockwork {
         self.since
     }
 
+    /// The world is paused: what comes due by `now` is skipped, not saved up, so
+    /// resuming doesn't fire a pause's worth of timers at once. A one-time timer that
+    /// came due goes off when the world resumes.
+    pub fn hold(&mut self, now: u64) {
+        self.since = self.since.max(now);
+        for last in self.held.values_mut() {
+            *last = (*last).max(now);
+        }
+    }
+
     fn window(&self, package: &str, name: &str) -> u64 {
         self.held.get(&(package.to_string(), name.to_string())).copied().unwrap_or(self.since)
     }

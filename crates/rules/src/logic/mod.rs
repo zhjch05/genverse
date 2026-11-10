@@ -59,11 +59,17 @@ pub struct LogicRules {
     pub max_entities: u32,
     /// Effects one player action may cause, over all packages.
     pub max_effects: u32,
+    /// The games stand still: timers wait (what comes due meanwhile is skipped, not
+    /// saved up) and players' actions in games are refused. An admin's pause, for
+    /// everyone in the world. Left out of the log while off, so older rules read and
+    /// sign the same.
+    #[serde(skip_serializing_if = "std::ops::Not::not")]
+    pub paused: bool,
 }
 
 impl Default for LogicRules {
     fn default() -> Self {
-        Self { mode: LogicMode::default(), clock: ClockRules::default(), max_entities: 10_000, max_effects: 256 }
+        Self { mode: LogicMode::default(), clock: ClockRules::default(), max_entities: 10_000, max_effects: 256, paused: false }
     }
 }
 

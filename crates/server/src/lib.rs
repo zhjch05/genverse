@@ -737,6 +737,10 @@ impl Place {
     /// changes, to send.
     fn run_timers(&mut self, now: u64, players: &[(String, [f32; 3])]) -> Vec<Change> {
         self.players = players.to_vec();
+        if self.state.rules.logic.paused {
+            self.clock.hold(now);
+            return Vec::new();
+        }
         let mut clock = std::mem::take(&mut self.clock);
         let (seed, rules) = (self.log.seed, self.state.rules.logic);
         let run = clock.run(self, now, seed, &rules, players);

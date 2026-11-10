@@ -45,7 +45,9 @@ impl Plugin for GraphicsPlugin {
             .add_systems(Startup, spawn_screen)
             // Before the cameras work out their sizes, so the world camera sees a resized
             // picture in the same frame.
-            .add_systems(PostUpdate, (apply_graphics, adjust_scale, fit_render_target).chain().before(CameraUpdateSystems));
+            .add_systems(PostUpdate, (apply_graphics, adjust_scale, fit_render_target).chain().before(CameraUpdateSystems))
+            .init_resource::<Dim>()
+            .add_systems(PostUpdate, dim_picture);
     }
 }
 
@@ -313,6 +315,30 @@ pub struct ScreenCamera;
 /// alpha says, so nothing from the last frame shows through.
 #[derive(Component)]
 struct WorldPicture;
+
+/// How bright the picture of the world is shown, in linear light: 1 as it is, less
+/// behind a menu. The
+/// picture itself is tinted, since the interface blends over it in HDR, where a
+/// translucent black doesn't darken.
+#[derive(Resource)]
+pub struct Dim(pub f32);
+
+impl Default for Dim {
+    fn default() -> Self {
+        Self(1.0)
+    }
+}
+
+fn dim_picture(dim: Res<Dim>, mut materials: ResMut<Assets<ColorMaterial>>, pictures: Query<&MeshMaterial2d<ColorMaterial>, With<WorldPicture>>) {
+    if !dim.is_changed() {
+        return;
+    }
+    for material in &pictures {
+        if let Some(mut material) = materials.get_mut(&material.0) {
+            material.color = Color::linear_rgb(dim.0, dim.0, dim.0);
+        }
+    }
+}
 
 /// Drawn by the screen camera only.
 const SCREEN_LAYER: usize = 1;
