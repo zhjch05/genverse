@@ -307,6 +307,9 @@ pub fn play_in(package: &Package, steps: &[String], world: Option<Copy>) -> Stri
     if body != super::Body::default() {
         let _ = writeln!(out, "  Moves: speed ×{}, jump ×{}, gravity ×{}, {} air jump(s)", body.speed, body.jump, body.gravity, body.air_jumps);
     }
+    if let Some(travel) = logic.state.travel(TESTER) {
+        let _ = writeln!(out, "  Sent to the world \"{}\" (in the game they'd leave for it there; the test stays here)", travel.to);
+    }
     if let Some(launch) = logic.state.launch(TESTER) {
         let [x, y, z] = launch.velocity;
         let _ = writeln!(out, "  Last launched at ({x}, {y}, {z}) m/s");
@@ -391,6 +394,8 @@ fn world_line(world: &[super::WorldChange]) -> String {
             super::WorldChange::Build { model, .. } => format!("built {model}"),
             super::WorldChange::Unbuild { id } => format!("removed build {id}"),
             super::WorldChange::Terrain { area, .. } => format!("reshaped {}x{} columns", area.size[0], area.size[1]),
+            super::WorldChange::Portal { id, to: Some(to) } => format!("made build {id} a portal to {}", to.label()),
+            super::WorldChange::Portal { id, to: None } => format!("unlinked the portal on build {id}"),
         })
         .collect();
     if world.is_empty() { String::new() } else { format!("; {}", world.join(", ")) }

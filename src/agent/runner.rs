@@ -121,7 +121,7 @@ fn run(
             } else {
                 cmd.args(["--tools", ""]);
             }
-            // Only the game's own read-only tools; no other MCP servers load.
+            // Only the game's own tools; no other MCP servers load.
             if let Some(tools) = tools {
                 let config = serde_json::json!({ "mcpServers": { SERVER_NAME: {
                     "type": "http",
@@ -144,7 +144,8 @@ fn run(
                     .arg(format!("mcp_servers.{SERVER_NAME}.url=\"{}\"", tools.url))
                     .arg("-c")
                     .arg(format!("mcp_servers.{SERVER_NAME}.bearer_token_env_var=\"GENVERSE_MCP_TOKEN\""))
-                    // Headless runs can't ask for approval; these tools are read-only.
+                    // Headless runs can't ask for approval; the game asks the player itself
+                    // about the tools that need it.
                     .arg("-c")
                     .arg(format!("mcp_servers.{SERVER_NAME}.default_tools_approval_mode=\"approve\""))
                     .env("GENVERSE_MCP_TOKEN", &tools.token);

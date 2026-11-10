@@ -138,6 +138,12 @@ pub enum Effect {
     /// Puts a player's hero at `position` (a respawn, a trapdoor, a portal of the game's).
     /// For `"*"`, it's where players appear when they come into the world.
     Teleport { player: String, position: [f32; 3] },
+    /// Sends a player to another world of the game (a dungeon's door, the way home):
+    /// they leave this one with what they carry, as through a portal.
+    Travel { player: String, to: String },
+    /// Makes a build the package placed a portal (to a world, `game/world` or
+    /// `host:port`), or an ordinary build again (`None`).
+    Portal { build: u64, to: Option<String> },
     /// Changes how a player's hero moves (`None`: back to normal).
     Body { player: String, body: Option<Body> },
     /// Throws a player's hero: sets how fast it's going, meters a second.
@@ -178,6 +184,14 @@ pub const MAX_SHOWS: usize = 32;
 #[derive(Clone, Copy, Debug, PartialEq, Serialize, Deserialize)]
 pub struct Teleport {
     pub position: [f32; 3],
+    pub change: u64,
+}
+
+/// Where a game last sent a player, out of this world, and in which change (so a game
+/// sends them each time once).
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+pub struct Travel {
+    pub to: String,
     pub change: u64,
 }
 
@@ -419,6 +433,7 @@ pub struct GameState {
     builds: BTreeMap<u64, String>,
     /// Where games last put each player (`"*"`: where players appear).
     teleports: BTreeMap<String, Teleport>,
+    travels: BTreeMap<String, Travel>,
     /// Players' names, as they signed their changes.
     names: BTreeMap<String, String>,
     /// How games have players move, when it isn't the usual.
@@ -462,6 +477,8 @@ struct SavedState {
     #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
     teleports: BTreeMap<String, Teleport>,
     #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    travels: BTreeMap<String, Travel>,
+    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
     names: BTreeMap<String, String>,
     #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
     bodies: BTreeMap<String, Body>,
@@ -494,6 +511,7 @@ impl From<GameState> for SavedState {
             panels: state.panels,
             builds: state.builds.into_iter().collect(),
             teleports: state.teleports,
+            travels: state.travels,
             names: state.names,
             bodies: state.bodies,
             launches: state.launches,
@@ -529,6 +547,7 @@ impl From<SavedState> for GameState {
             panels: saved.panels,
             builds: saved.builds.into_iter().collect(),
             teleports: saved.teleports,
+            travels: saved.travels,
             names: saved.names,
             bodies: saved.bodies,
             launches: saved.launches,
@@ -618,6 +637,11 @@ impl GameState {
     }
 
     /// The time of day a game set, and when.
+    /// Where a game last sent `player`, out of this world.
+    pub fn travel(&self, player: &str) -> Option<&Travel> {
+        self.travels.get(player)
+    }
+
     pub fn clock(&self) -> Option<(f32, u64)> {
         self.clock
     }
@@ -777,6 +801,7 @@ impl GameState {
             last_build: None,
             answer: None,
             teleports: BTreeMap::new(),
+            travels: BTreeMap::new(),
             bodies: BTreeMap::new(),
             launches: BTreeMap::new(),
             sky: None,
@@ -850,6 +875,7 @@ impl GameState {
             };
         }
         self.teleports.extend(done.teleports);
+        self.travels.extend(done.travels);
         for (player, body) in done.bodies {
             match body {
                 Some(b) => self.bodies.insert(player, b),
@@ -921,6 +947,7 @@ pub struct Batch<'a> {
     /// What a query's code returned ([`super::Trigger::Query`]).
     pub answer: Option<serde_json::Value>,
     teleports: BTreeMap<String, Teleport>,
+    travels: BTreeMap<String, Travel>,
     bodies: BTreeMap<String, Option<Body>>,
     launches: BTreeMap<String, Launch>,
     sky: Option<Option<Sky>>,
@@ -948,6 +975,7 @@ pub struct Mark {
     builds: BTreeMap<u64, Option<String>>,
     built: u64,
     teleports: BTreeMap<String, Teleport>,
+    travels: BTreeMap<String, Travel>,
     bodies: BTreeMap<String, Option<Body>>,
     launches: BTreeMap<String, Launch>,
     sky: Option<Option<Sky>>,
@@ -970,6 +998,7 @@ pub struct Done {
     panels: BTreeMap<String, Option<Panel>>,
     builds: BTreeMap<u64, Option<String>>,
     teleports: BTreeMap<String, Teleport>,
+    travels: BTreeMap<String, Travel>,
     bodies: BTreeMap<String, Option<Body>>,
     launches: BTreeMap<String, Launch>,
     sky: Option<Option<Sky>>,
@@ -981,9 +1010,9 @@ pub struct Done {
     stores: BTreeMap<(String, String), Option<Value>>,
     /// Messages for players: who, and what.
     pub notes: Vec<(String, String)>,
-    /// What it does to the world's voxels, in order ([`Effect::Build`],
-    /// [`Effect::Unbuild`], [`Effect::Terrain`]), with each build's id: for the world to
-    /// apply.
+    /// What it does to the world's voxels and portals, in order ([`Effect::Build`],
+    /// [`Effect::Unbuild`], [`Effect::Terrain`], [`Effect::Portal`]), with each build's
+    /// id: for the world to apply.
     pub world: Vec<(Effect, Option<u64>)>,
 }
 
@@ -1052,6 +1081,7 @@ impl Batch<'_> {
             builds: self.builds.clone(),
             built: self.built,
             teleports: self.teleports.clone(),
+            travels: self.travels.clone(),
             bodies: self.bodies.clone(),
             launches: self.launches.clone(),
             sky: self.sky.clone(),
@@ -1080,6 +1110,7 @@ impl Batch<'_> {
         self.builds = mark.builds;
         self.built = mark.built;
         self.teleports = mark.teleports;
+        self.travels = mark.travels;
         self.bodies = mark.bodies;
         self.launches = mark.launches;
         self.sky = mark.sky;
@@ -1354,6 +1385,26 @@ impl Batch<'_> {
                 self.teleports.insert(player.clone(), Teleport { position: *position, change: self.change });
                 Ok(None)
             }
+            Effect::Travel { player, to } => {
+                let world = crate::game::clean_name(to).filter(|name| name.eq_ignore_ascii_case(to.trim()));
+                let (Some(world), false) = (world, player.is_empty() || player == "*") else {
+                    return Err("travel takes one player and the name of a world of this game".into());
+                };
+                self.travels.insert(player.clone(), Travel { to: world, change: self.change });
+                Ok(None)
+            }
+            Effect::Portal { build, to } => {
+                if !grants.build {
+                    return Err(format!("{} may not make portals (it needs the build permission)", grants.package));
+                }
+                if self.build_owner(*build) != Some(grants.package.as_str()) {
+                    return Err(format!("{} may only link builds it placed (build() gives their ids)", grants.package));
+                }
+                if let Some(to) = to {
+                    crate::log::PortalTo::parse(to)?;
+                }
+                Ok(None)
+            }
             Effect::Body { player, body } => {
                 if player.is_empty() || player == "*" {
                     return Err("body takes one player".into());
@@ -1459,7 +1510,7 @@ impl Batch<'_> {
         let world = self
             .effects
             .iter()
-            .filter(|e| matches!(e, Effect::Build { .. } | Effect::Unbuild { .. } | Effect::Terrain { .. }))
+            .filter(|e| matches!(e, Effect::Build { .. } | Effect::Unbuild { .. } | Effect::Terrain { .. } | Effect::Portal { .. }))
             .map(|e| {
                 let id = matches!(e, Effect::Build { .. }).then(|| {
                     built += 1;
@@ -1478,6 +1529,7 @@ impl Batch<'_> {
             panels: self.panels,
             builds: self.builds,
             teleports: self.teleports,
+            travels: self.travels,
             bodies: self.bodies,
             launches: self.launches,
             sky: self.sky,

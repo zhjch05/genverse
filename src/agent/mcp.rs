@@ -1,6 +1,6 @@
 //! A minimal MCP server (streamable HTTP transport, JSON responses only) on
 //! `127.0.0.1` with a random port and bearer token, so local agent CLIs can call the
-//! game's read-only world tools.
+//! game's world tools.
 //!
 //! The HTTP thread never touches the ECS: each `tools/call` is forwarded to the game
 //! as a [`ToolCall`] and answered by a Bevy system on the next frame.
@@ -22,6 +22,10 @@ use serde_json::{Value, json};
 use tiny_http::{Header, Response, Server};
 
 pub const SERVER_NAME: &str = "genverse";
+
+/// How long a tool call waits for the game: long enough for the player to be asked
+/// about what the agent wants to do.
+const ANSWER_WAIT: Duration = Duration::from_secs(300);
 
 /// One tool invocation waiting for the game to answer.
 pub struct ToolCall {
@@ -129,7 +133,7 @@ fn serve(
                 reply,
             };
             let outcome = if calls.send(call).is_ok() {
-                answer.recv_timeout(Duration::from_secs(20)).unwrap_or(Err("the game didn't answer in time".into()))
+                answer.recv_timeout(ANSWER_WAIT).unwrap_or(Err("the game didn't answer in time".into()))
             } else {
                 Err("the game is shutting down".into())
             };

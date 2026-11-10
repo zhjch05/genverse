@@ -94,6 +94,8 @@
 //!                           -- with on_key (north, south, east, west, action, reset, leave)
 //! chase(id, player, {speed = 2.5, reach = 1.5})   -- runs after them; on_catch; chase(id) stops
 //! teleport(player, pos)     -- puts their hero there (a respawn, a trap, a door)
+//! travel(player, world)     -- sends them to another world of the game, with what they carry
+//! portal(build, to)         -- makes a build of the package's a portal (nil unlinks it)
 //! spawn_point(pos)          -- where players appear when they come into the world
 //! building(false)           -- only admins build or reshape land while this game runs
 //! ```
@@ -551,6 +553,14 @@ pub(super) mod vm {
                 "teleport",
                 scope.create_function(move |_, (player, pos): (String, Table)| {
                     apply(Effect::Teleport { player, position: pos_of(&pos)? }).map(|_| ())
+                })?,
+            )?;
+            globals.set("travel", scope.create_function(move |_, (player, to): (String, String)| apply(Effect::Travel { player, to }).map(|_| ()))?)?;
+            globals.set(
+                "portal",
+                scope.create_function(|_, (id, to): (String, Option<String>)| {
+                    let build = id.parse().map_err(|_| fail(format!("\"{id}\" isn't a build id")))?;
+                    apply(Effect::Portal { build, to }).map(|_| ())
                 })?,
             )?;
             // How the game shows things: effects, sounds, the sky, heroes' looks.

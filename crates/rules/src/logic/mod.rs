@@ -298,7 +298,7 @@ pub struct Outcome {
     pub world: Vec<WorldChange>,
 }
 
-/// What a game does to the world's voxels: the world applies it under its own rules
+/// What a game does to the world's voxels and portals: the world applies it under its own rules
 /// (land, budgets), charged to whoever installed the package.
 #[derive(Clone, Debug, PartialEq)]
 pub enum WorldChange {
@@ -306,6 +306,8 @@ pub enum WorldChange {
     Build { id: u64, package: String, model: String, spec: crate::build::BuildSpec, position: [f32; 3], yaw: f32 },
     Unbuild { id: u64 },
     Terrain { package: String, area: crate::sculpt::Area, spec: crate::sculpt::TerrainSpec },
+    /// Makes a build the package placed a portal, or (`None`) an ordinary build again.
+    Portal { id: u64, to: Option<crate::log::PortalTo> },
 }
 
 /// A package's answer, checked but not applied yet: the world applies its
@@ -541,6 +543,10 @@ impl Logic {
                 }),
                 (Effect::Unbuild { build }, _) => Some(WorldChange::Unbuild { id: *build }),
                 (Effect::Terrain { area, spec }, _) => Some(WorldChange::Terrain { package: name.clone(), area: *area, spec: spec.clone() }),
+                // Checked when it was staged: it parses.
+                (Effect::Portal { build, to }, _) => {
+                    Some(WorldChange::Portal { id: *build, to: to.as_deref().and_then(|to| crate::log::PortalTo::parse(to).ok()) })
+                }
                 _ => None,
             })
             .collect();

@@ -1,9 +1,15 @@
-//! Read-only world tools for agents, served over [`mcp`](super::mcp), and `test_game`,
-//! which plays a game package in a world of its own.
+//! The agent's tools, served over [`mcp`](super::mcp).
 //!
-//! Everything is expressed in the *build frame* the agent designs in: build voxels
-//! (12.5 cm), origin at the build site's ground, +Y up, z = 0 the front row facing the
-//! player, x to the right as the player sees it. Nothing here changes the world.
+//! - **Looking:** the build site, nearby builds, terrain, `search`, `query`, `look`, and
+//!   `test_game`, which plays a game package on a copy of the world. These are in the
+//!   *build frame* the agent designs in: build voxels (12.5 cm), origin at the build
+//!   site's ground, +Y up, z = 0 the front row facing the player, x to the right as the
+//!   player sees it. They change nothing.
+//! - **Doing:** every [op](super::ops) a player has, as the player ([`act`]). They happen
+//!   at once and the agent's folder follows, with two exceptions. What an op marks
+//!   [`ask`](super::ops::Op::ask) waits for the player's yes ([`Ask`], a card in the
+//!   chat). And what would swap the world under the agent (a trip elsewhere, hosting,
+//!   joining) is kept in [`AfterTurn`] until its turn ends.
 
 use std::fmt::Write;
 
@@ -17,10 +23,13 @@ use genverse_rules::{
 };
 
 use super::{
+    Chat,
     creations::{Creations, SavedCreation, anchor_in_front},
     landscape::{Landscape, sample},
-    mcp::{McpServer, ToolCall},
+    mcp::{McpServer, ToolCall, ToolResult},
+    ops::{self, Op},
     spec::{BuildSpec, VOXEL_SIZE, compile},
+    worlds::{Travel, Trip},
 };
 use crate::{
     player::Player,
@@ -32,8 +41,120 @@ use crate::{
     },
 };
 
-pub const INSTRUCTIONS: &str = "Read-only tools for the Genverse voxel world. Coordinates are build voxels \
-(12.5 cm) in the frame of the build site: y=0 is the ground there, z=0 is the front row facing the player.";
+pub const INSTRUCTIONS: &str = "Tools for the Genverse voxel world. Some look (the build site, search, query, \
+look, test_game): for those, coordinates are build voxels (12.5 cm) in the frame of the build site: y=0 is the \
+ground there, z=0 is the front row facing the player. The others do what the player can do from the chat and \
+the Game window (worlds, portals, saves, undo, rules), as the player.";
+
+/// How long the player has to answer an [`Ask`]; under the tool server's own wait.
+const ASK_WAIT: std::time::Duration = std::time::Duration::from_secs(240);
+
+/// Something the agent wants to do that the player is asked about first.
+pub struct Ask {
+    op: &'static Op,
+    args: Value,
+    /// What it is, for the card.
+    pub what: String,
+    reply: std::sync::mpsc::Sender<ToolResult>,
+    since: std::time::Instant,
+}
+
+impl Ask {
+    /// The player said yes: does it, and tells the agent how it went.
+    pub fn allow(self, chat: &mut Chat, ledger: &mut Ledger, world: &mut VoxelWorld, creations: &mut Creations, landscape: &mut Landscape, at: [f32; 3]) {
+        let result = act(self.op, self.args, chat, ledger, world, creations, landscape, at);
+        info!("agent tool {} (allowed): {result:?}", self.op.name);
+        let _ = self.reply.send(result);
+    }
+
+    /// The player said no, or never answered (`why`).
+    pub fn refuse(self, why: &str) {
+        info!("agent tool {}: {why}", self.op.name);
+        let _ = self.reply.send(Err(why.into()));
+    }
+}
+
+/// What the agent set going that waits for its turn to end: it would swap the world
+/// it's working in.
+#[derive(Default)]
+pub struct AfterTurn {
+    /// Ops to do then, in order.
+    pub ops: Vec<(&'static str, Value)>,
+    /// Where the player goes then.
+    pub trip: Option<Trip>,
+    pub stop_hosting: bool,
+    /// What the agent left itself to do where the trip leads, and the request it's
+    /// part of: it's started again there ([`Resume`]).
+    pub then: Option<(String, String)>,
+    /// The player was told it's waiting for their draft.
+    pub told: bool,
+}
+
+/// A request that goes on in the world its trip leads to: once the player has arrived,
+/// the agent is started again there with its note.
+pub struct Resume {
+    /// The world the trip left from.
+    pub from: String,
+    /// What's left to do, in the agent's words.
+    pub note: String,
+    /// The player's request it's part of.
+    pub prompt: String,
+    pub since: std::time::Instant,
+}
+
+impl AfterTurn {
+    pub fn is_empty(&self) -> bool {
+        self.ops.is_empty() && self.trip.is_none()
+    }
+}
+
+/// Does an op for the agent, as the player, and brings the agent's folder up to date.
+/// A trip the op asks for is held until the turn ends.
+pub fn act(
+    op: &'static Op,
+    args: Value,
+    chat: &mut Chat,
+    ledger: &mut Ledger,
+    world: &mut VoxelWorld,
+    creations: &mut Creations,
+    landscape: &mut Landscape,
+    at: [f32; 3],
+) -> ToolResult {
+    if op.last {
+        chat.after.ops.push((op.name, args));
+        return Ok(format!("\"{}\" happens as soon as you answer. Do the rest of the work first, and tell the player it's on its way.", op.name));
+    }
+    let asked = chat.pending.as_ref().map(|p| (p.provider.label(), p.prompt.clone()));
+    let then = args["then"].as_str().map(str::trim).filter(|note| !note.is_empty()).map(str::to_string);
+    let edited = super::workspace::edited(ledger);
+    let mut held = Travel::default();
+    let result = {
+        let cx = &mut ops::Context {
+            ledger: &mut *ledger,
+            world,
+            creations,
+            landscape,
+            travel: &mut held,
+            at,
+            agent: asked.as_ref().map(|(agent, prompt)| (*agent, prompt.as_str())),
+        };
+        ops::run_op(op, &ops::Args::new(args), cx)
+    };
+    if let Err(why) = super::workspace::refresh(ledger, &edited) {
+        warn!("couldn't bring the agent's folder up to date: {why}");
+    }
+    let mut text = result?;
+    if let Some(trip) = held.next.take() {
+        chat.after.trip = Some(trip);
+        chat.after.stop_hosting |= held.stop_hosting;
+        text = format!("{text} The player is taken there as soon as you answer (tell them you're taking them there): do the rest of the work here first.").trim().to_string();
+        chat.after.then = then.zip(asked.map(|(_, prompt)| prompt));
+        if chat.after.then.is_some() {
+            text.push_str(" You'll be started again there with your note, to do what's left.");
+        }
+    }
+    Ok(if text.is_empty() { "Done.".into() } else { text })
+}
 
 /// Where the next build goes, frozen while a request runs so tool answers stay consistent.
 #[derive(Resource, Default, Clone, Copy)]
@@ -60,7 +181,7 @@ impl BuildSite {
 
 pub fn definitions(rules: &WorldRules) -> Value {
     let size = json!({ "type": "integer", "minimum": 2, "maximum": rules.build.max_size });
-    json!([
+    let mut tools = json!([
         {
             "name": "get_build_site",
             "description": "Ground heights and surface types under a footprint centered on the build site, \
@@ -92,13 +213,16 @@ pub fn definitions(rules: &WorldRules) -> Value {
         },
         {
             "name": "sample_terrain",
-            "description": "A finer height map of part of the selected area, for terrain requests. Meters in the \
-                area frame (x, z from its corner); levels relative to sea level.",
+            "description": "A height map of the ground, with surfaces and trees; levels relative to sea level. \
+                With an area selected: a finer look at part of it, x, z, w, d in meters in the area frame (from its \
+                corner). With \"world\": true (or no area selected): the rectangle of world meters from x, z (its \
+                north-west corner) w wide and d deep, as change_land would see that area.",
             "inputSchema": {
                 "type": "object",
                 "properties": {
                     "x": { "type": "number" }, "z": { "type": "number" },
                     "w": { "type": "number", "minimum": 0.5 }, "d": { "type": "number", "minimum": 0.5 },
+                    "world": { "type": "boolean" },
                 },
                 "required": ["x", "z", "w", "d"],
             },
@@ -189,7 +313,12 @@ pub fn definitions(rules: &WorldRules) -> Value {
                 "required": ["code"],
             },
         },
-    ])
+    ]);
+    // What the player can do, the agent can do for them.
+    if let Value::Array(tools) = &mut tools {
+        tools.extend(ops::tools());
+    }
+    tools
 }
 
 fn search(args: &Value, ledger: &Ledger, hero: Option<Vec3>) -> Result<String, String> {
@@ -337,14 +466,21 @@ pub fn update_build_site(
 pub fn answer_tool_calls(
     server: Option<Res<McpServer>>,
     site: Res<BuildSite>,
-    world: Res<VoxelWorld>,
-    creations: Res<Creations>,
-    landscape: Res<Landscape>,
-    ledger: Res<Ledger>,
+    mut world: ResMut<VoxelWorld>,
+    mut creations: ResMut<Creations>,
+    mut landscape: ResMut<Landscape>,
+    mut ledger: ResMut<Ledger>,
+    mut chat: ResMut<Chat>,
     players: Query<&Transform, With<Player>>,
     transforms: Query<&Transform>,
     mut looks: ResMut<Looks>,
 ) {
+    // A question nobody answered, or whose request is over.
+    if chat.asking.as_ref().is_some_and(|ask| chat.pending.is_none() || ask.since.elapsed() > ASK_WAIT)
+        && let Some(ask) = chat.asking.take()
+    {
+        ask.refuse("the player didn't answer");
+    }
     let Some(server) = server else {
         return;
     };
@@ -352,11 +488,7 @@ pub fn answer_tool_calls(
     if calls.is_empty() {
         return;
     }
-    let placed: Vec<_> = creations
-        .placed
-        .iter()
-        .filter_map(|(e, c)| transforms.get(*e).ok().map(|t| (*t, c)))
-        .collect();
+    let hero = players.single().ok().map(|t| t.translation);
     for ToolCall { name, args, reply } in calls {
         // A picture takes a few frames: it answers when it's saved.
         if name == "look" {
@@ -377,6 +509,28 @@ pub fn answer_tool_calls(
             info!("agent tool look: taking a picture");
             continue;
         }
+        // Doing something, as the player.
+        if let Some(op) = ops::tool(&name) {
+            // `GENVERSE_KEEP=1` (scripted runs) says yes, as it keeps drafts.
+            if op.ask && std::env::var("GENVERSE_KEEP").is_err() {
+                if chat.asking.is_some() {
+                    let _ = reply.send(Err("the player is still deciding about the last thing you asked for: one at a time".into()));
+                    continue;
+                }
+                let line = ops::Args::new(args.clone()).line();
+                let what = if line.is_empty() { op.about.to_string() } else { format!("{}: {line}", op.about) };
+                info!("agent tool {name}: asking the player ({what})");
+                chat.asking = Some(Ask { op, args, what, reply, since: std::time::Instant::now() });
+                chat.open = true;
+                continue;
+            }
+            let at = hero.map_or([0.0; 3], |h| h.to_array());
+            let result = act(op, args, &mut chat, &mut ledger, &mut world, &mut creations, &mut landscape, at);
+            info!("agent tool {name}: {result:?}");
+            let _ = reply.send(result);
+            continue;
+        }
+        let placed: Vec<_> = creations.placed.iter().filter_map(|(e, c)| transforms.get(*e).ok().map(|t| (*t, c))).collect();
         let ctx = Ctx { site: *site, world: &world, creations: &creations, placed: &placed, limits: &ledger.rules.build };
         let result = match name.as_str() {
             "get_build_site" => Ok(ctx.build_site(&args, players.single().ok())),
@@ -384,8 +538,8 @@ pub fn answer_tool_calls(
             "get_build_spec" => ctx.spec(&args),
             "check_build" => ctx.check(&args),
             "sample_terrain" => sample_terrain(&world, &landscape, &args),
-            "test_game" => test_game(&args, &ledger, &world, players.single().ok().map(|t| t.translation)),
-            "search" => search(&args, &ledger, players.single().ok().map(|t| t.translation)),
+            "test_game" => test_game(&args, &ledger, &world, hero),
+            "search" => search(&args, &ledger, hero),
             "query" => query(&args, &ledger),
             other => Err(format!("unknown tool {other}")),
         };
@@ -395,8 +549,22 @@ pub fn answer_tool_calls(
 }
 
 fn sample_terrain(world: &VoxelWorld, landscape: &Landscape, args: &Value) -> Result<String, String> {
-    let area = landscape.target().ok_or("no area is selected; this tool is for terrain requests")?;
     let num = |key: &str| args[key].as_f64().filter(|v| v.is_finite()).map(|v| v as f32);
+    // Any rectangle of the world, as `change_land` takes it.
+    if args["world"].as_bool() == Some(true) || landscape.target().is_none() {
+        let (Some(x), Some(z), Some(w), Some(d)) = (num("x"), num("z"), num("w"), num("d")) else {
+            return Err("give x, z, w and d in world meters (no area is selected)".into());
+        };
+        let area = ops::area_of(x, z, w.clamp(0.5, 64.0), d.clamp(0.5, 64.0));
+        let size = area.size_m();
+        return Ok(format!(
+            "World rectangle from x={x:.1}, z={z:.1}, {:.1} × {:.1} m. Below, x and z run from its corner, as in change_land's \"terrain\".\n{}",
+            size.x,
+            size.y,
+            sample(world, area, Vec2::ZERO, size, 24)
+        ));
+    }
+    let area = landscape.target().ok_or("no area is selected")?;
     let size = area.size_m();
     let from = Vec2::new(num("x").unwrap_or(0.0), num("z").unwrap_or(0.0)).clamp(Vec2::ZERO, size - 0.25);
     let span = Vec2::new(num("w").unwrap_or(size.x), num("d").unwrap_or(size.y)).max(Vec2::splat(0.25)).min(size - from);

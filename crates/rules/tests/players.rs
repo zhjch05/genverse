@@ -264,3 +264,57 @@ fn panels_are_ui_trees() {
     assert!(report.contains("Panel open: \"Trader\" (market): Market You have (market:coin)"), "{report}");
     assert!(report.contains("[buy:torch: Buy]"), "{report}");
 }
+
+const GATE: &str = r##"
+function on_place(ev)
+  local arch = build("arch", { x = ev.pos.x + 3, y = ev.pos.y, z = ev.pos.z }, 0)
+  portal(arch, "dungeon")
+  spawn(ev.pos, { look = { model = "post" }, label = "Gatekeeper", gate = { arch = arch } })
+end
+function on_interact(ev)
+  travel(ev.player, "dungeon")
+end
+function on_hit(ev)
+  local gate = get(ev.entity).c.gate
+  if gate.arch then
+    portal(gate.arch, nil)
+    set(ev.entity, "gate", {})
+  else
+    travel(ev.player, "not a world!")
+  end
+end
+"##;
+
+#[test]
+fn games_make_portals_and_send_players_to_other_worlds() {
+    let spec = game("gate", vec![fixture("gate")], Some(GATE), vec![model("arch", [16, 20, 4]), model("post", [4, 8, 4])]);
+    let mut log = world(&spec);
+    let placed = log.push(by("ada", 101), Action::Intent { intent: Intent::Place { item: "gate:gate".into(), position: [20.0, 9.0, 20.0] } });
+    let keeper = EntityId { change: placed, n: 0 };
+    let state = replay(&log);
+    assert!(state.problems.is_empty(), "{:?}", state.problems);
+    // The build it placed is a portal, linked in the same action.
+    let (arch, _) = state.builds.iter().next().expect("the gate built an arch");
+    assert_eq!(state.portals.get(arch).map(|to| to.label()), Some("dungeon".to_string()));
+    assert!(state.logic.state.travel("ada").is_none());
+
+    // E on the keeper sends that player, and only them, to the other world.
+    let sent = log.push(by("ada", 102), Action::Intent { intent: Intent::Interact { entity: keeper } });
+    let state = replay(&log);
+    assert!(state.problems.is_empty(), "{:?}", state.problems);
+    let travel = state.logic.state.travel("ada").expect("ada was sent");
+    assert_eq!((travel.to.as_str(), travel.change), ("dungeon", sent));
+    assert!(state.logic.state.travel("bob").is_none());
+
+    // The game unlinks its own portal; the build stays.
+    log.push(by("ada", 103), Action::Intent { intent: Intent::Hit { entity: keeper } });
+    let state = replay(&log);
+    assert!(state.problems.is_empty(), "{:?}", state.problems);
+    assert!(state.portals.is_empty() && state.builds.len() == 1);
+
+    // A name that isn't a world's is refused, and the last trip stands.
+    log.push(by("bob", 104), Action::Intent { intent: Intent::Hit { entity: keeper } });
+    let state = replay(&log);
+    assert!(state.problems.iter().any(|p| p.contains("travel takes one player")), "{:?}", state.problems);
+    assert!(state.logic.state.travel("bob").is_none());
+}

@@ -392,6 +392,39 @@ pub fn follow_teleports(ledger: Res<Ledger>, mut seen: Local<(String, u64)>, mut
     }
 }
 
+/// Takes the hero where games send them out of this world (`travel(player, world)`):
+/// each trip once, as through a portal, once any draft is placed or discarded.
+pub fn follow_travels(
+    ledger: Res<Ledger>,
+    mut seen: Local<(String, u64, bool)>,
+    mut travel: ResMut<super::worlds::Travel>,
+    creations: Res<super::creations::Creations>,
+    landscape: Res<super::landscape::Landscape>,
+    mut chat: ResMut<super::Chat>,
+) {
+    let state = &ledger.logic.state;
+    let me = &ledger.profile.id;
+    let world = super::worlds::current_title(&ledger);
+    if seen.0 != world {
+        // Just arrived: trips out of here from before are history.
+        *seen = (world, state.travel(me).map_or(0, |t| t.change), false);
+        return;
+    }
+    let Some(trip) = state.travel(me).filter(|t| t.change > seen.1) else { return };
+    if creations.draft.is_some() || landscape.draft.is_some() {
+        if !seen.2 {
+            seen.2 = true;
+            chat.say(super::Role::System, format!("The game is taking you to {}: place or discard your draft first.", trip.to));
+        }
+        return;
+    }
+    (seen.1, seen.2) = (trip.change, false);
+    let to = genverse_rules::log::PortalTo::World { name: trip.to.clone() };
+    if let Err(why) = travel.portal(&to, &ledger) {
+        chat.say(super::Role::System, format!("The game tried to take you to {}. {why}", trip.to));
+    }
+}
+
 /// How games have the hero move, and each throw once.
 pub fn follow_body(ledger: Res<Ledger>, mut seen: Local<(String, u64)>, mut body: ResMut<HeroBody>) {
     let state = &ledger.logic.state;

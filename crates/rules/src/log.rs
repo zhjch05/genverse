@@ -84,8 +84,9 @@ impl PortalTo {
 /// Who a server's own changes are by: timers going off.
 pub const WORLD: &str = "world";
 
-/// Bumped when the rules change in a way that rasterizes the same log differently.
-pub const RULES_VERSION: u32 = 1;
+/// Bumped when the rules change in a way that rasterizes the same log differently, or
+/// games can do something an older copy would refuse (2: `travel` and `portal`).
+pub const RULES_VERSION: u32 = 2;
 
 /// Who made a change, and how.
 #[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
@@ -722,8 +723,10 @@ impl Replay {
         let mut placed = Vec::new();
         let mut removed = Vec::new();
         let mut made = Vec::new();
+        let mut linked = Vec::new();
         for change in world {
             match change {
+                WorldChange::Portal { id, to } => linked.push((*id, to.clone())),
                 WorldChange::Build { id, package, model, spec, position, yaw } => {
                     let build = BuildState {
                         build: *id,
@@ -775,6 +778,13 @@ impl Replay {
             }
             self.builds.remove(&id);
             self.portals.remove(&id);
+        }
+        // After the builds, so a game can place a build and link it in one go.
+        for (id, to) in linked {
+            match to.filter(|_| self.builds.contains_key(&id)) {
+                Some(to) => self.portals.insert(id, to),
+                None => self.portals.remove(&id),
+            };
         }
         self.edits.extend(made.iter().copied());
         Ok(made)

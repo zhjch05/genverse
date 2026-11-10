@@ -122,10 +122,10 @@ impl Plugin for AgentPlugin {
                     block_game_input,
                     center_view,
                     stream_creations,
-                    (online::sync_online, lan::update_lan, update_build_site, answer_tool_calls, poll_agent).chain(),
+                    (online::sync_online, lan::update_lan, update_build_site, answer_tool_calls, poll_agent, finish_turn, resume_turn, creations::show_builds).chain(),
                     (presence::send_presence, presence::move_avatars, presence::draw_peers, history::toggle_history, (loading::track_loading, fps::track_frames).chain()),
                     auto_prompt,
-                    (game::script_play.after(auto_prompt), game::run_timers, game::play_keys, game::sync_pieces, game::walk_pieces, game::follow_teleports, game::follow_body, game::use_pieces, worlds::use_portals, hud::draw_game_world, history::follow_ledger)
+                    (game::script_play.after(auto_prompt), game::run_timers, game::play_keys, game::sync_pieces, game::walk_pieces, game::follow_teleports, game::follow_travels, game::follow_body, game::use_pieces, worlds::use_portals, hud::draw_game_world, history::follow_ledger)
                         .chain(),
                     worlds::toggle_worlds,
                     (inventory::sync_inventory, inventory::inventory_keys, inventory::use_held, shortcuts, select_area, follow_cursor, check_clearance, click_in_world, outline_creations, draw_area, highlight_area, draw_parcels)
@@ -218,7 +218,19 @@ struct Chat {
     hints: bool,
     /// Recent errors from the world's game scripts, for the agent to fix.
     script_errors: Vec<String>,
+    /// Something the agent wants to do that waits for the player's yes.
+    asking: Option<tools::Ask>,
+    /// What the agent set going that waits for its turn to end.
+    after: tools::AfterTurn,
+    /// A request that goes on in the world the player is on their way to.
+    resume: Option<tools::Resume>,
+    /// How many worlds this request has gone on into.
+    hops: u8,
 }
+
+/// How many worlds one request may go on into, so two worlds can't send an agent back
+/// and forth forever.
+const MAX_HOPS: u8 = 3;
 
 impl Default for Chat {
     fn default() -> Self {
@@ -231,7 +243,9 @@ impl Default for Chat {
                 text: "Describe something to build, e.g. \"a cozy wooden bench\" or \"a glowing mushroom lamp\". \
                        It appears in front of you as a draft. Click a placed build to select it; while it's \
                        selected, messages change that build. To reshape the land, press G, drag across the \
-                       ground, and describe it: \"a pond with reeds\", \"a winding path\", \"terraced hillside\"."
+                       ground, and describe it: \"a pond with reeds\", \"a winding path\", \"terraced hillside\". \
+                       Or ask for anything else in your game: \"a new world called dungeon and a portal to it\", \
+                       \"undo that\", \"save this as before the party\"."
                     .into(),
                 at: Instant::now(),
             }],
@@ -249,6 +263,10 @@ impl Default for Chat {
             panel: None,
             hints: prefs::get("hints").and_then(|v| v.as_bool()).unwrap_or(true),
             script_errors: Vec::new(),
+            asking: None,
+            after: tools::AfterTurn::default(),
+            resume: None,
+            hops: 0,
         }
     }
 }
@@ -296,6 +314,10 @@ impl Chat {
             return;
         }
         self.input.clear();
+        // A new request: what the last one left waiting is dropped.
+        self.after = tools::AfterTurn::default();
+        self.resume = None;
+        self.hops = 0;
         let restore = area.is_none() && creations.draft.is_none() && creations.edit_selected(commands, false).is_some();
         let turns: Vec<_> = self
             .messages
@@ -305,23 +327,7 @@ impl Chat {
             .collect();
         let history = &turns[turns.len().saturating_sub(HISTORY)..];
         let draft = creations.draft.as_ref().map(|d| &d.spec);
-        // The world as files for the agent to look through, and edit the game in.
-        let game = match workspace::write(ledger, here.as_deref(), &self.script_errors) {
-            Ok(dir) => {
-                info!("the world's folder for the agent: {}", dir.display());
-                Some(format!(
-                    "{}Your folder is this world as files: WORLD.md has the overview, packages/ the game logic.",
-                    here.as_ref().map(|h| format!("{h}\n")).unwrap_or_default()
-                ))
-            }
-            Err(why) => {
-                warn!("couldn't write the world's folder: {why}");
-                game_context(ledger, &self.script_errors).map(|g| match &here {
-                    Some(here) => format!("{here}\n{g}"),
-                    None => g,
-                })
-            }
-        };
+        let game = folder_context(ledger, here.as_deref(), &self.script_errors);
         let request = prompt::request(history, draft, area.as_deref(), game.as_deref(), &text);
         // `GENVERSE_SHOW_REQUEST=1` logs what the agent is told, to see the world through its eyes.
         if std::env::var("GENVERSE_SHOW_REQUEST").is_ok() {
@@ -330,6 +336,86 @@ impl Chat {
         self.say(Role::Player, text.clone());
         self.start(tools, rules, self.provider, text, request, 0, restore);
     }
+}
+
+/// Writes the world as files for the agent to look through and edit the game in, and
+/// returns what the request says about it (or, if the folder can't be written, the
+/// world's game logic in full).
+fn folder_context(ledger: &Ledger, here: Option<&str>, errors: &[String]) -> Option<String> {
+    match workspace::write(ledger, here, errors) {
+        Ok(dir) => {
+            info!("the world's folder for the agent: {}", dir.display());
+            Some(format!(
+                "{}Your folder is this world as files: WORLD.md has the overview, packages/ the game logic.",
+                here.map(|h| format!("{h}\n")).unwrap_or_default()
+            ))
+        }
+        Err(why) => {
+            warn!("couldn't write the world's folder: {why}");
+            game_context(ledger, errors).map(|g| match here {
+                Some(here) => format!("{here}\n{g}"),
+                None => g,
+            })
+        }
+    }
+}
+
+impl Chat {
+    /// Starts the agent again in the world its trip led to, to do what it left itself
+    /// there: the same request, with the conversation so far and this world's folder.
+    fn carry_on(&mut self, tools: Option<&McpServer>, ledger: &Ledger, here: String, resume: tools::Resume, world: &str) {
+        let turns: Vec<_> = self
+            .messages
+            .iter()
+            .filter(|m| m.role != Role::System)
+            .map(|m| prompt::Turn { from_player: m.role == Role::Player, text: &m.text })
+            .collect();
+        let history = &turns[turns.len().saturating_sub(HISTORY)..];
+        let game = folder_context(ledger, Some(&here), &self.script_errors);
+        let message = format!(
+            "(From the game, not the player.) You're carrying on with the request \"{}\". You did its part in {} and brought the \
+             player here, to {world}, to finish it. Your note to yourself: {}\nDo that now, in this world: your folder and tools are \
+             this world's.",
+            resume.prompt, resume.from, resume.note
+        );
+        let request = prompt::request(history, None, None, game.as_deref(), &message);
+        self.say(Role::System, format!("The agent carries on here: {}", resume.note));
+        self.after = tools::AfterTurn::default();
+        self.hops += 1;
+        self.start(tools, &ledger.rules, self.provider, resume.prompt, request, 0, false);
+    }
+}
+
+/// Once the player has arrived where the agent's trip led, starts the agent again there
+/// with what it left itself to do. Gives up if they never get there, and steps aside if
+/// the player has asked for something else.
+fn resume_turn(
+    tools: Option<Res<McpServer>>,
+    mut chat: ResMut<Chat>,
+    ledger: Res<Ledger>,
+    world: Res<VoxelWorld>,
+    loading: Res<loading::Loading>,
+    travel: Res<worlds::Travel>,
+    players: Query<(&Player, &Transform)>,
+    cameras: Query<&GlobalTransform, With<Camera3d>>,
+) {
+    let Some(resume) = &chat.resume else { return };
+    if chat.pending.is_some() {
+        chat.resume = None;
+        return;
+    }
+    let here = worlds::current_title(&ledger);
+    let arrived = travel.next.is_none() && here != resume.from && loading.is_done();
+    let Some((_, hero)) = players.single().ok().filter(|(player, _)| arrived && player.has_landed()) else {
+        if resume.since.elapsed() > std::time::Duration::from_secs(90) {
+            chat.resume = None;
+            chat.say(Role::System, "The trip didn't happen, so what the agent meant to do there is left undone.");
+        }
+        return;
+    };
+    let Some(resume) = chat.resume.take() else { return };
+    let context = here_context(&world, ledger.log.terrain(), hero.translation, cameras.single().ok());
+    chat.carry_on(tools.as_deref(), &ledger, context, resume, &here);
 }
 
 /// Where the player stands, in the world's own meters, and the ground around them: so
@@ -517,6 +603,7 @@ fn auto_prompt(
                     landscape: &mut landscape,
                     travel: &mut travel,
                     at: hero.translation.to_array(),
+                    agent: None,
                 };
                 run_command(&mut chat, command.trim(), cx);
             }
@@ -555,7 +642,56 @@ fn run_command(chat: &mut Chat, text: &str, cx: &mut ops::Context) {
     }
 }
 
-/// Serves the read-only world tools to agents. Without it, agents still work blind.
+/// Does what the agent left for the end of its turn: what would have swapped the world
+/// under it while it worked (hosting, joining), then the trip it asked for. Waits for a
+/// draft to be placed or discarded, as going elsewhere does for the player.
+fn finish_turn(
+    mut chat: ResMut<Chat>,
+    mut ledger: ResMut<Ledger>,
+    mut world: ResMut<VoxelWorld>,
+    mut creations: ResMut<Creations>,
+    mut landscape: ResMut<Landscape>,
+    mut travel: ResMut<worlds::Travel>,
+    players: Query<&Transform, With<Player>>,
+) {
+    if chat.pending.is_some() || chat.after.is_empty() {
+        return;
+    }
+    if creations.draft.is_some() || landscape.draft.is_some() {
+        if !chat.after.told {
+            chat.after.told = true;
+            chat.say(Role::System, "Place or discard the draft, and the rest of what the agent set up (going elsewhere) follows.");
+        }
+        return;
+    }
+    let after = std::mem::take(&mut chat.after);
+    for (name, args) in after.ops {
+        let cx = &mut ops::Context {
+            ledger: &mut ledger,
+            world: &mut world,
+            creations: &mut creations,
+            landscape: &mut landscape,
+            travel: &mut travel,
+            at: players.single().map_or([0.0; 3], |t| t.translation.to_array()),
+            agent: None,
+        };
+        let reply = ops::said(ops::run(name, args, cx));
+        info!("after the agent's turn, {name} -> {reply}");
+        if !reply.is_empty() {
+            chat.say(Role::System, reply);
+        }
+    }
+    if let Some(trip) = after.trip {
+        travel.next = Some(trip);
+        travel.stop_hosting |= after.stop_hosting;
+        // The request goes on where the trip leads, a few worlds at most.
+        if let Some((note, prompt)) = after.then.filter(|_| chat.hops < MAX_HOPS) {
+            chat.resume = Some(tools::Resume { from: worlds::current_title(&ledger), note, prompt, since: std::time::Instant::now() });
+        }
+    }
+}
+
+/// Serves the world tools to agents. Without it, agents still work blind.
 fn start_tool_server(mut commands: Commands, ledger: Res<Ledger>) {
     match McpServer::start(tools::definitions(&ledger.rules), tools::INSTRUCTIONS) {
         Ok(server) => {
@@ -630,6 +766,8 @@ fn poll_agent(
         Err(e) => {
             warn!("{} failed: {e}", pending.provider.label());
             chat.say(Role::System, format!("⚠ {} failed: {e}", pending.provider.label()));
+            // It didn't finish: what waited for the end of its turn doesn't happen.
+            chat.after = tools::AfterTurn::default();
             keep_original(&mut creations, &mut chat);
             return;
         }
@@ -1643,6 +1781,9 @@ enum Action {
     Deselect,
     KeepTerrain,
     DiscardTerrain,
+    /// Yes or no to what the agent asked to do.
+    Allow,
+    Deny,
     SelectArea,
     ClearArea,
     Claim,
@@ -2134,6 +2275,22 @@ fn chat_panel(
                         let (name, color) = sender(&Role::Agent(pending.provider.label()), &me, mine, p);
                         ui.add_space(12.0);
                         chat.activity.show(ui, &name, color);
+                        if let Some(ask) = &chat.asking {
+                            ui.add_space(8.0);
+                            theme::card(ui, p.warn, |ui| {
+                                theme::card_title(ui, icon::QUESTION, &format!("{name} wants to"));
+                                ui.label(egui::RichText::new(&ask.what).color(p.strong));
+                                ui.add_space(2.0);
+                                ui.horizontal(|ui| {
+                                    if ui.add(theme::Block::new(format!("{} Allow", icon::CHECK), theme::Tone::Primary)).clicked() {
+                                        action = Some(Action::Allow);
+                                    }
+                                    if ui.add(theme::Block::new(format!("{} No", icon::X), theme::Tone::Plain)).clicked() {
+                                        action = Some(Action::Deny);
+                                    }
+                                });
+                            });
+                        }
                     }
                     ui.add_space(12.0);
                 });
@@ -2170,6 +2327,7 @@ fn chat_panel(
                 landscape: &mut landscape,
                 travel: &mut travel,
                 at: players.single().map_or([0.0; 3], |t| t.translation.to_array()),
+                agent: None,
             };
             run_command(&mut chat, text.trim(), cx);
         }
@@ -2249,6 +2407,17 @@ fn chat_panel(
                     format!("Released {n} parcel(s).")
                 };
                 chat.say(Role::System, message);
+            }
+        }
+        Some(Action::Allow) => {
+            if let Some(ask) = chat.asking.take() {
+                let at = players.single().map_or([0.0; 3], |t| t.translation.to_array());
+                ask.allow(&mut chat, &mut ledger, &mut world, &mut creations, &mut landscape, at);
+            }
+        }
+        Some(Action::Deny) => {
+            if let Some(ask) = chat.asking.take() {
+                ask.refuse("the player said no");
             }
         }
         Some(Action::Stop) => {

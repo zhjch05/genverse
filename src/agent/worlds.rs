@@ -851,6 +851,7 @@ pub fn worlds_window(
         landscape: &mut landscape,
         travel: &mut travel,
         at: hero.to_array(),
+        agent: None,
     };
     let reply = Some(ops::said(ops::run(op, args, cx)));
     if let Some(reply) = reply.filter(|r| !r.is_empty()) {

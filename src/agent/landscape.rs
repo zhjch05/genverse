@@ -135,6 +135,28 @@ impl Landscape {
         Some((id, name))
     }
 
+    /// Reshapes `area` at once, with no selection and no preview (the agent's
+    /// `change_land`): compiled against the ground as it is, applied and recorded.
+    /// Returns its name and what it did.
+    pub fn change(
+        &mut self,
+        world: &mut VoxelWorld,
+        ledger: &mut Ledger,
+        spec: TerrainSpec,
+        area: Area,
+        prompt: String,
+        provider: String,
+    ) -> Result<(String, SculptStats), PreviewError> {
+        if self.draft.is_some() {
+            return Err(PreviewError::Refused("the player has a land preview open; they keep it or put it back first".into()));
+        }
+        let edit = prepare(world, ledger, &spec, area)?;
+        let before = apply(world, &edit.edits);
+        self.draft = Some(TerrainDraft { spec, prompt, provider, area, stats: edit.stats, before });
+        let (_, name) = self.keep(world, ledger).expect("the draft was just set");
+        Ok((name, edit.stats))
+    }
+
     pub fn discard(&mut self, world: &mut VoxelWorld) {
         if let Some(draft) = self.draft.take() {
             revert(world, &draft.before);

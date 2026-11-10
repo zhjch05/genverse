@@ -50,6 +50,34 @@ pub struct Creations {
     /// and taken back if it refuses them.
     history: Vec<Change>,
     next_id: u64,
+    /// Builds placed, changed or removed without a draft (the agent's, by op), for
+    /// [`show_builds`] to bring into view.
+    shown: Vec<Shown>,
+}
+
+/// What [`show_builds`] has to do for a build changed without a draft.
+enum Shown {
+    Put(Box<SavedCreation>),
+    Gone(u64),
+}
+
+/// Who a change without a draft is recorded for: the agent and the request, if any.
+pub type Asked<'a> = Option<(&'a str, &'a str)>;
+
+/// Whether the land rules, budgets and rates allow a build of `stats` at `position`,
+/// in place of `old` if it moves or revises one (which also needs rights where it stood).
+pub fn allowed(ledger: &Ledger, position: Vec3, yaw: f32, size: &[i64], stats: BuildStats, old: Option<&SavedCreation>) -> Result<(), String> {
+    let here = genverse_rules::land::build_parcels(position, yaw, size);
+    let mut parcels = here.clone();
+    parcels.extend(old.map(parcels_of).unwrap_or_default());
+    ledger.check(&parcels)?;
+    let old = old.and_then(|r| ledger.footprints.get(&r.build));
+    let new = Footprint {
+        owner: old.map_or(ledger.profile.id.clone(), |o| o.owner.clone()),
+        parcels: here,
+        usage: Usage { builds: 1, voxels: stats.voxels, faces: stats.faces, glow: stats.glow, terrain: 0 },
+    };
+    ledger.budgets.check(&new, old, &ledger.rules.budgets).and_then(|_| ledger.check_rate(stats.voxels))
 }
 
 /// A change shown before the server took it, with its reference.
@@ -210,20 +238,7 @@ impl Creations {
     pub fn check_draft(&self, transform: &Transform, ledger: &Ledger) -> Option<String> {
         let draft = self.draft.as_ref()?;
         let yaw = transform.rotation.to_euler(EulerRot::YXZ).0;
-        let here = genverse_rules::land::build_parcels(transform.translation, yaw, &draft.spec.size);
-        let mut parcels = here.clone();
-        parcels.extend(draft.replaces.as_ref().map(parcels_of).unwrap_or_default());
-        if let Err(why) = ledger.check(&parcels) {
-            return Some(why);
-        }
-        let old = draft.replaces.as_ref().and_then(|r| ledger.footprints.get(&r.build));
-        let s = draft.stats;
-        let new = Footprint {
-            owner: old.map_or(ledger.profile.id.clone(), |o| o.owner.clone()),
-            parcels: here,
-            usage: Usage { builds: 1, voxels: s.voxels, faces: s.faces, glow: s.glow, terrain: 0 },
-        };
-        ledger.budgets.check(&new, old, &ledger.rules.budgets).and_then(|_| ledger.check_rate(s.voxels)).err()
+        allowed(ledger, transform.translation, yaw, &draft.spec.size, draft.stats, draft.replaces.as_ref()).err()
     }
 
     /// Starts a new following draft that copies a placed build (Minecraft's pick block).
@@ -327,20 +342,11 @@ impl Creations {
         }
         let draft = self.draft.take().expect("checked above");
         commands.entity(draft.entity).remove::<DraftMarker>().insert(SolidModel);
-        let known = self.placed.iter().map(|(_, c)| c.build).chain(ledger.builds.keys().copied());
-        self.next_id = self.next_id.max(known.max().map_or(1, |b| b + 1));
-        // An edit keeps its original id. Online, others pick ids at the same time, so a
-        // new build takes a random one instead of the next.
-        let build = draft.replaces.as_ref().map(|r| r.build).unwrap_or_else(|| {
-            if ledger.is_online() {
-                let mut bytes = [0u8; 8];
-                let _ = getrandom::fill(&mut bytes);
-                // Kept below 2^53 so it survives JSON readers that use doubles.
-                return u64::from_le_bytes(bytes) >> 11;
-            }
-            self.next_id += 1;
-            self.next_id - 1
-        });
+        // An edit keeps its original id.
+        let build = match draft.replaces.as_ref() {
+            Some(replaced) => replaced.build,
+            None => self.fresh_id(ledger),
+        };
         let saved = SavedCreation {
             build,
             name: draft.spec.name.clone(),
@@ -373,6 +379,65 @@ impl Creations {
         Ok(name)
     }
 
+    /// An id for a new build. Online, others pick ids at the same time, so it's a
+    /// random one instead of the next.
+    fn fresh_id(&mut self, ledger: &Ledger) -> u64 {
+        if ledger.is_online() {
+            let mut bytes = [0u8; 8];
+            let _ = getrandom::fill(&mut bytes);
+            // Kept below 2^53 so it survives JSON readers that use doubles.
+            return u64::from_le_bytes(bytes) >> 11;
+        }
+        let known = self.placed.iter().map(|(_, c)| c.build).chain(ledger.builds.keys().copied());
+        self.next_id = self.next_id.max(known.max().map_or(1, |b| b + 1));
+        self.next_id += 1;
+        self.next_id - 1
+    }
+
+    /// A build the draft is a revision of can't be changed under it.
+    fn not_the_draft(&self, build: u64) -> Result<(), String> {
+        match self.draft.as_ref().and_then(|d| d.replaces.as_ref()) {
+            Some(replaced) if replaced.build == build => Err(format!("Build {build} is the draft the player is revising: change it through your answer's \"build\".")),
+            _ => Ok(()),
+        }
+    }
+
+    /// Places a build where it says, without a draft (the agent's `place_build`), if
+    /// the land rules allow it there. Returns its id.
+    pub fn place(&mut self, ledger: &mut Ledger, mut saved: SavedCreation, stats: BuildStats, by: Asked) -> Result<u64, String> {
+        allowed(ledger, saved.position.into(), saved.yaw, &saved.spec.size, stats, None).map_err(|why| format!("Can't place it there: {why}."))?;
+        saved.build = self.fresh_id(ledger);
+        let change = ledger.record_checked(by.map(|b| b.0), by.map(|b| b.1), Action::PlaceBuild(saved.clone()))?;
+        self.history.push(Change::Placed { build: saved.build, change });
+        let build = saved.build;
+        self.shown.push(Shown::Put(Box::new(saved)));
+        Ok(build)
+    }
+
+    /// Moves or revises a placed build (`saved` is its whole new state, under its id),
+    /// without a draft.
+    pub fn change(&mut self, ledger: &mut Ledger, saved: SavedCreation, stats: BuildStats, by: Asked) -> Result<(), String> {
+        self.not_the_draft(saved.build)?;
+        let before = ledger.builds.get(&saved.build).cloned().ok_or(format!("There's no build {}.", saved.build))?;
+        allowed(ledger, saved.position.into(), saved.yaw, &saved.spec.size, stats, Some(&before)).map_err(|why| format!("Can't change it: {why}."))?;
+        let change = ledger.record_checked(by.map(|b| b.0), by.map(|b| b.1), Action::UpdateBuild(saved.clone()))?;
+        self.history.push(Change::Replaced { before, change });
+        self.shown.push(Shown::Put(Box::new(saved)));
+        Ok(())
+    }
+
+    /// Removes a placed build by id, without selecting it. Returns its name.
+    pub fn delete(&mut self, ledger: &mut Ledger, build: u64, by: Asked) -> Result<String, String> {
+        self.not_the_draft(build)?;
+        let before = ledger.builds.get(&build).cloned().ok_or(format!("There's no build {build}."))?;
+        ledger.check(&parcels_of(&before)).and_then(|_| ledger.check_rate(0)).map_err(|why| format!("Can't remove it: {why}."))?;
+        let change = ledger.record_checked(by.map(|b| b.0), by.map(|b| b.1), Action::RemoveBuild { build })?;
+        let name = before.name.clone();
+        self.history.push(Change::Deleted { before, change });
+        self.shown.push(Shown::Gone(build));
+        Ok(name)
+    }
+
     fn take_placed(&mut self, commands: &mut Commands, build: u64) -> Option<(Entity, SavedCreation)> {
         let index = self.placed.iter().position(|(_, c)| c.build == build)?;
         let (entity, saved) = self.placed.remove(index);
@@ -388,6 +453,26 @@ impl Creations {
         let entity = spawn_placed(commands, &build.model, &saved);
         self.placed.push((entity, saved));
         Some(entity)
+    }
+}
+
+/// Brings into view the builds placed, changed and removed without a draft. A build
+/// that was selected stays selected.
+pub fn show_builds(mut commands: Commands, mut creations: ResMut<Creations>) {
+    if creations.shown.is_empty() {
+        return;
+    }
+    for shown in std::mem::take(&mut creations.shown) {
+        match shown {
+            Shown::Put(build) => {
+                let selected = creations.selected().is_some_and(|s| s.build == build.build);
+                creations.upsert(&mut commands, &build);
+                if selected {
+                    creations.selected = creations.placed.iter().find(|(_, c)| c.build == build.build).map(|(e, _)| *e);
+                }
+            }
+            Shown::Gone(build) => creations.remove(&mut commands, build),
+        }
     }
 }
 

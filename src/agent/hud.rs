@@ -182,6 +182,8 @@ pub fn draw_game_world(mut commands: Commands, mut ledger: ResMut<Ledger>, mut w
         for change in changes {
             match change {
                 WorldChange::Build { .. } | WorldChange::Unbuild { .. } => builds = true,
+                // The ledger holds portals; nothing to draw.
+                WorldChange::Portal { .. } => {}
                 WorldChange::Terrain { package, area, spec } => {
                     let ground = ground_columns(world.terrain, area, &world.edits_in_area(area));
                     match sculpt::compile(&spec, area, world.terrain, ground, &ledger.rules.terrain) {

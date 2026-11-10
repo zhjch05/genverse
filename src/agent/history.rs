@@ -149,6 +149,7 @@ pub fn history_window(
         landscape: &mut landscape,
         travel: &mut travel,
         at: [0.0; 3],
+        agent: None,
     };
     let reply = ops::said(match pick {
         Pick::Undo(id) => ops::run("undo", json!({ "id": id }), cx),

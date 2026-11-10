@@ -75,7 +75,8 @@ A game isn't only something players put down. Installed, it can be the whole wor
   greeted again.
 - **It acts on players.** `chase(id, player)` runs a piece after a player (re-aimed every
   2 s, `on_catch` within reach); `teleport(player, pos)` moves a hero (each teleport is
-  shown once); `spawn_point(pos)` is where players appear; F attacks the piece in reach
+  shown once); `travel(player, world)` sends them to another world of the game with what
+  they carry, as through a portal, and `portal(build, to)` links a build the game placed; `spawn_point(pos)` is where players appear; F attacks the piece in reach
   (`Intent::Hit`, `on_hit`). Health, score and the like are stats. `body(player, {speed,
   jump, gravity, air_jumps})` changes how a hero moves until it's put back, and
   `launch(player, velocity)` throws one (each throw is felt once). A hero rides their pawn

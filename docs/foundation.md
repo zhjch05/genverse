@@ -17,7 +17,7 @@ Two rules decide what goes in the engine:
 
 Each step ends by rerunning the request set in [`evals/`](../evals/README.md).
 
-Status: all six steps are built, including `ground(x, z)`, `name(player)`,
+Status: steps one to six are built, and seven as far as the agent's tools go (ops, building and land anywhere). They include `ground(x, z)`, `name(player)`,
 `set_time(t)`, and packages recording the scripting API they were written for. One
 thing is left: game scripts and player scripts don't run in the web build yet. The Lua
 engine used here (mlua with Luau) doesn't build for the browser, so that needs a Lua
@@ -127,3 +127,48 @@ the log.
   - running player scripts
 - **Screenshots:** `look(at, from)` renders the world and returns the image, so the
   agent sees what it made.
+
+## 7. What a player can do, the agent can do
+
+The agent used to change the world only through its answer (one build, land in a
+selected area, a portal's target) and by editing package files. Everything else the
+game can do sat behind chat commands and the Game window, out of its reach: asked for a
+new world, it could only tell the player where the button was.
+
+- **Ops** (`src/agent/ops.rs`): each thing a player can do to the game and its worlds is
+  one entry: a name, its arguments, who may do it, and the code. Chat commands, the Game
+  window and the history panel all go through it, and the agent gets every op as a tool.
+  A new op reaches all of them at once.
+- **As the player:** an op changes the world through the ledger, signed by the player,
+  with the agent and the request kept on the change. Land, admin and rate rules hold.
+- **Asked first:** what can't be undone or takes the player online (removing a world,
+  loading a save, hosting, joining, leaving, taking a package out of the game) shows a
+  card in the chat, and happens on Allow.
+- **At the end of the turn:** going to another world, hosting and joining wait until the
+  agent answers, so the world it's working in doesn't change under it.
+- **The folder follows:** `GAME.md` shows the game (worlds, saves, packages, whether the
+  player is an admin), and the view is rewritten after each op, leaving the packages
+  the agent is editing as they are.
+- **No gaps by accident:** a new kind of change in the log doesn't compile until
+  `ops.rs` says which op makes it, or why none does.
+
+- **Building and land, anywhere:** `place_build` puts an object where the agent says
+  (any number in one request, on the ground there, facing the player unless told
+  otherwise), `change_build` moves, turns or redesigns one by id, `remove_build` takes
+  one away, and `change_land` reshapes an area the agent chooses (`sample_terrain` reads
+  any rectangle of the world first). They happen at once and undo takes them back. The
+  previews stay for what the player points at: one new object with no place named is
+  still a draft they place, and a selected area still gets a land preview.
+
+- **Games reach other worlds too:** `travel(player, world)` sends a player to another
+  world of the game with what they carry, and `portal(build, to)` links a build the
+  game placed. Scripts don't list the game's worlds: replaying a world's log must not
+  depend on anything outside it, so the agent writes the names in (`GAME.md` has them).
+
+- **A request can cross worlds:** a trip may carry `then`, the agent's note on what is
+  left to do where it leads. When the player has arrived, the agent is started again
+  there with that world's folder, the note and the conversation, up to three worlds
+  per request. "A dungeon world, a portal to it here, and one back from there" is one
+  request.
+
+Next: claiming and releasing parcels as ops.

@@ -459,6 +459,17 @@ impl Ledger {
         self.record_with(agent, prompt, action, None)
     }
 
+    /// [`Self::record`], saying why if the world didn't take the change (offline; online,
+    /// the server answers later).
+    pub fn record_checked(&mut self, agent: Option<&str>, prompt: Option<&str>, action: Action) -> Result<u64, String> {
+        self.refused = None;
+        let change = self.record(agent, prompt, action);
+        match self.refused.take() {
+            Some(why) => Err(why),
+            None => Ok(change),
+        }
+    }
+
     /// [`Self::record`], with the package an [`Action::InstallPackage`] names (online,
     /// it goes to the server along with the change).
     fn record_with(&mut self, agent: Option<&str>, prompt: Option<&str>, action: Action, package: Option<Package>) -> u64 {
