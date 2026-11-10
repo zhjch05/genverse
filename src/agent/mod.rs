@@ -15,6 +15,8 @@ mod commands;
 mod creations;
 mod fps;
 mod game;
+#[cfg(test)]
+mod gate;
 mod history;
 mod hud;
 mod inventory;
@@ -23,6 +25,7 @@ mod landscape;
 mod loading;
 mod mcp;
 mod ops;
+mod panels;
 mod online;
 mod prefs;
 mod presence;
@@ -117,7 +120,9 @@ impl Plugin for AgentPlugin {
             .init_gizmo_group::<AreaGizmos>()
             .init_gizmo_group::<presence::RingGizmos>()
             .add_systems(Startup, (attach_interface.after(graphics::spawn_screen), settings::load_settings))
-            .add_systems(Startup, ops::load_bindings)
+            .init_resource::<panels::Panels>()
+            .add_systems(Startup, (ops::load_bindings, panels::load_panels))
+            .add_systems(EguiPrimaryContextPass, panels::panel_windows.after(chat_panel))
             .add_systems(Startup, (load_creations, configure_area_gizmos, presence::configure_ring_gizmos, start_tool_server, lan::start_listening))
             .add_systems(
                 Update,
@@ -128,7 +133,7 @@ impl Plugin for AgentPlugin {
                     (online::sync_online, lan::update_lan, update_build_site, answer_tool_calls, poll_agent, finish_turn, resume_turn, creations::show_builds).chain(),
                     (presence::send_presence, presence::move_avatars, presence::draw_peers, history::toggle_history, (loading::track_loading, fps::track_frames).chain()),
                     auto_prompt,
-                    (game::script_play.after(auto_prompt), game::run_timers, game::play_keys, game::sync_pieces, game::walk_pieces, game::follow_teleports, game::follow_travels, game::follow_body, game::use_pieces, worlds::use_portals, hud::draw_game_world, history::follow_ledger)
+                    (game::script_play.after(auto_prompt), game::run_timers, game::play_keys, game::sync_pieces, game::walk_pieces, game::follow_teleports, game::follow_travels, game::follow_body, game::sync_game_actions, game::use_pieces, worlds::use_portals, hud::draw_game_world, history::follow_ledger)
                         .chain(),
                     worlds::toggle_worlds,
                     (inventory::sync_inventory, inventory::inventory_keys, inventory::use_held, shortcuts, select_area, follow_cursor, check_clearance, click_in_world, outline_creations, draw_area, highlight_area, draw_parcels)
@@ -557,7 +562,7 @@ fn auto_prompt(
     mut world: ResMut<VoxelWorld>,
     mut ledger: ResMut<Ledger>,
     mut travel: ResMut<worlds::Travel>,
-    (mut binds, mut graphics): (ResMut<Bindings>, ResMut<crate::graphics::Graphics>),
+    (mut binds, mut graphics, mut panels): (ResMut<Bindings>, ResMut<crate::graphics::Graphics>, ResMut<panels::Panels>),
     players: Query<(&Player, &Transform)>,
     cameras: Query<&GlobalTransform, With<Camera3d>>,
 ) {
@@ -610,6 +615,7 @@ fn auto_prompt(
                     agent: None,
                     binds: &mut binds,
                     graphics: &mut graphics,
+                    panels: &mut panels,
                 };
                 run_command(&mut chat, command.trim(), cx);
             }
@@ -658,7 +664,7 @@ fn finish_turn(
     mut creations: ResMut<Creations>,
     mut landscape: ResMut<Landscape>,
     mut travel: ResMut<worlds::Travel>,
-    (mut binds, mut graphics): (ResMut<Bindings>, ResMut<crate::graphics::Graphics>),
+    (mut binds, mut graphics, mut panels): (ResMut<Bindings>, ResMut<crate::graphics::Graphics>, ResMut<panels::Panels>),
     players: Query<&Transform, With<Player>>,
 ) {
     if chat.pending.is_some() || chat.after.is_empty() {
@@ -683,6 +689,7 @@ fn finish_turn(
             agent: None,
             binds: &mut binds,
             graphics: &mut graphics,
+            panels: &mut panels,
         };
         let reply = ops::said(ops::run(name, args, cx));
         info!("after the agent's turn, {name} -> {reply}");
@@ -736,6 +743,7 @@ fn poll_agent(
     mut ledger: ResMut<Ledger>,
     site: Res<BuildSite>,
     tools: Option<Res<McpServer>>,
+    mut panels: ResMut<panels::Panels>,
     drafts: Query<&Transform, With<DraftMarker>>,
 ) {
     let Some(pending) = &chat.pending else {
@@ -758,6 +766,19 @@ fn poll_agent(
         return;
     };
     let pending = chat.pending.take().expect("checked above");
+    // The panels it wrote in its folder are the player's now.
+    if let Some(folder) = workspace::current() {
+        let (done, wrong) = panels::take_from(&folder);
+        if !done.is_empty() || !wrong.is_empty() {
+            panels.reload();
+        }
+        for note in done {
+            chat.say(Role::System, note);
+        }
+        for why in wrong {
+            chat.say(Role::System, format!("⚠ {why}"));
+        }
+    }
     // The feed folds into one line once the work is over.
     if let Some(worked) = chat.activity.summary() {
         chat.say(Role::System, worked);
@@ -1206,7 +1227,7 @@ fn check_clearance(
 fn click_in_world(
     mut commands: Commands,
     time: Res<Time>,
-    buttons: Res<ButtonInput<MouseButton>>,
+    binds: Res<Bindings>,
     windows: Query<&Window, With<PrimaryWindow>>,
     cameras: Query<(&Camera, &GlobalTransform), With<Camera3d>>,
     over_ui: Res<PointerOverUi>,
@@ -1227,12 +1248,14 @@ fn click_in_world(
     let Some((cursor, ray)) = cursor_ray(&windows, &cameras, &over_ui) else {
         return;
     };
+    // A click is a press and a release in the same spot (a drag looks around), on
+    // whatever the player has these three on.
     let mut clicked = [false; 3];
-    for (i, button) in [MouseButton::Left, MouseButton::Right, MouseButton::Middle].into_iter().enumerate() {
-        if buttons.just_pressed(button) {
+    for (i, action) in ["click", "cancel", "copy"].into_iter().enumerate() {
+        if binds.just_pressed(action) {
             pressed_at[i] = Some(cursor);
         }
-        if buttons.just_released(button) {
+        if binds.just_released(action) {
             clicked[i] = pressed_at[i].take().is_some_and(|start| start.distance(cursor) <= 5.0);
         }
     }
@@ -1288,21 +1311,23 @@ fn shortcut_hints(
 ) -> Result {
     // Each hint names the keys the player has on that action now.
     let k = |action: &str| binds.label(action);
+    // What the mouse does by pointing keeps its usual name ("Click") until it's moved.
+    let m = |action: &str, usual: &str| if binds.is_usual(action) { usual.to_string() } else { binds.label(action) };
     let pair = |a: &str, b: &str| format!("{}/{}", binds.short(a), binds.short(b));
     let hand = || if (1..=9).all(|i| binds.short(&format!("hand_{i}")) == i.to_string()) { "1-9".to_string() } else { format!("{}…", binds.short("hand_1")) };
     let actions: Vec<(String, &str)> = match &creations.draft {
         Some(d) if d.follow => vec![
-            ("Click".into(), "place"),
+            (m("click", "Click"), "place"),
             (pair("turn_left", "turn_right"), "turn"),
             (pair("raise", "lower"), "raise / lower"),
             (k("chat"), "ask for changes"),
-            ("Esc or right-click".into(), "cancel"),
+            (format!("Esc or {}", m("cancel", "right-click")), "cancel"),
         ],
         Some(_) => vec![("Enter".into(), "keep the change"), (k("move_build"), "move it"), (k("chat"), "ask for more"), ("Esc".into(), "cancel")],
         None if landscape.draft.is_some() => {
             vec![("Enter".into(), "keep the change"), (k("chat"), "ask for changes"), ("Esc".into(), "put the ground back")]
         }
-        None if landscape.selecting => vec![("Drag".into(), "select an area (a click: 6 m)"), (format!("{} or Esc", k("select_area")), "stop")],
+        None if landscape.selecting => vec![(m("click", "Drag"), "select an area (a click: 6 m)"), (format!("{} or Esc", k("select_area")), "stop")],
         None if play.playing.is_some() => {
             vec![(binds.movement(), "move"), (k("reset"), "reset"), (k("use"), "action"), ("Esc".into(), "leave the game")]
         }
@@ -1310,7 +1335,7 @@ fn shortcut_hints(
             (k("chat"), "change it"),
             (format!("{} or double-click", k("move_build")), "move"),
             (binds.short("remove_build").into(), "remove"),
-            ("Middle-click".into(), "copy"),
+            (m("copy", "Middle-click"), "copy"),
             ("Ctrl/Cmd+Z".into(), "undo"),
             ("Esc".into(), "deselect"),
         ],
@@ -1324,7 +1349,7 @@ fn shortcut_hints(
         None if play.near.is_some() && inventory.held().is_some() => vec![
             (k("use"), "use"),
             (k("hit"), "hit"),
-            ("Right-click".into(), "use what's in hand on it"),
+            (m("use_held", "Right-click"), "use what's in hand on it"),
             (hand(), "hand"),
             (k("inventory"), "inventory"),
             (k("chat"), "describe a build"),
@@ -1335,24 +1360,24 @@ fn shortcut_hints(
             (k("hit"), "hit"),
             (k("chat"), "describe a build"),
             (k("select_area"), "reshape the ground"),
-            ("Click".into(), "select a build"),
+            (m("click", "Click"), "select a build"),
             (k("parcels"), "land"),
             (k("history"), "history"),
         ],
         None if inventory.held().is_some() => vec![
-            ("Right-click".into(), "put down what's in hand"),
+            (m("use_held", "Right-click"), "put down what's in hand"),
             (hand(), "hand"),
             (k("inventory"), "inventory"),
             (k("chat"), "describe a build"),
             (k("select_area"), "reshape the ground"),
-            ("Click".into(), "select a build"),
+            (m("click", "Click"), "select a build"),
             (k("history"), "history"),
         ],
         None => vec![
             (k("chat"), "describe a build"),
             (k("select_area"), "reshape the ground"),
-            ("Click".into(), "select a build"),
-            ("Middle-click".into(), "copy a build"),
+            (m("click", "Click"), "select a build"),
+            (m("copy", "Middle-click"), "copy a build"),
             (k("parcels"), "land"),
             (k("history"), "history"),
             (k("game_window"), "worlds"),
@@ -1361,14 +1386,20 @@ fn shortcut_hints(
     let actions: Vec<(&str, &str)> = actions.iter().map(|(keys, what)| (keys.as_str(), *what)).collect();
     let actions = actions.as_slice();
     // Looking around turns to the right button while the left one selects ground.
-    let look = if landscape.selecting || landscape.draft.is_some() { "Right-drag" } else { "Drag" };
+    let look = if !binds.is_usual("look") || !binds.is_usual("click") {
+        format!("Hold {}", binds.label("look"))
+    } else if landscape.selecting || landscape.draft.is_some() {
+        "Right-drag".to_string()
+    } else {
+        "Drag".to_string()
+    };
     let builder = if chat.open { "hide builder" } else { "builder" };
     let (movement, run, jump, view, panel, hints) = (binds.movement(), k("run"), k("jump"), k("view"), k("builder"), k("hints"));
     let moving = [
         (movement.as_str(), "move"),
         (run.as_str(), "run"),
         (jump.as_str(), "jump"),
-        (look, "look"),
+        (look.as_str(), "look"),
         ("Scroll", "zoom"),
         (view.as_str(), "view"),
         (panel.as_str(), builder),
@@ -1828,7 +1859,7 @@ enum Action {
 
 fn chat_panel(
     mut contexts: EguiContexts,
-    (mut binds, mut graphics): (ResMut<Bindings>, ResMut<crate::graphics::Graphics>),
+    (mut binds, mut graphics, mut panels): (ResMut<Bindings>, ResMut<crate::graphics::Graphics>, ResMut<panels::Panels>),
     egui_input: Res<EguiWantsInput>,
     mut chat: ResMut<Chat>,
     mut creations: ResMut<Creations>,
@@ -2360,6 +2391,7 @@ fn chat_panel(
                 agent: None,
                 binds: &mut binds,
                 graphics: &mut graphics,
+                panels: &mut panels,
             };
             run_command(&mut chat, text.trim(), cx);
         }
@@ -2444,7 +2476,7 @@ fn chat_panel(
         Some(Action::Allow) => {
             if let Some(ask) = chat.asking.take() {
                 let at = players.single().map_or([0.0; 3], |t| t.translation.to_array());
-                ask.allow(&mut chat, &mut ledger, &mut world, &mut creations, &mut landscape, (&mut binds, &mut graphics), at);
+                ask.allow(&mut chat, &mut ledger, &mut world, &mut creations, &mut landscape, (&mut binds, &mut graphics, &mut panels), at);
             }
         }
         Some(Action::Deny) => {

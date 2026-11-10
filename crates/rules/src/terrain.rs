@@ -47,6 +47,9 @@ pub mod block {
     pub const TUFT: VoxelId = 17;
     pub const FLOWERS: [VoxelId; 3] = [18, 19, 20];
     pub const SNOW: VoxelId = 21;
+    /// The first voxel that isn't the ground's own: a world's own blocks start here
+    /// ([`crate::content`]).
+    pub const OWN: VoxelId = 22;
 }
 
 pub fn palette() -> Palette {
@@ -96,13 +99,15 @@ pub fn palette() -> Palette {
     Palette { surfaces, entries }
 }
 
-/// Whether this is ground (as opposed to water, plants, trees, or air).
+/// Whether this is ground (as opposed to water, plants, trees, or air). A world's own
+/// blocks are.
 pub fn is_ground(id: VoxelId) -> bool {
     block::GRASS.contains(&id)
         || block::DIRT.contains(&id)
         || block::STONE.contains(&id)
         || block::SAND.contains(&id)
         || id == block::SNOW
+        || id >= block::OWN
 }
 
 /// Whether the player collides with this block. Water and small plants are walk-through.

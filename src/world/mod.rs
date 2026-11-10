@@ -31,6 +31,7 @@ use crate::voxel::{
     mesher::mesh_region,
     query::{Hit, march},
 };
+use genverse_rules::content::Content;
 use ledger::Ledger;
 use lod::{ColumnGround, LEVELS, Node, TOP, VIEW_DISTANCE, build_coarse, build_coarse_node, coarse_keys, coarse_region, select, span, step};
 use terrain::{Heights, Terrain, VOXEL_SIZE, WORLD_HEIGHT};
@@ -45,7 +46,7 @@ pub struct WorldPlugin;
 impl Plugin for WorldPlugin {
     fn build(&self, app: &mut App) {
         app.add_systems(PreStartup, setup_world)
-            .add_systems(Update, ((stream_chunks, finish_chunks, save_edits).chain(), apply_look));
+            .add_systems(Update, ((follow_content, stream_chunks, finish_chunks, save_edits).chain(), apply_look));
     }
 }
 
@@ -58,6 +59,14 @@ fn apply_look(ledger: Res<Ledger>, mut materials: ResMut<Assets<VoxelMaterial>>)
         if let Some(mut material) = materials.get_mut(id) {
             material.extension.set_width(bevel);
         }
+    }
+}
+
+/// Keeps the ground drawn with the world's blocks as its rules have them now: after a
+/// block is made, changed or taken out, an undo, or a move to another world.
+fn follow_content(ledger: Res<Ledger>, mut world: ResMut<VoxelWorld>, mut materials: ResMut<Assets<VoxelMaterial>>) {
+    if world.content != ledger.rules.content {
+        world.repaint(ledger.rules.content.clone(), &mut materials);
     }
 }
 
@@ -101,6 +110,9 @@ struct PendingColumn {
 pub struct VoxelWorld {
     pub terrain: Terrain,
     palette: Arc<Palette>,
+    /// The blocks the palette was made from ([`Content::palette`]).
+    content: Content,
+    /// One for each of the palette's surfaces: as many whatever blocks there are.
     materials: Vec<Handle<VoxelMaterial>>,
     loaded: HashMap<IVec3, LoadedChunk>,
     pending: HashMap<IVec3, PendingChunk>,
@@ -324,8 +336,8 @@ impl VoxelWorld {
         self.shown.clear();
         self.versions.clear();
         self.terrain = terrain;
-        // Each world's ground has its own colors.
-        self.palette = Arc::new(terrain.palette());
+        // Each world's ground has its own colors; its own blocks follow (`follow_content`).
+        self.palette = Arc::new(self.content.palette(terrain));
         self.edits = default();
         for (p, id) in edits {
             self.edits.entry(chunk_of(p)).or_default().insert(p, id);
@@ -333,6 +345,40 @@ impl VoxelWorld {
         self.edits_version += 1;
         self.unsaved = false;
         self.hold_saves = false;
+    }
+
+    /// Draws the ground with other blocks: materials change where they are, and what's
+    /// loaded is meshed again if a block's color or whether it's see-through changed.
+    pub fn repaint(&mut self, content: Content, materials: &mut Assets<VoxelMaterial>) {
+        let palette = content.palette(self.terrain);
+        for (handle, surface) in self.materials.iter().zip(&palette.surfaces) {
+            if let Some(mut material) = materials.get_mut(handle) {
+                let bevel = material.extension.width();
+                *material = surface.to_material();
+                material.extension.set_width(bevel);
+            }
+        }
+        let look = |p: &Palette| -> Vec<(u32, [u32; 4], bool)> {
+            p.entries.iter().map(|e| (e.variation.to_bits(), e.color.to_f32_array().map(f32::to_bits), p.surfaces[e.surface].is_transparent())).collect()
+        };
+        let recolored = look(&palette) != look(&self.palette);
+        self.palette = Arc::new(palette);
+        self.content = content;
+        if !recolored {
+            return;
+        }
+        // What's building now was meshed with the old colors: it builds again.
+        let chunks: Vec<IVec3> =
+            self.loaded.keys().chain(self.pending.keys()).copied().chain(self.columns.keys().flat_map(|c| Node::of_column(*c).chunks())).collect();
+        for c in chunks {
+            *self.versions.entry(c).or_default() += 1;
+            if self.loaded.contains_key(&c) {
+                self.dirty.insert(c);
+            }
+        }
+        let coarse: Vec<(u32, IVec3)> =
+            self.coarse.keys().chain(self.coarse_pending.keys()).copied().chain(self.coarse_nodes.keys().flat_map(|n| node_coarse(*n))).collect();
+        self.coarse_regen.extend(coarse);
     }
 
     /// Every edit, as `[x, y, z, block]`, for snapshots.
@@ -570,13 +616,14 @@ impl VoxelWorld {
 }
 
 fn setup_world(mut commands: Commands, mut materials: ResMut<Assets<VoxelMaterial>>) {
-    let palette = terrain::palette();
+    let (ledger, loaded) = ledger::load(SEED);
+    let content = ledger.rules.content.clone();
+    let palette = content.palette(ledger.log.terrain());
     let materials = palette
         .surfaces
         .iter()
         .map(|s| materials.add(s.to_material()))
         .collect();
-    let (ledger, loaded) = ledger::load(SEED);
     let mut edits: HashMap<IVec3, HashMap<IVec3, VoxelId>> = default();
     for (p, id) in loaded {
         edits.entry(chunk_of(p)).or_default().insert(p, id);
@@ -585,7 +632,8 @@ fn setup_world(mut commands: Commands, mut materials: ResMut<Assets<VoxelMateria
     commands.insert_resource(ledger);
     commands.insert_resource(VoxelWorld {
         terrain,
-        palette: Arc::new(terrain.palette()),
+        palette: Arc::new(palette),
+        content,
         materials,
         loaded: default(),
         pending: default(),
@@ -910,8 +958,9 @@ mod tests {
     fn world() -> VoxelWorld {
         VoxelWorld {
             terrain: Terrain::new(SEED, false),
-            palette: Arc::new(terrain::palette()),
-            materials: vec![Handle::default(); terrain::palette().surfaces.len()],
+            palette: Arc::new(Content::default().palette(Terrain::new(SEED, false))),
+            content: default(),
+            materials: vec![Handle::default(); 3 + genverse_rules::content::MAX_BLOCKS],
             loaded: default(),
             pending: default(),
             columns: default(),

@@ -147,7 +147,7 @@ pub fn inventory_keys(
 #[allow(clippy::too_many_arguments)]
 pub fn use_held(
     time: Res<Time>,
-    buttons: Res<ButtonInput<MouseButton>>,
+    binds: Res<crate::bindings::Bindings>,
     windows: Query<&Window, With<PrimaryWindow>>,
     cameras: Query<(&Camera, &GlobalTransform), With<Camera3d>>,
     over_ui: Res<PointerOverUi>,
@@ -164,11 +164,11 @@ pub fn use_held(
     let Some(item) = inventory.held().map(str::to_string) else { return };
     let Some((cursor, ray)) = cursor_ray(&windows, &cameras, &over_ui) else { return };
     let busy = creations.draft.is_some() || creations.selected.is_some() || landscape.selecting || landscape.draft.is_some() || inventory.open;
-    if buttons.just_pressed(MouseButton::Right) {
+    if binds.just_pressed("use_held") {
         *pressed = (!busy).then_some(cursor);
     }
     // A click, not a drag to look around.
-    if !buttons.just_released(MouseButton::Right) || !pressed.take().is_some_and(|at| at.distance(cursor) <= 5.0) {
+    if !binds.just_released("use_held") || !pressed.take().is_some_and(|at| at.distance(cursor) <= 5.0) {
         return;
     }
     let now_s = time.elapsed_secs();

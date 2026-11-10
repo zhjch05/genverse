@@ -468,7 +468,7 @@ pub fn worlds_window(
     mut landscape: ResMut<Landscape>,
     mut chat: ResMut<Chat>,
     mut binds: ResMut<crate::bindings::Bindings>,
-    mut graphics: ResMut<crate::graphics::Graphics>,
+    (mut graphics, mut panels): (ResMut<crate::graphics::Graphics>, ResMut<super::panels::Panels>),
     heroes: Query<&Transform, With<Player>>,
 ) -> Result {
     if !window.open {
@@ -867,6 +867,7 @@ pub fn worlds_window(
         agent: None,
         binds: &mut binds,
         graphics: &mut graphics,
+        panels: &mut panels,
     };
     let reply = Some(ops::said(ops::run(op, args, cx)));
     if let Some(reply) = reply.filter(|r| !r.is_empty()) {

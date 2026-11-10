@@ -9,6 +9,7 @@ use bevy_color::prelude::*;
 use bevy_math::prelude::*;
 use serde::{Deserialize, Serialize};
 
+use crate::content::{self, Tune};
 use crate::{logic::data::GameSpec, sculpt::TerrainSpec};
 use crate::voxel::{
     ModelData,
@@ -98,6 +99,9 @@ pub struct ColorSpec {
     pub name: String,
     pub hex: String,
     pub material: String,
+    /// What this color changes about its material ([`crate::content`]).
+    #[serde(flatten)]
+    pub tune: Tune,
 }
 
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
@@ -153,12 +157,12 @@ pub fn compile(spec: &BuildSpec, limits: &BuildLimits) -> Result<CompiledBuild, 
     }
     let size = UVec3::new(spec.size[0] as u32, spec.size[1] as u32, spec.size[2] as u32);
 
-    let mut surfaces = vec![
-        SurfaceDef { name: "matte".into(), roughness: 0.9, metallic: 0.0, reflectance: 0.35, emissive: None, alpha: 1.0 },
-        SurfaceDef { name: "glossy".into(), roughness: 0.25, metallic: 0.0, reflectance: 0.5, emissive: None, alpha: 1.0 },
-        SurfaceDef { name: "metal".into(), roughness: 0.35, metallic: 0.9, reflectance: 0.5, emissive: None, alpha: 1.0 },
-        SurfaceDef { name: "glass".into(), roughness: 0.05, metallic: 0.0, reflectance: 0.6, emissive: None, alpha: 0.45 },
-    ];
+    // The plain materials, shared by every color that doesn't change them.
+    let mut surfaces: Vec<SurfaceDef> = content::MATERIALS
+        .iter()
+        .filter(|(_, finish, _)| finish.glow == 0.0)
+        .map(|(name, f, _)| SurfaceDef { name: name.to_string(), roughness: f.roughness, metallic: f.metallic, reflectance: f.reflectance, emissive: None, alpha: f.alpha })
+        .collect();
     let mut palette = Vec::new();
     for (i, c) in spec.palette.iter().enumerate() {
         if c.name == "air" || spec.palette[..i].iter().any(|o| o.name == c.name) {
@@ -168,25 +172,27 @@ pub fn compile(spec: &BuildSpec, limits: &BuildLimits) -> Result<CompiledBuild, 
             errors.push(format!("color {:?} has invalid hex {:?}", c.name, c.hex));
             continue;
         }
-        let surface = match c.material.as_str() {
-            "matte" | "glossy" | "metal" | "glass" => c.material.clone(),
-            "glow" => {
-                // Emission is per surface, so each glowing color gets its own.
-                let name = format!("glow_{i}");
-                surfaces.push(SurfaceDef {
-                    name: name.clone(),
-                    roughness: 0.5,
-                    metallic: 0.0,
-                    reflectance: 0.4,
-                    emissive: Some((c.hex.clone(), 6_000.0)),
-                    alpha: 1.0,
-                });
-                name
-            }
-            other => {
-                errors.push(format!("color {:?} has unknown material {other:?}", c.name));
+        let finish = match content::check(&c.material, &c.tune) {
+            Ok(finish) => finish,
+            Err(e) => {
+                errors.push(format!("color {:?}: {e}", c.name));
                 continue;
             }
+        };
+        let surface = if c.tune.is_plain() && finish.glow == 0.0 {
+            c.material.clone()
+        } else {
+            // Emission is per surface, and so is a color's own finish: each gets its own.
+            let name = format!("{}_{i}", if c.tune.is_plain() { "glow" } else { "own" });
+            surfaces.push(SurfaceDef {
+                name: name.clone(),
+                roughness: finish.roughness,
+                metallic: finish.metallic,
+                reflectance: finish.reflectance,
+                emissive: (finish.glow > 0.0).then(|| (c.hex.clone(), finish.light())),
+                alpha: finish.alpha,
+            });
+            name
         };
         palette.push(PaletteDef { name: c.name.clone(), color: c.hex.clone(), surface, variation: 0.04 });
     }
@@ -309,8 +315,8 @@ mod tests {
             name: "Lamp post".into(),
             size: vec![7, 22, 7],
             palette: vec![
-                ColorSpec { name: "iron".into(), hex: "#3d4248".into(), material: "metal".into() },
-                ColorSpec { name: "light".into(), hex: "#ffd88a".into(), material: "glow".into() },
+                ColorSpec { name: "iron".into(), hex: "#3d4248".into(), material: "metal".into(), tune: Tune::default() },
+                ColorSpec { name: "light".into(), hex: "#ffd88a".into(), material: "glow".into(), tune: Tune::default() },
             ],
             shapes: vec![
                 shape("box", "iron", [1.0, 0.0, 1.0], [6.0, 2.0, 6.0]),
@@ -342,12 +348,61 @@ mod tests {
     }
 
     #[test]
+    fn a_color_tunes_its_material() {
+        let mut spec = lamp();
+        // Iron that glows a little, and a light that's see-through.
+        spec.palette[0].tune = Tune { glow: Some(0.5), ..Default::default() };
+        spec.palette[1].tune = Tune { alpha: Some(0.5), ..Default::default() };
+        let build = compile(&spec, &BuildLimits::default()).expect("in range");
+        let palette = &build.model.palette;
+        let (iron, light) = (palette.find("iron").unwrap(), palette.find("light").unwrap());
+        assert_ne!(palette.surface_of(iron).emissive, LinearRgba::BLACK);
+        assert_eq!((palette.surface_of(iron).metallic, palette.surface_of(light).alpha), (0.9, 0.5));
+        assert!(build.stats.glow > 5 * 4 * 5);
+        spec.palette[0].tune.roughness = Some(3.0);
+        assert!(compile(&spec, &BuildLimits::default()).err().unwrap()[0].contains("roughness is from 0 to 1"));
+        // A plain color is written, and read, as before.
+        let plain = serde_json::to_string(&lamp().palette[0]).unwrap();
+        assert_eq!(plain, r##"{"name":"iron","hex":"#3d4248","material":"metal"}"##);
+        let nulls: ColorSpec = serde_json::from_str(r##"{"name":"iron","hex":"#3d4248","material":"metal","glow":null,"alpha":0.5,"roughness":null,"metallic":null}"##).unwrap();
+        assert_eq!(nulls.tune.alpha, Some(0.5));
+    }
+
+    #[test]
     fn rejects_dense_builds() {
         let mut spec = lamp();
         spec.size = vec![64, 64, 64];
         spec.shapes = vec![shape("box", "iron", [0.0, 0.0, 0.0], [64.0, 64.0, 64.0])];
         let errors = compile(&spec, &BuildLimits::default()).err().unwrap();
         assert!(errors.iter().any(|e| e.contains("voxels is over the limit")));
+    }
+
+    /// The answer schema is what agents are held to, so it must list what the rules
+    /// take: a material, a land change or a thing to scatter added to the rules without
+    /// the schema could never be asked for.
+    #[test]
+    fn the_schema_lists_what_the_rules_take() {
+        let schema: serde_json::Value = serde_json::from_str(SCHEMA).unwrap();
+        let listed = |pointer: &str| -> Vec<String> {
+            let list = schema.pointer(pointer).and_then(|v| v.as_array()).unwrap_or_else(|| panic!("the schema has no list at {pointer}"));
+            list.iter().map(|v| v.as_str().unwrap_or_default().to_string()).collect()
+        };
+        assert_eq!(listed("/$defs/color/properties/material/enum"), content::MATERIALS.map(|(name, ..)| name));
+        let kinds: Vec<&str> = crate::sculpt::OP_KINDS.into_iter().chain([crate::sculpt::CLEAR]).collect();
+        assert_eq!(listed("/$defs/terrain_op/properties/kind/enum"), kinds);
+        assert_eq!(listed("/$defs/terrain_op/properties/item/anyOf/0/enum"), crate::sculpt::ITEMS);
+        // Every shape the schema offers is one the compiler makes.
+        for kind in listed("/$defs/shape/properties/kind/enum") {
+            let mut spec = lamp();
+            spec.shapes = vec![ShapeSpec { radius: Some(1.0), ..shape(&kind, "iron", [1.0, 1.0, 1.0], [5.0, 9.0, 5.0]) }];
+            assert!(compile(&spec, &BuildLimits::default()).is_ok(), "{kind} is in the schema and doesn't compile");
+        }
+        // And every number a color can tune is one the schema lets it give.
+        let color = schema.pointer("/$defs/color/properties").and_then(|v| v.as_object()).unwrap();
+        let tuned = serde_json::to_value(Tune { roughness: Some(0.5), metallic: Some(0.5), glow: Some(0.5), alpha: Some(0.5) }).unwrap();
+        for field in tuned.as_object().unwrap().keys() {
+            assert!(color.contains_key(field), "the schema's colors have no {field}");
+        }
     }
 
     #[test]

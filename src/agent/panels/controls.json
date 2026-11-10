@@ -1,0 +1,16 @@
+{
+  "title": "Controls",
+  "width": 420,
+  "body": {"kind": "column", "items": [
+    {"kind": "text", "style": "muted",
+     "text": "+ adds the next key you press; a key's button takes it off. Or ask the agent: \"let J jump too\"."},
+    {"kind": "each", "of": "action_groups", "item":
+      {"kind": "section", "title": "{group.name}", "items": [
+        {"kind": "each", "of": "actions", "where": {"group": "{group.name}"}, "item":
+          {"kind": "row", "items": [
+            {"kind": "text", "text": "{action.label}", "width": 110, "hint": "{action.title}"},
+            {"kind": "keys", "action": "{action.name}"}]}}]}},
+    {"kind": "space"},
+    {"kind": "button", "label": "Reset every key", "op": "resetkeys"}
+  ]}
+}

@@ -211,7 +211,41 @@ new building block, in Rust, for every world.
   from before, voxel for voxel. It's set when the world is made and kept in its first
   line. `newworld` takes a named one (islands, desert, tundra, ...) or the agent's own.
 
-Next: app panels as data (more node kinds, data sources, buttons that
-run ops); what the mouse does by pointing as actions, and a game's own actions in
-Controls; blocks and materials as content; parcels as ops; granular permissions for
-what a joined player may change.
+- **Panels are data:** a window of the app is a JSON file of nodes
+  (`src/agent/panels.rs`), drawn with egui: layout, the control for a setting, an
+  action's keys, lists repeated with `each` (actions, settings, worlds, saves, ops),
+  inputs, and buttons that run ops. A panel never runs code, so it can do what the
+  player can and no more. The agent writes `panels/<id>.json` in its folder and opens
+  it; the Controls window is one (`src/agent/panels/controls.json`), so the agent can
+  reshape it, and deleting its file brings the app's own back.
+
+- **Every input is an action:** what the mouse does by pointing (click to place and
+  select, cancel, use what's in hand, copy, hold to look) is in the bindings table
+  too, and a game declares its own actions (`{"kind": "action", "key": "q"}` in its
+  package), which sit among the player's controls while the game is on and reach its
+  player scripts as `f.acted.<name>`. The player's keys for them are kept when the
+  game is off.
+
+- **Blocks and materials are content:** a material is how a color takes the light
+  (`crates/rules/src/content.rs`: matte, glossy, metal, glass, glow), and any color of
+  a build or a block tunes it: roughness, metallic, glow, alpha. A world has blocks
+  of its own, up to 64 (`block`, `removeblock`, `blocks`): land changes paint and path
+  with them by name, and changing one changes everything made of it. A family of the
+  ground's own (grass, water, ...) takes a color the same way. They're part of the
+  world's rules, so they're recorded, replayed and undone; a block's place in the
+  list is its voxel for good, so one that's taken out keeps its place. `BLOCKS.md`
+  shows the agent what there is. Blocks can't yet be walked through or told apart by
+  game logic.
+
+- **The gate:** `src/agent/gate.rs` holds the list of registries (ops, settings,
+  bindings, panels, blocks, landscapes, worlds, saves, packages) and tests that each
+  has its fronts: ops that list and change it, which are the agent's tools; a page in
+  the agent's folder; a list a panel can show. It also reads the source: a key or
+  mouse button read outside the bindings, a window drawn outside the panels, or an op
+  the agent can't use fails the tests until it's moved into its table or listed there
+  with the reason. With the gates beside each table (every field is a setting, every
+  kind of change has an op, the answer schema lists what the rules take), adding
+  something the agent can't reach takes writing down why.
+
+Next: chords as bindings (Ctrl/Cmd+Z is the one key left outside); parcels as ops; granular permissions for what a joined
+player may change; the Settings and Game windows as panels.

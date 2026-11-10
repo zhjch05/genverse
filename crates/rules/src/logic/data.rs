@@ -31,6 +31,27 @@ pub enum Def {
         #[serde(default, skip_serializing_if = "Option::is_none")]
         model: Option<String>,
     },
+    /// Something a player does with a key of their own choosing: the game's player
+    /// scripts see it as `f.actions.<name>` and `f.acted.<name>`, and the player sees
+    /// it among their controls, where they can move it to another key.
+    Action {
+        title: String,
+        /// The key it starts on ("q", "mouse_middle"); none leaves it for the player
+        /// to bind.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        key: Option<String>,
+    },
+}
+
+/// The actions a package declares: `(full name, title, the key it starts on)`.
+pub fn actions(package: &Package) -> Vec<(String, String, Option<String>)> {
+    defs(package)
+        .into_iter()
+        .filter_map(|(name, def)| match def {
+            Def::Action { title, key } => Some((name.to_string(), title, key)),
+            Def::Item { .. } => None,
+        })
+        .collect()
 }
 
 /// The package's own definitions that parse, by name.
@@ -57,7 +78,15 @@ pub fn check(package: &Package) -> Vec<String> {
             continue;
         }
         match serde_json::from_value::<Def>(value.clone()) {
-            Err(e) => errors.push(format!("\"{name}\": {e} (the only kind is item; scripts do the rest)")),
+            Err(e) => errors.push(format!("\"{name}\": {e} (the kinds are item and action; scripts do the rest)")),
+            Ok(Def::Action { title, key }) => {
+                if title.trim().is_empty() || title.len() > 80 {
+                    errors.push(format!("\"{name}\": title must be 1-80 characters"));
+                }
+                if key.is_some_and(|k| k.is_empty() || k.len() > 20 || !k.chars().all(|c| c.is_ascii_lowercase() || c.is_ascii_digit() || c == '_')) {
+                    errors.push(format!("\"{name}\": key is a key's name, like \"q\", \"f6\" or \"mouse_middle\" (or leave it out)"));
+                }
+            }
             Ok(Def::Item { title, model }) => {
                 if title.trim().is_empty() || title.len() > 80 {
                     errors.push(format!("\"{name}\": title must be 1-80 characters"));
@@ -122,6 +151,9 @@ pub struct DefSpec {
     /// item: one of the package's models, as its icon.
     #[serde(default)]
     pub model: Option<String>,
+    /// action: the key it starts on.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub key: Option<String>,
 }
 
 impl GameSpec {
@@ -137,6 +169,9 @@ impl GameSpec {
                 let mut value = json!({ "kind": d.kind, "title": d.title });
                 if let Some(model) = &d.model {
                     value["model"] = model.clone().into();
+                }
+                if let Some(key) = &d.key {
+                    value["key"] = key.clone().into();
                 }
                 (full(&d.name), value)
             })
@@ -157,7 +192,10 @@ impl GameSpec {
         let local = |name: &str| name.strip_prefix(ns).and_then(|n| n.strip_prefix(':')).unwrap_or(name).to_string();
         let defs = defs(package)
             .into_iter()
-            .map(|(name, Def::Item { title, model })| DefSpec { name: local(name), kind: "item".into(), title, model })
+            .map(|(name, def)| match def {
+                Def::Item { title, model } => DefSpec { name: local(name), kind: "item".into(), title, model, key: None },
+                Def::Action { title, key } => DefSpec { name: local(name), kind: "action".into(), title, model: None, key },
+            })
             .collect();
         let scripts = package.scripts.iter().map(|(name, source)| ScriptSpec { name: name.clone(), source: source.clone() }).collect();
         let models = package.models.iter().map(|(name, build)| ModelSpec { name: name.clone(), build: build.clone() }).collect();
@@ -222,7 +260,7 @@ impl GameSpec {
 /// An item's title, for what players see ("Turnip"); its name if it has none.
 pub fn title(package: &Package, name: &str) -> String {
     match defs(package).get(name) {
-        Some(Def::Item { title, .. }) => title.clone(),
+        Some(Def::Item { title, .. } | Def::Action { title, .. }) => title.clone(),
         None => name.rsplit(':').next().unwrap_or(name).replace('_', " "),
     }
 }
@@ -231,7 +269,7 @@ pub fn title(package: &Package, name: &str) -> String {
 pub fn icon(package: &Package, name: &str) -> Option<String> {
     match defs(package).get(name) {
         Some(Def::Item { model, .. }) => model.clone(),
-        None => None,
+        Some(Def::Action { .. }) | None => None,
     }
 }
 
@@ -260,7 +298,31 @@ mod tests {
         bad.defs.insert("farm:old_crop".into(), json!({ "kind": "crop", "title": "Turnips", "seed": "farm:seed" }));
         let errors = check(&bad);
         assert_eq!(errors.len(), 2, "{errors:#?}");
-        assert!(errors.iter().any(|e| e.contains("farm:rock") && e.contains("only kind is item")));
+        assert!(errors.iter().any(|e| e.contains("farm:rock") && e.contains("kinds are item and action")));
         assert!(errors.iter().any(|e| e.contains("farm:gem") && e.contains("models")));
+    }
+
+    #[test]
+    fn a_game_declares_its_own_actions() {
+        let mut package = farm(1);
+        package.defs.insert("farm:water".into(), json!({ "kind": "action", "title": "Water the crops", "key": "q" }));
+        package.defs.insert("farm:whistle".into(), json!({ "kind": "action", "title": "Whistle" }));
+        assert!(check(&package).is_empty(), "{:?}", check(&package));
+        assert_eq!(
+            actions(&package),
+            vec![("farm:water".to_string(), "Water the crops".to_string(), Some("q".to_string())), ("farm:whistle".to_string(), "Whistle".to_string(), None)]
+        );
+        // An action isn't an item, and comes through a change like any definition.
+        assert_eq!((title(&package, "farm:water"), icon(&package, "farm:water")), ("Water the crops".to_string(), None));
+        let spec = GameSpec::from_package(&package);
+        let water = spec.defs.iter().find(|d| d.name == "water").expect("it's a def");
+        assert_eq!((water.kind.as_str(), water.key.as_deref()), ("action", Some("q")));
+        assert_eq!(actions(&spec.to_package(2)), actions(&package));
+        // As the agent writes it in package.json.
+        let written: DefSpec = serde_json::from_value(json!({ "name": "dash", "kind": "action", "title": "Dash", "key": "shift" })).unwrap();
+        assert_eq!(written.key.as_deref(), Some("shift"));
+        // A key is one key's name.
+        package.defs.insert("farm:bad".into(), json!({ "kind": "action", "title": "Bad", "key": "Ctrl+Q" }));
+        assert!(check(&package).iter().any(|e| e.contains("farm:bad") && e.contains("key")));
     }
 }

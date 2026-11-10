@@ -161,7 +161,11 @@
       "required": [
         "name",
         "hex",
-        "material"
+        "material",
+        "roughness",
+        "metallic",
+        "glow",
+        "alpha"
       ],
       "properties": {
         "name": {
@@ -179,6 +183,51 @@
             "metal",
             "glass",
             "glow"
+          ],
+          "description": "How it takes the light. The numbers after it change it; null leaves each as the material's."
+        },
+        "roughness": {
+          "description": "0 a mirror to 1 chalk; null for the material's.",
+          "anyOf": [
+            {
+              "type": "number"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "metallic": {
+          "description": "0 to 1; null for the material's.",
+          "anyOf": [
+            {
+              "type": "number"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "glow": {
+          "description": "Light it gives off in its color, 0 to 1: 0.1 glows and keeps its color, 0.3 pale and hot, 1 a white-hot lantern; null for the material's.",
+          "anyOf": [
+            {
+              "type": "number"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "alpha": {
+          "description": "1 solid, down to 0.1 see-through; null for the material's.",
+          "anyOf": [
+            {
+              "type": "number"
+            },
+            {
+              "type": "null"
+            }
           ]
         }
       }
@@ -395,17 +444,10 @@
           ]
         },
         "material": {
-          "description": "paint/path: ground material.",
+          "description": "paint/path: what the ground becomes: grass, dirt, stone, sand, snow, or one of this world's own blocks (BLOCKS.md).",
           "anyOf": [
             {
-              "type": "string",
-              "enum": [
-                "grass",
-                "dirt",
-                "stone",
-                "sand",
-                "snow"
-              ]
+              "type": "string"
             },
             {
               "type": "null"
@@ -569,7 +611,8 @@
         "name",
         "kind",
         "title",
-        "model"
+        "model",
+        "key"
       ],
       "properties": {
         "name": {
@@ -579,9 +622,10 @@
         "kind": {
           "type": "string",
           "enum": [
-            "item"
+            "item",
+            "action"
           ],
-          "description": "Something players carry (scripts give and take it)."
+          "description": "item: something players carry (scripts give and take it). action: something a player does with a key they can change; player scripts see it as f.acted.<name>."
         },
         "title": {
           "type": "string",
@@ -597,6 +641,17 @@
             }
           ],
           "description": "One of the package's models: the item's icon in the inventory and in the hand (null: a plain tile)."
+        },
+        "key": {
+          "anyOf": [
+            {
+              "type": "null"
+            },
+            {
+              "type": "string"
+            }
+          ],
+          "description": "action: the key it starts on, by name (\"q\", \"f6\", \"mouse_middle\"); null for items, or to leave it unbound."
         }
       }
     },

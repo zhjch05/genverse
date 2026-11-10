@@ -138,6 +138,7 @@ pub static SETTINGS: &[Setting] = &[
 pub const NOT_SETTINGS: &[(Store, &str, &str)] = &[
     (Store::Rules, "/spawn/center", "where the world starts: moving it would move the protected spawn off what's built there"),
     (Store::Rules, "/logic/clock/epoch", "when day 0 began: games set the time of day with set_time"),
+    (Store::Rules, "/content", "the world's blocks: a list, changed with the block and removeblock ops"),
 ];
 
 /// The setting called `name`: its whole name, in any case, or its last part if only

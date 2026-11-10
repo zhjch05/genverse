@@ -393,6 +393,41 @@ pub fn follow_teleports(ledger: Res<Ledger>, mut seen: Local<(String, u64)>, mut
     }
 }
 
+/// Puts the actions the world's games declare (their `action` definitions) among the
+/// player's controls, and takes them out when a game goes.
+pub fn sync_game_actions(ledger: Res<Ledger>, mut binds: ResMut<Bindings>, mut seen: Local<Option<(String, u64)>>) {
+    // Looked at again when the world changes, or the player is in another one.
+    let now = (super::worlds::current_title(&ledger), ledger.version);
+    if seen.as_ref() == Some(&now) {
+        return;
+    }
+    *seen = Some(now);
+    let actions = game_actions(&ledger);
+    // Only when they differ, so the bindings aren't marked changed every frame.
+    if binds.game() != actions.as_slice() {
+        binds.set_game(actions);
+    }
+}
+
+/// The actions the games on in this world declare, each under its game's name.
+pub fn game_actions(ledger: &Ledger) -> Vec<crate::bindings::GameAction> {
+    let logic = &ledger.logic;
+    logic
+        .installed
+        .values()
+        .filter_map(|install| logic.package(install))
+        .flat_map(|package| {
+            let group = if package.manifest.title.trim().is_empty() { package.manifest.name.clone() } else { package.manifest.title.clone() };
+            data::actions(package).into_iter().map(move |(name, title, key)| crate::bindings::GameAction {
+                name,
+                title,
+                group: group.clone(),
+                defaults: key.as_deref().and_then(crate::bindings::Input::named).into_iter().collect(),
+            })
+        })
+        .collect()
+}
+
 /// Takes the hero where games send them out of this world (`travel(player, world)`):
 /// each trip once, as through a portal, once any draft is placed or discarded.
 pub fn follow_travels(

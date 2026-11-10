@@ -122,6 +122,18 @@ pub fn run_player_scripts(
     let scripts = &mut *scripts;
     for (name, (_, vm)) in scripts.loaded.iter_mut() {
         let Some(running) = vm else { continue };
+        // With the game's own actions, by the names it gave them.
+        let own = |all: &[&'static str], is: &dyn Fn(&str) -> bool| -> Vec<String> {
+            let mine = binds.game().iter().filter(|a| a.package() == name && is(&a.name)).map(|a| a.short().to_string());
+            all.iter().map(|a| a.to_string()).chain(mine).collect()
+        };
+        let (acting, started) = if blocked.0 {
+            (Vec::new(), Vec::new())
+        } else {
+            (own(&actions, &|a| binds.pressed(a)), own(&acted, &|a| binds.just_pressed(a)))
+        };
+        let (acting, started): (Vec<&str>, Vec<&str>) = (acting.iter().map(String::as_str).collect(), started.iter().map(String::as_str).collect());
+        let frame = FrameIn { actions: &acting, acted: &started, ..frame };
         match running.frame(&frame, &logic.state) {
             Ok(out) => {
                 if let Some(v) = out.velocity {

@@ -12,6 +12,7 @@
 use bevy_math::prelude::*;
 use serde::{Deserialize, Serialize};
 
+use crate::content::Content;
 use crate::terrain::{Terrain, VOXEL_SIZE, WORLD_HEIGHT, block, is_ground, pick};
 use crate::voxel::{
     AIR, VoxelGrid, VoxelId,
@@ -397,14 +398,15 @@ fn subsoil(top: VoxelId) -> VoxelId {
     }
 }
 
-fn material_block(name: &str, p: IVec3, seed: u32) -> VoxelId {
+fn material_block(name: &str, p: IVec3, seed: u32, content: &Content) -> VoxelId {
     let t = value(p.as_vec3() / 5.0, seed);
     match name {
         "grass" => pick(block::GRASS, t),
         "dirt" => pick(block::DIRT, t),
         "stone" => pick(block::STONE, t),
         "sand" => pick(block::SAND, t),
-        _ => block::SNOW,
+        // One of the world's own blocks, or snow, as before there were any.
+        name => content.id(name).unwrap_or(block::SNOW),
     }
 }
 
@@ -456,7 +458,7 @@ fn finite(v: Option<f64>) -> Option<f32> {
 }
 
 /// Checks a spec without touching any terrain. Errors are phrased for the agent.
-pub fn validate(spec: &TerrainSpec, area: Area, limits: &TerrainLimits) -> Vec<String> {
+pub fn validate(spec: &TerrainSpec, area: Area, limits: &TerrainLimits, content: &Content) -> Vec<String> {
     let TerrainLimits { max_ops, max_height_change_m, max_path_points, .. } = *limits;
     let mut errors = Vec::new();
     let whole = area.size_m();
@@ -500,8 +502,10 @@ pub fn validate(spec: &TerrainSpec, area: Area, limits: &TerrainLimits) -> Vec<S
         }
         match op.kind.as_str() {
             "raise" | "lower" if op.amount_m.is_none() => errors.push(format!("{at}: needs amount_m")),
-            "paint" | "path" if op.material.as_deref().is_some_and(|m| !MATERIALS.contains(&m)) => {
-                errors.push(format!("{at}: material must be one of {}", MATERIALS.join(", ")));
+            "paint" | "path" if op.material.as_deref().is_some_and(|m| !MATERIALS.contains(&m) && content.id(m).is_none()) => {
+                let own: Vec<&str> = content.own().map(|(_, b)| b.name.as_str()).collect();
+                let own = if own.is_empty() { "; this world has no blocks of its own (the block tool makes one)".to_string() } else { format!(", or one of this world's own: {}", own.join(", ")) };
+                errors.push(format!("{at}: material must be one of {}{own}", MATERIALS.join(", ")));
             }
             "paint" if op.material.is_none() => errors.push(format!("{at}: needs a material")),
             "scatter" | "clear" if op.item.as_deref().is_some_and(|m| !ITEMS.contains(&m)) => {
@@ -527,8 +531,9 @@ pub fn compile(
     terrain: Terrain,
     mut columns: Columns,
     limits: &TerrainLimits,
+    content: &Content,
 ) -> Result<TerrainEdit, Vec<String>> {
-    let errors = validate(spec, area, limits);
+    let errors = validate(spec, area, limits, content);
     if !errors.is_empty() {
         return Err(errors);
     }
@@ -657,7 +662,7 @@ pub fn compile(
                     }
                     let depth = if material == "sand" { 3 } else { 1 };
                     for y in (g - depth + 1).max(1)..=g {
-                        columns.col(i)[y as usize] = material_block(material, IVec3::new(c.x, y, c.y), seed);
+                        columns.col(i)[y as usize] = material_block(material, IVec3::new(c.x, y, c.y), seed, content);
                     }
                     if material != "grass" {
                         columns.clear_plants(i);
@@ -728,7 +733,7 @@ pub fn compile(
                     if distance <= half {
                         let c = columns.column_of(i);
                         let g = columns.ground[i];
-                        columns.col(i)[g as usize] = material_block(material, IVec3::new(c.x, g, c.y), seed);
+                        columns.col(i)[g as usize] = material_block(material, IVec3::new(c.x, g, c.y), seed, content);
                     }
                 }
                 columns.fell(trunks);
@@ -926,7 +931,7 @@ mod tests {
 
     fn run(area: Area, ops: Vec<TerrainOp>) -> (Columns, TerrainEdit) {
         let spec = TerrainSpec { name: "test".into(), ops, about: None };
-        let edit = compile(&spec, area, TERRAIN, columns(area), &TerrainLimits::default()).unwrap();
+        let edit = compile(&spec, area, TERRAIN, columns(area), &TerrainLimits::default(), &Content::default()).unwrap();
         let mut after = columns(area);
         for (p, id) in &edit.edits {
             after.set(*p, *id);
@@ -985,7 +990,7 @@ mod tests {
         let mut up = op("raise");
         up.amount_m = Some(20.0);
         let spec = TerrainSpec { name: "too much".into(), ops: vec![up, op("teleport")], about: None };
-        let errors = validate(&spec, area, &TerrainLimits::default());
+        let errors = validate(&spec, area, &TerrainLimits::default(), &Content::default());
         assert_eq!(errors.len(), 2, "{errors:?}");
 
         let mut up = op("raise");
@@ -994,6 +999,35 @@ mod tests {
         assert_eq!(edit.stats.raised, 2.0);
         let c = area.min() + IVec2::splat(5);
         assert_eq!(after.ground_at(c).unwrap().0, TERRAIN.height(c.x, c.y) + 8);
+    }
+
+    #[test]
+    fn land_is_painted_with_a_worlds_own_block() {
+        let area = dry_area();
+        let mut paint = op("paint");
+        paint.material = Some("lava".into());
+        let spec = TerrainSpec { name: "lava field".into(), ops: vec![paint], about: None };
+        let none = Content::default();
+        assert!(validate(&spec, area, &TerrainLimits::default(), &none)[0].contains("no blocks of its own"));
+
+        let mut content = Content::default();
+        let lava = |name: &str| crate::content::BlockDef { name: name.into(), hex: "#ff5a00".into(), material: "glow".into(), tune: Default::default(), variation: None, gone: false };
+        content.define(lava("ice")).unwrap();
+        content.define(lava("lava")).unwrap();
+        let edit = compile(&spec, area, TERRAIN, columns(area), &TerrainLimits::default(), &content).expect("lava is a block here");
+        let id = content.id("lava").unwrap();
+        assert!(!edit.edits.is_empty() && edit.edits.iter().all(|(_, block)| *block == id || *block == AIR), "only lava, and plants cleared");
+        // It's ground from then on: the next change stands on it.
+        let mut after = columns(area);
+        for (p, id) in &edit.edits {
+            after.set(*p, *id);
+        }
+        for i in 0..after.len() {
+            after.rescan(i);
+        }
+        let c = area.min() + IVec2::splat(5);
+        assert_eq!(after.ground_at(c).unwrap().0, TERRAIN.height(c.x, c.y));
+        assert_eq!(after.get(IVec3::new(c.x, TERRAIN.height(c.x, c.y), c.y)), id);
     }
 
     #[test]

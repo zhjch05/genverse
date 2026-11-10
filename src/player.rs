@@ -691,7 +691,7 @@ fn clearance(world: &VoxelWorld, models: &[(&VoxelModel, &GlobalTransform)], piv
 pub fn follow_camera(
     time: Res<Time>,
     (binds, blocked): (Res<Bindings>, Res<InputBlocked>),
-    (buttons, motion, scroll): (Res<ButtonInput<MouseButton>>, Res<AccumulatedMouseMotion>, Res<AccumulatedMouseScroll>),
+    (motion, scroll): (Res<AccumulatedMouseMotion>, Res<AccumulatedMouseScroll>),
     over_ui: Res<PointerOverUi>,
     lock: Res<OrbitLock>,
     world: Res<VoxelWorld>,
@@ -710,7 +710,8 @@ pub fn follow_camera(
     let ease = |rate: f32| 1.0 - (-rate * dt).exp();
     for (mut cam, mut transform) in &mut cameras {
         // Turning follows the mouse directly, as in any third-person game.
-        let dragging = (buttons.pressed(MouseButton::Left) && !lock.0) || buttons.pressed(MouseButton::Right);
+        // While a drag selects ground, the button that selects doesn't also look around.
+        let dragging = if lock.0 { binds.pressed_without("look", "click") } else { binds.pressed("look") };
         if dragging {
             cam.yaw -= motion.delta.x * 0.005;
             cam.pitch = (cam.pitch + motion.delta.y * 0.004).clamp(-1.2, 1.45);

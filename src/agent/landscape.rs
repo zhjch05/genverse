@@ -264,7 +264,7 @@ fn prepare(world: &VoxelWorld, ledger: &Ledger, spec: &TerrainSpec, area: Area) 
         PreviewError::Invalid(vec!["part of the area isn't loaded; the player needs to be closer".to_string()])
     })?;
     let mut edit =
-        sculpt::compile(spec, area, world.terrain, columns, &ledger.rules.terrain).map_err(PreviewError::Invalid)?;
+        sculpt::compile(spec, area, world.terrain, columns, &ledger.rules.terrain, &ledger.rules.content).map_err(PreviewError::Invalid)?;
     let (_, edits) =
         ledger.land.authorize_terrain(&ledger.profile.id, area, edit.edits).map_err(PreviewError::Refused)?;
     edit.stats.changed = edits.len();
@@ -419,7 +419,7 @@ fn surface_code(id: VoxelId) -> char {
 
 /// G mode: drag on the ground to select an area; a click selects a small square.
 pub fn select_area(
-    buttons: Res<ButtonInput<MouseButton>>,
+    binds: Res<crate::bindings::Bindings>,
     windows: Query<&Window, With<PrimaryWindow>>,
     cameras: Query<(&Camera, &GlobalTransform), With<Camera3d>>,
     over_ui: Res<PointerOverUi>,
@@ -442,7 +442,7 @@ pub fn select_area(
         let hit = world.raycast_ground(ray, 60.0)?;
         Some(VoxelWorld::voxel_at(ray.get_point(hit.distance) - hit.normal * 0.01).xz())
     });
-    if buttons.just_pressed(MouseButton::Left) {
+    if binds.just_pressed("click") {
         landscape.drag_from = cell;
     }
     let Some(from) = landscape.drag_from else {
@@ -453,7 +453,7 @@ pub fn select_area(
         let to = from + (to - from).clamp(IVec2::splat(-max), IVec2::splat(max));
         landscape.area = Some(Area::from_corners(from, to));
     }
-    if buttons.just_released(MouseButton::Left) {
+    if binds.just_released("click") {
         landscape.drag_from = None;
         landscape.selecting = false;
         // A click, not a drag: a small square around it.

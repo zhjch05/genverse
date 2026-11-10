@@ -232,30 +232,13 @@ impl Recipe {
             .unwrap_or_default()
     }
 
-    /// The terrain's palette with this recipe's colors: each color replaces its
-    /// blocks' middle shade, and their lighter and darker shades keep their distance
-    /// from it.
+    /// The terrain's palette with this recipe's colors.
     pub fn recolor(&self, palette: &mut Palette) {
         let c = &self.colors;
-        // Each color, the entry that is its blocks' middle shade, and all its entries.
-        let groups: [(Option<[u8; 3]>, &str, &[&str]); 8] = [
-            (c.grass, "grass", &["grass_light", "grass", "grass_dark", "tuft"]),
-            (c.leaves, "leaves", &["leaves_light", "leaves", "leaves_dark"]),
-            (c.bark, "bark", &["bark", "bark_dark"]),
-            (c.water, "water", &["water"]),
-            (c.sand, "sand", &["sand", "sand_dark"]),
-            (c.dirt, "dirt", &["dirt", "dirt_dark"]),
-            (c.stone, "stone", &["stone_light", "stone", "stone_dark"]),
-            (c.snow, "snow", &["snow"]),
-        ];
-        for (color, middle, names) in groups {
-            let Some([r, g, b]) = color else { continue };
-            let Some(from) = palette.entries.iter().find(|e| e.name == middle).map(|e| e.color) else { continue };
-            let to: LinearRgba = Srgba::rgb_u8(r, g, b).into();
-            let shade = |was: f32, from: f32, to: f32| if from > 0.0 { (was / from * to).clamp(0.0, 1.0) } else { to };
-            for entry in palette.entries.iter_mut().filter(|e| names.contains(&e.name.as_str())) {
-                let was = entry.color;
-                entry.color = LinearRgba::new(shade(was.red, from.red, to.red), shade(was.green, from.green, to.green), shade(was.blue, from.blue, to.blue), was.alpha);
+        let colors = [c.grass, c.leaves, c.bark, c.water, c.sand, c.dirt, c.stone, c.snow];
+        for ((family, ..), color) in FAMILIES.iter().zip(colors) {
+            if let Some(color) = color {
+                tint(palette, family, color);
             }
         }
     }
@@ -326,6 +309,32 @@ mod hex {
             None => Ok(None),
             Some(text) => parse(&text).map(Some).ok_or_else(|| serde::de::Error::custom(format!("\"{text}\" isn't a color like #7fb04f"))),
         }
+    }
+}
+
+/// The ground's own blocks, by family: its name, the block that's its middle shade, and
+/// every block of it. In the order of [`Colors`].
+pub const FAMILIES: [(&str, &str, &[&str]); 8] = [
+    ("grass", "grass", &["grass_light", "grass", "grass_dark", "tuft"]),
+    ("leaves", "leaves", &["leaves_light", "leaves", "leaves_dark"]),
+    ("bark", "bark", &["bark", "bark_dark"]),
+    ("water", "water", &["water"]),
+    ("sand", "sand", &["sand", "sand_dark"]),
+    ("dirt", "dirt", &["dirt", "dirt_dark"]),
+    ("stone", "stone", &["stone_light", "stone", "stone_dark"]),
+    ("snow", "snow", &["snow"]),
+];
+
+/// Gives a family of the ground's blocks a color: it replaces the middle shade, and the
+/// lighter and darker shades keep their distance from it.
+pub fn tint(palette: &mut Palette, family: &str, [r, g, b]: [u8; 3]) {
+    let Some((_, middle, names)) = FAMILIES.iter().find(|(name, ..)| *name == family) else { return };
+    let Some(from) = palette.entries.iter().find(|e| e.name == *middle).map(|e| e.color) else { return };
+    let to: LinearRgba = Srgba::rgb_u8(r, g, b).into();
+    let shade = |was: f32, from: f32, to: f32| if from > 0.0 { (was / from * to).clamp(0.0, 1.0) } else { to };
+    for entry in palette.entries.iter_mut().filter(|e| names.contains(&e.name.as_str())) {
+        let was = entry.color;
+        entry.color = LinearRgba::new(shade(was.red, from.red, to.red), shade(was.green, from.green, to.green), shade(was.blue, from.blue, to.blue), was.alpha);
     }
 }
 

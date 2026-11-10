@@ -9,12 +9,15 @@
 //! WORLD.md             the world at a glance: where the player is, places, features
 //! GAME.md              the game around it: its worlds, saves, packages, who the player is
 //! SETTINGS.md          every value that can be tuned: the world's rules, the player's options
+//! KEYS.md              every action and its keys
+//! BLOCKS.md            the world's own blocks and the ground's colors
 //! places.jsonl         what everything means (`genverse_rules::semantic`), one per line
 //! builds/<id>.json     each build: name, about, request, position (and <id>.spec.json)
 //! pieces.jsonl         every game piece: id, package, position, components
 //! players.json         players' stats and items
 //! history.md           recent changes and the requests behind them
 //! packages/<name>/     package.json (title, defs), *.luau files, models/<model>.json
+//! panels/<id>.json     the app's panels and the player's: windows as data (`super::panels`)
 //! docs/                the scripting reference
 //! ```
 //!
@@ -100,6 +103,13 @@ pub fn write(ledger: &Ledger, here: Option<&str>, errors: &[String]) -> Result<P
     }
     put(&dir.join("docs/changes.md"), &changes)?;
     put(&dir.join("docs/terrain.md"), genverse_rules::recipe::DOC)?;
+    put(&dir.join("docs/panels.md"), super::panels::DOC)?;
+    put(&dir.join("docs/blocks.md"), &genverse_rules::content::doc())?;
+    // The app's panels and the player's, to read, change and add to.
+    for (id, text) in super::panels::sources() {
+        put(&dir.join("panels").join(format!("{id}.json")), &text)?;
+    }
+    std::fs::create_dir_all(dir.join("panels")).map_err(|e| e.to_string())?;
     view(&dir, ledger, here, errors)?;
     packages(&dir, ledger, &BTreeSet::new())?;
     if let Ok(mut current) = CURRENT.lock() {
@@ -140,6 +150,8 @@ fn view(dir: &Path, ledger: &Ledger, here: Option<&str>, errors: &[String]) -> R
     put(&dir.join("WORLD.md"), &overview(ledger, here, errors, &records))?;
     put(&dir.join("GAME.md"), &game(ledger))?;
     put(&dir.join("SETTINGS.md"), &super::registry::describe(&ledger.rules))?;
+    put(&dir.join("KEYS.md"), &super::ops::keys_page(ledger))?;
+    put(&dir.join("BLOCKS.md"), &ledger.rules.content.describe(ledger.log.terrain()))?;
     let mut places = String::new();
     for r in &records {
         places.push_str(&serde_json::to_string(r).unwrap_or_default());
@@ -525,6 +537,11 @@ request. Read and search it like a repository: Glob, Grep and Read.
 - SETTINGS.md: every value that can be tuned, with what the world's are now: how
   heroes move, the limits on builds and land, budgets, the clock, graphics. The `set`
   tool changes one.
+- KEYS.md: every action and the keys on it now, with the games' own. The `bind` and
+  `unbind` tools change them.
+- BLOCKS.md: what this world's ground is made of: its own blocks and the ground's
+  colors. The `block` tool makes or changes one; docs/blocks.md has blocks and
+  materials (what a color of a build can be made of, too).
 - places.jsonl: everything in the world and what it means, one JSON object per line:
   builds, land changes, game packages and their files, labeled pieces, named places.
   Grep it ("wolf", "bakery"), or use the `search` tool to find things by meaning and
@@ -538,6 +555,10 @@ request. Read and search it like a repository: Glob, Grep and Read.
   defs (items); each .luau file is a feature; models/<model>.json are the voxel models
   pieces are drawn as.
 - docs/game.md: the scripting reference. Read it before writing game logic.
+- panels/<id>.json: windows of the app, as data: the app's own (controls.json is the
+  key bindings window) and the player's. Write a file to add one, edit one to change
+  it; the `panel` tool opens one and checks it, and `removepanel` removes yours or
+  brings the app's own back. docs/panels.md has the nodes.
 - docs/terrain.md: what a new world's landscape can be (the newworld tool's "terrain"):
   sea and land, hills, mountains, trees, snow, what covers the ground, its colors.
 

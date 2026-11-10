@@ -28,6 +28,7 @@ use super::{
     landscape::{Landscape, sample},
     mcp::{McpServer, ToolCall, ToolResult},
     ops::{self, Op},
+    panels::Panels,
     spec::{BuildSpec, VOXEL_SIZE, compile},
     worlds::{Travel, Trip},
 };
@@ -63,7 +64,7 @@ pub struct Ask {
 
 impl Ask {
     /// The player said yes: does it, and tells the agent how it went.
-    pub fn allow(self, chat: &mut Chat, ledger: &mut Ledger, world: &mut VoxelWorld, creations: &mut Creations, landscape: &mut Landscape, own: (&mut Bindings, &mut Graphics), at: [f32; 3]) {
+    pub fn allow(self, chat: &mut Chat, ledger: &mut Ledger, world: &mut VoxelWorld, creations: &mut Creations, landscape: &mut Landscape, own: (&mut Bindings, &mut Graphics, &mut Panels), at: [f32; 3]) {
         let result = act(self.op, self.args, chat, ledger, world, creations, landscape, own, at);
         info!("agent tool {} (allowed): {result:?}", self.op.name);
         let _ = self.reply.send(result);
@@ -120,7 +121,7 @@ pub fn act(
     world: &mut VoxelWorld,
     creations: &mut Creations,
     landscape: &mut Landscape,
-    (binds, graphics): (&mut Bindings, &mut Graphics),
+    (binds, graphics, panels): (&mut Bindings, &mut Graphics, &mut Panels),
     at: [f32; 3],
 ) -> ToolResult {
     if op.last {
@@ -142,6 +143,7 @@ pub fn act(
             agent: asked.as_ref().map(|(agent, prompt)| (*agent, prompt.as_str())),
             binds,
             graphics,
+            panels,
         };
         ops::run_op(op, &ops::Args::new(args), cx)
     };
@@ -476,7 +478,7 @@ pub fn answer_tool_calls(
     mut landscape: ResMut<Landscape>,
     mut ledger: ResMut<Ledger>,
     mut chat: ResMut<Chat>,
-    (mut binds, mut graphics): (ResMut<Bindings>, ResMut<Graphics>),
+    (mut binds, mut graphics, mut panels): (ResMut<Bindings>, ResMut<Graphics>, ResMut<Panels>),
     players: Query<&Transform, With<Player>>,
     transforms: Query<&Transform>,
     mut looks: ResMut<Looks>,
@@ -531,7 +533,7 @@ pub fn answer_tool_calls(
                 continue;
             }
             let at = hero.map_or([0.0; 3], |h| h.to_array());
-            let result = act(op, args, &mut chat, &mut ledger, &mut world, &mut creations, &mut landscape, (&mut binds, &mut graphics), at);
+            let result = act(op, args, &mut chat, &mut ledger, &mut world, &mut creations, &mut landscape, (&mut binds, &mut graphics, &mut panels), at);
             info!("agent tool {name}: {result:?}");
             let _ = reply.send(result);
             continue;
@@ -597,12 +599,13 @@ fn surface_code(id: VoxelId) -> char {
         id if block::LEAVES.contains(&id) => 'l',
         block::WATER => 'w',
         block::SNOW => 'n',
+        id if id >= block::OWN => 'b',
         _ => '?',
     }
 }
 
 const SURFACE_LEGEND: &str = "g grass, d dirt, r rock, s sand, w water (height is the water surface), \
-t tree trunk, l leaves, n snow, ? not loaded";
+t tree trunk, l leaves, n snow, b one of this world's own blocks, ? not loaded";
 
 impl Ctx<'_> {
     /// Top of the first ground voxel (terrain, water, trees) under a world point, as a

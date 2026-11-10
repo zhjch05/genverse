@@ -6,7 +6,7 @@
 
 use serde::{Deserialize, Serialize};
 
-use crate::{budget::BudgetLimits, build::BuildLimits, land::Spawn, logic::LogicRules, sculpt::TerrainLimits};
+use crate::{budget::BudgetLimits, build::BuildLimits, content::Content, land::Spawn, logic::LogicRules, sculpt::TerrainLimits};
 
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
@@ -101,6 +101,10 @@ pub struct WorldRules {
     /// How heroes move here. Left out while it's the default, like `look`.
     #[serde(skip_serializing_if = "HeroRules::is_default")]
     pub hero: HeroRules,
+    /// The world's blocks: colors over the ground's, and blocks of its own. Left out
+    /// while there are none, like `look`.
+    #[serde(skip_serializing_if = "Content::is_default")]
+    pub content: Content,
 }
 
 #[cfg(test)]
@@ -111,7 +115,7 @@ mod tests {
     fn default_look_leaves_signed_rules_unchanged() {
         // Rules signed before `look` existed must serialize to the same bytes.
         let json = serde_json::to_string(&WorldRules::default()).unwrap();
-        assert!(!json.contains("look") && !json.contains("logic") && !json.contains("hero"));
+        assert!(!json.contains("look") && !json.contains("logic") && !json.contains("hero") && !json.contains("content"));
         // Hero rules travel the same way, and are bounded where they're used.
         let rules = WorldRules { hero: HeroRules { run_speed: 14.0, gravity: 1e9, ..Default::default() }, ..Default::default() };
         let back: WorldRules = serde_json::from_str(&serde_json::to_string(&rules).unwrap()).unwrap();

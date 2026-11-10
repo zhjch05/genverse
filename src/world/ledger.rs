@@ -1280,6 +1280,16 @@ fn load_with(seed: u32, join: bool) -> (Ledger, HashMap<IVec3, VoxelId>) {
     (ledger, edits)
 }
 
+#[cfg(test)]
+impl Ledger {
+    /// An empty local world with a player in it, for tests that only read one.
+    pub fn for_tests() -> Self {
+        let key = Keypair::from_seed([7; 32]);
+        let profile = Profile { id: key.player_id(), name: "Tester".into(), secret: None, guest: true };
+        empty(WorldLog::new(1), profile, key)
+    }
+}
+
 fn empty(log: WorldLog, profile: Profile, key: Keypair) -> Ledger {
     Ledger {
         log,

@@ -40,7 +40,11 @@ Shapes (from/to are opposite corners of the shape's bounding box, in voxels)
 - wobble 0.1-0.35 gives organic, noisy edges (leaves, stone); keep null for built things.
 
 Materials: matte (wood, stone, cloth, plants), glossy (ceramic, paint, polished), metal,
-glass (see-through), glow (emits light: lanterns, windows at night, crystals).
+glass (see-through), glow (emits light: lanterns, windows at night, crystals). A color may
+change its material's numbers: roughness 0-1, metallic 0-1, glow 0-1 (light in its own color:
+0.1 glows and keeps its color, 0.3 pale and hot, 1 a white-hot lantern), alpha 0.1-1 (see-through). Leave each null unless the thing needs
+it: frosted glass is glass with alpha 0.8, chrome is metal with roughness 0.05, embers are
+matte with glow 0.1.
 
 Style
 - Clean, chunky, readable shapes with a few colors: 2-3 shades of each main color read as
@@ -53,7 +57,8 @@ Hard limits (builds over these are rejected)
 
 Example "build" for a small lamp post:
 {{"name":"Lamp post","size":[7,22,7],
- "palette":[{{"name":"iron","hex":"#3d4248","material":"metal"}},{{"name":"light","hex":"#ffd88a","material":"glow"}}],
+ "palette":[{{"name":"iron","hex":"#3d4248","material":"metal","roughness":null,"metallic":null,"glow":null,"alpha":null}},
+  {{"name":"light","hex":"#ffd88a","material":"glow","roughness":null,"metallic":null,"glow":null,"alpha":null}}],
  "shapes":[
   {{"kind":"box","color":"iron","from":[1,0,1],"to":[6,2,6],"radius":null,"wobble":null}},
   {{"kind":"cylinder","color":"iron","from":[2,2,2],"to":[5,17,5],"radius":null,"wobble":null}},
@@ -88,7 +93,8 @@ Never list voxels. Keep "build" null unless they also ask for an object.
   terrace: steps with amount_m height.
   water: pond or lake. level_m is the water surface (null: the lowest ground in the shape),
     depth_m below it (default 1). Carves the basin, adds sandy banks, removes trees in it.
-  paint: ground material grass, dirt, stone, sand, or snow; density is coverage (1 solid, 0.4 patchy).
+  paint: ground material grass, dirt, stone, sand, snow, or one of this world's own blocks
+    (BLOCKS.md; the block tool makes one first); density is coverage (1 solid, 0.4 patchy).
   scatter: item tree, bush, rock, flowers, grass, or plants (grass and flowers); density 0..1
     (trees: 0.3 a few, 1 a grove; plants: 0.5 a meadow).
   path: points [[x, z], ...] (2-{max_points}), width_m (default 1.5), material. It levels the ground
@@ -163,6 +169,15 @@ Numbers the game runs on (how fast heroes run and how high they jump, how big a 
 how long a day lasts, graphics) are settings: SETTINGS.md lists them and the set tool changes
 one. Change a setting when the request is about the whole world ("everyone runs faster here");
 use body() in game logic when it's about one player or a moment ("a potion that speeds me up").
+What the ground is made of is the world's blocks (BLOCKS.md, docs/blocks.md): "a lava field",
+"an ice lake", "a gold road" are a block of the world's own (the block tool: a name, a color, a
+material) and then a land change that paints or paths with it by name. "Make the grass purple"
+or "blood-red water" in a world that exists is the block tool with the family's name; a new
+world's colors go in its terrain recipe.
+A window of the app is a panel: a JSON file of nodes under panels/ in your folder (docs/panels.md),
+drawn by the game, whose buttons run the same ops as your tools. "A window with sliders for
+how I move", "put all the world's rules in one panel", "make the controls window show only
+movement keys" are files there: write or edit the file, then open it with the panel tool.
 The keys are the player's own: "let J jump too" or "put run on Ctrl" is the bind tool (bindings
 lists the actions), never a script; a script is for a key that should do something new.
 These happen at once, for everyone, signed as the player, and your folder follows. Most can be
@@ -288,6 +303,13 @@ model out, or rename a file, answer with "game": {"name": "<package>", "title": 
   ground puts it down (on_place: ev.item, ev.pos: a tent, a seed, a trap) and on a piece in reach
   uses it on that piece (on_use: ev.item, ev.entity: a key on a door, a can on a plant).
 Keep "build" and "terrain" null unless they also ask for those (on_start can build and reshape).
+- "defs" (package.json) also declares the game's own actions, {"name": "fireball", "kind":
+  "action", "title": "Throw a fireball", "key": "q"}: something the player does with a key. It
+  shows among their controls with that title, on that key until they move it, and your player
+  script reads it as f.acted.fireball (just pressed) and f.actions.fireball (held). Declare one
+  for every key your game uses, in place of reading the key (f.pressed.q): the player can then
+  see what the game's keys are and change them. "key" is one key's name, or null to leave it
+  for the player to choose.
 - "defs" (package.json): the items players carry, {"name", "kind": "item", "title", "model"}: names lowercase
   and local to the package; "model" is one of your models, its icon (null: a plain tile).
 - models/<name>.json: every piece is drawn as one of these voxel models, in exactly the "build"
@@ -452,8 +474,8 @@ Keep "build" and "terrain" null unless they also ask for those (on_start can bui
     "left" "right" "f1"-"f12" "mouse_left" "mouse_right" "mouse_middle"); f.actions.<action>
     held and f.acted.<action> just started: what the player's own keys for the game's
     actions are doing, whatever keys those are ("jump" "run" "use" "hit" "forward" "back"
-    "left" "right": prefer these to the keys they usually sit on, so a player who moved
-    jump to J still jumps); f.hero = {pos, vel, grounded, in_water, facing}; f.walk = {x, z}
+    "left" "right", and the actions your package declares: prefer these to the keys they
+    usually sit on, so a player who moved jump to J still jumps); f.hero = {pos, vel, grounded, in_water, facing}; f.walk = {x, z}
     where the usual controls would go (m/s); f.camera = {yaw, pitch}; f.body (what body() set);
     f.gravity (m/s²)
   It may read get, find, near, stat(name) and count(item) (the player's own), and:

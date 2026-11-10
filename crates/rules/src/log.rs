@@ -764,7 +764,7 @@ impl Replay {
                     if voxels {
                         let terrain = self.terrain();
                         let columns = ground_columns(terrain, *area, &self.edits);
-                        let edit = sculpt::compile(spec, *area, terrain, columns, &self.rules.terrain)
+                        let edit = sculpt::compile(spec, *area, terrain, columns, &self.rules.terrain, &self.rules.content)
                             .map_err(|errors| format!("{package}'s land change: {}", errors.join("; ")))?;
                         let (_, edits) = self.land.authorize_terrain(installer, *area, edit.edits).expect("authorized above");
                         made.extend(edits);
@@ -958,7 +958,7 @@ impl Replay {
                     let terrain = self.terrain();
                     let columns = ground_columns(terrain, *area, &self.edits);
                     let ground = columns.clone();
-                    let edit = sculpt::compile(spec, *area, terrain, columns, &self.rules.terrain)
+                    let edit = sculpt::compile(spec, *area, terrain, columns, &self.rules.terrain, &self.rules.content)
                         .map_err(|errors| format!("\"{name}\" {}", errors.join("; ")))?;
                     let (_, edits) =
                         self.land.authorize_terrain(&by.player, *area, edit.edits).expect("authorized above");

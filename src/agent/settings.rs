@@ -17,7 +17,7 @@ use genverse_rules::settings::WorldRules;
 
 use super::registry::{self, Changed, Kind, SETTINGS, Scope, Setting, Stores};
 use crate::world::ledger::Ledger;
-use crate::bindings::{ACTIONS, Bindings, INPUTS};
+use crate::bindings::Bindings;
 use super::{prefs, theme};
 use crate::graphics::{Antialias, Graphics, Level, Quality, RENDER_SCALES};
 
@@ -30,8 +30,6 @@ const WINDOW_SIZES: [(u32, u32); 8] =
 pub struct SettingsWindow {
     pub open: bool,
     display: Display,
-    /// The action waiting for a key press, in Controls.
-    capturing: Option<&'static str>,
     /// The world's rules as changed in the window but not applied yet.
     world: Option<WorldRules>,
 }
@@ -150,29 +148,14 @@ pub fn settings_window(
     mut graphics: ResMut<Graphics>,
     mut windows: Query<&mut Window, With<PrimaryWindow>>,
     monitors: Query<(&Monitor, Has<PrimaryMonitor>)>,
-    mut binds: ResMut<Bindings>,
-    (keys, buttons): (Res<ButtonInput<KeyCode>>, Res<ButtonInput<MouseButton>>),
+    binds: Res<Bindings>,
+    mut panels: ResMut<super::panels::Panels>,
     mut ledger: ResMut<Ledger>,
 ) -> Result {
     if !settings.open {
-        settings.capturing = None;
-        binds.capturing = false;
         return Ok(());
     }
-    // Controls waiting for a key: the next one pressed is bound (Esc cancels). A left
-    // click is how the list itself is used, so it's bound from the chat instead.
-    if let Some(action) = settings.capturing {
-        if keys.just_pressed(KeyCode::Escape) {
-            settings.capturing = None;
-        } else if let Some(input) = INPUTS.iter().find(|input| input.name != "mouse_left" && input.just_pressed(&keys, &buttons)) {
-            let _ = binds.bind(action, input.name);
-            super::ops::keep_bindings(&binds);
-            settings.capturing = None;
-        }
-    }
-    binds.capturing = settings.capturing.is_some();
-    let mut capturing = settings.capturing;
-    let mut rebind = None;
+    let mut open_controls = false;
     // The world's settings, for its admins: edited on a copy, recorded on Apply.
     let admin = ledger.land.is_admin(&ledger.profile.id);
     let mut world = settings.world.clone().unwrap_or_else(|| ledger.rules.clone());
@@ -313,41 +296,10 @@ pub fn settings_window(
                 theme::note(ui, format!("{} shows the frame rate.", binds.label("stats")));
             });
             section(ui, "Controls", show == "controls", |ui| {
-                theme::note(ui, "+ adds the next key you press; a key's button takes it off. Or ask the agent: \"let J jump too\".");
-                ui.vertical(|ui| {
-                    let mut group = "";
-                    for action in ACTIONS {
-                        if action.group != group {
-                            group = action.group;
-                            ui.add_space(6.0);
-                            ui.label(egui::RichText::new(group).strong().color(p.strong));
-                        }
-                        ui.horizontal(|ui| {
-                            let name = action.name.replace('_', " ");
-                            // A column of names, left-aligned, so the keys line up.
-                            ui.allocate_ui_with_layout(egui::vec2(110.0, 18.0), egui::Layout::left_to_right(egui::Align::Center), |ui| {
-                                ui.set_min_width(110.0);
-                                ui.label(egui::RichText::new(name).color(p.text)).on_hover_text(action.title);
-                            });
-                            for input in binds.inputs(action.name) {
-                                if ui.small_button(format!("{} {}", input.label, icon::X)).on_hover_text("Take this key off").clicked() {
-                                    rebind = Some(Rebind::Unbind(action.name, input.name));
-                                }
-                            }
-                            if capturing == Some(action.name) {
-                                ui.label(egui::RichText::new("press a key… (Esc cancels)").small().color(p.primary));
-                            } else if ui.small_button(icon::PLUS).on_hover_text("Add a key").clicked() {
-                                capturing = Some(action.name);
-                            }
-                            if !binds.is_default(action) && ui.small_button(icon::ARROW_COUNTER_CLOCKWISE).on_hover_text("Back to its default").clicked() {
-                                rebind = Some(Rebind::Reset(Some(action.name)));
-                            }
-                        });
-                    }
-                });
-                ui.add_space(4.0);
-                if ui.button("Reset every key").clicked() {
-                    rebind = Some(Rebind::Reset(None));
+                theme::note(ui, format!("Which keys do what: jump is on {}, the builder on {}.", binds.label("jump"), binds.label("chat")));
+                // The list itself is a panel (data the agent can reshape), not part of this window.
+                if ui.button(format!("{} Change keys…", icon::KEYBOARD)).clicked() {
+                    open_controls = true;
                 }
             });
             if admin {
@@ -402,13 +354,10 @@ pub fn settings_window(
     }
     settings.world = (open && !apply_world && world != ledger.rules).then_some(world);
 
-    settings.capturing = capturing.filter(|_| open);
-    if let Some(rebind) = rebind {
-        let _ = match rebind {
-            Rebind::Unbind(action, input) => binds.unbind(action, Some(input)),
-            Rebind::Reset(action) => binds.reset(action),
-        };
-        super::ops::keep_bindings(&binds);
+    if open_controls
+        && let Err(why) = panels.open("controls")
+    {
+        warn!("{why}");
     }
     settings.open = open;
     if display != before {
@@ -431,7 +380,7 @@ fn section(ui: &mut egui::Ui, title: &str, open: bool, add: impl FnOnce(&mut egu
 }
 
 /// The control for one setting, by what it holds; returns its new value if it changed.
-fn edit(ui: &mut egui::Ui, setting: &Setting, now: &serde_json::Value) -> Option<serde_json::Value> {
+pub(super) fn edit(ui: &mut egui::Ui, setting: &Setting, now: &serde_json::Value) -> Option<serde_json::Value> {
     use serde_json::json;
     match setting.kind {
         Kind::Whole { min, max } => {
@@ -466,12 +415,6 @@ fn edit(ui: &mut egui::Ui, setting: &Setting, now: &serde_json::Value) -> Option
             changed.then(|| json!(choice))
         }
     }
-}
-
-/// A change made in the Controls list.
-enum Rebind {
-    Unbind(&'static str, &'static str),
-    Reset(Option<&'static str>),
 }
 
 fn grid(ui: &mut egui::Ui, id: &str, add: impl FnOnce(&mut egui::Ui)) {

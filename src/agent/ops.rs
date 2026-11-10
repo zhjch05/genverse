@@ -31,6 +31,7 @@ use genverse_rules::{
 use serde_json::Value;
 
 use super::{
+    panels::{self, Panels},
     registry::{self, Changed, Scope as Whose, Stores},
     creations::{Creations, SavedCreation},
     landscape::{Landscape, PreviewError, describe_stats},
@@ -63,6 +64,8 @@ pub struct Context<'a> {
     pub binds: &'a mut Bindings,
     /// The player's graphics options, for the settings that are theirs.
     pub graphics: &'a mut Graphics,
+    /// The app's panels, for the ops that open them.
+    pub panels: &'a mut Panels,
 }
 
 impl Context<'_> {
@@ -348,6 +351,10 @@ pub static OPS: &[Op] = &[
         portal,
     )
     .note("For a build that's already placed. Players walk up to it and press E."),
+    op("landscapes", "", "The landscapes a new world can have", &[], |_, _| {
+        Ok(format!("A new world's ground is flat, or a landscape: {}. /newworld <name> <landscape> makes one.", genverse_rules::recipe::Recipe::NAMES.join(", ")))
+    })
+    .note("The named ones; the newworld tool's \"terrain\" takes one of your own (docs/terrain.md)."),
     op(
         "newworld",
         "<name> [flat|natural|islands|desert|...]",
@@ -421,7 +428,48 @@ pub static OPS: &[Op] = &[
         set,
     )
     .note("A world's setting changes for everyone in it, needs the player to be an admin, and is undone like any change. The player's own (graphics) are theirs alone."),
+    op("blocks", "", "What this world's ground is made of", &[], |cx, _| Ok(cx.ledger.rules.content.list()))
+        .note("The world's own blocks, the ground's families and the colors the world gave them, and the materials."),
+    op(
+        "block",
+        "<name> <#rrggbb> [material]",
+        "Make a block of this world's own, change one, or recolor the ground's",
+        &[
+            word("name", "the block's name (lava, blue_ice), or a family of the ground's own to recolor: grass, leaves, bark, water, sand, dirt, stone, snow"),
+            word("color", "#rrggbb").opt(),
+            word("material", "matte, glossy, metal, glass or glow (matte if left out; a block that's there keeps its own)").opt(),
+            named("roughness", "0 a mirror to 1 chalk, over the material's").number(),
+            named("metallic", "0 to 1, over the material's").number(),
+            named("glow", "light it gives off in its color, 0 to 1: 0.1 glows and keeps its color (lava), 0.3 pale and hot, 1 a white-hot lantern").number(),
+            named("alpha", "1 solid, down to 0.1 see-through").number(),
+            named("variation", "how much each voxel's brightness differs from the next: 0 flat, up to 0.3").number(),
+        ],
+        block,
+    )
+    .note("A block of the world's own is what land changes paint and path with, by its name as \"material\"; changing it changes everything made of it. A family's name recolors the ground's own blocks everywhere in this world (only the color). Needs the player to be an admin, is for everyone in the world, and is undone like any change. docs/blocks.md says more."),
+    op("removeblock", "<name>", "Take a block out, or give the ground its own color back", &[word("name", "the block, or a family of the ground's")], remove_block)
+        .note("What's made of a block that's taken out stays as it looks; making a block of that name again brings it back."),
     op("bindings", "", "Which keys do what", &[], |cx, _| Ok(cx.binds.list())).note("Every action and the keys and mouse buttons on it."),
+    op("panels", "", "The app's panels, and yours", &[], |cx, _| {
+        cx.panels.reload();
+        Ok(cx.panels.list())
+    }),
+    op(
+        "panel",
+        "<id> [close]",
+        "Open a panel",
+        &[word("id", "the panel: its file's name without .json (panels lists them)"), word("close", "\"close\" closes it instead").opt()],
+        panel,
+    )
+    .note("Shows the player a panel: one of the app's (controls), or one you wrote as panels/<id>.json in your folder (docs/panels.md says how). It takes your file as it is now, and says what's wrong with it if it isn't a valid panel: fix it and open it again."),
+    op("removepanel", "<id>", "Remove one of your panels, or bring the app's own back", &[word("id", "the panel (panels lists them)")], |cx, args| {
+        let id = args.text("id").ok_or_else(|| format!("Usage: /removepanel <id>. {}", cx.panels.list()))?;
+        let folder = cx.agent.and(super::workspace::current());
+        let said = panels::remove(&id, folder.as_deref())?;
+        cx.panels.reload();
+        Ok(said)
+    })
+    .note("The app's own panels can't be removed, only changed; removing your version of one brings the app's back."),
     op(
         "bind",
         "<action> <key>",
@@ -920,7 +968,7 @@ fn rules(cx: &mut Context, _: &Args) -> Reply {
 }
 
 /// The game's packages by name: the server's when online, this game's otherwise.
-fn catalog(ledger: &Ledger) -> std::collections::BTreeMap<String, std::sync::Arc<genverse_rules::logic::Package>> {
+pub fn catalog(ledger: &Ledger) -> std::collections::BTreeMap<String, std::sync::Arc<genverse_rules::logic::Package>> {
     match &ledger.online {
         Some(online) => online.game.as_ref().map(|g| g.packages()).unwrap_or_default(),
         None => ledger::read_game(&game_name()).packages(),
@@ -976,6 +1024,26 @@ fn remove_package(cx: &mut Context, args: &Args) -> Reply {
     Ok(format!("Took {name} out of the game; worlds stop running it."))
 }
 
+/// Opens (or closes) a panel. For the agent, the panels it wrote in its folder are
+/// taken in first, so it hears at once if one isn't a panel.
+fn panel(cx: &mut Context, args: &Args) -> Reply {
+    let id = args.text("id").ok_or_else(|| format!("Usage: /panel <id> [close]. {}", cx.panels.list()))?.to_lowercase();
+    let mut notes = Vec::new();
+    if cx.agent.is_some()
+        && let Some(folder) = super::workspace::current()
+    {
+        let (done, wrong) = panels::take_from(&folder);
+        if let Some(why) = wrong.iter().find(|w| w.starts_with(&format!("panels/{id}.json"))) {
+            return Err(why.clone());
+        }
+        notes = done.into_iter().chain(wrong).collect();
+    }
+    cx.panels.reload();
+    let said = if args.text("close").is_some() { cx.panels.close(&id)? } else { cx.panels.open(&id)? };
+    notes.insert(0, said);
+    Ok(notes.join(" "))
+}
+
 /// Changes one setting: a world's as a change to its rules (admins), the player's own in
 /// place.
 fn set(cx: &mut Context, args: &Args) -> Reply {
@@ -1007,6 +1075,60 @@ fn set(cx: &mut Context, args: &Args) -> Reply {
     }
 }
 
+/// Changes the world's blocks, as a change to its rules.
+fn change_blocks(cx: &mut Context, change: impl FnOnce(&mut genverse_rules::content::Content) -> Reply) -> Reply {
+    if !cx.ledger.land.is_admin(&cx.ledger.profile.id) {
+        return Err("A world's blocks are for everyone in it: only its admins change them.".into());
+    }
+    let mut rules = cx.ledger.rules.clone();
+    let said = change(&mut rules.content)?;
+    if rules == cx.ledger.rules {
+        return Ok(said);
+    }
+    cx.record(Action::SetRules { rules });
+    Ok(format!("{said} Undo takes it back."))
+}
+
+/// Makes or changes a block; what isn't given stays as a block that's there has it.
+fn block(cx: &mut Context, args: &Args) -> Reply {
+    use genverse_rules::content::{BlockDef, Tune};
+    const USAGE: &str = "Usage: /block <name> <#rrggbb> [material], like /block lava #ff5a00 glow. /blocks lists them.";
+    let name = args.text("name").ok_or(USAGE)?.to_lowercase();
+    let content = &cx.ledger.rules.content;
+    let before = content.own().find(|(_, b)| b.name == name).map(|(_, b)| b.clone());
+    let number = |field: &str| match args.raw(field) {
+        Some(Value::Number(n)) => Ok(n.as_f64()),
+        Some(Value::String(s)) if !s.trim().is_empty() => s.trim().parse::<f64>().map(Some).map_err(|_| format!("{field} is a number.")),
+        _ => Ok(None),
+    };
+    let Some(hex) = args.text("color").or(before.as_ref().map(|b| b.hex.clone())) else {
+        return Err(match content.colors.get(&name) {
+            Some(hex) => format!("{name} is {hex} here. /block {name} <#rrggbb> recolors it."),
+            None => USAGE.into(),
+        });
+    };
+    let was = before.as_ref();
+    let def = BlockDef {
+        hex,
+        material: args.text("material").map(|m| m.to_lowercase()).or(was.map(|b| b.material.clone())).unwrap_or("matte".into()),
+        tune: Tune {
+            roughness: number("roughness")?.or(was.and_then(|b| b.tune.roughness)),
+            metallic: number("metallic")?.or(was.and_then(|b| b.tune.metallic)),
+            glow: number("glow")?.or(was.and_then(|b| b.tune.glow)),
+            alpha: number("alpha")?.or(was.and_then(|b| b.tune.alpha)),
+        },
+        variation: number("variation")?.or(was.and_then(|b| b.variation)),
+        gone: false,
+        name,
+    };
+    change_blocks(cx, |content| content.define(def))
+}
+
+fn remove_block(cx: &mut Context, args: &Args) -> Reply {
+    let name = args.text("name").ok_or_else(|| format!("Usage: /removeblock <name>. {}", cx.ledger.rules.content.list()))?;
+    change_blocks(cx, |content| content.remove(&name))
+}
+
 /// Keeps the player's bindings between runs: what differs from the defaults.
 pub fn keep_bindings(binds: &Bindings) {
     super::prefs::set("bindings", serde_json::json!(binds.changed()));
@@ -1014,9 +1136,27 @@ pub fn keep_bindings(binds: &Bindings) {
 
 /// Takes on the bindings kept from before.
 pub fn load_bindings(mut binds: ResMut<Bindings>) {
+    restore_bindings(&mut binds);
+}
+
+fn restore_bindings(binds: &mut Bindings) {
     let kept: std::collections::BTreeMap<String, Vec<String>> =
         super::prefs::get("bindings").and_then(|v| serde_json::from_value(v).ok()).unwrap_or_default();
     binds.restore(kept.iter().map(|(action, inputs)| (action.as_str(), inputs.iter().map(String::as_str).collect())));
+}
+
+/// Every action and its keys as they're kept now, with this world's games' own: the
+/// page in the agent's folder.
+pub fn keys_page(ledger: &Ledger) -> String {
+    let mut binds = Bindings::default();
+    restore_bindings(&mut binds);
+    binds.set_game(super::game::game_actions(ledger));
+    format!(
+        "# Keys\n\nEvery action and the keys and mouse buttons on it, as the player has them now. They're the \
+         player's own: the `bind`, `unbind` and `resetkeys` tools change them, and panels/controls.json is the window \
+         that shows them. A game adds its own with an action def in its package (docs/game.md).\n\n{}\n",
+        binds.list()
+    )
 }
 
 fn bind(cx: &mut Context, args: &Args) -> Reply {
