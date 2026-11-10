@@ -547,6 +547,7 @@ fn play_frames(package: &Package, logic: &mut Logic, rules: &LogicRules, tester:
     let mut hero = Hero { pos: tester.here(&logic.state), grounded: true, ..Default::default() };
     let start = hero.pos;
     let (mut steered, mut highest, mut camera, mut poses, mut shows) = (0, hero.pos[1], None, 0, 0);
+    let mut jumps = 0;
     let mut said = Vec::new();
     for f in 0..frames {
         let body = logic.state.body(TESTER);
@@ -558,6 +559,9 @@ fn play_frames(package: &Package, logic: &mut Logic, rules: &LogicRules, tester:
             hero,
             keys: &held,
             pressed: if f == 0 { &held } else { &[] },
+            // A step names keys or actions ("press jump"): the tester has no bindings.
+            actions: &held,
+            acted: if f == 0 { &held } else { &[] },
             walk: [0.0, 0.0],
             camera: [0.0, 0.3],
             body,
@@ -573,10 +577,15 @@ fn play_frames(package: &Package, logic: &mut Logic, rules: &LogicRules, tester:
                 steered += 1;
                 v
             }
+            // The usual jump, from the ground, as the game's hero makes it.
+            None if out.jump && hero.grounded => {
+                jumps += 1;
+                [0.0, 7.5 * (body.jump * body.gravity).sqrt(), 0.0]
+            }
             None => [0.0, if hero.grounded { 0.0 } else { hero.velocity[1] - gravity * dt }, 0.0],
         };
         hero.pos = std::array::from_fn(|i| hero.pos[i] + v[i] * dt);
-        hero.grounded = hero.pos[1] <= ground_y;
+        hero.grounded = hero.pos[1] <= ground_y && v[1] <= 0.0;
         if hero.grounded {
             hero.pos[1] = ground_y;
         }
@@ -603,7 +612,8 @@ fn play_frames(package: &Package, logic: &mut Logic, rules: &LogicRules, tester:
         start[0], start[1], start[2], hero.pos[0], hero.pos[1], hero.pos[2], highest - start[1]
     );
     let camera = camera.map_or(String::new(), |c| format!("; camera {c:?}"));
-    let extra = format!("{}{}", if poses > 0 { format!("; posed pieces {poses} time(s)") } else { String::new() }, if shows > 0 { format!("; {shows} effect(s)/sound(s)") } else { String::new() });
+    let jumped = if jumps > 0 { format!("; jumped {jumps} time(s)") } else { String::new() };
+    let extra = format!("{jumped}{}{}", if poses > 0 { format!("; posed pieces {poses} time(s)") } else { String::new() }, if shows > 0 { format!("; {shows} effect(s)/sound(s)") } else { String::new() });
     let said = if said.is_empty() { String::new() } else { format!("; {}", said.join("; ")) };
     format!("{moved}{camera}{extra}{said}")
 }

@@ -13,6 +13,7 @@ use bevy::{
 
 use genverse_rules::logic::solid::Areas;
 
+use crate::bindings::Bindings;
 use crate::{
     voxel::{
         VoxelModel, VoxelModelAsset,
@@ -91,6 +92,8 @@ impl Default for HeroBody {
 #[derive(Resource, Default)]
 pub struct ScriptedHero {
     pub velocity: Option<Vec3>,
+    /// A script asked for the usual jump this frame (`jump()`).
+    pub jump: bool,
     pub camera: Option<CameraRig>,
 }
 
@@ -406,7 +409,7 @@ fn index_solids(
 
 pub fn move_player(
     time: Res<Time>,
-    keys: Res<ButtonInput<KeyCode>>,
+    binds: Res<Bindings>,
     blocked: Res<InputBlocked>,
     pawned: Res<Pawned>,
     mut body: ResMut<HeroBody>,
@@ -489,18 +492,18 @@ pub fn move_player(
             continue;
         }
 
-        let pressed = |key| !blocked.0 && keys.pressed(key);
+        let pressed = |action: &str| !blocked.0 && binds.pressed(action);
         let axis = |pos, neg| pressed(pos) as i32 as f32 - pressed(neg) as i32 as f32;
         let input = Vec2::new(
-            axis(KeyCode::KeyD, KeyCode::KeyA) + axis(KeyCode::ArrowRight, KeyCode::ArrowLeft),
-            axis(KeyCode::KeyW, KeyCode::KeyS) + axis(KeyCode::ArrowUp, KeyCode::ArrowDown),
+            axis("right", "left"),
+            axis("forward", "back"),
         )
         .clamp_length_max(1.0);
         // Camera-relative: forward is away from the camera.
         let forward = Vec3::new(-yaw.sin(), 0.0, -yaw.cos());
         let right = Vec3::new(-forward.z, 0.0, forward.x);
         let wish = right * input.x + forward * input.y;
-        let speed = if pressed(KeyCode::ShiftLeft) { RUN_SPEED } else { WALK_SPEED } * body.speed;
+        let speed = if pressed("run") { RUN_SPEED } else { WALK_SPEED } * body.speed;
 
         let target = wish * speed;
         let accel = if player.grounded { 14.0 } else { 4.0 };
@@ -516,7 +519,9 @@ pub fn move_player(
         if player.grounded {
             player.air_jumps = 0;
         }
-        if !scripted_move && !blocked.0 && keys.just_pressed(KeyCode::Space) && (player.grounded || player.air_jumps < body.air_jumps) {
+        // The jump key, or a player script asking for the usual jump.
+        let jump = (!blocked.0 && binds.just_pressed("jump")) || scripted.jump;
+        if !scripted_move && jump && (player.grounded || player.air_jumps < body.air_jumps) {
             if !player.grounded {
                 player.air_jumps += 1;
             }
@@ -679,7 +684,7 @@ fn clearance(world: &VoxelWorld, models: &[(&VoxelModel, &GlobalTransform)], piv
 
 pub fn follow_camera(
     time: Res<Time>,
-    (keys, blocked): (Res<ButtonInput<KeyCode>>, Res<InputBlocked>),
+    (binds, blocked): (Res<Bindings>, Res<InputBlocked>),
     (buttons, motion, scroll): (Res<ButtonInput<MouseButton>>, Res<AccumulatedMouseMotion>, Res<AccumulatedMouseScroll>),
     over_ui: Res<PointerOverUi>,
     lock: Res<OrbitLock>,
@@ -720,7 +725,7 @@ pub fn follow_camera(
         #[cfg(target_arch = "wasm32")]
         let _ = &mut cursors;
 
-        if !blocked.0 && keys.just_pressed(KeyCode::F5) {
+        if !blocked.0 && binds.just_pressed("view") {
             cam.first_person = !cam.first_person;
         }
         let lines = if over_ui.0 {

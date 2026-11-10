@@ -36,6 +36,7 @@ use super::{
     spec::{BuildSpec, VOXEL_SIZE as BUILD_VOXEL, compile},
     worlds::{Travel, Trip, fresh_seed},
 };
+use crate::bindings::Bindings;
 use crate::world::{
     VoxelWorld,
     ledger::{self, Ledger, clean_name, game_name},
@@ -55,6 +56,8 @@ pub struct Context<'a> {
     /// The agent doing this for the player and the request behind it, kept with the
     /// changes it makes; `None` when the player does it themself.
     pub agent: Option<(&'a str, &'a str)>,
+    /// Which keys do what, for the ops that change them.
+    pub binds: &'a mut Bindings,
 }
 
 impl Context<'_> {
@@ -279,6 +282,13 @@ impl Op {
 const THEN: &str = "what's left of the request to do in that world, as a note to yourself: once the player is there you're started again, \
     in that world's folder, with this note and the conversation so far; leave it out if nothing is left";
 
+/// How a key is named, for the agent.
+const KEY: &str = "a key or mouse button by name: a letter or digit (j, 7), space, shift, ctrl, alt, tab, up, down, left, right, \
+    delete, f1-f12, mouse_left, mouse_right, mouse_middle, mouse_back, mouse_forward (Enter and Esc are fixed)";
+
+const KEYS_ARE_THE_PLAYERS: &str = "The player's own keys, kept on their machine: no other player's change, and not part of the world \
+    (undo and saves don't touch them). The key hints and the Settings window's Controls follow.";
+
 /// Every op. The chat suggests its commands in this order.
 pub static OPS: &[Op] = &[
     op("history", "[n]", "The latest changes, with ids", &[word("n", "how many, up to 50 (default 12)").opt()], history),
@@ -381,6 +391,25 @@ pub static OPS: &[Op] = &[
     .admin()
     .unlisted()
     .ask(),
+    op("bindings", "", "Which keys do what", &[], |cx, _| Ok(cx.binds.list())).note("Every action and the keys and mouse buttons on it."),
+    op(
+        "bind",
+        "<action> <key>",
+        "Make a key do something, as well as the keys that already do",
+        &[word("action", "what it should do: an action's name (bindings lists them: jump, run, use, chat, ...)"), word("key", KEY)],
+        bind,
+    )
+    .note(KEYS_ARE_THE_PLAYERS),
+    op(
+        "unbind",
+        "<action> [key]",
+        "Take a key off an action",
+        &[word("action", "the action's name"), word("key", "the key to take off it; left out, every key").opt()],
+        unbind,
+    )
+    .note(KEYS_ARE_THE_PLAYERS),
+    op("resetkeys", "[action]", "Put keys back to their defaults", &[word("action", "one action; left out, all of them").opt()], reset_keys)
+        .note(KEYS_ARE_THE_PLAYERS),
     op(
         "place_build",
         "<build> <x> <z>",
@@ -900,6 +929,40 @@ fn remove_package(cx: &mut Context, args: &Args) -> Reply {
     let name = args.text("name").ok_or("Which package? /packages lists the game's.")?;
     cx.ledger.set_game_package(GameAction::RemovePackage { name: name.clone() })?;
     Ok(format!("Took {name} out of the game; worlds stop running it."))
+}
+
+/// Keeps the player's bindings between runs: what differs from the defaults.
+pub fn keep_bindings(binds: &Bindings) {
+    super::prefs::set("bindings", serde_json::json!(binds.changed()));
+}
+
+/// Takes on the bindings kept from before.
+pub fn load_bindings(mut binds: ResMut<Bindings>) {
+    let kept: std::collections::BTreeMap<String, Vec<String>> =
+        super::prefs::get("bindings").and_then(|v| serde_json::from_value(v).ok()).unwrap_or_default();
+    binds.restore(kept.iter().map(|(action, inputs)| (action.as_str(), inputs.iter().map(String::as_str).collect())));
+}
+
+fn bind(cx: &mut Context, args: &Args) -> Reply {
+    let (Some(action), Some(key)) = (args.text("action"), args.text("key")) else {
+        return Err("Usage: /bind <action> <key>, like /bind jump j. /bindings lists the actions.".into());
+    };
+    let said = cx.binds.bind(&action, &key)?;
+    keep_bindings(cx.binds);
+    Ok(said)
+}
+
+fn unbind(cx: &mut Context, args: &Args) -> Reply {
+    let action = args.text("action").ok_or("Usage: /unbind <action> [key]. /bindings lists the actions.")?;
+    let said = cx.binds.unbind(&action, args.text("key").as_deref())?;
+    keep_bindings(cx.binds);
+    Ok(said)
+}
+
+fn reset_keys(cx: &mut Context, args: &Args) -> Reply {
+    let said = cx.binds.reset(args.text("action").as_deref())?;
+    keep_bindings(cx.binds);
+    Ok(said)
 }
 
 /// The ground a build stands on at world meters `(x, z)`: the loaded ground, edits and

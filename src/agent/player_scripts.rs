@@ -13,6 +13,7 @@ use genverse_rules::logic::{
 };
 
 use super::Chat;
+use crate::bindings::{ACTIONS, Bindings, INPUTS};
 use crate::{
     player::{self, CameraRig, FollowCamera, HeroBody, InputBlocked, Player, ScriptedHero},
     world::{VoxelWorld, ledger::Ledger},
@@ -39,39 +40,13 @@ pub struct Poses {
     pub before: Vec<EntityId>,
 }
 
-const KEYS: [(KeyCode, &str); 24] = [
-    (KeyCode::KeyW, "w"),
-    (KeyCode::KeyA, "a"),
-    (KeyCode::KeyS, "s"),
-    (KeyCode::KeyD, "d"),
-    (KeyCode::Space, "space"),
-    (KeyCode::ShiftLeft, "shift"),
-    (KeyCode::ControlLeft, "ctrl"),
-    (KeyCode::KeyQ, "q"),
-    (KeyCode::KeyE, "e"),
-    (KeyCode::KeyR, "r"),
-    (KeyCode::KeyF, "f"),
-    (KeyCode::KeyC, "c"),
-    (KeyCode::KeyV, "v"),
-    (KeyCode::KeyX, "x"),
-    (KeyCode::KeyZ, "z"),
-    (KeyCode::ArrowUp, "up"),
-    (KeyCode::ArrowDown, "down"),
-    (KeyCode::ArrowLeft, "left"),
-    (KeyCode::ArrowRight, "right"),
-    (KeyCode::Digit1, "1"),
-    (KeyCode::Digit2, "2"),
-    (KeyCode::Digit3, "3"),
-    (KeyCode::Digit4, "4"),
-    (KeyCode::Digit5, "5"),
-];
-
 #[allow(clippy::too_many_arguments)]
 pub fn run_player_scripts(
     mut scripts: NonSendMut<PlayerScripts>,
     time: Res<Time>,
     keys: Res<ButtonInput<KeyCode>>,
     buttons: Res<ButtonInput<MouseButton>>,
+    binds: Res<Bindings>,
     blocked: Res<InputBlocked>,
     body: Res<HeroBody>,
     mut ledger: ResMut<Ledger>,
@@ -106,28 +81,25 @@ pub fn run_player_scripts(
         scripts.loaded.insert(name.clone(), (install.package.hash.clone(), vm));
     }
     let Ok((transform, hero)) = heroes.single() else { return };
-    let (held, pressed): (Vec<&str>, Vec<&str>) = if blocked.0 {
-        (Vec::new(), Vec::new())
+    // Every key and mouse button by name, and the player's own actions, whatever keys
+    // they've put them on.
+    let (held, pressed, actions, acted): (Vec<&str>, Vec<&str>, Vec<&str>, Vec<&str>) = if blocked.0 {
+        Default::default()
     } else {
-        let mut held: Vec<&str> = KEYS.iter().filter(|(k, _)| keys.pressed(*k)).map(|(_, n)| *n).collect();
-        let mut pressed: Vec<&str> = KEYS.iter().filter(|(k, _)| keys.just_pressed(*k)).map(|(_, n)| *n).collect();
-        for (button, name) in [(MouseButton::Left, "mouse_left"), (MouseButton::Right, "mouse_right")] {
-            if buttons.pressed(button) {
-                held.push(name);
-            }
-            if buttons.just_pressed(button) {
-                pressed.push(name);
-            }
-        }
-        (held, pressed)
+        (
+            INPUTS.iter().filter(|input| input.held(&keys, &buttons)).map(|input| input.name).collect(),
+            INPUTS.iter().filter(|input| input.just_pressed(&keys, &buttons)).map(|input| input.name).collect(),
+            ACTIONS.iter().filter(|action| binds.pressed(action.name)).map(|action| action.name).collect(),
+            ACTIONS.iter().filter(|action| binds.just_pressed(action.name)).map(|action| action.name).collect(),
+        )
     };
     let camera = cameras.single().map_or([0.0, 0.3], |c| [c.yaw(), c.pitch()]);
     // Where the usual controls would take the hero.
-    let axis = |a: &str, b: &str| held.contains(&a) as i32 as f32 - held.contains(&b) as i32 as f32;
-    let input = Vec2::new(axis("d", "a") + axis("right", "left"), axis("w", "s") + axis("up", "down")).clamp_length_max(1.0);
+    let axis = |a: &str, b: &str| actions.contains(&a) as i32 as f32 - actions.contains(&b) as i32 as f32;
+    let input = Vec2::new(axis("right", "left"), axis("forward", "back")).clamp_length_max(1.0);
     let forward = Vec3::new(-camera[0].sin(), 0.0, -camera[0].cos());
     let right = Vec3::new(-forward.z, 0.0, forward.x);
-    let speed = if held.contains(&"shift") { player::RUN_SPEED } else { player::WALK_SPEED } * body.speed;
+    let speed = if actions.contains(&"run") { player::RUN_SPEED } else { player::WALK_SPEED } * body.speed;
     let walk = (right * input.x + forward * input.y) * speed;
     let pos = transform.translation;
     let in_water = world.get(VoxelWorld::voxel_at(pos + Vec3::Y * 0.4)) == Some(crate::world::terrain::block::WATER);
@@ -139,6 +111,8 @@ pub fn run_player_scripts(
         hero: Hero { pos: pos.to_array(), velocity: hero.velocity().to_array(), grounded: hero.grounded(), in_water, facing: hero.facing() },
         keys: &held,
         pressed: &pressed,
+        actions: &actions,
+        acted: &acted,
         walk: [walk.x, walk.z],
         camera,
         body: b,
@@ -153,6 +127,7 @@ pub fn run_player_scripts(
                 if let Some(v) = out.velocity {
                     scripted.velocity = Some(Vec3::from_array(v));
                 }
+                scripted.jump |= out.jump;
                 if let Some(c) = out.camera {
                     scripted.camera = Some(CameraRig { distance: c.distance, pitch: c.pitch, yaw: c.yaw, height: c.height, shake: c.shake });
                 }

@@ -32,6 +32,7 @@ use bevy::prelude::*;
 use bevy_egui::{EguiContexts, egui};
 use std::f32::consts::FRAC_PI_2;
 
+use crate::bindings::Bindings;
 use genverse_rules::{
     build::{BuildLimits, compile},
     logic::{
@@ -67,8 +68,8 @@ pub struct Play {
     pub near: Option<EntityId>,
     /// The region taking keys where the local player's pawn is: it gets the movement keys.
     pub playing: Option<EntityId>,
-    /// The direction key held, since when, and when it last repeated.
-    held: Option<(KeyCode, f32, f32)>,
+    /// The movement action held (its place in [`MOVES`]), since when, and when it last repeated.
+    held: Option<(usize, f32, f32)>,
     /// A short note at the top of the view, and when it appeared.
     toast: Option<(String, f32)>,
     /// The pieces in the world and how each looks.
@@ -333,7 +334,7 @@ pub fn run_timers(
 /// Finds the piece within reach, and uses it on E (unless a game has the keys).
 pub fn use_pieces(
     time: Res<Time>,
-    keys: Res<ButtonInput<KeyCode>>,
+    binds: Res<Bindings>,
     blocked: Res<InputBlocked>,
     creations: Res<Creations>,
     landscape: Res<Landscape>,
@@ -358,9 +359,9 @@ pub fn use_pieces(
         return;
     }
     let Some(entity) = play.near else { return };
-    let intent = if keys.just_pressed(KeyCode::KeyE) {
+    let intent = if binds.just_pressed("use") {
         Intent::Interact { entity }
-    } else if keys.just_pressed(KeyCode::KeyF) {
+    } else if binds.just_pressed("hit") {
         Intent::Hit { entity }
     } else {
         return;
@@ -451,15 +452,12 @@ fn my_pawn(ledger: &Ledger) -> Option<Vec3> {
 }
 
 
-/// The key's world direction, turned so W is away from the camera.
-fn direction(key: KeyCode, yaw: f32) -> Option<&'static str> {
-    let turn = match key {
-        KeyCode::KeyW | KeyCode::ArrowUp => 0,
-        KeyCode::KeyD | KeyCode::ArrowRight => 1,
-        KeyCode::KeyS | KeyCode::ArrowDown => 2,
-        KeyCode::KeyA | KeyCode::ArrowLeft => 3,
-        _ => return None,
-    };
+/// The movement actions, clockwise from forward: a grid game's direction keys.
+const MOVES: [&str; 4] = ["forward", "right", "back", "left"];
+
+/// The world direction of a movement action (its place in [`MOVES`]), turned so
+/// forward is away from the camera.
+fn direction(turn: usize, yaw: f32) -> Option<&'static str> {
     // The camera's forward, snapped to the nearest axis: 0 north (-z), 1 east, ...
     let forward = Vec2::new(-yaw.sin(), -yaw.cos());
     let facing = if forward.x.abs() > forward.y.abs() {
@@ -477,6 +475,7 @@ fn direction(key: KeyCode, yaw: f32) -> Option<&'static str> {
 pub fn play_keys(
     time: Res<Time>,
     keys: Res<ButtonInput<KeyCode>>,
+    binds: Res<Bindings>,
     blocked: Res<InputBlocked>,
     mut pawned: ResMut<Pawned>,
     mut ledger: ResMut<Ledger>,
@@ -492,22 +491,21 @@ pub fn play_keys(
     let Some(region) = play.playing.filter(|_| !blocked.0) else { return };
     let key = |name: &str| Intent::Key { entity: region, key: name.into() };
     let yaw = cameras.single().map_or(0.0, |c| c.yaw());
-    let arrows = [KeyCode::KeyW, KeyCode::KeyA, KeyCode::KeyS, KeyCode::KeyD, KeyCode::ArrowUp, KeyCode::ArrowLeft, KeyCode::ArrowDown, KeyCode::ArrowRight];
     let mut send = None;
-    if let Some(k) = arrows.into_iter().find(|k| keys.just_pressed(*k)) {
+    if let Some(k) = (0..MOVES.len()).find(|k| binds.just_pressed(MOVES[*k])) {
         play.held = Some((k, now_s, now_s));
         send = direction(k, yaw);
     } else if let Some((k, since, last)) = play.held {
-        if !keys.pressed(k) {
+        if !binds.pressed(MOVES[k]) {
             play.held = None;
         } else if now_s - since > REPEAT_AFTER && now_s - last > REPEAT_EVERY {
             play.held = Some((k, since, now_s));
             send = direction(k, yaw);
         }
     }
-    if keys.just_pressed(KeyCode::KeyR) {
+    if binds.just_pressed("reset") {
         send = Some("reset");
-    } else if keys.just_pressed(KeyCode::KeyE) {
+    } else if binds.just_pressed("use") {
         send = Some("action");
     } else if keys.just_pressed(KeyCode::Escape) {
         send = Some("leave");

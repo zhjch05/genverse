@@ -10,7 +10,8 @@
 //!
 //! ```lua
 //! function on_frame(f)
-//!   -- f.dt, f.now, f.me, f.keys.space (held), f.pressed.q (just pressed),
+//!   -- f.dt, f.now, f.me, f.keys.space (held), f.pressed.q (just pressed), any key by name;
+//!   -- f.actions.jump (held), f.acted.jump (just started): the player's own keys for them;
 //!   -- f.hero = {pos, vel, grounded, in_water, facing}, f.walk = {x, z} (where the
 //!   -- usual controls would go), f.camera = {yaw, pitch}, f.body (what the game set),
 //!   -- f.gravity (m/s², with body.gravity)
@@ -58,9 +59,13 @@ pub struct FrameIn<'a> {
     pub now: f64,
     pub me: &'a str,
     pub hero: Hero,
-    /// Keys held, and just pressed: "w", "space", "shift", "q", "1", "mouse_left", ...
+    /// Keys held, and just pressed: "w", "space", "shift", "q", "1", "j", "mouse_left", ...
     pub keys: &'a [&'a str],
     pub pressed: &'a [&'a str],
+    /// What the player's own keys for them are doing, whatever those keys are: actions
+    /// held ("jump", "run", "use", "forward", ...), and just started.
+    pub actions: &'a [&'a str],
+    pub acted: &'a [&'a str],
     /// Where the usual controls would take the hero across the ground, m/s.
     pub walk: [f32; 2],
     /// The camera's yaw and pitch, radians.
@@ -101,6 +106,8 @@ pub struct FrameOut {
     /// The hero's velocity for this frame, m/s: they move with it (the engine keeps
     /// them out of walls). `None`: the usual controls.
     pub velocity: Option<[f32; 3]>,
+    /// The hero makes their usual jump this frame (`jump()`), if they can.
+    pub jump: bool,
     pub poses: Vec<(EntityId, Pose)>,
     pub camera: Option<CameraRig>,
     /// What it sent its package's game logic (`send(name, data)`: `on_message`).
@@ -231,6 +238,13 @@ impl PlayerVm {
                 })?,
             )?;
             globals.set(
+                "jump",
+                scope.create_function(|_, ()| {
+                    out.borrow_mut().jump = true;
+                    Ok(())
+                })?,
+            )?;
+            globals.set(
                 "pose",
                 scope.create_function(|_, (id, spec): (String, Table)| {
                     let id = parse_id(&id)?;
@@ -330,6 +344,8 @@ impl PlayerVm {
         };
         f.set("keys", set(input.keys)?)?;
         f.set("pressed", set(input.pressed)?)?;
+        f.set("actions", set(input.actions)?)?;
+        f.set("acted", set(input.acted)?)?;
         let walk = lua.create_table()?;
         walk.set("x", input.walk[0])?;
         walk.set("z", input.walk[1])?;
@@ -368,6 +384,8 @@ mod tests {
             hero: Hero { pos: [0.0, 9.0, 0.0], grounded: false, ..Default::default() },
             keys,
             pressed,
+            actions: keys,
+            acted: pressed,
             walk: [4.0, 0.0],
             camera: [0.0, 0.3],
             body: Body::default(),
@@ -399,6 +417,13 @@ mod tests {
         assert_eq!(out.velocity, Some([4.0, 5.0, 0.0]));
         // Not held: the usual controls.
         assert_eq!(vm.frame(&input(&[], &[]), &state).unwrap().velocity, None);
+        // Any key can be read by name, and the usual jump asked for without steering.
+        let hop = "function on_frame(f) if f.pressed.j or f.acted.jump then jump() end end";
+        let mut hopper = PlayerVm::new(&package(&[("hop.player.luau", hop)])).unwrap().unwrap();
+        let out = hopper.frame(&input(&["j"], &["j"]), &state).unwrap();
+        assert!(out.jump && out.velocity.is_none());
+        assert!(hopper.frame(&input(&[], &["jump"]), &state).unwrap().jump);
+        assert!(!hopper.frame(&input(&["j"], &[]), &state).unwrap().jump);
         // A package with no player scripts has no VM; a runaway frame is stopped.
         assert!(PlayerVm::new(&package(&[("main.luau", world_file)])).unwrap().is_none());
         let mut slow = PlayerVm::new(&package(&[("slow.player.luau", "function on_frame(f) while true do end end")])).unwrap().unwrap();

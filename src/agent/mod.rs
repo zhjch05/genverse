@@ -52,6 +52,7 @@ use bevy_egui::{
 };
 use egui_phosphor::regular as icon;
 
+use crate::bindings::Bindings;
 use crate::{
     player::{self, InputBlocked, Player, PointerOverUi},
     graphics::{self, ScreenCamera},
@@ -115,6 +116,7 @@ impl Plugin for AgentPlugin {
             .init_gizmo_group::<AreaGizmos>()
             .init_gizmo_group::<presence::RingGizmos>()
             .add_systems(Startup, (attach_interface.after(graphics::spawn_screen), settings::load_settings))
+            .add_systems(Startup, ops::load_bindings)
             .add_systems(Startup, (load_creations, configure_area_gizmos, presence::configure_ring_gizmos, start_tool_server, lan::start_listening))
             .add_systems(
                 Update,
@@ -554,6 +556,7 @@ fn auto_prompt(
     mut world: ResMut<VoxelWorld>,
     mut ledger: ResMut<Ledger>,
     mut travel: ResMut<worlds::Travel>,
+    mut binds: ResMut<Bindings>,
     players: Query<(&Player, &Transform)>,
     cameras: Query<&GlobalTransform, With<Camera3d>>,
 ) {
@@ -604,6 +607,7 @@ fn auto_prompt(
                     travel: &mut travel,
                     at: hero.translation.to_array(),
                     agent: None,
+                    binds: &mut binds,
                 };
                 run_command(&mut chat, command.trim(), cx);
             }
@@ -652,6 +656,7 @@ fn finish_turn(
     mut creations: ResMut<Creations>,
     mut landscape: ResMut<Landscape>,
     mut travel: ResMut<worlds::Travel>,
+    mut binds: ResMut<Bindings>,
     players: Query<&Transform, With<Player>>,
 ) {
     if chat.pending.is_some() || chat.after.is_empty() {
@@ -674,6 +679,7 @@ fn finish_turn(
             travel: &mut travel,
             at: players.single().map_or([0.0; 3], |t| t.translation.to_array()),
             agent: None,
+            binds: &mut binds,
         };
         let reply = ops::said(ops::run(name, args, cx));
         info!("after the agent's turn, {name} -> {reply}");
@@ -954,6 +960,7 @@ fn poll_agent(
 fn shortcuts(
     mut commands: Commands,
     keys: Res<ButtonInput<KeyCode>>,
+    binds: Res<Bindings>,
     blocked: Res<InputBlocked>,
     mut chat: ResMut<Chat>,
     mut creations: ResMut<Creations>,
@@ -978,26 +985,26 @@ fn shortcuts(
     if command {
         return;
     }
-    if keys.just_pressed(KeyCode::F1) {
+    if binds.just_pressed("hints") {
         chat.hints = !chat.hints;
         prefs::set("hints", chat.hints);
         return;
     }
     // T opens the chat to talk to the agent, like Minecraft's chat key.
-    if keys.just_pressed(KeyCode::KeyT) {
+    if binds.just_pressed("chat") {
         chat.open = true;
         chat.focus_input = true;
         return;
     }
 
     // P: show who owns the land around you.
-    if keys.just_pressed(KeyCode::KeyP) {
+    if binds.just_pressed("parcels") {
         overlay.visible = !overlay.visible;
         return;
     }
 
     // G: select an area of ground to reshape.
-    if keys.just_pressed(KeyCode::KeyG) && creations.draft.is_none() && landscape.draft.is_none() && chat.pending.is_none() {
+    if binds.just_pressed("select_area") && creations.draft.is_none() && landscape.draft.is_none() && chat.pending.is_none() {
         landscape.selecting = !landscape.selecting;
         if landscape.selecting {
             creations.selected = None;
@@ -1022,19 +1029,19 @@ fn shortcuts(
             }
             return;
         }
-        if keys.just_pressed(KeyCode::KeyM) && !follow {
+        if binds.just_pressed("move_build") && !follow {
             if let Some(draft) = &mut creations.draft {
                 draft.follow = true;
             }
             return;
         }
-        for (key, how) in [
-            (KeyCode::KeyQ, Adjust::Turn(1.0)),
-            (KeyCode::KeyE, Adjust::Turn(-1.0)),
-            (KeyCode::KeyR, Adjust::Raise(1.0)),
-            (KeyCode::KeyF, Adjust::Raise(-1.0)),
+        for (action, how) in [
+            ("turn_left", Adjust::Turn(1.0)),
+            ("turn_right", Adjust::Turn(-1.0)),
+            ("raise", Adjust::Raise(1.0)),
+            ("lower", Adjust::Raise(-1.0)),
         ] {
-            if keys.just_pressed(key) {
+            if binds.just_pressed(action) {
                 creations.adjust_draft(&mut transform, how);
             }
         }
@@ -1058,11 +1065,11 @@ fn shortcuts(
     }
 
     if creations.selected.is_some() {
-        if keys.just_pressed(KeyCode::KeyM) {
+        if binds.just_pressed("move_build") {
             if let Some(name) = creations.edit_selected(&mut commands, true) {
                 chat.say(Role::System, format!("Moving \"{name}\": point and click to place it."));
             }
-        } else if keys.any_just_pressed([KeyCode::Delete, KeyCode::Backspace]) {
+        } else if binds.just_pressed("remove_build") {
             match creations.delete_selected(&mut commands, &mut ledger) {
                 Ok(name) => chat.say(Role::System, format!("Deleted \"{name}\". Ctrl/Cmd+Z brings it back.")),
                 Err(why) => chat.say(Role::System, why),
@@ -1274,76 +1281,96 @@ fn shortcut_hints(
     landscape: Res<Landscape>,
     play: Res<game::Play>,
     inventory: Res<inventory::Inventory>,
+    binds: Res<Bindings>,
 ) -> Result {
-    let actions: &[(&str, &str)] = match &creations.draft {
-        Some(d) if d.follow => &[
-            ("Click", "place"),
-            ("Q/E", "turn"),
-            ("R/F", "raise / lower"),
-            ("T", "ask for changes"),
-            ("Esc or right-click", "cancel"),
+    // Each hint names the keys the player has on that action now.
+    let k = |action: &str| binds.label(action);
+    let pair = |a: &str, b: &str| format!("{}/{}", binds.short(a), binds.short(b));
+    let hand = || if (1..=9).all(|i| binds.short(&format!("hand_{i}")) == i.to_string()) { "1-9".to_string() } else { format!("{}…", binds.short("hand_1")) };
+    let actions: Vec<(String, &str)> = match &creations.draft {
+        Some(d) if d.follow => vec![
+            ("Click".into(), "place"),
+            (pair("turn_left", "turn_right"), "turn"),
+            (pair("raise", "lower"), "raise / lower"),
+            (k("chat"), "ask for changes"),
+            ("Esc or right-click".into(), "cancel"),
         ],
-        Some(_) => &[("Enter", "keep the change"), ("M", "move it"), ("T", "ask for more"), ("Esc", "cancel")],
+        Some(_) => vec![("Enter".into(), "keep the change"), (k("move_build"), "move it"), (k("chat"), "ask for more"), ("Esc".into(), "cancel")],
         None if landscape.draft.is_some() => {
-            &[("Enter", "keep the change"), ("T", "ask for changes"), ("Esc", "put the ground back")]
+            vec![("Enter".into(), "keep the change"), (k("chat"), "ask for changes"), ("Esc".into(), "put the ground back")]
         }
-        None if landscape.selecting => &[("Drag", "select an area (a click: 6 m)"), ("G or Esc", "stop")],
-        None if play.playing.is_some() => &[("WASD/arrows", "move"), ("R", "reset"), ("E", "action"), ("Esc", "leave the game")],
-        None if creations.selected.is_some() => &[
-            ("T", "change it"),
-            ("M or double-click", "move"),
-            ("Delete", "remove"),
-            ("Middle-click", "copy"),
-            ("Ctrl/Cmd+Z", "undo"),
-            ("Esc", "deselect"),
+        None if landscape.selecting => vec![("Drag".into(), "select an area (a click: 6 m)"), (format!("{} or Esc", k("select_area")), "stop")],
+        None if play.playing.is_some() => {
+            vec![(binds.movement(), "move"), (k("reset"), "reset"), (k("use"), "action"), ("Esc".into(), "leave the game")]
+        }
+        None if creations.selected.is_some() => vec![
+            (k("chat"), "change it"),
+            (format!("{} or double-click", k("move_build")), "move"),
+            (binds.short("remove_build").into(), "remove"),
+            ("Middle-click".into(), "copy"),
+            ("Ctrl/Cmd+Z".into(), "undo"),
+            ("Esc".into(), "deselect"),
         ],
-        None if chat.pending.is_some() => &[],
+        None if chat.pending.is_some() => Vec::new(),
         None if landscape.area.is_some() => {
-            &[("T", "describe what this land should become"), ("G", "select again"), ("Esc", "clear the area")]
+            vec![(k("chat"), "describe what this land should become"), (k("select_area"), "select again"), ("Esc".into(), "clear the area")]
         }
-        None if inventory.open => &[("Click", "pick up or put down a stack"), ("1-9", "what's in hand"), ("I or Esc", "close")],
-        None if play.near.is_some() && inventory.held().is_some() => &[
-            ("E", "use"),
-            ("F", "hit"),
-            ("Right-click", "use what's in hand on it"),
-            ("1-9", "hand"),
-            ("I", "inventory"),
-            ("T", "describe a build"),
-            ("H", "history"),
+        None if inventory.open => {
+            vec![("Click".into(), "pick up or put down a stack"), (hand(), "what's in hand"), (format!("{} or Esc", k("inventory")), "close")]
+        }
+        None if play.near.is_some() && inventory.held().is_some() => vec![
+            (k("use"), "use"),
+            (k("hit"), "hit"),
+            ("Right-click".into(), "use what's in hand on it"),
+            (hand(), "hand"),
+            (k("inventory"), "inventory"),
+            (k("chat"), "describe a build"),
+            (k("history"), "history"),
         ],
-        None if play.near.is_some() => &[
-            ("E", "use"),
-            ("F", "hit"),
-            ("T", "describe a build"),
-            ("G", "reshape the ground"),
-            ("Click", "select a build"),
-            ("P", "land"),
-            ("H", "history"),
+        None if play.near.is_some() => vec![
+            (k("use"), "use"),
+            (k("hit"), "hit"),
+            (k("chat"), "describe a build"),
+            (k("select_area"), "reshape the ground"),
+            ("Click".into(), "select a build"),
+            (k("parcels"), "land"),
+            (k("history"), "history"),
         ],
-        None if inventory.held().is_some() => &[
-            ("Right-click", "put down what's in hand"),
-            ("1-9", "hand"),
-            ("I", "inventory"),
-            ("T", "describe a build"),
-            ("G", "reshape the ground"),
-            ("Click", "select a build"),
-            ("H", "history"),
+        None if inventory.held().is_some() => vec![
+            ("Right-click".into(), "put down what's in hand"),
+            (hand(), "hand"),
+            (k("inventory"), "inventory"),
+            (k("chat"), "describe a build"),
+            (k("select_area"), "reshape the ground"),
+            ("Click".into(), "select a build"),
+            (k("history"), "history"),
         ],
-        None => &[
-            ("T", "describe a build"),
-            ("G", "reshape the ground"),
-            ("Click", "select a build"),
-            ("Middle-click", "copy a build"),
-            ("P", "land"),
-            ("H", "history"),
-            ("O", "worlds"),
+        None => vec![
+            (k("chat"), "describe a build"),
+            (k("select_area"), "reshape the ground"),
+            ("Click".into(), "select a build"),
+            ("Middle-click".into(), "copy a build"),
+            (k("parcels"), "land"),
+            (k("history"), "history"),
+            (k("game_window"), "worlds"),
         ],
     };
+    let actions: Vec<(&str, &str)> = actions.iter().map(|(keys, what)| (keys.as_str(), *what)).collect();
+    let actions = actions.as_slice();
     // Looking around turns to the right button while the left one selects ground.
     let look = if landscape.selecting || landscape.draft.is_some() { "Right-drag" } else { "Drag" };
     let builder = if chat.open { "hide builder" } else { "builder" };
-    let moving =
-        [("WASD", "move"), ("Shift", "run"), ("Space", "jump"), (look, "look"), ("Scroll", "zoom"), ("F5", "view"), ("Tab", builder), ("F1", "hide hints")];
+    let (movement, run, jump, view, panel, hints) = (binds.movement(), k("run"), k("jump"), k("view"), k("builder"), k("hints"));
+    let moving = [
+        (movement.as_str(), "move"),
+        (run.as_str(), "run"),
+        (jump.as_str(), "jump"),
+        (look, "look"),
+        ("Scroll", "zoom"),
+        (view.as_str(), "view"),
+        (panel.as_str(), builder),
+        (hints.as_str(), "hide hints"),
+    ];
 
     let ctx = contexts.ctx_mut()?;
     let p = theme::palette(ctx);
@@ -1360,7 +1387,7 @@ fn shortcut_hints(
                     .stroke(egui::Stroke::new(1.0, p.line))
                     .corner_radius(theme::ROUND + 1)
                     .inner_margin(egui::Margin::symmetric(8, 5))
-                    .show(ui, |ui| ui.horizontal(|ui| hint_row(ui, &[("F1", "show hints")], true)));
+                    .show(ui, |ui| ui.horizontal(|ui| hint_row(ui, &[(hints.as_str(), "show hints")], true)));
             });
         return Ok(());
     }
@@ -1798,7 +1825,7 @@ enum Action {
 
 fn chat_panel(
     mut contexts: EguiContexts,
-    keys: Res<ButtonInput<KeyCode>>,
+    mut binds: ResMut<Bindings>,
     egui_input: Res<EguiWantsInput>,
     mut chat: ResMut<Chat>,
     mut creations: ResMut<Creations>,
@@ -1819,7 +1846,7 @@ fn chat_panel(
     players: Query<&Transform, With<Player>>,
     cameras: Query<&GlobalTransform, With<Camera3d>>,
 ) -> Result {
-    if keys.just_pressed(KeyCode::Tab) && !egui_input.wants_keyboard_input() {
+    if binds.just_pressed("builder") && !egui_input.wants_keyboard_input() {
         chat.open = !chat.open;
     }
     let ctx = contexts.ctx_mut()?;
@@ -2328,6 +2355,7 @@ fn chat_panel(
                 travel: &mut travel,
                 at: players.single().map_or([0.0; 3], |t| t.translation.to_array()),
                 agent: None,
+                binds: &mut binds,
             };
             run_command(&mut chat, text.trim(), cx);
         }
@@ -2412,7 +2440,7 @@ fn chat_panel(
         Some(Action::Allow) => {
             if let Some(ask) = chat.asking.take() {
                 let at = players.single().map_or([0.0; 3], |t| t.translation.to_array());
-                ask.allow(&mut chat, &mut ledger, &mut world, &mut creations, &mut landscape, at);
+                ask.allow(&mut chat, &mut ledger, &mut world, &mut creations, &mut landscape, &mut binds, at);
             }
         }
         Some(Action::Deny) => {

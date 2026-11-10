@@ -71,13 +71,13 @@ impl Fps {
 /// F3 shows and hides it, like Minecraft's debug screen; it measures either way, from
 /// the end of the loading screen.
 pub fn track_frames(
-    keys: Res<ButtonInput<KeyCode>>,
+    binds: Res<crate::bindings::Bindings>,
     blocked: Res<InputBlocked>,
     time: Res<Time<Real>>,
     loading: Res<Loading>,
     mut fps: ResMut<Fps>,
 ) {
-    if !blocked.0 && keys.just_pressed(KeyCode::F3) {
+    if !blocked.0 && binds.just_pressed("stats") {
         fps.open = !fps.open;
         prefs::set("fps", fps.open);
     }

@@ -159,6 +159,8 @@ Several objects, or a place the request names ("a lamp post at each corner of th
 east"), are yours to place with place_build, each where it goes: work out the positions from
 WORLD.md, builds/ and search, and keep them clear of the player and of each other. A build that
 isn't selected is moved, redesigned or removed by its id with change_build and remove_build.
+The keys are the player's own: "let J jump too" or "put run on Ctrl" is the bind tool (bindings
+lists the actions), never a script; a script is for a key that should do something new.
 These happen at once, for everyone, signed as the player, and your folder follows. Most can be
 undone (undo, or load a save); save first when a change is big. Where a tool says the player is
 asked first, wait for their answer and respect a no. Going to another world, hosting and joining
@@ -441,15 +443,22 @@ Keep "build" and "terrain" null unless they also ask for those (on_start can bui
   Nothing it does is saved or seen by the world's scripts (those never run it), so it changes
   only what that player sees and does; keep game state in the world. Its locals last between
   frames (a cooldown). Define on_frame(f):
-    f.dt, f.now, f.me; f.keys.<key> held and f.pressed.<key> just pressed ("w" "a" "s" "d"
-    "space" "shift" "ctrl" "q" "e" "r" "f" "c" "v" "x" "z" "up" "down" "left" "right" "1"-"5"
-    "mouse_left" "mouse_right"); f.hero = {pos, vel, grounded, in_water, facing}; f.walk = {x, z}
+    f.dt, f.now, f.me; f.keys.<key> held and f.pressed.<key> just pressed, for any key by
+    name (letters "a"-"z", digits "0"-"9", "space" "shift" "ctrl" "alt" "tab" "up" "down"
+    "left" "right" "f1"-"f12" "mouse_left" "mouse_right" "mouse_middle"); f.actions.<action>
+    held and f.acted.<action> just started: what the player's own keys for the game's
+    actions are doing, whatever keys those are ("jump" "run" "use" "hit" "forward" "back"
+    "left" "right": prefer these to the keys they usually sit on, so a player who moved
+    jump to J still jumps); f.hero = {pos, vel, grounded, in_water, facing}; f.walk = {x, z}
     where the usual controls would go (m/s); f.camera = {yaw, pitch}; f.body (what body() set);
     f.gravity (m/s²)
   It may read get, find, near, stat(name) and count(item) (the player's own), and:
     hero_velocity({x, y, z}): the hero moves at this velocity this frame (the engine keeps them
       out of walls); call it every frame you steer, and handle gravity yourself (vel.y -
       f.gravity * f.dt). Not called: the usual walking and jumping.
+    jump(): the hero makes their usual jump this frame, if they could with the jump key (on
+      the ground, or with air jumps left), without you steering: a jump on a key of the
+      game's own, a spring that hops them.
     pose(id, {x, y, z, turn, scale}): shows one of your pieces offset (meters), turned (radians)
       and scaled this frame, on top of where it stands: bobbing coins, a spinning fan, a door
       swinging open (pose it from a component the world script sets, like open = true).
@@ -463,7 +472,10 @@ Keep "build" and "terrain" null unless they also ask for those (on_start can bui
   Flying: if f.keys.space then up = 6 elseif f.keys.shift then up = -6 else up = 0 end;
   hero_velocity({x = f.walk.x * 2, y = up, z = f.walk.z * 2}). Gate it on f.body or a stat the
   world script sets (a flight potion), so the game decides who may fly. test_game runs player
-  scripts with "press <key>" and "hold <key+key> <seconds>".
+  scripts with "press <key>" and "hold <key+key> <seconds>" (a name there is a key or an
+  action: "press j", "press jump").
+  Which key does what the game already does (jump, run, use, open the inventory) is the
+  player's own setting, not a script's: change it with the bind and unbind tools.
 - One meter per tile works well (the hero is 1.35 m tall). Positions are meters; ev.pos from
   on_place is on the ground. A failed check (bad component, someone else's entity) or a Lua error
   refuses the whole action; the player sees the message, and you get it with the next request.

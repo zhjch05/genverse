@@ -1,5 +1,6 @@
 #[cfg(not(target_arch = "wasm32"))]
 mod agent;
+mod bindings;
 mod graphics;
 mod player;
 mod scene;
@@ -20,6 +21,7 @@ fn main() -> AppExit {
     let mut app = App::new();
     app.add_plugins(DefaultPlugins.set(WindowPlugin { primary_window: Some(window), ..default() }))
         .add_plugins((
+            bindings::BindingsPlugin,
             voxel::VoxelPlugin,
             world::WorldPlugin,
             player::PlayerPlugin,

@@ -247,7 +247,7 @@ fn at_portal(build: &BuildState, feet: Vec3) -> bool {
 /// reach, whose E comes first).
 #[allow(clippy::too_many_arguments)]
 pub fn use_portals(
-    keys: Res<ButtonInput<KeyCode>>,
+    binds: Res<crate::bindings::Bindings>,
     blocked: Res<InputBlocked>,
     ledger: Res<Ledger>,
     play: Res<Play>,
@@ -262,7 +262,7 @@ pub fn use_portals(
         .iter()
         .find(|(id, _)| ledger.builds.get(id).is_some_and(|b| at_portal(b, hero.translation)))
         .map(|(id, to)| (*id, to.clone()));
-    if blocked.0 || !loading.is_done() || play.near.is_some() || play.playing.is_some() || !keys.just_pressed(KeyCode::KeyE) {
+    if blocked.0 || !loading.is_done() || play.near.is_some() || play.playing.is_some() || !binds.just_pressed("use") {
         return;
     }
     if let Some(to) = travel.near().cloned()
@@ -373,12 +373,12 @@ impl WorldsWindow {
 }
 
 /// O opens and closes it; `GENVERSE_WORLDS=1` opens it at start.
-pub fn toggle_worlds(keys: Res<ButtonInput<KeyCode>>, blocked: Res<InputBlocked>, mut window: ResMut<WorldsWindow>, mut started: Local<bool>) {
+pub fn toggle_worlds(binds: Res<crate::bindings::Bindings>, blocked: Res<InputBlocked>, mut window: ResMut<WorldsWindow>, mut started: Local<bool>) {
     if !*started {
         *started = true;
         window.open = std::env::var("GENVERSE_WORLDS").is_ok();
     }
-    if !blocked.0 && keys.just_pressed(KeyCode::KeyO) {
+    if !blocked.0 && binds.just_pressed("game_window") {
         window.open = !window.open;
         window.rows = None;
     }
@@ -464,6 +464,7 @@ pub fn worlds_window(
     mut creations: ResMut<Creations>,
     mut landscape: ResMut<Landscape>,
     mut chat: ResMut<Chat>,
+    mut binds: ResMut<crate::bindings::Bindings>,
     heroes: Query<&Transform, With<Player>>,
 ) -> Result {
     if !window.open {
@@ -852,6 +853,7 @@ pub fn worlds_window(
         travel: &mut travel,
         at: hero.to_array(),
         agent: None,
+        binds: &mut binds,
     };
     let reply = Some(ops::said(ops::run(op, args, cx)));
     if let Some(reply) = reply.filter(|r| !r.is_empty()) {

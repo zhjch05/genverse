@@ -114,26 +114,22 @@ pub fn sync_inventory(ledger: Res<Ledger>, mut inventory: ResMut<Inventory>) {
 }
 
 /// 1-9 pick a hotbar slot; I opens and closes the inventory (Esc closes it too).
-pub fn inventory_keys(time: Res<Time>, keys: Res<ButtonInput<KeyCode>>, blocked: Res<InputBlocked>, mut inventory: ResMut<Inventory>) {
+pub fn inventory_keys(
+    time: Res<Time>,
+    keys: Res<ButtonInput<KeyCode>>,
+    binds: Res<crate::bindings::Bindings>,
+    blocked: Res<InputBlocked>,
+    mut inventory: ResMut<Inventory>,
+) {
     if blocked.0 {
         return;
     }
-    let digits = [
-        KeyCode::Digit1,
-        KeyCode::Digit2,
-        KeyCode::Digit3,
-        KeyCode::Digit4,
-        KeyCode::Digit5,
-        KeyCode::Digit6,
-        KeyCode::Digit7,
-        KeyCode::Digit8,
-        KeyCode::Digit9,
-    ];
-    if let Some(i) = digits.iter().position(|k| keys.just_pressed(*k)) {
+    let hands = ["hand_1", "hand_2", "hand_3", "hand_4", "hand_5", "hand_6", "hand_7", "hand_8", "hand_9"];
+    if let Some(i) = hands.iter().position(|hand| binds.just_pressed(hand)) {
         inventory.selected = i;
         inventory.picked_at = Some(time.elapsed_secs());
     }
-    if keys.just_pressed(KeyCode::KeyI) || (inventory.open && keys.just_pressed(KeyCode::Escape)) {
+    if binds.just_pressed("inventory") || (inventory.open && keys.just_pressed(KeyCode::Escape)) {
         inventory.open = !inventory.open;
         // A stack in hand goes back where there's room.
         if !inventory.open && let Some(item) = inventory.cursor.take() {

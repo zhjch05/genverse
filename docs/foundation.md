@@ -171,4 +171,12 @@ new world, it could only tell the player where the button was.
   per request. "A dungeon world, a portal to it here, and one back from there" is one
   request.
 
-Next: claiming and releasing parcels as ops.
+- **Keys are data too:** everything a key does is a named action with the keys bound
+  to it (`src/bindings.rs`); the game asks for the action, never the key. `bind`,
+  `unbind` and `resetkeys` are ops, so the chat, the Settings window's Controls and the
+  agent all change them, and the key hints follow. They're the player's own, kept with
+  their preferences. Player scripts read any key by name and the player's actions, and
+  `jump()` asks for the usual jump.
+
+Next: claiming and releasing parcels as ops; what the mouse does by pointing (place,
+select, look) as actions; a game's own actions listed in Controls.

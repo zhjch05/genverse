@@ -41,7 +41,7 @@ enum Pick {
 
 /// H opens and closes it; `GENVERSE_HISTORY=1` opens it at start.
 pub fn toggle_history(
-    keys: Res<ButtonInput<KeyCode>>,
+    binds: Res<crate::bindings::Bindings>,
     blocked: Res<InputBlocked>,
     mut history: ResMut<History>,
     mut started: Local<bool>,
@@ -50,7 +50,7 @@ pub fn toggle_history(
         *started = true;
         history.open = std::env::var("GENVERSE_HISTORY").is_ok();
     }
-    if !blocked.0 && keys.just_pressed(KeyCode::KeyH) {
+    if !blocked.0 && binds.just_pressed("history") {
         history.open = !history.open;
     }
 }
@@ -64,6 +64,7 @@ pub fn history_window(
     mut landscape: ResMut<Landscape>,
     mut chat: ResMut<Chat>,
     mut travel: ResMut<super::worlds::Travel>,
+    mut binds: ResMut<crate::bindings::Bindings>,
     peers: Res<super::presence::Peers>,
 ) -> Result {
     if !history.open {
@@ -150,6 +151,7 @@ pub fn history_window(
         travel: &mut travel,
         at: [0.0; 3],
         agent: None,
+        binds: &mut binds,
     };
     let reply = ops::said(match pick {
         Pick::Undo(id) => ops::run("undo", json!({ "id": id }), cx),
