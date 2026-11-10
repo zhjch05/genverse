@@ -10,7 +10,7 @@ use genverse_rules::{
 };
 
 fn sokoban() -> GameSpec {
-    GameSpec {
+    GameSpec { shaders: Default::default(),
         remove: None, rename: None,
         name: "sokoban".into(),
         title: "Sokoban".into(),

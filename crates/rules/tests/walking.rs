@@ -87,7 +87,7 @@ end
 
 #[test]
 fn a_walk_is_one_change_and_ends_in_on_arrive() {
-    let game = GameSpec {
+    let game = GameSpec { shaders: Default::default(),
         remove: None, rename: None,
         name: "town".into(),
         title: "Town".into(),
@@ -147,7 +147,7 @@ end
 
 #[test]
 fn games_change_how_players_move_and_carry_them() {
-    let game = GameSpec {
+    let game = GameSpec { shaders: Default::default(),
         remove: None, rename: None,
         name: "tower".into(),
         title: "Tower".into(),
@@ -212,7 +212,7 @@ end
 
 #[test]
 fn the_world_is_the_game() {
-    let game = GameSpec {
+    let game = GameSpec { shaders: Default::default(),
         remove: None, rename: None,
         name: "night".into(),
         title: "Night".into(),
@@ -297,7 +297,7 @@ end
 
 #[test]
 fn routines_wandering_and_spawners_are_lua() {
-    let game = GameSpec {
+    let game = GameSpec { shaders: Default::default(),
         remove: None,
         rename: None,
         name: "vale".into(),
@@ -351,7 +351,7 @@ fn walks_go_around_solid_pieces() {
     // 25 cm thick, 2 m tall, 6 m long across the way.
     fence.build.size = vec![2, 16, 48];
     fence.build.shapes[0].to = vec![2.0, 16.0, 48.0];
-    let game = GameSpec {
+    let game = GameSpec { shaders: Default::default(),
         remove: None, rename: None,
         name: "yard".into(),
         title: "Yard".into(),
@@ -373,7 +373,7 @@ fn walks_go_around_solid_pieces() {
 
 #[test]
 fn agents_query_the_world_without_changing_it() {
-    let game = GameSpec {
+    let game = GameSpec { shaders: Default::default(),
         remove: None, rename: None,
         name: "town".into(),
         title: "Town".into(),
@@ -401,7 +401,7 @@ fn agents_query_the_world_without_changing_it() {
 
 #[test]
 fn packages_tell_each_other_and_keep_values() {
-    let pkg = |name: &str, source: &str| GameSpec {
+    let pkg = |name: &str, source: &str| GameSpec { shaders: Default::default(),
         remove: None, rename: None,
         name: name.into(),
         title: name.into(),
@@ -446,7 +446,7 @@ fn packages_tell_each_other_and_keep_values() {
 
 #[test]
 fn trials_play_player_scripts_items_and_time() {
-    let game = GameSpec {
+    let game = GameSpec { shaders: Default::default(),
         remove: None, rename: None,
         name: "sky".into(),
         title: "Sky".into(),
@@ -483,7 +483,7 @@ fn trials_play_player_scripts_items_and_time() {
 
 #[test]
 fn scripts_read_the_ground() {
-    let game = GameSpec {
+    let game = GameSpec { shaders: Default::default(),
         remove: None, rename: None,
         name: "town".into(),
         title: "Town".into(),
@@ -505,7 +505,7 @@ fn scripts_read_the_ground() {
 
 #[test]
 fn games_know_names_and_set_the_time() {
-    let game = GameSpec {
+    let game = GameSpec { shaders: Default::default(),
         remove: None, rename: None,
         name: "town".into(),
         title: "Town".into(),

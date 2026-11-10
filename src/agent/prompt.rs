@@ -266,6 +266,7 @@ editing those files in place:
 - package.json: {"name", "title", "defs": [...]}: the title players see and the items.
 - <feature>.luau: one file per feature. Change one by editing it; add a feature as a new file.
 - models/<model>.json: the voxel models pieces are drawn as.
+- shaders/<shader>.wgsl: WGSL drawn on the ground under pieces with a decal (below).
 What you change there is installed as the next version when you answer. To take a file, def or
 model out, or rename a file, answer with "game": {"name": "<package>", "title": "", "defs": [],
 "scripts": [], "models": [], "remove": ["old.luau"], "rename": [{"from", "to"}] or null}; otherwise
@@ -416,7 +417,12 @@ Keep "build" and "terrain" null unless they also ask for those (on_start can bui
       and walking pieces can't go through it (a gate, a crate, a fence) while it isn't moving.
       Also scale = 0.1-8 (a growing crop, a giant), tint = "#rrggbb" (multiplies its colors: a
       ghostly blue, a poisoned green), glow = true (it all shines), hidden = true (not drawn)
-    label = "text": shown over it nearby; E on it calls on_interact
+    decal = {shader = "halo", size = 2, color = "#ffd84a", alpha = 1, params = {0, 0, 0, 0}}:
+      a flat square on the ground at its feet, size meters across, drawn by one of your shaders
+      (shader left out: a soft ring in color). A selection ring under a character, a spell's
+      target circle, a glowing rune, a pool of light, a zone's edge. set() a new decal to change
+      it live (a pulse when something happens, params to tell the shader what's going on). A
+      piece may have a decal and no look: just a mark on the ground
     pawn = player id: that player's hero stands on this entity and rides it as it walks or
       flies; move it to move them
     walk, chase, region, world, feature: set through the functions above (feature for you),
@@ -464,6 +470,23 @@ Keep "build" and "terrain" null unless they also ask for those (on_start can bui
       about (locked, one-way, timed), use a labeled piece and travel() instead
     terrain({x, z, w, d}, {name = "...", ops = {...}}): reshapes land in that area (meters),
       with the same ops as a land change (dig a moat, raise a hill); keep areas small
+- Shaders: shaders/<name>.wgsl in the package is WGSL (WebGPU's shading language) that draws a
+  decal, run on the GPU for every pixel of it, every frame. Write one function:
+    fn decal(d: Decal) -> vec4<f32>     // the color here, rgb and alpha (0 is see-through)
+  where d.uv is where on the square (-1..1 in x and y, (0, 0) the middle: length(d.uv) is
+  the distance out, 1 the edge), d.size its meters across, d.time seconds (to animate), d.color
+  the decal's color and alpha (linear), d.params its four params. rgb above 1 glows. Anything
+  WGSL has is there (smoothstep, sin, atan2, fract, mix, length, consts, helper functions) except
+  loops (write the steps out) and bindings of your own. A golden selection ring that pulses:
+    // A golden ring that pulses under whoever is selected.
+    fn decal(d: Decal) -> vec4<f32> {
+        let r = length(d.uv);
+        let ring = smoothstep(0.7, 0.8, r) * (1.0 - smoothstep(0.86, 0.96, r));
+        let pulse = 0.75 + 0.25 * sin(d.time * 4.0);
+        return vec4(d.color.rgb * 2.0, ring * pulse * d.color.a);
+    }
+  test_game compiles every shader with the compiler the game draws with: a mistake comes back
+  with its line (shaders/halo.wgsl:3). A new version of a shader shows at once, for everyone.
 - Player scripts: a file named <name>.player.luau runs on each player's own machine every frame,
   for what has to feel immediate: how the hero moves, pieces that bob, spin or swing, the camera.
   Nothing it does is saved or seen by the world's scripts (those never run it), so it changes

@@ -3187,6 +3187,7 @@ dependencies = [
  "bevy_math",
  "ed25519-dalek",
  "mlua",
+ "naga",
  "serde",
  "serde_json",
  "sha2",

@@ -114,7 +114,10 @@ pub struct GameSpec {
     pub scripts: Vec<ScriptSpec>,
     #[serde(default)]
     pub models: Vec<ModelSpec>,
-    /// Names of defs, script files and models a change takes out ([`Self::onto`]).
+    /// WGSL shaders ([`super::shader`]).
+    #[serde(default)]
+    pub shaders: Vec<ShaderSpec>,
+    /// Names of defs, script files, models and shaders a change takes out ([`Self::onto`]).
     #[serde(default)]
     pub remove: Option<Vec<String>>,
     /// Script files a change renames: their pieces and timers follow.
@@ -134,6 +137,14 @@ pub struct Rename {
 pub struct ModelSpec {
     pub name: String,
     pub build: crate::build::BuildSpec,
+}
+
+/// A shader the package's entities can draw with ([`super::shader`]).
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+pub struct ShaderSpec {
+    /// Its local name ("halo"), without `.wgsl`.
+    pub name: String,
+    pub source: String,
 }
 
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
@@ -183,7 +194,8 @@ impl GameSpec {
         let manifest = Manifest { name: ns.clone(), version, title: self.title.clone(), permissions, depends: Vec::new(), renamed, api: super::package::API };
         let scripts = self.scripts.iter().map(|s| (s.name.clone(), s.source.clone())).collect();
         let models = self.models.iter().map(|m| (m.name.clone(), m.build.clone())).collect();
-        Package { manifest, defs, scripts, models }
+        let shaders = self.shaders.iter().map(|s| (s.name.clone(), s.source.clone())).collect();
+        Package { manifest, defs, scripts, models, shaders }
     }
 
     /// The other way, to show an agent what's installed so it can change it.
@@ -199,7 +211,8 @@ impl GameSpec {
             .collect();
         let scripts = package.scripts.iter().map(|(name, source)| ScriptSpec { name: name.clone(), source: source.clone() }).collect();
         let models = package.models.iter().map(|(name, build)| ModelSpec { name: name.clone(), build: build.clone() }).collect();
-        Self { name: ns.into(), title: package.manifest.title.clone(), defs, scripts, models, remove: None, rename: None }
+        let shaders = package.shaders.iter().map(|(name, source)| ShaderSpec { name: name.clone(), source: source.clone() }).collect();
+        Self { name: ns.into(), title: package.manifest.title.clone(), defs, scripts, models, shaders, remove: None, rename: None }
     }
 
     /// This change on top of `base` (what the world runs under the same name, if
@@ -231,6 +244,9 @@ impl GameSpec {
         out.scripts.sort_by(|a, b| a.name.cmp(&b.name));
         out.models.retain(|m| !gone(&m.name) && !self.models.iter().any(|n| n.name == m.name));
         out.models.extend(self.models.iter().cloned());
+        out.shaders.retain(|m| !gone(&m.name) && !self.shaders.iter().any(|n| n.name == m.name));
+        out.shaders.extend(self.shaders.iter().cloned());
+        out.shaders.sort_by(|a, b| a.name.cmp(&b.name));
         out
     }
 
@@ -240,9 +256,14 @@ impl GameSpec {
         let mut added = Vec::new();
         let mut changed = Vec::new();
         let had = |name: &str| {
-            base.is_some_and(|b| b.defs.iter().any(|d| d.name == name) || b.scripts.iter().any(|s| s.name == name) || b.models.iter().any(|m| m.name == name))
+            base.is_some_and(|b| {
+                b.defs.iter().any(|d| d.name == name)
+                    || b.scripts.iter().any(|s| s.name == name)
+                    || b.models.iter().any(|m| m.name == name)
+                    || b.shaders.iter().any(|s| s.name == name)
+            })
         };
-        let names = self.scripts.iter().map(|s| &s.name).chain(self.defs.iter().map(|d| &d.name)).chain(self.models.iter().map(|m| &m.name));
+        let names = self.scripts.iter().map(|s| &s.name).chain(self.defs.iter().map(|d| &d.name)).chain(self.models.iter().map(|m| &m.name)).chain(self.shaders.iter().map(|s| &s.name));
         for name in names {
             if had(name) { changed.push(name.clone()) } else { added.push(name.clone()) }
         }

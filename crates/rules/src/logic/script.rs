@@ -902,7 +902,7 @@ mod tests {
                 "shapes":[{"kind":"box","color":"wood","from":[0,0,0],"to":[8,8,8],"radius":null,"wobble":null}]}"##,
         )
         .unwrap();
-        Package {
+        Package { shaders: Default::default(),
             manifest,
             defs: BTreeMap::new(),
             scripts: BTreeMap::from([("main.luau".into(), source.into())]),
@@ -914,7 +914,7 @@ mod tests {
         let time = WorldTime { day: 0, year: 0, season: 0, day_of_season: 0, time_of_day: 0.0 };
         let event = Event { ground: None, change: 9, player: "p", trigger: Trigger::Intent(&intent), time, at: 100, seed: 1 };
         let models = package.models.keys().cloned().collect();
-        let grants = Grants { package: "game".into(), write: Vec::new(), spawn: true, scope: Scope::World, max_entities: 100, models, drawn: true, build: true };
+        let grants = Grants { package: "game".into(), write: Vec::new(), spawn: true, scope: Scope::World, max_entities: 100, models, shaders: Vec::new(), drawn: true, build: true };
         let mut batch = state.batch(9, "p", 256);
         run(package, &event, &mut batch, &grants)?;
         let done = batch.finish();

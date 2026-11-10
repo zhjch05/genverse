@@ -15,6 +15,7 @@ pub mod entity;
 pub mod package;
 pub mod script;
 pub mod present;
+pub mod shader;
 pub mod solid;
 #[cfg(not(target_arch = "wasm32"))]
 pub mod frame;
@@ -500,6 +501,7 @@ impl Logic {
                 scope: Scope::World,
                 max_entities: 0,
                 models: Vec::new(),
+                shaders: Vec::new(),
                 drawn: false,
                 build: false,
             };
@@ -673,6 +675,7 @@ pub fn grants(package: &Package, install: &Install, rules: &LogicRules) -> Grant
         scope: install.scope.clone(),
         max_entities: rules.max_entities,
         models: package.models.keys().cloned().collect(),
+        shaders: package.shaders.keys().cloned().collect(),
         drawn: !package.scripts.is_empty(),
         build: perms.contains(&Permission::Build),
     }

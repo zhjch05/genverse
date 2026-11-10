@@ -31,6 +31,10 @@ pub struct Package {
     /// with their `look`.
     #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
     pub models: BTreeMap<String, BuildSpec>,
+    /// WGSL shaders by local name ("halo"): see [`super::shader`]. Entities draw one under
+    /// them with their `decal`.
+    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    pub shaders: BTreeMap<String, String>,
 }
 
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
@@ -174,6 +178,16 @@ impl Package {
                 errors.push(format!("model \"{name}\": {}", problems.join("; ")));
             }
         }
+        if self.shaders.len() > super::shader::MAX_SHADERS {
+            errors.push(format!("{} shaders; the most is {}", self.shaders.len(), super::shader::MAX_SHADERS));
+        }
+        for (name, source) in &self.shaders {
+            if !super::shader::valid_name(name) {
+                errors.push(format!("shader \"{name}\" needs a lowercase name (letters, digits, _; up to 32)"));
+            } else if let Err(e) = super::shader::check_decal(&format!("shaders/{name}.wgsl"), source) {
+                errors.push(e);
+            }
+        }
         if self.scripts.len() > MAX_SCRIPTS {
             errors.push(format!("{} scripts; the most is {MAX_SCRIPTS}", self.scripts.len()));
         }
@@ -219,6 +233,7 @@ pub(crate) mod tests {
                 depends: Vec::new(), renamed: Default::default(), api: 0,
             },
             models: BTreeMap::new(),
+            shaders: BTreeMap::new(),
             defs: BTreeMap::from([
                 ("farm:turnip_seed".into(), serde_json::json!({ "kind": "item", "title": "Turnip seeds" })),
                 ("farm:turnip".into(), serde_json::json!({ "kind": "item", "title": "Turnip" })),
@@ -246,6 +261,9 @@ pub(crate) mod tests {
         bad.defs.insert("fish:cod".into(), serde_json::json!({}));
         bad.scripts.insert("../x.luau".into(), String::new());
         bad.manifest.permissions.push(Permission::Write { namespace: "farm".into() });
-        assert_eq!(bad.check().unwrap_err().len(), 4);
+        bad.shaders.insert("halo".into(), "fn decal(d: Decal) -> vec4<f32> { return d.colour; }".into());
+        let errors = bad.check().unwrap_err();
+        assert_eq!(errors.len(), 5);
+        assert!(errors.iter().any(|e| e.contains("shaders/halo.wgsl:1")), "{errors:?}");
     }
 }

@@ -14,7 +14,7 @@ use genverse_rules::{
 fn lamp(source: &str) -> GameSpec {
     let model = r##"{"name":"Lamp","size":[4,8,4],"palette":[{"name":"glow","hex":"#ffd27a","material":"glow"}],
         "shapes":[{"kind":"box","color":"glow","from":[0,0,0],"to":[4,8,4],"radius":null,"wobble":null}]}"##;
-    GameSpec {
+    GameSpec { shaders: Default::default(),
         remove: None, rename: None,
         name: "lamp".into(),
         title: "Lamp".into(),

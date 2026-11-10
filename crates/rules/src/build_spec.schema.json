@@ -527,6 +527,7 @@
         "defs",
         "scripts",
         "models",
+        "shaders",
         "remove",
         "rename"
       ],
@@ -560,6 +561,13 @@
           },
           "description": "Models to add or replace (by name), in the same format as \"build\"; [] for none."
         },
+        "shaders": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/game_shader"
+          },
+          "description": "WGSL shaders to add or replace (by name), drawn under pieces with a \"decal\" (docs/game.md); [] for none."
+        },
         "remove": {
           "anyOf": [
             {
@@ -572,7 +580,7 @@
               }
             }
           ],
-          "description": "Names of defs, script files or models to take out (a removed script file's pieces go with it); null for none."
+          "description": "Names of defs, script files, models or shaders to take out (a removed script file's pieces go with it); null for none."
         },
         "rename": {
           "anyOf": [
@@ -603,6 +611,24 @@
         }
       },
       "description": "A change to the world's game logic: what you send replaces what's there by name (defs, script files, models), names in \"remove\" are taken out, and everything else stays."
+    },
+    "game_shader": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "name",
+        "source"
+      ],
+      "properties": {
+        "name": {
+          "type": "string",
+          "description": "Lowercase id within the package, e.g. \"halo\"."
+        },
+        "source": {
+          "type": "string",
+          "description": "WGSL defining fn decal(d: Decal) -> vec4<f32> (docs/game.md)."
+        }
+      }
     },
     "game_def": {
       "type": "object",

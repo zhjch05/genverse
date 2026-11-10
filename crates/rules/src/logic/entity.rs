@@ -318,7 +318,7 @@ pub const REMOVED_COMPONENTS: [(&str, &str); 3] = [
     ("zone", "region(id, {w, d, keys = true})"),
 ];
 
-pub const RESERVED: [&str; 8] = ["look", "label", "pawn", "walk", "chase", "region", "world", "feature"];
+pub const RESERVED: [&str; 9] = ["look", "decal", "label", "pawn", "walk", "chase", "region", "world", "feature"];
 
 /// Checks an engine component's value, phrased for the agent that wrote it.
 fn check_reserved(name: &str, value: &Value, grants: &Grants) -> Result<(), String> {
@@ -336,6 +336,7 @@ fn check_reserved(name: &str, value: &Value, grants: &Grants) -> Result<(), Stri
             let flags = ["glow", "hidden"].iter().all(|k| value[*k].is_null() || value[*k].is_boolean());
             model && turn && solid && scale && tint && flags
         }
+        "decal" => super::shader::DecalLook::read(value, &grants.shaders).is_some(),
         "label" => value.as_str().is_some_and(|l| l.chars().count() <= 60),
         "pawn" => value.as_str().is_some_and(|p| !p.is_empty() && p.len() <= 128),
         "feature" => value.as_str().is_some_and(|s| s.len() <= 64),
@@ -355,6 +356,11 @@ fn check_reserved(name: &str, value: &Value, grants: &Grants) -> Result<(), Stri
                 "\"look\" is {{\"model\": one of the package's models ({}), \"turn\": 0-3, \"solid\": true to block walking, \"scale\": 0.1-8, \"tint\": \"#rrggbb\", \"glow\": true, \"hidden\": true}}",
                 if grants.models.is_empty() { "it has none".to_string() } else { grants.models.join(", ") }
             ),
+            "decal" => format!(
+                "{} ({})",
+                super::shader::DecalLook::HELP,
+                if grants.shaders.is_empty() { "it has no shaders".to_string() } else { format!("its shaders: {}", grants.shaders.join(", ")) }
+            ),
             "label" => "\"label\" is text of up to 60 characters".into(),
             "region" => "\"region\" is {\"radius\": 0-64 m} or {\"size\": [w, d]} (meters, 0-128), and \"keys\": true to take the keys".into(),
             "world" => "\"world\" is {\"building\": true or false}".into(),
@@ -373,6 +379,8 @@ pub struct Grants {
     pub max_entities: u32,
     /// Its voxel models, which its entities' `look` may name.
     pub models: Vec<String>,
+    /// Its shaders, which its entities' `decal` may name.
+    pub shaders: Vec<String>,
     /// Every entity it makes must be drawn: a `look`, unless it's a `pawn` (the hero
     /// shows those). True for scripted packages; the simple farming kinds draw
     /// themselves.
@@ -1193,8 +1201,8 @@ impl Batch<'_> {
                 if count + 1 > grants.max_entities as i64 {
                     return Err(format!("{} already has {count} entities; this world allows {}", grants.package, grants.max_entities));
                 }
-                // A region or the world's rules aren't seen; a pawn is the hero.
-                let unseen = ["pawn", "region", "world"].iter().any(|c| components.contains_key(*c));
+                // A region or the world's rules aren't seen; a pawn is the hero; a decal is drawn.
+                let unseen = ["pawn", "region", "world", "decal"].iter().any(|c| components.contains_key(*c));
                 if grants.drawn && !components.contains_key("look") && !unseen {
                     return Err(format!(
                         "every piece needs a look: {{model = ...}}, one of the package's models ({})",
@@ -1250,7 +1258,7 @@ impl Batch<'_> {
                 let mut e = entity(self, *id)?;
                 if RESERVED.contains(&component.as_str()) {
                     own(grants, &e)?;
-                    if component == "look" && grants.drawn && !e.components.contains_key("pawn") {
+                    if component == "look" && grants.drawn && !["pawn", "decal"].iter().any(|c| e.components.contains_key(*c)) {
                         return Err("every piece needs a look; set another one instead of removing it".into());
                     }
                 } else {
@@ -1568,7 +1576,7 @@ mod tests {
     use super::*;
 
     fn grants(package: &str, scope: Scope) -> Grants {
-        Grants { package: package.into(), write: Vec::new(), spawn: true, scope, max_entities: 2, models: vec!["crate".into()], drawn: false, build: false }
+        Grants { package: package.into(), write: Vec::new(), spawn: true, scope, max_entities: 2, models: vec!["crate".into()], shaders: Vec::new(), drawn: false, build: false }
     }
 
     fn spawn(x: f32) -> Effect {

@@ -13,6 +13,7 @@
 
 mod commands;
 mod creations;
+mod decal;
 mod fps;
 mod game;
 #[cfg(test)]
@@ -114,6 +115,8 @@ impl Plugin for AgentPlugin {
             .init_resource::<settings::SettingsWindow>()
             .init_resource::<lan::Lan>()
             .init_resource::<game::Play>()
+            .init_resource::<decal::Decals>()
+            .add_plugins(MaterialPlugin::<decal::DecalMaterial>::default())
             .init_resource::<present::LocalShows>()
             .init_resource::<tools::Looks>()
             .init_resource::<worlds::Travel>()
@@ -172,6 +175,8 @@ impl Plugin for AgentPlugin {
                     .after(loading::loading_screen),
             )
             // How games show things: effects, sounds, the sky, heroes' looks.
+            // Decals follow the pieces they're under.
+            .add_systems(Update, decal::sync_decals.after(game::walk_pieces))
             .add_systems(Update, (present::play_shows, present::update_particles, present::apply_sky, present::dress_hero))
             .add_systems(Update, tools::take_looks.after(crate::player::follow_camera))
             // Before games act, so they read the ground as it is.

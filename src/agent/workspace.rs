@@ -16,7 +16,8 @@
 //! pieces.jsonl         every game piece: id, package, position, components
 //! players.json         players' stats and items
 //! history.md           recent changes and the requests behind them
-//! packages/<name>/     package.json (title, defs), *.luau files, models/<model>.json
+//! packages/<name>/     package.json (title, defs), *.luau files, models/<model>.json,
+//!                      shaders/<shader>.wgsl
 //! panels/<id>.json     the app's panels and the player's: windows as data (`super::panels`)
 //! docs/                the scripting reference
 //! ```
@@ -36,7 +37,7 @@ use serde_json::{Value, json};
 
 use genverse_rules::{
     build::BuildSpec,
-    logic::data::{DefSpec, GameSpec, ModelSpec, ScriptSpec},
+    logic::data::{DefSpec, GameSpec, ModelSpec, ScriptSpec, ShaderSpec},
     semantic::{self, Record},
 };
 
@@ -223,6 +224,9 @@ fn packages(dir: &Path, ledger: &Ledger, keep: &BTreeSet<String>) -> Result<(), 
         }
         for model in &spec.models {
             put(&root.join("models").join(format!("{}.json", model.name)), &pretty(&model.build))?;
+        }
+        for shader in &spec.shaders {
+            put(&root.join("shaders").join(format!("{}.wgsl", shader.name)), &shader.source)?;
         }
     }
     std::fs::create_dir_all(&root).map_err(|e| e.to_string())
@@ -473,15 +477,34 @@ fn diff(root: &Path, name: &str, base: Option<&GameSpec>) -> Result<Option<GameS
             models.push(ModelSpec { name: model.to_string(), build });
         }
     }
+    let mut shaders = Vec::new();
+    if let Ok(entries) = std::fs::read_dir(root.join("shaders")) {
+        for entry in entries.flatten() {
+            let file = entry.file_name().to_string_lossy().to_string();
+            let Some(shader) = file.strip_suffix(".wgsl") else { continue };
+            let source = std::fs::read_to_string(entry.path()).map_err(|e| e.to_string())?;
+            shaders.push(ShaderSpec { name: shader.to_string(), source });
+        }
+    }
     scripts.sort_by(|a, b| a.name.cmp(&b.name));
     models.sort_by(|a, b| a.name.cmp(&b.name));
+    shaders.sort_by(|a, b| a.name.cmp(&b.name));
     let Some(base) = base else {
-        if scripts.is_empty() && models.is_empty() && defs.is_empty() {
+        if scripts.is_empty() && models.is_empty() && shaders.is_empty() && defs.is_empty() {
             return Ok(None);
         }
-        return Ok(Some(GameSpec { name: name.into(), title, defs, scripts, models, remove: None, rename: None }));
+        return Ok(Some(GameSpec { name: name.into(), title, defs, scripts, models, shaders, remove: None, rename: None }));
     };
-    let mut change = GameSpec { name: name.into(), title: String::new(), defs: Vec::new(), scripts: Vec::new(), models: Vec::new(), remove: None, rename: None };
+    let mut change = GameSpec {
+        name: name.into(),
+        title: String::new(),
+        defs: Vec::new(),
+        scripts: Vec::new(),
+        models: Vec::new(),
+        shaders: Vec::new(),
+        remove: None,
+        rename: None,
+    };
     let mut gone = Vec::new();
     if !title.trim().is_empty() && title != base.title {
         change.title = title;
@@ -492,10 +515,12 @@ fn diff(root: &Path, name: &str, base: Option<&GameSpec>) -> Result<Option<GameS
     gone.extend(base.scripts.iter().filter(|s| !scripts.iter().any(|n| n.name == s.name)).map(|s| s.name.clone()));
     change.models = models.iter().filter(|m| !base.models.contains(m)).cloned().collect();
     gone.extend(base.models.iter().filter(|m| !models.iter().any(|n| n.name == m.name)).map(|m| m.name.clone()));
+    change.shaders = shaders.iter().filter(|s| !base.shaders.contains(s)).cloned().collect();
+    gone.extend(base.shaders.iter().filter(|s| !shaders.iter().any(|n| n.name == s.name)).map(|s| s.name.clone()));
     if !gone.is_empty() {
         change.remove = Some(gone);
     }
-    let unchanged = change.title.is_empty() && change.defs.is_empty() && change.scripts.is_empty() && change.models.is_empty() && change.remove.is_none();
+    let unchanged = change.title.is_empty() && change.defs.is_empty() && change.scripts.is_empty() && change.models.is_empty() && change.shaders.is_empty() && change.remove.is_none();
     Ok((!unchanged).then_some(change))
 }
 
@@ -553,7 +578,8 @@ request. Read and search it like a repository: Glob, Grep and Read.
 - history.md: recent changes, who made them, and what they asked for.
 - packages/<name>/: the game logic, as it runs now. package.json has the title and the
   defs (items); each .luau file is a feature; models/<model>.json are the voxel models
-  pieces are drawn as.
+  pieces are drawn as; shaders/<shader>.wgsl draw on the ground under pieces with a
+  decal (docs/game.md).
 - docs/game.md: the scripting reference. Read it before writing game logic.
 - panels/<id>.json: windows of the app, as data: the app's own (controls.json is the
   key bindings window) and the player's. Write a file to add one, edit one to change

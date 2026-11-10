@@ -26,7 +26,7 @@ fn model(name: &str, size: [i64; 3]) -> ModelSpec {
 }
 
 fn game(name: &str, defs: Vec<DefSpec>, script: Option<&str>, models: Vec<ModelSpec>) -> GameSpec {
-    GameSpec {
+    GameSpec { shaders: Default::default(),
         remove: None, rename: None,
         name: name.into(),
         title: name.into(),

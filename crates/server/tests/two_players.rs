@@ -229,7 +229,7 @@ fn two_players_share_one_ordered_world() {
 
 /// The rules crate's Sokoban test script, as a package.
 fn sokoban() -> GameSpec {
-    GameSpec {
+    GameSpec { shaders: Default::default(),
         remove: None, rename: None,
         name: "sokoban".into(),
         title: "Sokoban".into(),
@@ -337,7 +337,7 @@ fn the_server_runs_timers() {
     end
     "#;
     let models = sokoban().models;
-    let bell = GameSpec {
+    let bell = GameSpec { shaders: Default::default(),
         remove: None, rename: None,
         name: "bell".into(),
         title: "Bell".into(),
@@ -518,7 +518,7 @@ fn items_and_rules_follow_the_game() {
         let mut models = models();
         models.retain(|m| m.name == "box");
         models[0].name = "bin".into();
-        GameSpec {
+        GameSpec { shaders: Default::default(),
             remove: None,
             rename: None,
             name: "farm".into(),

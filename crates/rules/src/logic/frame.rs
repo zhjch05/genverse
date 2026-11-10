@@ -373,7 +373,7 @@ mod tests {
 
     fn package(files: &[(&str, &str)]) -> Package {
         let manifest = Manifest { name: "game".into(), version: 1, title: "Game".into(), permissions: vec![Permission::Spawn], depends: Vec::new(), renamed: Default::default(), api: 0 };
-        Package { manifest, defs: BTreeMap::new(), scripts: files.iter().map(|(n, s)| (n.to_string(), s.to_string())).collect(), models: BTreeMap::new() }
+        Package { shaders: Default::default(), manifest, defs: BTreeMap::new(), scripts: files.iter().map(|(n, s)| (n.to_string(), s.to_string())).collect(), models: BTreeMap::new() }
     }
 
     fn input<'a>(keys: &'a [&'a str], pressed: &'a [&'a str]) -> FrameIn<'a> {

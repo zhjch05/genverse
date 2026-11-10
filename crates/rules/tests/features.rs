@@ -22,7 +22,7 @@ fn model(name: &str) -> ModelSpec {
 
 /// A change to the world's package: only these files and models.
 fn change(scripts: &[(&str, &str)], models: &[&str], remove: Option<Vec<String>>) -> GameSpec {
-    GameSpec {
+    GameSpec { shaders: Default::default(),
         name: "world".into(),
         title: String::new(),
         defs: Vec::new(),
