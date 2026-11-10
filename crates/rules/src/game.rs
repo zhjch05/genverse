@@ -23,7 +23,14 @@ pub fn clean_name(name: &str) -> Option<String> {
 #[serde(tag = "kind", rename_all = "snake_case")]
 pub enum GameAction {
     /// A new world, with its ground.
-    CreateWorld { name: String, seed: u32, flat: bool },
+    CreateWorld {
+        name: String,
+        seed: u32,
+        flat: bool,
+        /// Its landscape; left out while it's the usual one.
+        #[serde(default, skip_serializing_if = "crate::recipe::Recipe::is_default")]
+        recipe: crate::recipe::Recipe,
+    },
     /// Takes a world out of the game (its files move to the trash; nothing is deleted).
     RemoveWorld { name: String },
     /// Who runs the game, and every world in it.
@@ -63,6 +70,15 @@ pub enum Sync {
 pub struct Ground {
     pub seed: u32,
     pub flat: bool,
+    /// Its landscape ([`crate::recipe`]).
+    pub recipe: crate::recipe::Recipe,
+}
+
+impl Ground {
+    /// A new world's log on this ground.
+    pub fn log(&self) -> crate::log::WorldLog {
+        crate::log::WorldLog { flat: self.flat, recipe: self.recipe, ..crate::log::WorldLog::new(self.seed) }
+    }
 }
 
 #[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
@@ -82,9 +98,9 @@ impl GameLog {
         let mut out: Vec<(String, Ground)> = Vec::new();
         for c in &self.changes {
             match &c.action {
-                GameAction::CreateWorld { name, seed, flat } => {
+                GameAction::CreateWorld { name, seed, flat, recipe } => {
                     out.retain(|(n, _)| n != name);
-                    out.push((name.clone(), Ground { seed: *seed, flat: *flat }));
+                    out.push((name.clone(), Ground { seed: *seed, flat: *flat, recipe: *recipe }));
                 }
                 GameAction::RemoveWorld { name } => out.retain(|(n, _)| n != name),
                 _ => {}
@@ -272,13 +288,13 @@ mod tests {
         let mut game = GameLog::new("local");
         // The first player runs a new game.
         game.push(by("ada"), GameAction::SetAdmins { admins: vec!["ada".into()] }).unwrap();
-        game.push(by("ada"), GameAction::CreateWorld { name: "home".into(), seed: 1, flat: false }).unwrap();
-        game.push(by("ada"), GameAction::CreateWorld { name: "sokoban".into(), seed: 1, flat: true }).unwrap();
-        assert!(game.push(by("bo"), GameAction::CreateWorld { name: "mine".into(), seed: 1, flat: true }).is_err());
-        assert!(game.push(by("ada"), GameAction::CreateWorld { name: "home".into(), seed: 2, flat: true }).is_err());
-        assert!(game.push(by("ada"), GameAction::CreateWorld { name: "Bad Name".into(), seed: 2, flat: true }).is_err());
+        game.push(by("ada"), GameAction::CreateWorld { name: "home".into(), seed: 1, flat: false, recipe: Default::default() }).unwrap();
+        game.push(by("ada"), GameAction::CreateWorld { name: "sokoban".into(), seed: 1, flat: true, recipe: Default::default() }).unwrap();
+        assert!(game.push(by("bo"), GameAction::CreateWorld { name: "mine".into(), seed: 1, flat: true, recipe: Default::default() }).is_err());
+        assert!(game.push(by("ada"), GameAction::CreateWorld { name: "home".into(), seed: 2, flat: true, recipe: Default::default() }).is_err());
+        assert!(game.push(by("ada"), GameAction::CreateWorld { name: "Bad Name".into(), seed: 2, flat: true, recipe: Default::default() }).is_err());
         assert_eq!(game.start().as_deref(), Some("home"));
-        assert_eq!(game.world("sokoban"), Some(Ground { seed: 1, flat: true }));
+        assert_eq!(game.world("sokoban"), Some(Ground { seed: 1, flat: true, recipe: Default::default() }));
         game.push(by("ada"), GameAction::RemoveWorld { name: "home".into() }).unwrap();
         assert!(game.push(by("ada"), GameAction::RemoveWorld { name: "sokoban".into() }).unwrap_err().contains("at least one"));
         assert_eq!(game.start().as_deref(), Some("sokoban"));

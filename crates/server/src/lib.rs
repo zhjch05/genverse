@@ -213,7 +213,7 @@ fn open_game(config: &ServerConfig) -> io::Result<GameLog> {
         game.push(by.clone(), GameAction::SetAdmins { admins }).map_err(io::Error::other)?;
     }
     // A new game's first world is made by whoever runs it; here, the server.
-    game.changes.push(game::GameChange { id: game.changes.len() as u64 + 1, by, action: GameAction::CreateWorld { name: "main".into(), seed, flat } });
+    game.changes.push(game::GameChange { id: game.changes.len() as u64 + 1, by, action: GameAction::CreateWorld { name: "main".into(), seed, flat, recipe: Default::default() } });
     store::write_game(dir, &game)?;
     Ok(game)
 }
@@ -334,7 +334,7 @@ impl Server {
             let ground = self.game.world(name).ok_or_else(|| io::Error::other(format!("there's no world \"{name}\"")))?;
             let dir = self.dir.join("worlds").join(name);
             let (mut file, log) = LogFile::open(&dir)?;
-            let mut log = log.unwrap_or(WorldLog { flat: ground.flat, ..WorldLog::new(ground.seed) });
+            let mut log = log.unwrap_or(ground.log());
             // The game's admins run every world in it.
             log.admins = self.game.admins();
             let snapshot_path = dir.join("snapshot.json");

@@ -8,6 +8,7 @@
 //! README.md            how the folder works
 //! WORLD.md             the world at a glance: where the player is, places, features
 //! GAME.md              the game around it: its worlds, saves, packages, who the player is
+//! SETTINGS.md          every value that can be tuned: the world's rules, the player's options
 //! places.jsonl         what everything means (`genverse_rules::semantic`), one per line
 //! builds/<id>.json     each build: name, about, request, position (and <id>.spec.json)
 //! pieces.jsonl         every game piece: id, package, position, components
@@ -98,6 +99,7 @@ pub fn write(ledger: &Ledger, here: Option<&str>, errors: &[String]) -> Result<P
         let _ = write!(changes, "\n## {version}\n\n{what}\n");
     }
     put(&dir.join("docs/changes.md"), &changes)?;
+    put(&dir.join("docs/terrain.md"), genverse_rules::recipe::DOC)?;
     view(&dir, ledger, here, errors)?;
     packages(&dir, ledger, &BTreeSet::new())?;
     if let Ok(mut current) = CURRENT.lock() {
@@ -137,6 +139,7 @@ fn view(dir: &Path, ledger: &Ledger, here: Option<&str>, errors: &[String]) -> R
     let records = semantic::records(&ledger.log, &ledger.builds, &ledger.logic);
     put(&dir.join("WORLD.md"), &overview(ledger, here, errors, &records))?;
     put(&dir.join("GAME.md"), &game(ledger))?;
+    put(&dir.join("SETTINGS.md"), &super::registry::describe(&ledger.rules))?;
     let mut places = String::new();
     for r in &records {
         places.push_str(&serde_json::to_string(r).unwrap_or_default());
@@ -249,7 +252,11 @@ fn game(ledger: &Ledger) -> String {
         }
         None => {
             for w in files::list_worlds() {
-                let _ = writeln!(out, "- {} ({}, {} changes){}", w.name, if w.flat { "flat" } else { "natural" }, w.changes, here(&w.name));
+                let ground = match log.as_ref().and_then(|g| g.world(&w.name)).map(|g| g.recipe) {
+                    Some(recipe) if !recipe.is_default() => format!("{}: {}", if w.flat { "flat" } else { "a landscape" }, recipe.describe()),
+                    _ => if w.flat { "flat" } else { "natural" }.to_string(),
+                };
+                let _ = writeln!(out, "- {} ({ground}, {} changes){}", w.name, w.changes, here(&w.name));
             }
         }
     }
@@ -303,6 +310,17 @@ fn game(ledger: &Ledger) -> String {
 fn overview(ledger: &Ledger, here: Option<&str>, errors: &[String], records: &[Record]) -> String {
     let (game, world) = crate::world::ledger::place();
     let mut out = format!("# {world} (a world of the game \"{game}\")\n\n");
+    let terrain = ledger.log.terrain();
+    let _ = writeln!(
+        out,
+        "Its ground is {}, set when it was made: it doesn't change (change_land reshapes parts of it; a new world can have another).\n",
+        match (terrain.flat, terrain.recipe.is_default()) {
+            (true, true) => "flat and empty".to_string(),
+            (false, true) => "the usual natural landscape".to_string(),
+            (true, false) => format!("flat, with its own cover and colors ({})", terrain.recipe.describe()),
+            (false, false) => format!("a landscape of its own ({})", terrain.recipe.describe()),
+        }
+    );
     if let Some(here) = here {
         let _ = writeln!(out, "## Where the player is\n\n{here}");
     }
@@ -504,6 +522,9 @@ request. Read and search it like a repository: Glob, Grep and Read.
   features and recent script errors. Start here.
 - GAME.md: the game this world is part of: its worlds, saves and packages, whether
   it's shared, and whether the player is an admin.
+- SETTINGS.md: every value that can be tuned, with what the world's are now: how
+  heroes move, the limits on builds and land, budgets, the clock, graphics. The `set`
+  tool changes one.
 - places.jsonl: everything in the world and what it means, one JSON object per line:
   builds, land changes, game packages and their files, labeled pieces, named places.
   Grep it ("wolf", "bakery"), or use the `search` tool to find things by meaning and
@@ -517,6 +538,8 @@ request. Read and search it like a repository: Glob, Grep and Read.
   defs (items); each .luau file is a feature; models/<model>.json are the voxel models
   pieces are drawn as.
 - docs/game.md: the scripting reference. Read it before writing game logic.
+- docs/terrain.md: what a new world's landscape can be (the newworld tool's "terrain"):
+  sea and land, hills, mountains, trees, snow, what covers the ground, its colors.
 
 To change the game logic, edit the files under packages/ in place (Edit, Write): change
 a feature's .luau file, add a new file for a new feature, add or change a model, add a

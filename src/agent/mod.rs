@@ -27,6 +27,7 @@ mod online;
 mod prefs;
 mod presence;
 mod prompt;
+mod registry;
 mod runner;
 mod stream;
 mod activity;
@@ -556,7 +557,7 @@ fn auto_prompt(
     mut world: ResMut<VoxelWorld>,
     mut ledger: ResMut<Ledger>,
     mut travel: ResMut<worlds::Travel>,
-    mut binds: ResMut<Bindings>,
+    (mut binds, mut graphics): (ResMut<Bindings>, ResMut<crate::graphics::Graphics>),
     players: Query<(&Player, &Transform)>,
     cameras: Query<&GlobalTransform, With<Camera3d>>,
 ) {
@@ -608,6 +609,7 @@ fn auto_prompt(
                     at: hero.translation.to_array(),
                     agent: None,
                     binds: &mut binds,
+                    graphics: &mut graphics,
                 };
                 run_command(&mut chat, command.trim(), cx);
             }
@@ -656,7 +658,7 @@ fn finish_turn(
     mut creations: ResMut<Creations>,
     mut landscape: ResMut<Landscape>,
     mut travel: ResMut<worlds::Travel>,
-    mut binds: ResMut<Bindings>,
+    (mut binds, mut graphics): (ResMut<Bindings>, ResMut<crate::graphics::Graphics>),
     players: Query<&Transform, With<Player>>,
 ) {
     if chat.pending.is_some() || chat.after.is_empty() {
@@ -680,6 +682,7 @@ fn finish_turn(
             at: players.single().map_or([0.0; 3], |t| t.translation.to_array()),
             agent: None,
             binds: &mut binds,
+            graphics: &mut graphics,
         };
         let reply = ops::said(ops::run(name, args, cx));
         info!("after the agent's turn, {name} -> {reply}");
@@ -1825,7 +1828,7 @@ enum Action {
 
 fn chat_panel(
     mut contexts: EguiContexts,
-    mut binds: ResMut<Bindings>,
+    (mut binds, mut graphics): (ResMut<Bindings>, ResMut<crate::graphics::Graphics>),
     egui_input: Res<EguiWantsInput>,
     mut chat: ResMut<Chat>,
     mut creations: ResMut<Creations>,
@@ -2356,6 +2359,7 @@ fn chat_panel(
                 at: players.single().map_or([0.0; 3], |t| t.translation.to_array()),
                 agent: None,
                 binds: &mut binds,
+                graphics: &mut graphics,
             };
             run_command(&mut chat, text.trim(), cx);
         }
@@ -2440,7 +2444,7 @@ fn chat_panel(
         Some(Action::Allow) => {
             if let Some(ask) = chat.asking.take() {
                 let at = players.single().map_or([0.0; 3], |t| t.translation.to_array());
-                ask.allow(&mut chat, &mut ledger, &mut world, &mut creations, &mut landscape, &mut binds, at);
+                ask.allow(&mut chat, &mut ledger, &mut world, &mut creations, &mut landscape, (&mut binds, &mut graphics), at);
             }
         }
         Some(Action::Deny) => {

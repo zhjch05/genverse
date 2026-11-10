@@ -73,6 +73,12 @@ pub struct Pawned(pub Option<Vec3>);
 /// throw it hasn't felt yet.
 #[derive(Resource)]
 pub struct HeroBody {
+    /// How heroes move in this world, before a game's multiples: meters a second
+    /// walking and running, how fast a jump leaves the ground, and gravity.
+    pub walk: f32,
+    pub run: f32,
+    pub jump_speed: f32,
+    pub fall: f32,
     pub speed: f32,
     /// How high a jump goes.
     pub jump: f32,
@@ -83,7 +89,7 @@ pub struct HeroBody {
 
 impl Default for HeroBody {
     fn default() -> Self {
-        Self { speed: 1.0, jump: 1.0, gravity: 1.0, air_jumps: 0, launch: None }
+        Self { walk: WALK_SPEED, run: RUN_SPEED, jump_speed: JUMP_SPEED, fall: GRAVITY, speed: 1.0, jump: 1.0, gravity: 1.0, air_jumps: 0, launch: None }
     }
 }
 
@@ -503,14 +509,14 @@ pub fn move_player(
         let forward = Vec3::new(-yaw.sin(), 0.0, -yaw.cos());
         let right = Vec3::new(-forward.z, 0.0, forward.x);
         let wish = right * input.x + forward * input.y;
-        let speed = if pressed("run") { RUN_SPEED } else { WALK_SPEED } * body.speed;
+        let speed = if pressed("run") { body.run } else { body.walk } * body.speed;
 
         let target = wish * speed;
         let accel = if player.grounded { 14.0 } else { 4.0 };
         let horizontal = player.velocity.xz().lerp(target.xz(), 1.0 - (-accel * dt).exp());
         player.velocity.x = horizontal.x;
         player.velocity.z = horizontal.y;
-        player.velocity.y -= GRAVITY * body.gravity * dt;
+        player.velocity.y -= body.fall * body.gravity * dt;
         // A game's player script moves the hero its own way (flying, swimming, dashing).
         let scripted_move = scripted.velocity.is_some();
         if let Some(v) = scripted.velocity {
@@ -526,7 +532,7 @@ pub fn move_player(
                 player.air_jumps += 1;
             }
             // Height goes with the square of speed: `jump` ×2 goes twice as high.
-            player.velocity.y = JUMP_SPEED * (body.jump * body.gravity).sqrt();
+            player.velocity.y = body.jump_speed * (body.jump * body.gravity).sqrt();
         }
         if let Some(throw) = body.launch.take() {
             player.velocity = throw;

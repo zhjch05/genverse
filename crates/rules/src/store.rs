@@ -36,11 +36,13 @@ struct Head {
     flat: bool,
     #[serde(default = "crate::terrain::legacy_terrain")]
     terrain_version: u32,
+    #[serde(default, skip_serializing_if = "crate::recipe::Recipe::is_default")]
+    recipe: crate::recipe::Recipe,
 }
 
 impl Head {
     fn of(log: &WorldLog) -> Self {
-        Self { seed: log.seed, rules_version: log.rules_version, admins: log.admins.clone(), rules: log.rules.clone(), flat: log.flat, terrain_version: log.terrain_version }
+        Self { seed: log.seed, rules_version: log.rules_version, admins: log.admins.clone(), rules: log.rules.clone(), flat: log.flat, terrain_version: log.terrain_version, recipe: log.recipe }
     }
 }
 
@@ -228,6 +230,7 @@ fn read_lines(path: &Path) -> io::Result<WorldLog> {
                 fresh.rules = h.rules;
                 fresh.flat = h.flat;
                 fresh.terrain_version = h.terrain_version;
+                fresh.recipe = h.recipe;
                 log = Some(fresh);
             }
             (Line::Package(p), Some(log)) => {

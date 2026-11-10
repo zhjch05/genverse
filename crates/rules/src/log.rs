@@ -363,6 +363,9 @@ pub struct WorldLog {
     /// saved before it was kept are on the first.
     #[serde(default = "terrain::legacy_terrain")]
     pub terrain_version: u32,
+    /// The landscape the world was made with; left out while it's the usual one.
+    #[serde(default, skip_serializing_if = "crate::recipe::Recipe::is_default")]
+    pub recipe: crate::recipe::Recipe,
     pub changes: Vec<Change>,
     /// Game packages, by hash: everything an [`Action::InstallPackage`] may name.
     /// Packages that were never installed are harmless; they just wait.
@@ -379,6 +382,7 @@ impl WorldLog {
             rules: WorldRules::default(),
             flat: false,
             terrain_version: TERRAIN_VERSION,
+            recipe: crate::recipe::Recipe::NATURAL,
             changes: Vec::new(),
             packages: BTreeMap::new(),
         }
@@ -386,7 +390,7 @@ impl WorldLog {
 
     /// The ground this world is made of.
     pub fn terrain(&self) -> Terrain {
-        Terrain { seed: self.seed, flat: self.flat, version: self.terrain_version }
+        Terrain { seed: self.seed, flat: self.flat, version: self.terrain_version, recipe: self.recipe }
     }
 
     /// Keeps `package` so changes can install it. Returns its hash.
@@ -512,6 +516,7 @@ pub struct Replay {
     pub seed: u32,
     pub flat: bool,
     pub terrain_version: u32,
+    pub recipe: crate::recipe::Recipe,
     pub admins: Vec<String>,
     pub builds: Builds,
     /// Voxel edits on top of the seed.
@@ -851,7 +856,7 @@ impl Replay {
 
     /// The ground the world is made of.
     pub fn terrain(&self) -> Terrain {
-        Terrain { seed: self.seed, flat: self.flat, version: self.terrain_version }
+        Terrain { seed: self.seed, flat: self.flat, version: self.terrain_version, recipe: self.recipe }
     }
 
     /// The world before any change: the log's seed, admins and starting rules.
@@ -859,7 +864,7 @@ impl Replay {
         let rules = log.rules.clone();
         let land = Land::new(log.admins.clone(), rules.spawn.clone(), rules.land);
         let logic = Logic { packages: log.packages.clone(), ..Default::default() };
-        Self { seed: log.seed, flat: log.flat, terrain_version: log.terrain_version, admins: log.admins.clone(), land, rules, logic, ..Default::default() }
+        Self { seed: log.seed, flat: log.flat, terrain_version: log.terrain_version, recipe: log.recipe, admins: log.admins.clone(), land, rules, logic, ..Default::default() }
     }
 
     /// Applies one change on top of the current state, or says why the rules refuse it

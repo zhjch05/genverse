@@ -45,6 +45,43 @@ impl Look {
     }
 }
 
+/// How heroes move in this world, before what a game does to one player (`body`).
+#[derive(Clone, Copy, Debug, PartialEq, Serialize, Deserialize)]
+#[serde(default)]
+pub struct HeroRules {
+    /// Meters a second.
+    pub walk_speed: f32,
+    pub run_speed: f32,
+    /// How fast a jump leaves the ground, meters a second: with the usual gravity, 7.5
+    /// goes a little over a meter high.
+    pub jump_speed: f32,
+    /// Meters a second, each second.
+    pub gravity: f32,
+}
+
+impl Default for HeroRules {
+    fn default() -> Self {
+        Self { walk_speed: 4.0, run_speed: 7.0, jump_speed: 7.5, gravity: 24.0 }
+    }
+}
+
+impl HeroRules {
+    fn is_default(&self) -> bool {
+        *self == Self::default()
+    }
+
+    /// The rules kept within what a hero can be moved by, whatever a log says.
+    pub fn bounded(self) -> Self {
+        let within = |v: f32, lo: f32, hi: f32, usual: f32| if v.is_finite() { v.clamp(lo, hi) } else { usual };
+        Self {
+            walk_speed: within(self.walk_speed, 0.5, 20.0, 4.0),
+            run_speed: within(self.run_speed, 0.5, 40.0, 7.0),
+            jump_speed: within(self.jump_speed, 0.0, 30.0, 7.5),
+            gravity: within(self.gravity, 1.0, 100.0, 24.0),
+        }
+    }
+}
+
 #[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
 #[serde(default)]
 pub struct WorldRules {
@@ -61,6 +98,9 @@ pub struct WorldRules {
     /// while it's the default, like `look`.
     #[serde(skip_serializing_if = "LogicRules::is_default")]
     pub logic: LogicRules,
+    /// How heroes move here. Left out while it's the default, like `look`.
+    #[serde(skip_serializing_if = "HeroRules::is_default")]
+    pub hero: HeroRules,
 }
 
 #[cfg(test)]
@@ -71,7 +111,12 @@ mod tests {
     fn default_look_leaves_signed_rules_unchanged() {
         // Rules signed before `look` existed must serialize to the same bytes.
         let json = serde_json::to_string(&WorldRules::default()).unwrap();
-        assert!(!json.contains("look") && !json.contains("logic"));
+        assert!(!json.contains("look") && !json.contains("logic") && !json.contains("hero"));
+        // Hero rules travel the same way, and are bounded where they're used.
+        let rules = WorldRules { hero: HeroRules { run_speed: 14.0, gravity: 1e9, ..Default::default() }, ..Default::default() };
+        let back: WorldRules = serde_json::from_str(&serde_json::to_string(&rules).unwrap()).unwrap();
+        assert_eq!((back.hero.run_speed, back.hero.bounded().gravity), (14.0, 100.0));
+        assert_eq!(HeroRules { jump_speed: f32::NAN, ..Default::default() }.bounded().jump_speed, 7.5);
         let rules = WorldRules { look: Look { bevel: 0.12 }, ..Default::default() };
         let back: WorldRules = serde_json::from_str(&serde_json::to_string(&rules).unwrap()).unwrap();
         assert_eq!(back.look.bevel, 0.12);

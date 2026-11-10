@@ -33,6 +33,7 @@ use super::{
 };
 use crate::{
     bindings::Bindings,
+    graphics::Graphics,
     player::Player,
     voxel::{AIR, VoxelId},
     world::{
@@ -62,8 +63,8 @@ pub struct Ask {
 
 impl Ask {
     /// The player said yes: does it, and tells the agent how it went.
-    pub fn allow(self, chat: &mut Chat, ledger: &mut Ledger, world: &mut VoxelWorld, creations: &mut Creations, landscape: &mut Landscape, binds: &mut Bindings, at: [f32; 3]) {
-        let result = act(self.op, self.args, chat, ledger, world, creations, landscape, binds, at);
+    pub fn allow(self, chat: &mut Chat, ledger: &mut Ledger, world: &mut VoxelWorld, creations: &mut Creations, landscape: &mut Landscape, own: (&mut Bindings, &mut Graphics), at: [f32; 3]) {
+        let result = act(self.op, self.args, chat, ledger, world, creations, landscape, own, at);
         info!("agent tool {} (allowed): {result:?}", self.op.name);
         let _ = self.reply.send(result);
     }
@@ -119,7 +120,7 @@ pub fn act(
     world: &mut VoxelWorld,
     creations: &mut Creations,
     landscape: &mut Landscape,
-    binds: &mut Bindings,
+    (binds, graphics): (&mut Bindings, &mut Graphics),
     at: [f32; 3],
 ) -> ToolResult {
     if op.last {
@@ -140,6 +141,7 @@ pub fn act(
             at,
             agent: asked.as_ref().map(|(agent, prompt)| (*agent, prompt.as_str())),
             binds,
+            graphics,
         };
         ops::run_op(op, &ops::Args::new(args), cx)
     };
@@ -474,7 +476,7 @@ pub fn answer_tool_calls(
     mut landscape: ResMut<Landscape>,
     mut ledger: ResMut<Ledger>,
     mut chat: ResMut<Chat>,
-    mut binds: ResMut<Bindings>,
+    (mut binds, mut graphics): (ResMut<Bindings>, ResMut<Graphics>),
     players: Query<&Transform, With<Player>>,
     transforms: Query<&Transform>,
     mut looks: ResMut<Looks>,
@@ -529,7 +531,7 @@ pub fn answer_tool_calls(
                 continue;
             }
             let at = hero.map_or([0.0; 3], |h| h.to_array());
-            let result = act(op, args, &mut chat, &mut ledger, &mut world, &mut creations, &mut landscape, &mut binds, at);
+            let result = act(op, args, &mut chat, &mut ledger, &mut world, &mut creations, &mut landscape, (&mut binds, &mut graphics), at);
             info!("agent tool {name}: {result:?}");
             let _ = reply.send(result);
             continue;

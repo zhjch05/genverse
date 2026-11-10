@@ -22,6 +22,7 @@
 use bevy::prelude::*;
 use genverse_rules::{
     game::GameAction,
+    recipe::Recipe,
     log::{Action, PortalTo},
     logic::Scope,
     sculpt::{Area, TerrainSpec},
@@ -30,6 +31,7 @@ use genverse_rules::{
 use serde_json::Value;
 
 use super::{
+    registry::{self, Changed, Scope as Whose, Stores},
     creations::{Creations, SavedCreation},
     landscape::{Landscape, PreviewError, describe_stats},
     online,
@@ -37,6 +39,7 @@ use super::{
     worlds::{Travel, Trip, fresh_seed},
 };
 use crate::bindings::Bindings;
+use crate::graphics::Graphics;
 use crate::world::{
     VoxelWorld,
     ledger::{self, Ledger, clean_name, game_name},
@@ -58,6 +61,8 @@ pub struct Context<'a> {
     pub agent: Option<(&'a str, &'a str)>,
     /// Which keys do what, for the ops that change them.
     pub binds: &'a mut Bindings,
+    /// The player's graphics options, for the settings that are theirs.
+    pub graphics: &'a mut Graphics,
 }
 
 impl Context<'_> {
@@ -201,6 +206,11 @@ impl Args {
         serde_json::from_value(value).map(Some).map_err(|e| format!("\"{name}\" doesn't match its format: {e}"))
     }
 
+    /// An argument as it was given, whatever it is.
+    fn raw(&self, name: &str) -> Option<&Value> {
+        self.0.get(name).filter(|v| !v.is_null())
+    }
+
     /// The arguments on one line, for asking the player about them.
     pub fn line(&self) -> String {
         self.0.keys().filter_map(|name| self.text(name)).collect::<Vec<_>>().join(" ")
@@ -340,11 +350,12 @@ pub static OPS: &[Op] = &[
     .note("For a build that's already placed. Players walk up to it and press E."),
     op(
         "newworld",
-        "<name> [flat|natural]",
+        "<name> [flat|natural|islands|desert|...]",
         "Make a new world in this game",
         &[
             word("name", "letters, digits, - and _"),
-            word("ground", "flat (the default: empty, for games and building) or natural (a landscape of its own)").opt(),
+            word("ground", "flat (the default: empty and level, for games and building), natural (the usual landscape), or another landscape by name: islands, mountains, plains, forest, desert, tundra, badlands, alien").opt(),
+            named("terrain", "a landscape of your own, instead of a named one: an object of what differs from the usual (docs/terrain.md in your folder has the fields), like {\"like\": \"islands\", \"trees\": 300, \"colors\": {\"water\": \"#3fd0a0\"}}").object(),
             named("go", "\"no\" makes it without taking the player there (to link a portal to it); left out, they go"),
             named("then", THEN),
         ],
@@ -391,6 +402,25 @@ pub static OPS: &[Op] = &[
     .admin()
     .unlisted()
     .ask(),
+    op(
+        "settings",
+        "[filter]",
+        "Every value that can be tuned, and what it is now",
+        &[word("filter", "only the settings with this in their name (hero, build, graphics, ...); left out, all of them").opt()],
+        |cx, args| Ok(registry::list(&Stores { rules: &cx.ledger.rules, graphics: cx.graphics }, &args.text("filter").unwrap_or_default())),
+    )
+    .note("The world's rules (how heroes move, limits, budgets, the clock) and the player's own options (graphics), with their ranges."),
+    op(
+        "set",
+        "<setting> <value>",
+        "Change a setting",
+        &[
+            word("name", "the setting's name (settings lists them: hero.run_speed, world.build.max_voxels, graphics.bloom, ...)"),
+            rest("value", "what it should be, within its range; \"default\" puts it back"),
+        ],
+        set,
+    )
+    .note("A world's setting changes for everyone in it, needs the player to be an admin, and is undone like any change. The player's own (graphics) are theirs alone."),
     op("bindings", "", "Which keys do what", &[], |cx, _| Ok(cx.binds.list())).note("Every action and the keys and mouse buttons on it."),
     op(
         "bind",
@@ -656,7 +686,7 @@ fn fork(cx: &mut Context, args: &Args) -> Reply {
     }
     let state = ledger.state_of_save(at);
     let log = ledger.log.fork(at, &save, state, ledger.log.changes.last().map_or(0, |c| c.by.at));
-    let name = ledger.create_world(&world, (log.seed, log.flat), Some(log))?;
+    let name = ledger.create_world(&world, genverse_rules::game::Ground { seed: log.seed, flat: log.flat, recipe: log.recipe }, Some(log))?;
     Ok(format!("Started the world {name} from \"{save}\"; this one carries on as it is. /world {name} goes there."))
 }
 
@@ -718,15 +748,30 @@ fn new_game(cx: &mut Context, args: &Args) -> Reply {
 
 /// Makes a world in this game (on a server, asks it to) and, locally, goes there.
 fn new_world(cx: &mut Context, args: &Args) -> Reply {
-    let name = args.text("name").ok_or("Usage: /newworld <name> [flat|natural]")?;
-    let flat = args.flat();
+    let name = args.text("name").ok_or("Usage: /newworld <name> [flat|natural|islands|desert|...]")?;
+    // The ground: flat and empty unless a landscape is asked for, by its name
+    // (`ground`) or as a recipe of the agent's own (`terrain`).
+    let kind = args.text("ground").map(|kind| kind.to_lowercase());
+    let named = match kind.as_deref() {
+        None | Some("flat") => None,
+        Some(kind) => Some(Recipe::named(kind).ok_or(format!("There's no ground called \"{kind}\": flat, {}.", Recipe::NAMES.join(", ")))?),
+    };
+    let own = match args.raw("terrain") {
+        Some(Value::String(text)) if text.trim_start().starts_with('{') => {
+            Some(Recipe::read(&serde_json::from_str(text).map_err(|e| format!("\"terrain\" isn't JSON: {e}"))?)?)
+        }
+        Some(given) => Some(Recipe::read(given)?),
+        None => None,
+    };
+    let flat = kind.as_deref() == Some("flat") || (kind.is_none() && own.is_none());
+    let recipe = own.or(named).unwrap_or_default();
     let seed = fresh_seed(flat);
     if cx.ledger.is_online() {
         let name = clean_name(&name).ok_or("A world's name is letters, digits, - and _.")?;
-        cx.ledger.propose_game(GameAction::CreateWorld { name: name.clone(), seed, flat })?;
+        cx.ledger.propose_game(GameAction::CreateWorld { name: name.clone(), seed, flat, recipe })?;
         return Ok(format!("Asking the server to make {name}…"));
     }
-    let name = cx.ledger.create_world(&name, (seed, flat), None)?;
+    let name = cx.ledger.create_world(&name, genverse_rules::game::Ground { seed, flat, recipe }, None)?;
     if args.text("go").as_deref() == Some("no") {
         return Ok(format!("Made the world {name}."));
     }
@@ -929,6 +974,37 @@ fn remove_package(cx: &mut Context, args: &Args) -> Reply {
     let name = args.text("name").ok_or("Which package? /packages lists the game's.")?;
     cx.ledger.set_game_package(GameAction::RemovePackage { name: name.clone() })?;
     Ok(format!("Took {name} out of the game; worlds stop running it."))
+}
+
+/// Changes one setting: a world's as a change to its rules (admins), the player's own in
+/// place.
+fn set(cx: &mut Context, args: &Args) -> Reply {
+    let name = args.text("name").ok_or("Usage: /set <setting> <value>, like /set hero.run_speed 10. /settings lists them.")?;
+    let setting = registry::find(&name)?;
+    let stores = Stores { rules: &cx.ledger.rules, graphics: cx.graphics };
+    let before = registry::value(setting, &stores);
+    let Some(given) = args.raw("value") else {
+        return Err(format!("{} is {} ({}; {}). /set {} <value> changes it.", setting.name, registry::show(setting, &before), setting.title, registry::range(setting), setting.name));
+    };
+    if setting.scope() == Whose::World && !cx.ledger.land.is_admin(&cx.ledger.profile.id) {
+        return Err(format!("{} is this world's: only its admins change it.", setting.name));
+    }
+    let value = registry::parse(setting, given)?;
+    if value == before {
+        return Ok(format!("{} is already {}.", setting.name, registry::show(setting, &value)));
+    }
+    let said = format!("{} is now {} (it was {}).", setting.name, registry::show(setting, &value), registry::show(setting, &before));
+    match registry::with(setting, &stores, value)? {
+        Changed::Rules(rules) => {
+            cx.record(Action::SetRules { rules: *rules });
+            Ok(format!("{said} That's for everyone in this world; undo takes it back."))
+        }
+        Changed::Graphics(graphics) => {
+            *cx.graphics = graphics;
+            super::prefs::set("graphics", serde_json::to_value(graphics).unwrap_or_default());
+            Ok(said)
+        }
+    }
 }
 
 /// Keeps the player's bindings between runs: what differs from the defaults.
@@ -1142,7 +1218,7 @@ cover!(action_cover, ACTION_COVER, Action {
     Action::Undo { .. } => Cover::Op("undo"),
     Action::Revert { .. } => Cover::Never("only in old logs"),
     Action::Rollback { .. } => Cover::Never("only in old logs"),
-    Action::SetRules { .. } => Cover::Op("land"),
+    Action::SetRules { .. } => Cover::Op("set"),
     Action::LegacyVoxels { .. } => Cover::Never("only in old logs"),
     Action::InstallPackage { .. } => Cover::Op("turn_on"),
     Action::UninstallPackage { .. } => Cover::Op("uninstall"),
@@ -1181,7 +1257,7 @@ mod tests {
             assert_eq!(op.args.is_empty(), op.params.is_empty(), "{}: its usage and params disagree", op.name);
             if op.slash {
                 assert!(op.name.chars().all(|c| c.is_ascii_lowercase()), "/{} can't be typed as one word", op.name);
-                assert!(op.params.iter().all(|p| p.json == "string"), "/{} takes something that can't be typed", op.name);
+                assert!(op.params.iter().all(|p| p.kind == Kind::Named || p.json == "string"), "/{} takes something that can't be typed", op.name);
             }
             // Nothing typed may follow an argument that takes the rest of the line.
             let typed: Vec<&Param> = op.params.iter().filter(|p| p.kind != Kind::Named).collect();

@@ -65,6 +65,7 @@ pub fn history_window(
     mut chat: ResMut<Chat>,
     mut travel: ResMut<super::worlds::Travel>,
     mut binds: ResMut<crate::bindings::Bindings>,
+    mut graphics: ResMut<crate::graphics::Graphics>,
     peers: Res<super::presence::Peers>,
 ) -> Result {
     if !history.open {
@@ -152,6 +153,7 @@ pub fn history_window(
         at: [0.0; 3],
         agent: None,
         binds: &mut binds,
+        graphics: &mut graphics,
     };
     let reply = ops::said(match pick {
         Pick::Undo(id) => ops::run("undo", json!({ "id": id }), cx),

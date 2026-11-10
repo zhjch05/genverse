@@ -332,6 +332,8 @@ pub struct WorldsWindow {
     /// Where they were read.
     listed_in: String,
     new_name: String,
+    /// The new world's ground: flat, or a landscape by name.
+    new_ground: String,
     new_flat: bool,
     new_game: String,
     /// A world to remove, waiting for "yes".
@@ -353,6 +355,7 @@ impl Default for WorldsWindow {
             catalog: Vec::new(),
             listed_in: String::new(),
             new_name: String::new(),
+            new_ground: "flat".into(),
             new_flat: true,
             new_game: String::new(),
             removing: None,
@@ -465,6 +468,7 @@ pub fn worlds_window(
     mut landscape: ResMut<Landscape>,
     mut chat: ResMut<Chat>,
     mut binds: ResMut<crate::bindings::Bindings>,
+    mut graphics: ResMut<crate::graphics::Graphics>,
     heroes: Query<&Transform, With<Player>>,
 ) -> Result {
     if !window.open {
@@ -536,8 +540,16 @@ pub fn worlds_window(
                     if admin {
                         ui.horizontal(|ui| {
                             ui.add(egui::TextEdit::singleline(&mut window.new_name).hint_text("new world name").desired_width(160.0));
-                            ui.selectable_value(&mut window.new_flat, true, "Flat").on_hover_text("Empty and flat: for games and building");
-                            ui.selectable_value(&mut window.new_flat, false, "Natural").on_hover_text("A fresh landscape of its own");
+                            egui::ComboBox::from_id_salt("new_world_ground")
+                                .selected_text(window.new_ground.clone())
+                                .show_ui(ui, |ui| {
+                                    ui.selectable_value(&mut window.new_ground, "flat".into(), "flat").on_hover_text("Empty and level: for games and building");
+                                    for name in genverse_rules::recipe::Recipe::NAMES {
+                                        ui.selectable_value(&mut window.new_ground, name.into(), name);
+                                    }
+                                })
+                                .response
+                                .on_hover_text("The new world's ground: flat, or a landscape. Ask the agent for one of your own.");
                             let ok = ledger::clean_name(&window.new_name).is_some();
                             if ui.add_enabled(ok, egui::Button::new(format!("{} New world", icon::PLUS))).clicked() {
                                 todo = Some(Do::NewWorld);
@@ -825,7 +837,7 @@ pub fn worlds_window(
         }
         Do::Leave => ("leave", json!({})),
         Do::Host => ("host", json!({})),
-        Do::NewWorld => ("newworld", json!({ "name": std::mem::take(&mut window.new_name), "ground": ground(window.new_flat) })),
+        Do::NewWorld => ("newworld", json!({ "name": std::mem::take(&mut window.new_name), "ground": window.new_ground })),
         Do::RemoveWorld(name) => {
             window.removing = None;
             ("removeworld", json!({ "name": name }))
@@ -854,6 +866,7 @@ pub fn worlds_window(
         at: hero.to_array(),
         agent: None,
         binds: &mut binds,
+        graphics: &mut graphics,
     };
     let reply = Some(ops::said(ops::run(op, args, cx)));
     if let Some(reply) = reply.filter(|r| !r.is_empty()) {

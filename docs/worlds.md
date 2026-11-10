@@ -37,7 +37,7 @@ directory is one game the same way (a `world.jsonl` from before becomes its worl
 ## The game log
 
 ```rust
-GameAction::CreateWorld { name, seed, flat }
+GameAction::CreateWorld { name, seed, flat, recipe } // recipe: its landscape, if not the usual
 GameAction::RemoveWorld { name }      // moved to saves/trash, never deleted
 GameAction::SetAdmins { admins }
 GameAction::Save { name, worlds }     // world name → its last change: a save of everything

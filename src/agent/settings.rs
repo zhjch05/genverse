@@ -13,6 +13,10 @@ use bevy_egui::{EguiContexts, egui};
 use egui_phosphor::regular as icon;
 use serde::{Deserialize, Serialize};
 
+use genverse_rules::settings::WorldRules;
+
+use super::registry::{self, Changed, Kind, SETTINGS, Scope, Setting, Stores};
+use crate::world::ledger::Ledger;
 use crate::bindings::{ACTIONS, Bindings, INPUTS};
 use super::{prefs, theme};
 use crate::graphics::{Antialias, Graphics, Level, Quality, RENDER_SCALES};
@@ -28,6 +32,8 @@ pub struct SettingsWindow {
     display: Display,
     /// The action waiting for a key press, in Controls.
     capturing: Option<&'static str>,
+    /// The world's rules as changed in the window but not applied yet.
+    world: Option<WorldRules>,
 }
 
 #[derive(Clone, Copy, PartialEq, Eq, Debug, Default, Serialize, Deserialize)]
@@ -146,6 +152,7 @@ pub fn settings_window(
     monitors: Query<(&Monitor, Has<PrimaryMonitor>)>,
     mut binds: ResMut<Bindings>,
     (keys, buttons): (Res<ButtonInput<KeyCode>>, Res<ButtonInput<MouseButton>>),
+    mut ledger: ResMut<Ledger>,
 ) -> Result {
     if !settings.open {
         settings.capturing = None;
@@ -166,6 +173,10 @@ pub fn settings_window(
     binds.capturing = settings.capturing.is_some();
     let mut capturing = settings.capturing;
     let mut rebind = None;
+    // The world's settings, for its admins: edited on a copy, recorded on Apply.
+    let admin = ledger.land.is_admin(&ledger.profile.id);
+    let mut world = settings.world.clone().unwrap_or_else(|| ledger.rules.clone());
+    let mut apply_world = false;
     let Ok(mut window) = windows.single_mut() else { return Ok(()) };
     let ctx = contexts.ctx_mut()?;
     let p = theme::palette(ctx);
@@ -178,162 +189,218 @@ pub fn settings_window(
     theme::centered(egui::Window::new(format!("{} Settings", icon::GAUGE)), ctx, 0.0)
         .open(&mut open)
         .collapsible(false)
-        .default_width(380.0)
+        .default_width(400.0)
+        .default_height(640.0)
+        // Taller than a small screen with every section open: the window scrolls.
+        .vscroll(true)
         .show(ctx, |ui| {
+            // The sections fold, so the window stays short: Display and Graphics start
+            // open, or the one `GENVERSE_SETTINGS` names (controls, world).
+            let show = std::env::var("GENVERSE_SETTINGS").map(|s| s.to_lowercase()).ok().filter(|s| ["display", "graphics", "controls", "world"].contains(&s.as_str()));
+            let show = show.as_deref().unwrap_or("");
             let physical = window.physical_size();
-            theme::section(ui, "Display");
-            grid(ui, "display_grid", |ui| {
-                ui.label("Window mode");
-                pick(ui, "window_mode", &mut display.mode, &Mode::ALL, |m| m.label().into());
-                ui.end_row();
+            section(ui, "Display", show.is_empty() || show == "display", |ui| {
+                grid(ui, "display_grid", |ui| {
+                    ui.label("Window mode");
+                    pick(ui, "window_mode", &mut display.mode, &Mode::ALL, |m| m.label().into());
+                    ui.end_row();
 
-                ui.label("Resolution");
-                match display.mode {
-                    Mode::Windowed => {
-                        let size = window.size().round().as_uvec2();
-                        let fits = |&(w, h): &(u32, u32)| {
-                            monitor.is_none_or(|m| {
-                                let screen = Vec2::new(m.physical_width as f32, m.physical_height as f32) / m.scale_factor as f32;
-                                w as f32 <= screen.x && h as f32 <= screen.y
-                            })
-                        };
-                        let sizes: Vec<_> = WINDOW_SIZES.into_iter().filter(fits).map(Some).collect();
-                        let mut current = Some((size.x, size.y));
-                        let shown = |s: &Option<(u32, u32)>| s.map_or(String::new(), |(w, h)| format!("{w} × {h}"));
-                        if pick(ui, "window_size", &mut current, &sizes, shown) {
-                            display.window = current;
-                        }
-                    }
-                    Mode::Borderless => {
-                        ui.label(egui::RichText::new(format!("{} × {} (the screen's)", physical.x, physical.y)).color(p.muted));
-                    }
-                    Mode::Fullscreen => match monitor {
-                        Some(monitor) => {
-                            let modes: Vec<_> = fullscreen_modes(monitor).into_iter().map(Some).collect();
-                            let mut current = display.fullscreen.and_then(|(w, h, hz)| {
-                                modes.iter().flatten().find(|m| m.physical_size == UVec2::new(w, h) && m.refresh_rate_millihertz == hz).copied()
-                            });
-                            let shown = |m: &Option<VideoMode>| match m {
-                                Some(m) => format!(
-                                    "{} × {} · {} Hz",
-                                    m.physical_size.x,
-                                    m.physical_size.y,
-                                    (m.refresh_rate_millihertz as f32 / 1000.0).round()
-                                ),
-                                None => "The screen's own".into(),
+                    ui.label("Resolution");
+                    match display.mode {
+                        Mode::Windowed => {
+                            let size = window.size().round().as_uvec2();
+                            let fits = |&(w, h): &(u32, u32)| {
+                                monitor.is_none_or(|m| {
+                                    let screen = Vec2::new(m.physical_width as f32, m.physical_height as f32) / m.scale_factor as f32;
+                                    w as f32 <= screen.x && h as f32 <= screen.y
+                                })
                             };
-                            let mut choices = vec![None];
-                            choices.extend(modes);
-                            if pick(ui, "fullscreen_mode", &mut current, &choices, shown) {
-                                display.fullscreen =
-                                    current.map(|m| (m.physical_size.x, m.physical_size.y, m.refresh_rate_millihertz));
+                            let sizes: Vec<_> = WINDOW_SIZES.into_iter().filter(fits).map(Some).collect();
+                            let mut current = Some((size.x, size.y));
+                            let shown = |s: &Option<(u32, u32)>| s.map_or(String::new(), |(w, h)| format!("{w} × {h}"));
+                            if pick(ui, "window_size", &mut current, &sizes, shown) {
+                                display.window = current;
                             }
                         }
-                        None => {
-                            ui.label(egui::RichText::new("The screen's own").color(p.muted));
+                        Mode::Borderless => {
+                            ui.label(egui::RichText::new(format!("{} × {} (the screen's)", physical.x, physical.y)).color(p.muted));
                         }
-                    },
-                }
-                ui.end_row();
-
-                ui.label("Render scale").on_hover_text("Draws the world at fewer pixels and stretches it to fit; the interface stays sharp");
-                let shown = |s: &f32| {
-                    let px = (physical.as_vec2() * *s).round();
-                    format!("{:.0}%  ({} × {})", s * 100.0, px.x, px.y)
-                };
-                let mut scale = RENDER_SCALES.into_iter().min_by(|a, b| (a - g.render_scale).abs().total_cmp(&(b - g.render_scale).abs())).unwrap_or(1.0);
-                if pick(ui, "render_scale", &mut scale, &RENDER_SCALES, shown) {
-                    g.render_scale = scale;
-                }
-                ui.end_row();
-
-                ui.label("Auto render scale").on_hover_text(
-                    "Draws at fewer pixels while frames run slow (under about 55 fps), and back up to the render scale when there's room",
-                );
-                toggle(ui, "auto_scale", &mut g.auto_scale);
-                ui.end_row();
-
-                ui.label("VSync").on_hover_text("Waits for the screen's refresh: no tearing, at most its rate");
-                toggle(ui, "vsync", &mut display.vsync);
-                ui.end_row();
-            });
-
-            ui.add_space(10.0);
-            theme::section(ui, "Graphics");
-            grid(ui, "graphics_grid", |ui| {
-                ui.label("Preset");
-                let mut preset = g.preset();
-                let choices: Vec<_> = Quality::ALL.into_iter().map(Some).collect();
-                let shown = |q: &Option<Quality>| q.map_or("Custom", |q| q.label()).to_string();
-                if pick(ui, "preset", &mut preset, &choices, shown)
-                    && let Some(q) = preset
-                {
-                    g = q.settings(g.render_scale, g.auto_scale);
-                }
-                ui.end_row();
-
-                ui.label("Anti-aliasing").on_hover_text("FXAA is cheap; TAA is smoother and also softens shadows");
-                pick(ui, "antialias", &mut g.antialias, &Antialias::ALL, |a| a.label().into());
-                ui.end_row();
-
-                ui.label("Ambient occlusion").on_hover_text("Shading in corners and under things; the costliest effect");
-                pick(ui, "ambient_occlusion", &mut g.ambient_occlusion, &Level::ALL, |l| l.label().into());
-                ui.end_row();
-
-                ui.label("Shadows").on_hover_text("How far shadows reach and how sharp they are");
-                pick(ui, "shadows", &mut g.shadows, &Level::ALL, |l| l.label().into());
-                ui.end_row();
-
-                ui.label("Contact shadows").on_hover_text("Fine shadows where things touch");
-                ui.add_enabled_ui(g.shadows != Level::Off, |ui| toggle(ui, "contact_shadows", &mut g.contact_shadows));
-                ui.end_row();
-
-                ui.label("Bloom").on_hover_text("A glow around bright things");
-                toggle(ui, "bloom", &mut g.bloom);
-                ui.end_row();
-            });
-            ui.add_space(6.0);
-            theme::note(ui, format!("{} shows the frame rate.", binds.label("stats")));
-
-            ui.add_space(10.0);
-            theme::section(ui, "Controls");
-            theme::note(ui, "+ adds the next key you press; a key's button takes it off. Or ask the agent: \"let J jump too\".");
-            egui::ScrollArea::vertical().max_height(280.0).auto_shrink([false, true]).show(ui, |ui| {
-                let mut group = "";
-                for action in ACTIONS {
-                    if action.group != group {
-                        group = action.group;
-                        ui.add_space(6.0);
-                        ui.label(egui::RichText::new(group).strong().color(p.strong));
+                        Mode::Fullscreen => match monitor {
+                            Some(monitor) => {
+                                let modes: Vec<_> = fullscreen_modes(monitor).into_iter().map(Some).collect();
+                                let mut current = display.fullscreen.and_then(|(w, h, hz)| {
+                                    modes.iter().flatten().find(|m| m.physical_size == UVec2::new(w, h) && m.refresh_rate_millihertz == hz).copied()
+                                });
+                                let shown = |m: &Option<VideoMode>| match m {
+                                    Some(m) => format!(
+                                        "{} × {} · {} Hz",
+                                        m.physical_size.x,
+                                        m.physical_size.y,
+                                        (m.refresh_rate_millihertz as f32 / 1000.0).round()
+                                    ),
+                                    None => "The screen's own".into(),
+                                };
+                                let mut choices = vec![None];
+                                choices.extend(modes);
+                                if pick(ui, "fullscreen_mode", &mut current, &choices, shown) {
+                                    display.fullscreen =
+                                        current.map(|m| (m.physical_size.x, m.physical_size.y, m.refresh_rate_millihertz));
+                                }
+                            }
+                            None => {
+                                ui.label(egui::RichText::new("The screen's own").color(p.muted));
+                            }
+                        },
                     }
-                    ui.horizontal(|ui| {
-                        let name = action.name.replace('_', " ");
-                        // A column of names, left-aligned, so the keys line up.
-                        ui.allocate_ui_with_layout(egui::vec2(110.0, 18.0), egui::Layout::left_to_right(egui::Align::Center), |ui| {
-                            ui.set_min_width(110.0);
-                            ui.label(egui::RichText::new(name).color(p.text)).on_hover_text(action.title);
-                        });
-                        for input in binds.inputs(action.name) {
-                            if ui.small_button(format!("{} {}", input.label, icon::X)).on_hover_text("Take this key off").clicked() {
-                                rebind = Some(Rebind::Unbind(action.name, input.name));
+                    ui.end_row();
+
+                    ui.label("Render scale").on_hover_text("Draws the world at fewer pixels and stretches it to fit; the interface stays sharp");
+                    let shown = |s: &f32| {
+                        let px = (physical.as_vec2() * *s).round();
+                        format!("{:.0}%  ({} × {})", s * 100.0, px.x, px.y)
+                    };
+                    let mut scale = RENDER_SCALES.into_iter().min_by(|a, b| (a - g.render_scale).abs().total_cmp(&(b - g.render_scale).abs())).unwrap_or(1.0);
+                    if pick(ui, "render_scale", &mut scale, &RENDER_SCALES, shown) {
+                        g.render_scale = scale;
+                    }
+                    ui.end_row();
+
+                    ui.label("Auto render scale").on_hover_text(
+                        "Draws at fewer pixels while frames run slow (under about 55 fps), and back up to the render scale when there's room",
+                    );
+                    toggle(ui, "auto_scale", &mut g.auto_scale);
+                    ui.end_row();
+
+                    ui.label("VSync").on_hover_text("Waits for the screen's refresh: no tearing, at most its rate");
+                    toggle(ui, "vsync", &mut display.vsync);
+                    ui.end_row();
+                });
+            });
+            section(ui, "Graphics", show.is_empty() || show == "graphics", |ui| {
+                grid(ui, "graphics_grid", |ui| {
+                    ui.label("Preset");
+                    let mut preset = g.preset();
+                    let choices: Vec<_> = Quality::ALL.into_iter().map(Some).collect();
+                    let shown = |q: &Option<Quality>| q.map_or("Custom", |q| q.label()).to_string();
+                    if pick(ui, "preset", &mut preset, &choices, shown)
+                        && let Some(q) = preset
+                    {
+                        g = q.settings(g.render_scale, g.auto_scale);
+                    }
+                    ui.end_row();
+
+                    ui.label("Anti-aliasing").on_hover_text("FXAA is cheap; TAA is smoother and also softens shadows");
+                    pick(ui, "antialias", &mut g.antialias, &Antialias::ALL, |a| a.label().into());
+                    ui.end_row();
+
+                    ui.label("Ambient occlusion").on_hover_text("Shading in corners and under things; the costliest effect");
+                    pick(ui, "ambient_occlusion", &mut g.ambient_occlusion, &Level::ALL, |l| l.label().into());
+                    ui.end_row();
+
+                    ui.label("Shadows").on_hover_text("How far shadows reach and how sharp they are");
+                    pick(ui, "shadows", &mut g.shadows, &Level::ALL, |l| l.label().into());
+                    ui.end_row();
+
+                    ui.label("Contact shadows").on_hover_text("Fine shadows where things touch");
+                    ui.add_enabled_ui(g.shadows != Level::Off, |ui| toggle(ui, "contact_shadows", &mut g.contact_shadows));
+                    ui.end_row();
+
+                    ui.label("Bloom").on_hover_text("A glow around bright things");
+                    toggle(ui, "bloom", &mut g.bloom);
+                    ui.end_row();
+                });
+                ui.add_space(6.0);
+                theme::note(ui, format!("{} shows the frame rate.", binds.label("stats")));
+            });
+            section(ui, "Controls", show == "controls", |ui| {
+                theme::note(ui, "+ adds the next key you press; a key's button takes it off. Or ask the agent: \"let J jump too\".");
+                ui.vertical(|ui| {
+                    let mut group = "";
+                    for action in ACTIONS {
+                        if action.group != group {
+                            group = action.group;
+                            ui.add_space(6.0);
+                            ui.label(egui::RichText::new(group).strong().color(p.strong));
+                        }
+                        ui.horizontal(|ui| {
+                            let name = action.name.replace('_', " ");
+                            // A column of names, left-aligned, so the keys line up.
+                            ui.allocate_ui_with_layout(egui::vec2(110.0, 18.0), egui::Layout::left_to_right(egui::Align::Center), |ui| {
+                                ui.set_min_width(110.0);
+                                ui.label(egui::RichText::new(name).color(p.text)).on_hover_text(action.title);
+                            });
+                            for input in binds.inputs(action.name) {
+                                if ui.small_button(format!("{} {}", input.label, icon::X)).on_hover_text("Take this key off").clicked() {
+                                    rebind = Some(Rebind::Unbind(action.name, input.name));
+                                }
                             }
-                        }
-                        if capturing == Some(action.name) {
-                            ui.label(egui::RichText::new("press a key… (Esc cancels)").small().color(p.primary));
-                        } else if ui.small_button(icon::PLUS).on_hover_text("Add a key").clicked() {
-                            capturing = Some(action.name);
-                        }
-                        if !binds.is_default(action) && ui.small_button(icon::ARROW_COUNTER_CLOCKWISE).on_hover_text("Back to its default").clicked() {
-                            rebind = Some(Rebind::Reset(Some(action.name)));
+                            if capturing == Some(action.name) {
+                                ui.label(egui::RichText::new("press a key… (Esc cancels)").small().color(p.primary));
+                            } else if ui.small_button(icon::PLUS).on_hover_text("Add a key").clicked() {
+                                capturing = Some(action.name);
+                            }
+                            if !binds.is_default(action) && ui.small_button(icon::ARROW_COUNTER_CLOCKWISE).on_hover_text("Back to its default").clicked() {
+                                rebind = Some(Rebind::Reset(Some(action.name)));
+                            }
+                        });
+                    }
+                });
+                ui.add_space(4.0);
+                if ui.button("Reset every key").clicked() {
+                    rebind = Some(Rebind::Reset(None));
+                }
+            });
+            if admin {
+                section(ui, "This world", show == "world", |ui| {
+                    theme::note(ui, "For everyone in this world. Apply records the change, and undo takes it back. Or ask the agent: \"everyone runs faster here\".");
+                    ui.vertical(|ui| {
+                        let mut group = "";
+                        for setting in SETTINGS.iter().filter(|s| s.scope() == Scope::World) {
+                            if setting.group() != group {
+                                group = setting.group();
+                                ui.add_space(6.0);
+                                ui.label(egui::RichText::new(group).strong().color(p.strong));
+                            }
+                            let stores = Stores { rules: &world, graphics: &g };
+                            let now = registry::value(setting, &stores);
+                            let mut next = None;
+                            ui.horizontal(|ui| {
+                                let name = setting.name.rsplit('.').next().unwrap_or(setting.name).replace('_', " ");
+                                ui.allocate_ui_with_layout(egui::vec2(170.0, 18.0), egui::Layout::left_to_right(egui::Align::Center), |ui| {
+                                    ui.set_min_width(170.0);
+                                    ui.label(egui::RichText::new(name).color(p.text)).on_hover_text(format!("{} ({})", setting.title, registry::range(setting)));
+                                });
+                                next = edit(ui, setting, &now);
+                                if now != registry::default(setting) {
+                                    ui.label(egui::RichText::new(format!("default {}", registry::show(setting, &registry::default(setting)))).small().color(p.muted));
+                                }
+                            });
+                            if let Some(next) = next
+                                && let Ok(Changed::Rules(rules)) = registry::with(setting, &stores, next)
+                            {
+                                world = *rules;
+                            }
                         }
                     });
-                }
-            });
-            ui.add_space(4.0);
-            if ui.button("Reset every key").clicked() {
-                rebind = Some(Rebind::Reset(None));
+                    if world != ledger.rules {
+                        ui.add_space(4.0);
+                        ui.horizontal(|ui| {
+                            if ui.add(theme::Block::new(format!("{} Apply", icon::CHECK), theme::Tone::Primary)).clicked() {
+                                apply_world = true;
+                            }
+                            if ui.add(theme::Block::new("Put back", theme::Tone::Plain)).clicked() {
+                                world = ledger.rules.clone();
+                            }
+                        });
+                    }
+                });
             }
         });
+
+    if apply_world {
+        ledger.record(None, None, genverse_rules::log::Action::SetRules { rules: world.clone() });
+    }
+    settings.world = (open && !apply_world && world != ledger.rules).then_some(world);
 
     settings.capturing = capturing.filter(|_| open);
     if let Some(rebind) = rebind {
@@ -346,7 +413,6 @@ pub fn settings_window(
     settings.open = open;
     if display != before {
         settings.display = display;
-    settings.open = std::env::var("GENVERSE_SETTINGS").is_ok();
         display.apply(&mut window, monitor);
         prefs::set("display", serde_json::to_value(display).unwrap_or_default());
     }
@@ -355,6 +421,51 @@ pub fn settings_window(
         prefs::set("graphics", serde_json::to_value(g).unwrap_or_default());
     }
     Ok(())
+}
+
+/// A part of the window under a heading that folds, `open` to start with.
+fn section(ui: &mut egui::Ui, title: &str, open: bool, add: impl FnOnce(&mut egui::Ui)) {
+    let muted = theme::palette(ui.ctx()).muted;
+    egui::CollapsingHeader::new(egui::RichText::new(title.to_uppercase()).size(11.0).strong().color(muted)).default_open(open).show(ui, add);
+    ui.add_space(4.0);
+}
+
+/// The control for one setting, by what it holds; returns its new value if it changed.
+fn edit(ui: &mut egui::Ui, setting: &Setting, now: &serde_json::Value) -> Option<serde_json::Value> {
+    use serde_json::json;
+    match setting.kind {
+        Kind::Whole { min, max } => {
+            let mut n = now.as_u64().unwrap_or(min);
+            let speed = (n as f64 * 0.02).max(1.0);
+            ui.add(egui::DragValue::new(&mut n).range(min..=max).speed(speed)).changed().then(|| json!(n))
+        }
+        Kind::Limit { max } => {
+            let mut limited = !now.is_null();
+            let mut n = now.as_u64().unwrap_or(60.min(max));
+            let ticked = ui.checkbox(&mut limited, "limit").changed();
+            let speed = (n as f64 * 0.02).max(1.0);
+            let dragged = limited && ui.add(egui::DragValue::new(&mut n).range(0..=max).speed(speed)).changed();
+            (ticked || dragged).then(|| if limited { json!(n) } else { serde_json::Value::Null })
+        }
+        Kind::Number { min, max } => {
+            let mut n = now.as_f64().unwrap_or(min);
+            ui.add(egui::DragValue::new(&mut n).range(min..=max).speed((max - min) / 400.0).max_decimals(3)).changed().then(|| json!((n * 1000.0).round() / 1000.0))
+        }
+        Kind::Flag => {
+            let mut on = now.as_bool().unwrap_or_default();
+            ui.checkbox(&mut on, "").changed().then(|| json!(on))
+        }
+        Kind::Choice(choices) => {
+            let mut choice = choices.iter().copied().find(|c| Some(*c) == now.as_str()).unwrap_or(choices[0]);
+            let mut changed = false;
+            egui::ComboBox::from_id_salt(setting.name).width(120.0).selected_text(choice).show_ui(ui, |ui| {
+                for c in choices {
+                    changed |= ui.selectable_value(&mut choice, *c, *c).changed();
+                }
+            });
+            changed.then(|| json!(choice))
+        }
+    }
 }
 
 /// A change made in the Controls list.

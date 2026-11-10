@@ -15,7 +15,7 @@ use genverse_rules::logic::{
 use super::Chat;
 use crate::bindings::{ACTIONS, Bindings, INPUTS};
 use crate::{
-    player::{self, CameraRig, FollowCamera, HeroBody, InputBlocked, Player, ScriptedHero},
+    player::{CameraRig, FollowCamera, HeroBody, InputBlocked, Player, ScriptedHero},
     world::{VoxelWorld, ledger::Ledger},
 };
 
@@ -99,7 +99,7 @@ pub fn run_player_scripts(
     let input = Vec2::new(axis("right", "left"), axis("forward", "back")).clamp_length_max(1.0);
     let forward = Vec3::new(-camera[0].sin(), 0.0, -camera[0].cos());
     let right = Vec3::new(-forward.z, 0.0, forward.x);
-    let speed = if actions.contains(&"run") { player::RUN_SPEED } else { player::WALK_SPEED } * body.speed;
+    let speed = if actions.contains(&"run") { body.run } else { body.walk } * body.speed;
     let walk = (right * input.x + forward * input.y) * speed;
     let pos = transform.translation;
     let in_water = world.get(VoxelWorld::voxel_at(pos + Vec3::Y * 0.4)) == Some(crate::world::terrain::block::WATER);
@@ -116,7 +116,7 @@ pub fn run_player_scripts(
         walk: [walk.x, walk.z],
         camera,
         body: b,
-        gravity: player::GRAVITY * b.gravity,
+        gravity: body.fall * b.gravity,
     };
     let second = super::game::now();
     let scripts = &mut *scripts;

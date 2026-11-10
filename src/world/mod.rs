@@ -324,6 +324,8 @@ impl VoxelWorld {
         self.shown.clear();
         self.versions.clear();
         self.terrain = terrain;
+        // Each world's ground has its own colors.
+        self.palette = Arc::new(terrain.palette());
         self.edits = default();
         for (p, id) in edits {
             self.edits.entry(chunk_of(p)).or_default().insert(p, id);
@@ -583,7 +585,7 @@ fn setup_world(mut commands: Commands, mut materials: ResMut<Assets<VoxelMateria
     commands.insert_resource(ledger);
     commands.insert_resource(VoxelWorld {
         terrain,
-        palette: Arc::new(palette),
+        palette: Arc::new(terrain.palette()),
         materials,
         loaded: default(),
         pending: default(),

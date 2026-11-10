@@ -178,5 +178,40 @@ new world, it could only tell the player where the button was.
   their preferences. Player scripts read any key by name and the player's actions, and
   `jump()` asks for the usual jump.
 
-Next: claiming and releasing parcels as ops; what the mouse does by pointing (place,
-select, look) as actions; a game's own actions listed in Controls.
+- **One list of settings:** every value that can be tuned is a named setting with a
+  range and a scope (`src/agent/registry.rs`): the world's rules, now including how
+  heroes move, and the player's graphics. `set` and `settings` are ops, the Settings
+  window's "This world" section is made from the list, and `SETTINGS.md` shows the
+  agent what there is. A world's settings are its admins' and are recorded and undone
+  like any change; a player's are their own. A field added to the rules or the
+  graphics fails the tests until it's a setting or says why it isn't.
+
+## Where the line is
+
+The engine is Rust, Bevy and egui, and stays one build for everyone. What's native and
+what's open follows from what each thing is:
+
+- **Native, with parameters:** what runs per voxel, per pixel or per frame for
+  everything (rendering, meshing, collision, storage), and what every machine must
+  agree on (the log, replay, signatures, the protocol).
+- **Native, tuned only by admins:** the guards on what players and agents may do
+  (land, budgets, rates, the script sandbox, the agent's own tools).
+- **Open as data:** content (models, sky, sounds; next terrain recipes, blocks and
+  materials), settings, bindings, and UI as trees the game draws with egui.
+- **Open as Lua:** what a game does, and what must feel immediate for one player.
+
+When the agent hits a wall, the wall goes on the list in `evals/` and the engine gets a
+new building block, in Rust, for every world.
+
+- **Landscapes are recipes:** a new world's ground comes from a recipe
+  (`crates/rules/src/recipe.rs`): how much sea, how high the hills and ranges, how many
+  trees and plants, where the snow starts, what covers the ground, whether the low
+  ground is wet, and the colors of its blocks. Whole numbers only, compiled by the
+  generator, so every machine makes the same ground; the usual recipe is the terrain
+  from before, voxel for voxel. It's set when the world is made and kept in its first
+  line. `newworld` takes a named one (islands, desert, tundra, ...) or the agent's own.
+
+Next: app panels as data (more node kinds, data sources, buttons that
+run ops); what the mouse does by pointing as actions, and a game's own actions in
+Controls; blocks and materials as content; parcels as ops; granular permissions for
+what a joined player may change.

@@ -389,7 +389,7 @@ fn a_game_hosts_many_worlds() {
         let sig = p.key.sign(&game_bytes(&by, &action));
         p.client.send(ToServer::ProposeGame { request, by, action, sig });
     };
-    let arena = || GameAction::CreateWorld { name: "arena".into(), seed: 7, flat: true };
+    let arena = || GameAction::CreateWorld { name: "arena".into(), seed: 7, flat: true, recipe: Default::default() };
     // Only the game's admins make worlds (Ada, the first to join).
     game_change(&bo, 1, arena());
     assert!(matches!(bo.next(), ToClient::Rejected { why, .. } if why.contains("admins")));
@@ -491,7 +491,7 @@ fn items_and_rules_follow_the_game() {
     until(&ada, |m| matches!(m, ToClient::Committed { request: Some(4), .. }));
 
     // She goes to a new world: the seeds go with her.
-    game_change(5, by(), GameAction::CreateWorld { name: "arena".into(), seed: 7, flat: true });
+    game_change(5, by(), GameAction::CreateWorld { name: "arena".into(), seed: 7, flat: true, recipe: Default::default() });
     ada.client.send(ToServer::Enter { world: "arena".into() });
     let ToClient::Welcome { log, .. } = until(&ada, |m| matches!(m, ToClient::Welcome { .. })) else { unreachable!() };
     let me = ada.key.player_id();

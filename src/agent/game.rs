@@ -432,6 +432,9 @@ pub fn follow_body(ledger: Res<Ledger>, mut seen: Local<(String, u64)>, mut body
     let me = &ledger.profile.id;
     let b = state.body(me);
     (body.speed, body.jump, body.gravity, body.air_jumps) = (b.speed, b.jump, b.gravity, b.air_jumps);
+    // The world's own way of moving, which a game's multiples are of.
+    let hero = ledger.rules.hero.bounded();
+    (body.walk, body.run, body.jump_speed, body.fall) = (hero.walk_speed, hero.run_speed, hero.jump_speed, hero.gravity);
     let world = super::worlds::current_title(&ledger);
     let last = state.launch(me).map_or(0, |l| l.change);
     if seen.0 != world {

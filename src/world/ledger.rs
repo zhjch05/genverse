@@ -75,7 +75,7 @@ pub fn place() -> (String, String) {
     if log.world(&world).is_none() {
         let mut log = log;
         let by = Provenance::new("local", "local", None, None, now());
-        let _ = log.push(by, GameAction::CreateWorld { name: world.clone(), seed: crate::world::SEED, flat: true });
+        let _ = log.push(by, GameAction::CreateWorld { name: world.clone(), seed: crate::world::SEED, flat: true, recipe: Default::default() });
         write_game(&game, &log);
     }
     set_place(&game, &world);
@@ -129,7 +129,7 @@ pub fn read_game(game: &str) -> GameLog {
 pub fn read_game(game: &str) -> GameLog {
     let mut log = GameLog::new(game);
     let by = Provenance::new("local", "local", None, None, 0);
-    let _ = log.push(by, GameAction::CreateWorld { name: "home".into(), seed: crate::world::SEED, flat: false });
+    let _ = log.push(by, GameAction::CreateWorld { name: "home".into(), seed: crate::world::SEED, flat: false, recipe: Default::default() });
     log
 }
 
@@ -178,7 +178,7 @@ fn migrate_layout() {
     let admins = home_log.as_ref().map(|l| l.admins.clone()).filter(|a| !a.is_empty()).unwrap_or(vec![profile.id.clone()]);
     let _ = game.push(by(), GameAction::SetAdmins { admins });
     let (seed, flat) = home_log.map_or((crate::world::SEED, false), |l| (l.seed, l.flat));
-    let _ = game.push(by(), GameAction::CreateWorld { name: "home".into(), seed, flat });
+    let _ = game.push(by(), GameAction::CreateWorld { name: "home".into(), seed, flat, recipe: Default::default() });
     for entry in std::fs::read_dir("saves/worlds").into_iter().flatten().flatten() {
         let name = entry.file_name().to_string_lossy().to_string();
         let Some(clean) = clean_name(&name).filter(|c| *c == name && *c != "home") else { continue };
@@ -187,7 +187,7 @@ fn migrate_layout() {
             continue;
         }
         let Some(summary) = genverse_rules::store::summary(&to) else { continue };
-        let _ = game.push(by(), GameAction::CreateWorld { name: clean, seed: summary.seed, flat: summary.flat });
+        let _ = game.push(by(), GameAction::CreateWorld { name: clean, seed: summary.seed, flat: summary.flat, recipe: Default::default() });
     }
     let _ = std::fs::remove_dir("saves/worlds");
     write_game("local", &game);
@@ -267,7 +267,7 @@ pub fn create_game(name: &str, flat: bool, seed: u32, admin: &Provenance) -> Res
     }
     let mut game = GameLog::new(&name);
     game.push(admin.clone(), GameAction::SetAdmins { admins: vec![admin.player.clone()] })?;
-    game.push(admin.clone(), GameAction::CreateWorld { name: "main".into(), seed, flat })?;
+    game.push(admin.clone(), GameAction::CreateWorld { name: "main".into(), seed, flat, recipe: Default::default() })?;
     write_game(&name, &game);
     Ok(name)
 }
@@ -715,22 +715,22 @@ impl Ledger {
         run.errors
     }
 
-    /// Adds a world to this (local) game: flat and empty, or natural from `seed`, or
-    /// starting from `log` (a fork). Returns its name.
-    pub fn create_world(&mut self, name: &str, ground: (u32, bool), log: Option<WorldLog>) -> Result<String, String> {
+    /// Adds a world to this (local) game on `ground` (flat and empty, or a landscape
+    /// from its seed and recipe), or starting from `log` (a fork). Returns its name.
+    pub fn create_world(&mut self, name: &str, ground: genverse_rules::game::Ground, log: Option<WorldLog>) -> Result<String, String> {
         let name = clean_name(name).ok_or("A world's name is letters, digits, - and _.")?;
         let game = game_name();
         let mut game_log = read_game(&game);
-        let (seed, flat) = log.as_ref().map_or(ground, |l| (l.seed, l.flat));
+        let ground = log.as_ref().map_or(ground, |l| genverse_rules::game::Ground { seed: l.seed, flat: l.flat, recipe: l.recipe });
         let by = Provenance::new(&self.profile.id, &self.profile.name, None, None, now());
-        game_log.push(by, GameAction::CreateWorld { name: name.clone(), seed, flat })?;
+        game_log.push(by, GameAction::CreateWorld { name: name.clone(), seed: ground.seed, flat: ground.flat, recipe: ground.recipe })?;
         #[cfg(not(target_arch = "wasm32"))]
         {
             let dir = game_dir_of(&game).join("worlds").join(&name);
             if dir.exists() {
                 return Err(format!("There's a folder for \"{name}\" already ({}).", dir.display()));
             }
-            let log = log.unwrap_or(WorldLog { flat, ..WorldLog::new(seed) });
+            let log = log.unwrap_or(ground.log());
             let (mut file, _) = genverse_rules::store::LogFile::open(&dir).map_err(|e| e.to_string())?;
             file.rewrite(&log).map_err(|e| format!("Couldn't write {}: {e}", dir.display()))?;
         }
@@ -1209,7 +1209,7 @@ fn load_with(seed: u32, join: bool) -> (Ledger, HashMap<IVec3, VoxelId>) {
     // A world named with `GENVERSE_WORLD` that the game didn't have joins it.
     if game_log.world(&world_name()).is_none() {
         let by = Provenance::new(&profile.id, &profile.name, None, None, now());
-        if game_log.push(by, GameAction::CreateWorld { name: world_name(), seed: log.seed, flat: log.flat }).is_ok() {
+        if game_log.push(by, GameAction::CreateWorld { name: world_name(), seed: log.seed, flat: log.flat, recipe: log.recipe }).is_ok() {
             write_game(&game, &game_log);
         }
     }

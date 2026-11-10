@@ -14,6 +14,7 @@ pub mod land;
 pub mod log;
 pub mod logic;
 pub mod rate;
+pub mod recipe;
 pub mod sculpt;
 pub mod semantic;
 pub mod settings;

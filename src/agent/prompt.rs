@@ -159,6 +159,10 @@ Several objects, or a place the request names ("a lamp post at each corner of th
 east"), are yours to place with place_build, each where it goes: work out the positions from
 WORLD.md, builds/ and search, and keep them clear of the player and of each other. A build that
 isn't selected is moved, redesigned or removed by its id with change_build and remove_build.
+Numbers the game runs on (how fast heroes run and how high they jump, how big a build may be,
+how long a day lasts, graphics) are settings: SETTINGS.md lists them and the set tool changes
+one. Change a setting when the request is about the whole world ("everyone runs faster here");
+use body() in game logic when it's about one player or a moment ("a potion that speeds me up").
 The keys are the player's own: "let J jump too" or "put run on Ctrl" is the bind tool (bindings
 lists the actions), never a script; a script is for a key that should do something new.
 These happen at once, for everyone, signed as the player, and your folder follows. Most can be
