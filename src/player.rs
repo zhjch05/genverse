@@ -1,12 +1,14 @@
 //! The hero: a voxel character assembled from model parts, a kinematic controller with
 //! voxel collision, procedural walk animation, and a third-person follow camera that
-//! eases in front of whatever gets between it and the hero.
+//! eases in front of whatever would hide most of the hero (lesser things in the way
+//! are dithered away instead; see [`CameraCutout`]).
 
 use std::f32::consts::{PI, TAU};
 
 use bevy::{
     input::mouse::{AccumulatedMouseMotion, AccumulatedMouseScroll, MouseScrollUnit},
     platform::collections::HashMap,
+    math::Affine3A,
     prelude::*,
     window::{CursorOptions, PrimaryWindow},
 };
@@ -16,8 +18,8 @@ use genverse_rules::logic::solid::Areas;
 use crate::bindings::Bindings;
 use crate::{
     voxel::{
-        VoxelModel, VoxelModelAsset,
-        query::{march, overlaps_box, raycast},
+        CameraCutout, VoxelModel, VoxelModelAsset,
+        query::{overlaps_box, solid_at},
     },
     world::{
         ChunkLoader, SolidModel, VoxelWorld,
@@ -212,6 +214,10 @@ const FIRST_PERSON: f32 = -0.15;
 const PROBE: f32 = 0.22;
 /// Room kept between the camera and whatever is in the way.
 const MARGIN: f32 = 0.2;
+/// How far below the eyes the middle of the hero is, where the cutout centers.
+const CUTOUT_DROP: f32 = 0.5;
+/// The cutout's radius around the hero, in meters: the whole hero and a little more.
+const CUTOUT_RADIUS: f32 = 1.3;
 
 #[derive(Component)]
 pub struct FollowCamera {
@@ -658,32 +664,93 @@ fn animate_hero(
     }
 }
 
-/// How far back from `pivot` along `dir` the camera can sit, up to `max`: the nearest
-/// terrain or build hit by five rays (the center and the corners of a small square), less
-/// a little room.
-fn clearance(world: &VoxelWorld, models: &[(&VoxelModel, &GlobalTransform)], pivot: Vec3, dir: Dir3, max: f32) -> f32 {
+/// Everything solid the camera minds: terrain plus the builds near the hero.
+struct Solids<'a> {
+    world: &'a VoxelWorld,
+    models: Vec<(&'a VoxelModel, Affine3A)>,
+}
+
+impl Solids<'_> {
+    fn at(&self, p: Vec3) -> bool {
+        self.world.get((p / VOXEL_SIZE).floor().as_ivec3()).is_some_and(is_solid)
+            || self.models.iter().any(|(model, inverse)| solid_at(model, inverse, p))
+    }
+
+    /// Along the ray from `origin`, within `max`: where it first meets something solid,
+    /// and where the solid it has passed through adds up to [`THIN`] (one deep run, or
+    /// many shallow ones, like a stepped slope seen along its length). The first
+    /// [`SKIN`] of a run the ray starts inside (a leg in a slope, the hero against a
+    /// wall) doesn't count; past that, the ray is inside the thing and it does.
+    fn sight(&self, origin: Vec3, dir: Vec3, max: f32) -> (f32, f32) {
+        let mut first = f32::INFINITY;
+        let mut depth = 0.0;
+        // At the start the ray may be inside the hero's own surroundings.
+        let mut leaving = true;
+        let mut t = 0.0;
+        // A little past `max`, so a run starting just before it is measured.
+        while t <= max + THIN {
+            if self.at(origin + dir * t) {
+                if !leaving {
+                    first = first.min(t);
+                    depth += STEP;
+                    if depth >= THIN {
+                        return (first, t);
+                    }
+                }
+            } else {
+                leaving = false;
+            }
+            t += STEP;
+            leaving &= t < SKIN;
+        }
+        (first, f32::INFINITY)
+    }
+
+    /// Whether a camera at `p` looking along `-dir` has its near plane clear.
+    fn room_at(&self, p: Vec3, right: Vec3, up: Vec3) -> bool {
+        [(0.0, 0.0), (1.0, 1.0), (1.0, -1.0), (-1.0, 1.0), (-1.0, -1.0)]
+            .into_iter()
+            .all(|(x, y)| !self.at(p + (right * x + up * y) * PROBE))
+    }
+}
+
+/// Points on the hero the camera wants to see, across and up from the eyes (meters):
+/// head, chest and legs, each at the middle and both sides.
+const SIGHT: [(f32, f32); 9] =
+    [(-0.25, 0.1), (0.0, 0.1), (0.25, 0.1), (-0.25, -0.5), (0.0, -0.5), (0.25, -0.5), (-0.25, -1.0), (0.0, -1.0), (0.25, -1.0)];
+/// How many of the [`SIGHT`] points may be hidden before the camera moves in. The rest
+/// of the view is the dither's job: it fades whatever sits between camera and hero.
+const MAY_HIDE: usize = 4;
+/// Less solid than this along a sight line, all told (a branch, a post, a fence), doesn't
+/// hide the hero, unless something hides every point at once (a thin wall).
+const THIN: f32 = 0.8;
+/// How much solid right at the hero a sight line forgives: what the hero stands in or
+/// against, not between them and the camera.
+const SKIN: f32 = 0.5;
+/// How finely sight lines are walked.
+const STEP: f32 = 0.1;
+
+/// How far back from `pivot` along `dir` the camera can sit, up to `max`.
+///
+/// Nothing about what's in the way matters but its shape: the camera only moves in when
+/// most of the hero would be hidden (something deep, or something that covers all of
+/// them), and then just in front of it; past that, it only keeps out of solids itself.
+fn clearance(solids: &Solids, pivot: Vec3, dir: Dir3, max: f32) -> f32 {
     let right = dir.cross(Vec3::Y).normalize_or(Vec3::X);
     let up = right.cross(*dir);
-    let mut free = max;
-    for (x, y) in [(0.0, 0.0), (1.0, 1.0), (1.0, -1.0), (-1.0, 1.0), (-1.0, -1.0)] {
-        let origin = pivot + (right * x + up * y) * PROBE;
-        // In voxel units, with `t` still in meters. A ray that starts inside something
-        // (the hero against a wall) says nothing about what's behind them.
-        let hit = march(origin / VOXEL_SIZE, *dir / VOXEL_SIZE, 0.0, free, |cell| Some(world.get(cell).is_some_and(is_solid)));
-        if let Some((t, normal)) = hit
-            && normal != IVec3::ZERO
-        {
-            free = free.min(t);
-        }
-        for (model, transform) in models {
-            if let Some(hit) = raycast(model, transform, Ray3d::new(origin, dir), free)
-                && hit.normal != Vec3::ZERO
-            {
-                free = free.min(hit.distance);
-            }
-        }
+    let mut any = [0.0; SIGHT.len()];
+    let mut thick = [0.0; SIGHT.len()];
+    for (i, (x, y)) in SIGHT.into_iter().enumerate() {
+        (any[i], thick[i]) = solids.sight(pivot + right * x + up * y, *dir, max);
     }
-    if free < max { (free - MARGIN).max(0.0) } else { max }
+    thick.sort_by(f32::total_cmp);
+    let covered = thick[MAY_HIDE].min(any.into_iter().fold(0.0, f32::max));
+    let mut reach = if covered < max { (covered - MARGIN).max(0.0) } else { max };
+    // Never inside anything: step in to the nearest spot with room.
+    while reach > 0.0 && !solids.room_at(pivot + *dir * reach, right, up) {
+        reach = (reach - STEP).max(0.0);
+    }
+    reach
 }
 
 pub fn follow_camera(
@@ -695,6 +762,7 @@ pub fn follow_camera(
     world: Res<VoxelWorld>,
     scripted: Res<ScriptedHero>,
     (solids, areas): (Query<(&VoxelModel, &GlobalTransform), With<SolidModel>>, Res<SolidAreas>),
+    mut cutout: ResMut<CameraCutout>,
     players: Query<(&Transform, &Player), Without<FollowCamera>>,
     mut heroes: Query<&mut Visibility, With<Hero>>,
     mut cursors: Query<&mut CursorOptions, With<PrimaryWindow>>,
@@ -767,14 +835,15 @@ pub fn follow_camera(
         // Pull in front of anything between the camera and the hero: quickly, so the
         // view rarely sees inside a wall, but eased rather than a jump; then drift back out.
         let limit = if cam.zoom > 0.0 {
-            let r = cam.zoom + PROBE;
-            let models: Vec<_> = areas
+            let r = cam.zoom + THIN + 1.0;
+            let models = areas
                 .0
                 .within([cam.target.x - r, cam.target.z - r], [cam.target.x + r, cam.target.z + r])
                 .into_iter()
                 .filter_map(|entity| solids.get(entity).ok())
+                .map(|(model, transform)| (model, transform.affine().inverse()))
                 .collect();
-            clearance(&world, &models, cam.target, dir, cam.zoom)
+            clearance(&Solids { world: &world, models }, cam.target, dir, cam.zoom)
         } else {
             cam.zoom
         };
@@ -797,5 +866,15 @@ pub fn follow_camera(
         };
         transform.translation = cam.target + *dir * reach + shake;
         transform.look_to(-*dir, Vec3::Y);
+
+        // Whatever is still between camera and hero is dithered away, not moved in front of.
+        let strength = if reach > 0.6 { 1.0 } else { 0.0 };
+        cutout.set_if_neq(CameraCutout {
+            camera: transform.translation,
+            hero: cam.target - Vec3::Y * CUTOUT_DROP,
+            // Up close the cut would fill the screen; keep it about the hero's size there.
+            radius: CUTOUT_RADIUS.min(reach * 0.5),
+            strength: cutout.strength + (strength - cutout.strength) * ease(8.0),
+        });
     }
 }

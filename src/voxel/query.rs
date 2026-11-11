@@ -14,6 +14,12 @@ fn to_voxels(model: &VoxelModel, inverse: &bevy::math::Affine3A, p: Vec3) -> Vec
     inverse.transform_point3(p) / model.voxel_size + model.pivot
 }
 
+/// Whether `model` has a solid voxel at world point `p`; `inverse` undoes its transform.
+pub fn solid_at(model: &VoxelModel, inverse: &bevy::math::Affine3A, p: Vec3) -> bool {
+    let cell = to_voxels(model, inverse, p).floor().as_ivec3();
+    model.grid.contains(cell) && model.grid.get(cell) != AIR
+}
+
 /// Whether any voxel of `model` overlaps the world-space box `min..max`.
 pub fn overlaps_box(model: &VoxelModel, transform: &GlobalTransform, min: Vec3, max: Vec3) -> bool {
     let inverse = transform.affine().inverse();
@@ -162,6 +168,16 @@ mod tests {
 
     fn at(x: f32, z: f32, yaw: f32) -> GlobalTransform {
         GlobalTransform::from(Transform::from_xyz(x, 0.0, z).with_rotation(Quat::from_rotation_y(yaw)))
+    }
+
+    #[test]
+    fn solid_at_respects_rotation() {
+        // Turned 90 degrees the bar is long along z: x -0.5..0.5, z -1..1.
+        let turned = at(10.0, 0.0, FRAC_PI_2);
+        let inverse = turned.affine().inverse();
+        assert!(solid_at(&bar(), &inverse, Vec3::new(10.0, 0.5, 0.8)));
+        assert!(!solid_at(&bar(), &inverse, Vec3::new(10.8, 0.5, 0.0)));
+        assert!(!solid_at(&bar(), &inverse, Vec3::new(10.0, 1.2, 0.0)));
     }
 
     #[test]

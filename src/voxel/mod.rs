@@ -25,7 +25,7 @@ use bevy::{
     pbr::{ExtendedMaterial, MaterialExtension, MaterialExtensionKey, MaterialExtensionPipeline},
     platform::collections::{HashMap, HashSet},
     prelude::*,
-    render::render_resource::{AsBindGroup, RenderPipelineDescriptor, SpecializedMeshPipelineError},
+    render::render_resource::{AsBindGroup, RenderPipelineDescriptor, ShaderType, SpecializedMeshPipelineError},
     shader::{ShaderDefVal, ShaderRef},
     tasks::{AsyncComputeTaskPool, Task, futures::check_ready},
 };
@@ -47,6 +47,35 @@ pub struct Bevel {
     /// x: the fillet width, as a share of a voxel; the rest is padding for WebGL2.
     #[uniform(100)]
     settings: Vec4,
+    /// Where the camera and hero are, for the cutout (`voxel_cutout.wesl`).
+    #[uniform(101)]
+    cutout: Cutout,
+}
+
+/// The material side of [`CameraCutout`].
+#[derive(ShaderType, Reflect, Debug, Clone, Copy, Default, PartialEq)]
+pub struct Cutout {
+    /// xyz: the camera; w: how strongly to cut, 0 to 1.
+    camera: Vec4,
+    /// xyz: the middle of the hero; w: the cut's radius there.
+    hero: Vec4,
+}
+
+/// Dithers away whatever voxels stand between the camera and the hero, so the hero
+/// shows through what the camera doesn't move in front of. Set by the camera each
+/// frame; `strength` 0 turns it off.
+#[derive(Resource, Debug, Clone, Copy, Default, PartialEq)]
+pub struct CameraCutout {
+    pub camera: Vec3,
+    pub hero: Vec3,
+    pub radius: f32,
+    pub strength: f32,
+}
+
+impl CameraCutout {
+    fn uniform(&self) -> Cutout {
+        Cutout { camera: self.camera.extend(self.strength), hero: self.hero.extend(self.radius) }
+    }
 }
 
 impl Bevel {
@@ -76,6 +105,10 @@ impl MaterialExtension for Bevel {
         "shaders/voxel_bevel.wesl".into()
     }
 
+    fn prepass_fragment_shader() -> ShaderRef {
+        "shaders/voxel_prepass.wesl".into()
+    }
+
     fn specialize(
         _pipeline: &MaterialExtensionPipeline,
         descriptor: &mut RenderPipelineDescriptor,
@@ -91,6 +124,11 @@ impl MaterialExtension for Bevel {
             ["VERTEX_UVS", "VERTEX_UVS_A", "VERTEX_UVS_B", "VERTEX_COLORS"].map(Into::into).into();
         if !has("PREPASS_PIPELINE") || has("NORMAL_PREPASS_OR_DEFERRED_PREPASS") {
             defs.extend(["VERTEX_NORMALS", "VERTEX_TANGENTS"].map(Into::into));
+        }
+        // The cutout is for what the camera sees: the main pass and the camera's
+        // prepasses (which always write normals or motion), never a shadow map.
+        if !has("PREPASS_PIPELINE") || has("NORMAL_PREPASS") || has("MOTION_VECTOR_PREPASS") || has("DEFERRED_PREPASS") {
+            defs.push("CAMERA_CUTOUT".into());
         }
         descriptor.vertex.shader_defs.extend(defs.iter().cloned());
         if let Some(fragment) = &mut descriptor.fragment {
@@ -129,7 +167,20 @@ impl Plugin for VoxelPlugin {
             .init_asset::<VoxelModelAsset>()
             .init_asset_loader::<asset::VoxelModelLoader>()
             .init_resource::<SharedMaterials>()
-            .add_systems(Update, (sync_from_asset, put_to_sleep, start_rebuilds, finish_rebuilds).chain());
+            .init_resource::<CameraCutout>()
+            .add_systems(Update, (sync_from_asset, put_to_sleep, start_rebuilds, finish_rebuilds).chain())
+            .add_systems(PostUpdate, apply_cutout);
+    }
+}
+
+/// Hands the camera's cutout to every voxel material, including ones made since.
+fn apply_cutout(cutout: Res<CameraCutout>, mut materials: ResMut<Assets<VoxelMaterial>>) {
+    let wanted = cutout.uniform();
+    let stale: Vec<_> = materials.iter().filter(|(_, m)| m.extension.cutout != wanted).map(|(id, _)| id).collect();
+    for id in stale {
+        if let Some(mut material) = materials.get_mut(id) {
+            material.extension.cutout = wanted;
+        }
     }
 }
 

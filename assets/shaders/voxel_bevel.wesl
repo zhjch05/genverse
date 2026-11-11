@@ -6,6 +6,7 @@ import bevy_pbr::render::{
     pbr_fragment::pbr_input_from_standard_material,
     pbr_functions::alpha_discard,
 };
+import super::voxel_cutout::cut;
 
 @if(PREPASS_PIPELINE)
 import bevy_pbr::{
@@ -57,6 +58,8 @@ fn fragment(
     in: VertexOutput,
     @builtin(front_facing) is_front: bool,
 ) -> FragmentOutput {
+@if(CAMERA_CUTOUT)
+    cut(in.world_position.xyz, in.position.xy);
     var pbr_input = pbr_input_from_standard_material(in, is_front);
     pbr_input.N = rounded_normal(in, pbr_input.N);
     pbr_input.material.base_color = alpha_discard(
