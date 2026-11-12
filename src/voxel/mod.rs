@@ -25,7 +25,11 @@ use bevy::{
     pbr::{ExtendedMaterial, MaterialExtension, MaterialExtensionKey, MaterialExtensionPipeline},
     platform::collections::{HashMap, HashSet},
     prelude::*,
-    render::render_resource::{AsBindGroup, RenderPipelineDescriptor, ShaderType, SpecializedMeshPipelineError},
+    asset::{RenderAssetUsages, uuid_handle},
+    render::{
+        render_resource::{AsBindGroup, RenderPipelineDescriptor, SpecializedMeshPipelineError},
+        storage::ShaderBuffer,
+    },
     shader::{ShaderDefVal, ShaderRef},
     tasks::{AsyncComputeTaskPool, Task, futures::check_ready},
 };
@@ -42,24 +46,29 @@ pub type VoxelMaterial = ExtendedMaterial<StandardMaterial, Bevel>;
 ///
 /// It also draws the mesher's packed vertices: `voxel_vertex.wesl` unpacks them in
 /// every pass, into the fields Bevy's shaders expect from a full vertex layout.
-#[derive(Asset, AsBindGroup, Reflect, Debug, Clone, Default)]
+#[derive(Asset, AsBindGroup, Reflect, Debug, Clone)]
 pub struct Bevel {
     /// x: the fillet width, as a share of a voxel; the rest is padding for WebGL2.
     #[uniform(100)]
     settings: Vec4,
-    /// Where the camera and hero are, for the cutout (`voxel_cutout.wesl`).
-    #[uniform(101)]
-    cutout: Cutout,
+    /// Where the camera and hero are, for the cutout (`voxel_cutout.wesl`): one buffer
+    /// every voxel material shares, [`CUTOUT_BUFFER`].
+    #[storage(101, read_only)]
+    cutout: Handle<ShaderBuffer>,
 }
 
-/// The material side of [`CameraCutout`].
-#[derive(ShaderType, Reflect, Debug, Clone, Copy, Default, PartialEq)]
-pub struct Cutout {
-    /// xyz: the camera; w: how strongly to cut, 0 to 1.
-    camera: Vec4,
-    /// xyz: the middle of the hero; w: the cut's radius there.
-    hero: Vec4,
+impl Default for Bevel {
+    fn default() -> Self {
+        Self { settings: Vec4::ZERO, cutout: CUTOUT_BUFFER }
+    }
 }
+
+/// The buffer holding the camera's cutout, rewritten in place as the camera moves.
+///
+/// It lives outside the materials on purpose: changing a material marks every mesh
+/// drawn with it as changed, so Bevy re-extracts and re-specializes every chunk.
+/// Rewriting a buffer of the same size only uploads its 32 bytes.
+const CUTOUT_BUFFER: Handle<ShaderBuffer> = uuid_handle!("6f1c2b7e-5a43-4d8e-9b61-2c0e7f4a9d15");
 
 /// Dithers away whatever voxels stand between the camera and the hero, so the hero
 /// shows through what the camera doesn't move in front of. Set by the camera each
@@ -73,8 +82,10 @@ pub struct CameraCutout {
 }
 
 impl CameraCutout {
-    fn uniform(&self) -> Cutout {
-        Cutout { camera: self.camera.extend(self.strength), hero: self.hero.extend(self.radius) }
+    /// As `voxel_cutout.wesl` reads it: camera xyz and strength, then hero xyz and radius.
+    fn buffer(&self) -> ShaderBuffer {
+        let data = [self.camera.extend(self.strength), self.hero.extend(self.radius)].map(|v| v.to_array()).concat();
+        ShaderBuffer::new(data, RenderAssetUsages::RENDER_WORLD)
     }
 }
 
@@ -170,17 +181,14 @@ impl Plugin for VoxelPlugin {
             .init_resource::<CameraCutout>()
             .add_systems(Update, (sync_from_asset, put_to_sleep, start_rebuilds, finish_rebuilds).chain())
             .add_systems(PostUpdate, apply_cutout);
+        app.world_mut().resource_mut::<Assets<ShaderBuffer>>().insert(&CUTOUT_BUFFER, CameraCutout::default().buffer()).ok();
     }
 }
 
-/// Hands the camera's cutout to every voxel material, including ones made since.
-fn apply_cutout(cutout: Res<CameraCutout>, mut materials: ResMut<Assets<VoxelMaterial>>) {
-    let wanted = cutout.uniform();
-    let stale: Vec<_> = materials.iter().filter(|(_, m)| m.extension.cutout != wanted).map(|(id, _)| id).collect();
-    for id in stale {
-        if let Some(mut material) = materials.get_mut(id) {
-            material.extension.cutout = wanted;
-        }
+/// Uploads the camera's cutout to the buffer every voxel material reads.
+fn apply_cutout(cutout: Res<CameraCutout>, mut buffers: ResMut<Assets<ShaderBuffer>>) {
+    if cutout.is_changed() {
+        buffers.insert(&CUTOUT_BUFFER, cutout.buffer()).ok();
     }
 }
 

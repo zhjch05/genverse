@@ -14,7 +14,7 @@ struct VoxelCutout {
 }
 
 @group(constants::MATERIAL_BIND_GROUP) @binding(101)
-var<uniform> cutout: VoxelCutout;
+var<storage, read> cutout: VoxelCutout;
 
 // Room kept clear in front of the hero, in meters, so their own surroundings stay.
 const KEEP: f32 = 0.6;
