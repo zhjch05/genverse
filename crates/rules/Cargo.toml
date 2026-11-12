@@ -2,6 +2,8 @@
 name = "genverse_rules"
 version = "0.1.0"
 edition = "2024"
+license = "MIT OR Apache-2.0"
+repository = "https://github.com/zhjch05/genverse"
 description = "Genverse's world rules: voxel models, terrain, terrain changes, build specs, game packages, and their limits. No rendering, so a server can share them."
 
 [dependencies]

@@ -9,15 +9,41 @@ append-only log of changes. They can be shared over the network, undone, saved a
 
 *A volcano and a mushroom lamp, both built by the agent from a one-line prompt.*
 
+## Install
+
+**Download** a build for macOS, Windows or Linux from
+[Releases](https://github.com/zhjch05/genverse/releases), unpack it and run `genverse`. Keep
+the `assets` folder next to it.
+
+- **macOS:** the builds aren't signed yet, so the first time, run
+  `xattr -dr com.apple.quarantine genverse-*` in the unpacked folder (or right-click
+  `genverse` → Open).
+- **Linux:** needs Vulkan drivers, ALSA and udev (on Debian/Ubuntu:
+  `sudo apt install libasound2 libudev1 libvulkan1`).
+- **Any platform:** a GPU with compute shaders (Vulkan, Metal or DirectX 12).
+
+**The agent.** Building, reshaping and making games need [Claude Code](https://code.claude.com/docs/en/setup)
+or [Codex CLI](https://github.com/openai/codex), installed and signed in once from a
+terminal. Requests run on your own Claude or ChatGPT plan and count toward its usage.
+Without either you can still walk around, play games and join others. Genverse sends no
+telemetry.
+
+**Where your files go.** Worlds, your player key and settings are kept in
+`~/Library/Application Support/Genverse` (macOS), `%APPDATA%\Genverse` (Windows) or
+`~/.local/share/genverse` (Linux). Set `GENVERSE_HOME` to use another folder. Run from a
+checkout, they stay in its `saves/` folder.
+
+**From source** (the latest stable Rust; on Linux also `libasound2-dev libudev-dev
+libwayland-dev libxkbcommon-dev`):
+
 ```sh
-cargo run                             # or: bevy run
+cargo run --release                   # or: bevy run
 GENVERSE_WORLD=sokoban cargo run      # start in (or create) a named world
 ```
 
-Needs `claude` and/or `codex` on your `PATH`, already logged in, for anything the agent does.
-
 ## Contents
 
+- [Install](#install)
 - [Controls](#controls)
 - [Talking to the agent](#talking-to-the-agent)
 - [Builds](#builds)

@@ -86,6 +86,17 @@ pub fn start(provider: Provider, system: String, prompt: String, tools: Option<&
     AgentJob { events: rx, cancel }
 }
 
+/// The agent CLI's full path, or what to do about it missing.
+fn program(name: &str, provider: Provider) -> Result<PathBuf, String> {
+    crate::platform::find_program(name).ok_or_else(|| {
+        let install = match provider {
+            Provider::Claude => "https://code.claude.com/docs/en/setup",
+            Provider::Codex => "https://github.com/openai/codex",
+        };
+        format!("{} isn't installed: `{name}` isn't on your PATH. Install it ({install}), sign in once from a terminal, then try again.", provider.label())
+    })
+}
+
 fn scratch_dir() -> Result<PathBuf, String> {
     let dir = std::env::temp_dir().join("genverse-agent");
     std::fs::create_dir_all(&dir).map_err(|e| format!("can't create {}: {e}", dir.display()))?;
@@ -108,7 +119,7 @@ fn run(
     let last_message = scratch.join("codex-last-message.json");
     match provider {
         Provider::Claude => {
-            cmd = Command::new("claude");
+            cmd = Command::new(program("claude", provider)?);
             // Partial messages: what it says arrives as it's written, for the live feed.
             cmd.args(["-p", prompt, "--output-format", "stream-json", "--verbose", "--include-partial-messages"])
                 .args(["--json-schema", SCHEMA, "--system-prompt", system])
@@ -136,7 +147,7 @@ fn run(
             let schema = scratch.join("build_spec.schema.json");
             std::fs::write(&schema, SCHEMA).map_err(|e| e.to_string())?;
             let _ = std::fs::remove_file(&last_message);
-            cmd = Command::new("codex");
+            cmd = Command::new(program("codex", provider)?);
             cmd.args(["exec", "--json", "--ignore-user-config", "--ephemeral", "--skip-git-repo-check"])
                 .args(["--sandbox", if files { "workspace-write" } else { "read-only" }, "-c", "model_reasoning_effort=\"low\""]);
             if let Some(tools) = tools {

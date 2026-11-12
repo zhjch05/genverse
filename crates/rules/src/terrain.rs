@@ -786,7 +786,7 @@ mod tests {
         assert!(block::SAND.contains(&sands.generate(IVec3::new(0, FLAT_GROUND, 0), UVec3::ONE).get(IVec3::ZERO)));
         // The coarse terrain far away agrees about water.
         let far = dry.generate_coarse(IVec3::new(-16, 0, -16), UVec3::new(32, (WORLD_HEIGHT / 8) as u32, 32), 8);
-        assert!(!far.cells().iter().any(|c| *c == block::WATER));
+        assert!(!far.cells().contains(&block::WATER));
     }
     const USUAL_TOP: i32 = 81;
 

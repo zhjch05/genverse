@@ -2,6 +2,8 @@
 name = "genverse_net"
 version = "0.1.0"
 edition = "2024"
+license = "MIT OR Apache-2.0"
+repository = "https://github.com/zhjch05/genverse"
 description = "Genverse's wire protocol: JSON messages, one per line, over TCP (bridged over iroh for the internet)."
 
 [dependencies]

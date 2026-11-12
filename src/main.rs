@@ -2,6 +2,8 @@
 mod agent;
 mod bindings;
 mod graphics;
+#[cfg(not(target_arch = "wasm32"))]
+mod platform;
 mod player;
 mod scene;
 mod voxel;
@@ -10,6 +12,9 @@ mod world;
 use bevy::prelude::*;
 
 fn main() -> AppExit {
+    // Before anything touches a file or starts a process.
+    #[cfg(not(target_arch = "wasm32"))]
+    platform::prepare();
     let mut window = Window {
         title: "Genverse".into(),
         // On the web, size the canvas to the page instead of a fixed resolution.

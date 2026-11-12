@@ -5,6 +5,8 @@ members = ["crates/rules", "crates/net", "crates/server"]
 name = "genverse"
 version = "0.1.0"
 edition = "2024"
+license = "MIT OR Apache-2.0"
+repository = "https://github.com/zhjch05/genverse"
 
 [dependencies]
 bevy = "0.20"
