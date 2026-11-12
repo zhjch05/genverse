@@ -3188,6 +3188,7 @@ dependencies = [
  "ed25519-dalek",
  "mlua",
  "naga",
+ "ron",
  "serde",
  "serde_json",
  "sha2",

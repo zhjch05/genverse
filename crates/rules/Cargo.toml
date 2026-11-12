@@ -19,6 +19,10 @@ naga = { version = "30", features = ["wgsl-in"] }
 [target.'cfg(not(target_arch = "wasm32"))'.dependencies]
 mlua = { version = "0.11", features = ["luau", "serialize"] }
 
+[dev-dependencies]
+# Parsing the `.vox.ron` models in tests, as the game does.
+ron = "0.12"
+
 [lints.clippy]
 too_many_arguments = "allow"
 type_complexity = "allow"

@@ -289,6 +289,9 @@ Characters and props are data. A model declares `surfaces` (roughness, metallic,
 alpha), a `palette` of named colors, and an ordered list of `ops`:
 
 - `Shape(geom, fill, noise?, mask?)` with `Box`, `Ellipsoid`, `Capsule` or `Cylinder`
+- `Voxels(at, legend, layers)` for painted voxels: each layer is a z slice drawn as text
+  rows, top row first, one character per voxel (`.` leaves the cell alone); the hero's
+  face is painted this way
 - `Island`, `Scatter`, `Settle` and `Spill` for terrain-like generation
 
 `parts` cut a model into named pieces that rotate around a `joint` under a `parent`; that's

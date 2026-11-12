@@ -2,7 +2,7 @@
 //! declares surfaces, a palette, and an ordered list of operations (shapes and
 //! generators) that are rasterized into a grid.
 
-use std::sync::Arc;
+use std::{collections::BTreeMap, sync::Arc};
 
 use bevy_color::prelude::*;
 use bevy_math::prelude::*;
@@ -155,6 +155,16 @@ pub enum OpDef {
         region: Option<(V3, V3)>,
         #[serde(default)]
         seed: u32,
+    },
+    /// Painted voxels, written cell by cell like pixel art. Each layer is a picture of
+    /// one z slice, as seen from the front: `layers[i]` is z = `at.z + i`, its first row
+    /// is the top (y = `at.y + rows - 1`) and its last row sits at `at.y`, and each row
+    /// runs along +x from `at.x`. Every character is a `legend` key naming a material
+    /// (`"air"` carves); `.` and space leave the cell as it was. Rows may differ in length.
+    Voxels {
+        at: (i32, i32, i32),
+        legend: BTreeMap<char, String>,
+        layers: Vec<Vec<String>>,
     },
     /// Removes `mats` voxels with nothing solid underneath, bottom-up, so liquids rest on ground.
     Settle { mats: Vec<String>, region: (V3, V3) },
@@ -449,6 +459,30 @@ fn apply_op(grid: &mut VoxelGrid, palette: &Palette, op: &OpDef) -> Result<(), S
                 }
             }
         }
+        OpDef::Voxels { at, legend, layers } => {
+            let mut ids = BTreeMap::new();
+            for (&key, name) in legend {
+                if key == '.' || key == ' ' {
+                    return Err(format!("legend key {key:?} is reserved for \"leave as is\""));
+                }
+                ids.insert(key, lookup(palette, name)?);
+            }
+            let at = IVec3::new(at.0, at.1, at.2);
+            for (dz, rows) in layers.iter().enumerate() {
+                for (row, line) in rows.iter().enumerate() {
+                    let y = (rows.len() - 1 - row) as i32;
+                    for (dx, key) in line.chars().enumerate() {
+                        if key == '.' || key == ' ' {
+                            continue;
+                        }
+                        let id = *ids.get(&key).ok_or_else(|| {
+                            format!("painted voxel {key:?} (layer {dz}, row {row}) is not in the legend")
+                        })?;
+                        grid.set(at + IVec3::new(dx as i32, y, dz as i32), id);
+                    }
+                }
+            }
+        }
         OpDef::Settle { mats, region } => {
             let mats = mats.iter().map(|n| lookup(palette, n)).collect::<Result<Vec<_>, _>>()?;
             let (min, max) = (v3(region.0), v3(region.1));
@@ -550,6 +584,92 @@ fn geom_distance(geom: &Geom, p: Vec3) -> f32 {
             } else {
                 Vec2::new(p.x - b.x, p.z - b.z).length() / radius
             }
+        }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn parse(text: &str) -> ModelDef {
+        ron::Options::default()
+            .with_default_extension(ron::extensions::Extensions::IMPLICIT_SOME)
+            .from_str(text)
+            .unwrap()
+    }
+
+    fn model(ops: &str) -> Result<ModelData, String> {
+        build(parse(&format!(
+            r##"(
+                voxel_size: 0.1,
+                size: (4, 3, 2),
+                pivot: (0, 0, 0),
+                surfaces: [(name: "matte")],
+                palette: [
+                    (name: "red", color: "#ff0000", surface: "matte"),
+                    (name: "blue", color: "#0000ff", surface: "matte"),
+                ],
+                ops: [{ops}],
+            )"##
+        )))
+    }
+
+    #[test]
+    fn painted_layers_read_like_pictures_from_the_front() {
+        let m = model(
+            r#"
+            Shape(geom: Box(min: (0, 0, 0), max: (4, 3, 2)), fill: Solid("blue")),
+            Voxels(
+                at: (0, 0, 0),
+                legend: {'r': "red", '_': "air"},
+                layers: [
+                    ["r...",
+                     ".. _",
+                     "...r"],
+                    ["", "", "rr"],
+                ],
+            ),
+            "#,
+        )
+        .unwrap();
+        let (red, blue) = (m.palette.find("red").unwrap(), m.palette.find("blue").unwrap());
+        let at = |x, y, z| m.grid.get(IVec3::new(x, y, z));
+        // The first row is the top of the layer.
+        assert_eq!(at(0, 2, 0), red);
+        assert_eq!(at(3, 0, 0), red);
+        assert_eq!(at(3, 1, 0), AIR);
+        // `.` and space leave what was there.
+        assert_eq!(at(2, 1, 0), blue);
+        assert_eq!(at(0, 0, 0), blue);
+        // The second layer is one step back in z.
+        assert_eq!((at(0, 0, 1), at(1, 0, 1), at(2, 0, 1)), (red, red, blue));
+        assert_eq!(at(0, 2, 1), blue);
+    }
+
+    #[test]
+    fn painting_past_the_grid_is_clipped() {
+        let m = model(r#"Voxels(at: (2, 2, 1), legend: {'r': "red"}, layers: [["rrrr", "rrrr"], ["rrrr"]])"#).unwrap();
+        let red = m.palette.find("red").unwrap();
+        assert_eq!(m.grid.cells().iter().filter(|&&c| c == red).count(), 2);
+        assert_eq!(m.grid.get(IVec3::new(3, 2, 1)), red);
+    }
+
+    #[test]
+    fn painting_needs_every_key_in_the_legend() {
+        let unknown = model(r#"Voxels(at: (0, 0, 0), legend: {'r': "red"}, layers: [["rx"]])"#);
+        assert!(unknown.is_err_and(|e| e.contains("'x'")));
+        let missing = model(r#"Voxels(at: (0, 0, 0), legend: {'r': "pink"}, layers: [["r"]])"#);
+        assert!(missing.is_err_and(|e| e.contains("pink")));
+        let reserved = model(r#"Voxels(at: (0, 0, 0), legend: {'.': "red"}, layers: [["."]])"#);
+        assert!(reserved.is_err_and(|e| e.contains("reserved")));
+    }
+
+    #[test]
+    fn the_shipped_models_build() {
+        for path in ["characters/hero.vox.ron", "models/sakura_island.vox.ron"] {
+            let text = std::fs::read_to_string(format!("{}/../../assets/{path}", env!("CARGO_MANIFEST_DIR"))).unwrap();
+            build(parse(&text)).unwrap_or_else(|e| panic!("{path}: {e}"));
         }
     }
 }

@@ -92,14 +92,18 @@
         // Cowlick.
         Shape(geom: Box(min: (9, 30, 5), max: (11, 32, 7)), fill: Solid("hair_light")),
         Shape(geom: Box(min: (10, 31, 4), max: (11, 32, 5)), fill: Solid("hair_light")),
-        // Face, painted on the front layer.
-        Shape(geom: Box(min: (6, 20, 1), max: (8, 23, 2)), fill: Solid("eye")),
-        Shape(geom: Box(min: (12, 20, 1), max: (14, 23, 2)), fill: Solid("eye")),
-        Shape(geom: Box(min: (6, 22, 1), max: (7, 23, 2)), fill: Solid("eye_shine")),
-        Shape(geom: Box(min: (12, 22, 1), max: (13, 23, 2)), fill: Solid("eye_shine")),
-        Shape(geom: Box(min: (5, 19, 1), max: (7, 20, 2)), fill: Solid("blush")),
-        Shape(geom: Box(min: (13, 19, 1), max: (15, 20, 2)), fill: Solid("blush")),
-        Shape(geom: Box(min: (9, 18, 1), max: (11, 19, 2)), fill: Solid("mouth")),
+        // Face, painted on the front layer: rows run top (y 22) to bottom (y 18).
+        Voxels(
+            at: (5, 18, 1),
+            legend: {'e': "eye", 'w': "eye_shine", 'b': "blush", 'm': "mouth"},
+            layers: [[
+                ".we....we.",
+                ".ee....ee.",
+                ".ee....ee.",
+                "bb......bb",
+                "....mm....",
+            ]],
+        ),
     ],
 
     parts: [
