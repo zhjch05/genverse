@@ -248,6 +248,10 @@ struct Chat {
     play_together: bool,
     /// The Play together section above the name is unfolded.
     network: bool,
+    /// We were online last frame: Play together opens on going online (hosting or
+    /// joining), wherever it was started from, to show how others get in or how
+    /// finding the host is going.
+    was_online: bool,
     /// The share of the window's width the panel covers (0 when hidden).
     covered: f32,
     /// Where the panel is on screen, in egui points, while any of it shows.
@@ -297,6 +301,7 @@ impl Default for Chat {
             server_addr: String::new(),
             play_together: false,
             network: false,
+            was_online: false,
             covered: 0.0,
             panel: None,
             hints: prefs::get("hints").and_then(|v| v.as_bool()).unwrap_or(true),
@@ -1813,7 +1818,7 @@ fn network_section(ui: &mut egui::Ui, chat: &mut Chat, ledger: &Ledger, lan: &la
             {
                 *action = Some(Action::PlayTogether);
             }
-            if ui.add(theme::Block::new("Host", theme::Tone::Plain)).on_hover_text("Open this world to others on port 7878").clicked() {
+            if ui.add(theme::Block::new("Host", theme::Tone::Plain)).on_hover_text("Open this world to others: on your network, and anywhere with an invite").clicked() {
                 *action = Some(Action::Host);
             }
         });
@@ -1840,7 +1845,7 @@ fn network_section(ui: &mut egui::Ui, chat: &mut Chat, ledger: &Ledger, lan: &la
             let field = ui.add(
                 egui::TextEdit::singleline(&mut chat.server_addr)
                     .desired_width(ui.available_width() - 52.0)
-                    .hint_text("Join by address: host:port"),
+                    .hint_text("Join by address (host:port) or invite"),
             );
             let enter = field.lost_focus() && ui.input(|i| i.key_pressed(egui::Key::Enter));
             let filled = !chat.server_addr.trim().is_empty();
@@ -1850,15 +1855,42 @@ fn network_section(ui: &mut egui::Ui, chat: &mut Chat, ledger: &Ledger, lan: &la
         });
         return;
     };
+    let shown = crate::world::ledger::shown_addr(&online.addr);
+    // Joined, but the server hasn't welcomed us yet: finding it (an invite takes a while).
+    let finding = online.closed.is_none() && online.state.is_none() && ledger.hosting.is_none();
     ui.horizontal(|ui| {
-        let status = match (&online.closed, &ledger.hosting) {
-            (Some(_), _) => format!("{} · reconnecting…", online.addr),
-            (None, Some(server)) => format!("Others can join on port {}", server.addr.port()),
-            (None, None) => format!("Playing at {}", online.addr),
-        };
-        theme::note(ui, status);
+        match (&online.closed, &ledger.hosting) {
+            (Some(why), _) => {
+                ui.add(egui::Spinner::new().size(12.0));
+                ui.label(egui::RichText::new(format!("{shown} · reconnecting…")).small().color(p.muted)).on_hover_text(why);
+            }
+            (None, Some(server)) => {
+                let players = server.players.load(std::sync::atomic::Ordering::Relaxed).saturating_sub(1);
+                let others = match players {
+                    0 => "no one else yet".to_string(),
+                    1 => "1 other playing".to_string(),
+                    n => format!("{n} others playing"),
+                };
+                theme::note(ui, format!("Hosting · {others}"));
+            }
+            (None, None) if finding => {
+                ui.add(egui::Spinner::new().size(12.0));
+                let what = if online.tunnel.is_some() { "Finding the host" } else { "Connecting to " };
+                let target = if online.tunnel.is_some() { String::new() } else { shown.clone() };
+                theme::note(ui, format!("{what}{target}… {}s", online.since.elapsed().as_secs()));
+            }
+            (None, None) => {
+                let how = if online.tunnel.is_some() { "by invite".to_string() } else { format!("at {shown}") };
+                match &online.game {
+                    Some(game) => theme::note(ui, format!("Playing in {} · {how}", game.name)),
+                    None => theme::note(ui, format!("Playing {how}")),
+                }
+            }
+        }
         let (label, tip) = if ledger.hosting.is_some() {
             ("Stop hosting", "Close this world to others and go back to your local world")
+        } else if finding {
+            ("Cancel", "Stop trying and stay in your local world")
         } else {
             ("Leave", "Back to your local world")
         };
@@ -1867,6 +1899,56 @@ fn network_section(ui: &mut egui::Ui, chat: &mut Chat, ledger: &Ledger, lan: &la
                 *action = Some(Action::Leave);
             }
         });
+    });
+    if finding && online.since.elapsed().as_secs() >= 20 {
+        let why = online.tunnel.as_ref().and_then(|t| t.error());
+        let hint = match why {
+            Some(why) => format!("Still trying: {why}."),
+            None if online.tunnel.is_some() => "Still trying. Check the invite, and that the host is still hosting.".into(),
+            None => "Still trying. Check the address, and that the host is still hosting.".into(),
+        };
+        theme::note(ui, hint);
+    }
+    let Some(server) = &ledger.hosting else { return };
+    // Hosting: how others get in.
+    let copy = |ui: &mut egui::Ui, chat: &mut Chat, text: &str, tip: &str, said: &str| {
+        if ui.small_button(icon::COPY).on_hover_text(tip).clicked() {
+            ui.ctx().copy_text(text.to_string());
+            chat.say(Role::System, said);
+        }
+    };
+    ui.horizontal(|ui| {
+        ui.label(egui::RichText::new(icon::HOUSE_LINE).color(p.muted)).on_hover_text("On your network");
+        match online::lan_address(server.addr.port()) {
+            Some(address) => {
+                ui.label(egui::RichText::new(&address).monospace().size(11.5).color(p.strong));
+                copy(ui, chat, &address, "Copy the address", "Copied your address: others on your network paste it into Join (or find you under Play together).");
+            }
+            None => theme::note(ui, format!("this computer, port {}", server.addr.port())),
+        }
+    });
+    ui.horizontal(|ui| {
+        ui.label(egui::RichText::new(icon::GLOBE_HEMISPHERE_WEST).color(p.muted)).on_hover_text("From anywhere");
+        match &ledger.internet {
+            Some(door) if door.online() => {
+                let invite = door.invite();
+                let short = format!("{}…{}", &invite[..12], &invite[invite.len() - 4..]);
+                ui.label(egui::RichText::new(short).monospace().size(11.5).color(p.strong)).on_hover_text(invite);
+                if ui
+                    .add(theme::Block::new(format!("{} Copy invite", icon::COPY), theme::Tone::Primary))
+                    .on_hover_text("For friends anywhere: they paste it into Join. It stays the same each time you host.")
+                    .clicked()
+                {
+                    ui.ctx().copy_text(invite.to_string());
+                    chat.say(Role::System, "Copied the invite: send it to a friend, and they paste it into Join.");
+                }
+            }
+            Some(_) => {
+                ui.add(egui::Spinner::new().size(12.0));
+                theme::note(ui, "Opening to the internet…");
+            }
+            None => theme::note(ui, "Not open to the internet (see the chat for why)"),
+        }
     });
 }
 
@@ -1989,6 +2071,12 @@ fn chat_panel(
                 .frame(egui::Frame::new().fill(p.footer).inner_margin(egui::Margin::symmetric(10, 8)))
                 .show_separator_line(false)
                 .show(ui, |ui| {
+                    let online = ledger.online.is_some();
+                    if online && !chat.was_online {
+                        chat.network = true;
+                        chat.name = None;
+                    }
+                    chat.was_online = online;
                     if chat.name.is_some() {
                         profile_section(ui, chat, &mut ledger);
                         ui.add_space(6.0);
@@ -2003,7 +2091,7 @@ fn chat_panel(
                         // A status pip on the avatar, grass-green while playing with others.
                         let dot = face.rect.right_bottom() - egui::vec2(3.0, 3.0);
                         ui.painter().rect_filled(egui::Rect::from_center_size(dot, egui::vec2(11.0, 11.0)), 2, p.footer);
-                        let online = ledger.online.as_ref().is_some_and(|o| o.closed.is_none());
+                        let online = ledger.online.as_ref().is_some_and(|o| o.closed.is_none() && o.state.is_some());
                         let pip = if online { p.online } else { p.faint };
                         ui.painter().rect_filled(egui::Rect::from_center_size(dot, egui::vec2(7.0, 7.0)), 1, pip);
                         ui.vertical(|ui| {
@@ -2012,8 +2100,9 @@ fn chat_panel(
                             let status = match (&ledger.online, &ledger.hosting) {
                                 (None, _) => "Local world".to_string(),
                                 (Some(online), _) if online.closed.is_some() => "Reconnecting…".to_string(),
+                                (Some(online), None) if online.state.is_none() => "Joining…".to_string(),
                                 (Some(_), Some(server)) => format!("Hosting on port {}", server.addr.port()),
-                                (Some(online), None) => format!("Online at {}", online.addr),
+                                (Some(online), None) => format!("Online at {}", crate::world::ledger::shown_addr(&online.addr)),
                             };
                             ui.label(egui::RichText::new(status).size(11.5).color(p.muted));
                         });

@@ -282,8 +282,9 @@ fn place(ledger: &Ledger) -> (String, String, bool) {
         (None, _) if game == world || game == "local" => (world, "Local world".into(), false),
         (None, _) => (world, format!("Local world · {game}"), false),
         (Some(online), _) if online.closed.is_some() => (world, "Reconnecting…".into(), false),
+        (Some(online), None) if online.state.is_none() => (world, "Joining…".into(), false),
         (Some(_), Some(server)) => (world, format!("Hosting on port {}", server.addr.port()), true),
-        (Some(online), None) => (world, format!("Online at {}", online.addr), true),
+        (Some(online), None) => (world, format!("Online at {}", crate::world::ledger::shown_addr(&online.addr)), true),
     }
 }
 

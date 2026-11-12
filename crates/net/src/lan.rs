@@ -145,6 +145,33 @@ impl Listener {
     }
 }
 
+/// This computer's address on the local network, as others on it reach it: a private
+/// address on a real network interface (Wi-Fi, Ethernet) before any other, so a VPN's
+/// tunnel or a virtual machine's bridge isn't mistaken for it.
+pub fn local_ipv4() -> Option<Ipv4Addr> {
+    let interfaces = if_addrs::get_if_addrs().ok()?;
+    let rank = |name: &str, ip: Ipv4Addr| {
+        let virtual_ = ["utun", "tun", "tap", "ppp", "ipsec", "bridge", "vmnet", "vmenet", "vbox", "anpi", "ap", "docker", "veth", "wg", "zt", "tailscale", "llw", "awdl"]
+            .iter()
+            .any(|p| name.starts_with(p));
+        match (ip.is_private(), virtual_) {
+            (true, false) => 0,
+            (true, true) => 2,
+            (false, false) => 1,
+            (false, true) => 3,
+        }
+    };
+    interfaces
+        .iter()
+        .filter_map(|i| match i.addr {
+            if_addrs::IfAddr::V4(ref v4) if !v4.ip.is_loopback() && !v4.ip.is_link_local() => Some((rank(&i.name, v4.ip), v4.ip)),
+            _ => None,
+        })
+        .filter(|(rank, _)| *rank < 3)
+        .min_by_key(|(rank, _)| *rank)
+        .map(|(_, ip)| ip)
+}
+
 /// Whether `ip` is this machine (so a world hosted here can be joined on loopback).
 pub fn is_local(ip: IpAddr) -> bool {
     ip.is_loopback()

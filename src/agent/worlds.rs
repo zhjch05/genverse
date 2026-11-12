@@ -159,6 +159,7 @@ pub fn travel(
         && let Some(server) = ledger.hosting.take()
     {
         // Closed before the trip, so its logs are done with when the local world loads them.
+        ledger.internet = None;
         server.stop();
         chat.say(Role::System, "Stopped hosting; the others were disconnected.");
     }
@@ -519,14 +520,14 @@ pub fn worlds_window(
                     (Some(server), _) => {
                         format!("hosting on port {} · {} playing", server.addr.port(), server.players.load(std::sync::atomic::Ordering::Relaxed))
                     }
-                    (None, Some(online)) => format!("on {}", online.addr),
+                    (None, Some(online)) => format!("on {}", crate::world::ledger::shown_addr(&online.addr)),
                     (None, None) => "on this computer".into(),
                 };
                 ui.label(egui::RichText::new(hosting).small().color(p.muted));
                 if let Some(back) = travel.back.clone() {
                     let label = match &back {
                         Trip::Local { world, .. } | Trip::Remote { world } => world.clone(),
-                        Trip::Server(addr) => addr.clone(),
+                        Trip::Server(addr) => crate::world::ledger::shown_addr(addr),
                     };
                     if ui.button(format!("{} Back to {label}", icon::ARROW_BEND_UP_LEFT)).clicked() {
                         todo = Some(Do::Go(back));
@@ -795,7 +796,7 @@ pub fn worlds_window(
                     });
                     for addr in recent_servers() {
                         ui.horizontal(|ui| {
-                            ui.label(&addr);
+                            ui.label(crate::world::ledger::shown_addr(&addr));
                             if ui.small_button("Join").clicked() {
                                 todo = Some(Do::Go(Trip::Server(addr.clone())));
                             }
@@ -813,7 +814,7 @@ pub fn worlds_window(
                         }
                     } else if ui
                         .button(format!("Host {}", game_name()))
-                        .on_hover_text("Others on your network can join every world in it until you stop hosting")
+                        .on_hover_text("Others can join every world in it until you stop hosting: on your network by address, from anywhere by invite")
                         .clicked()
                     {
                         todo = Some(Do::Host);

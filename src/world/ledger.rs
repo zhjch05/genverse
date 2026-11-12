@@ -380,12 +380,18 @@ pub struct Ledger {
     /// it hosts one.
     #[cfg(not(target_arch = "wasm32"))]
     pub hosting: Option<genverse_server::Running>,
+    /// The hosted server's door to the internet: its invite, while hosting.
+    #[cfg(not(target_arch = "wasm32"))]
+    pub internet: Option<genverse_net::internet::Host>,
 }
 
 /// A connection to a server and what's in flight on it.
 #[cfg(not(target_arch = "wasm32"))]
 pub struct Online {
+    /// What we joined: an address, or an invite.
     pub addr: String,
+    /// The way to the host when joining by invite; the client connects through it.
+    pub tunnel: Option<genverse_net::internet::Tunnel>,
     pub client: genverse_net::Client,
     /// The world as the server has committed it (voxels included, so remote changes
     /// apply one at a time). None until the server welcomes us.
@@ -398,6 +404,8 @@ pub struct Online {
     pub committed: HashMap<u64, u64>,
     /// Why the connection ended, while it's down.
     pub closed: Option<String>,
+    /// When we joined, to show how long finding the server is taking.
+    pub since: std::time::Instant,
     /// Failed reconnects in a row, for backing off.
     pub attempts: u32,
     /// The game the server hosts, once it has welcomed us.
@@ -910,8 +918,8 @@ impl Ledger {
         Some(reference)
     }
 
-    /// Joins the server at `addr` (`host` or `host:port`); its world arrives as a
-    /// welcome. The local world stays saved as it is.
+    /// Joins the server at `addr` (`host`, `host:port`, or an invite to a game hosted
+    /// over the internet); its world arrives as a welcome. The local world stays saved as it is.
     #[cfg(not(target_arch = "wasm32"))]
     pub fn go_online(&mut self, addr: &str) -> Result<(), String> {
         self.online = Some(connect_to(addr, &self.profile, &self.key)?);
@@ -923,11 +931,16 @@ impl Ledger {
     #[cfg(not(target_arch = "wasm32"))]
     pub fn reconnect(&mut self) -> Result<(), String> {
         let online = self.online.as_mut().ok_or("not online")?;
-        let fresh = connect_to(&online.addr, &self.profile, &self.key)?;
-        online.client = fresh.client;
+        online.client = client_for(&online.addr, online.tunnel.as_ref(), &self.profile, &self.key)?;
         online.state = None;
         online.closed = None;
         Ok(())
+    }
+
+    /// A secret for `purpose` that only this player's key gives
+    /// ([`Keypair::derive`]): the same one every time.
+    pub fn derive_secret(&self, purpose: &str) -> [u8; 32] {
+        self.key.derive(purpose)
     }
 
     pub fn is_online(&self) -> bool {
@@ -1346,6 +1359,8 @@ fn empty(log: WorldLog, profile: Profile, key: Keypair) -> Ledger {
         online: None,
         #[cfg(not(target_arch = "wasm32"))]
         hosting: None,
+        #[cfg(not(target_arch = "wasm32"))]
+        internet: None,
     }
 }
 
@@ -1361,18 +1376,28 @@ fn connect(profile: &Profile, key: &Keypair) -> Option<Online> {
 #[cfg(not(target_arch = "wasm32"))]
 fn connect_to(addr: &str, profile: &Profile, key: &Keypair) -> Result<Online, String> {
     let addr = addr.trim();
-    let addr = if addr.contains(':') { addr.to_string() } else { format!("{addr}:{}", genverse_net::DEFAULT_PORT) };
-    let signer = key.clone();
-    let client = genverse_net::Client::connect(&addr, profile.id.clone(), profile.name.clone(), move |m| signer.sign(m))?;
-    info!("joining {addr} as {}", profile.name);
+    let (addr, tunnel) = if genverse_net::internet::is_invite(addr) {
+        // A fresh key each time: the player proves who they are to the server, not here.
+        let mut secret = [0u8; 32];
+        getrandom::fill(&mut secret).map_err(|e| e.to_string())?;
+        (addr.to_string(), Some(genverse_net::internet::Tunnel::start(addr, secret)?))
+    } else if addr.contains(':') {
+        (addr.to_string(), None)
+    } else {
+        (format!("{addr}:{}", genverse_net::DEFAULT_PORT), None)
+    };
+    let client = client_for(&addr, tunnel.as_ref(), profile, key)?;
+    info!("joining {} as {}", shown_addr(&addr), profile.name);
     Ok(Online {
         addr,
+        tunnel,
         client,
         state: None,
         next_request: FIRST_REQUEST,
         pending: HashMap::new(),
         committed: HashMap::new(),
         closed: None,
+        since: std::time::Instant::now(),
         attempts: 0,
         game: None,
         world: None,
@@ -1380,6 +1405,24 @@ fn connect_to(addr: &str, profile: &Profile, key: &Keypair) -> Result<Online, St
         arriving_from: None,
         others: HashMap::new(),
     })
+}
+
+/// A client for the server at `addr`, through `tunnel` when there is one.
+#[cfg(not(target_arch = "wasm32"))]
+fn client_for(addr: &str, tunnel: Option<&genverse_net::internet::Tunnel>, profile: &Profile, key: &Keypair) -> Result<genverse_net::Client, String> {
+    let at = tunnel.map_or(addr.to_string(), |t| t.addr().to_string());
+    let signer = key.clone();
+    genverse_net::Client::connect(&at, profile.id.clone(), profile.name.clone(), move |m| signer.sign(m))
+}
+
+/// What we joined, short enough to show: an invite by the start of its key.
+#[cfg(not(target_arch = "wasm32"))]
+pub fn shown_addr(addr: &str) -> String {
+    if genverse_net::internet::is_invite(addr) {
+        format!("an invite ({}…)", addr.trim().chars().take(11).collect::<String>())
+    } else {
+        addr.to_string()
+    }
 }
 
 /// `GENVERSE_AS=Name`: a separate player for this run (not saved, never an admin). Its

@@ -28,6 +28,14 @@ impl Keypair {
     pub fn sign(&self, message: &[u8]) -> String {
         hex(&self.0.sign(message).to_bytes())
     }
+
+    /// Another secret, for `purpose`, that only this key gives (and always the same
+    /// one), without using the player's own key for anything else: like the key that
+    /// keeps a host's invite the same from one session to the next.
+    pub fn derive(&self, purpose: &str) -> [u8; 32] {
+        use sha2::{Digest, Sha256};
+        Sha256::new().chain_update(b"genverse derive\0").chain_update(purpose).chain_update(b"\0").chain_update(self.0.to_bytes()).finalize().into()
+    }
 }
 
 /// Whether `signature` (hex) is `player`'s (a hex public key) over `message`.

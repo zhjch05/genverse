@@ -241,14 +241,14 @@ fn game(ledger: &Ledger) -> String {
         None => Some(files::read_game(&local_game)),
     };
     let name = match &ledger.online {
-        Some(online) => online.game.as_ref().map_or(online.addr.clone(), |g| g.name.clone()),
+        Some(online) => online.game.as_ref().map_or(crate::world::ledger::shown_addr(&online.addr), |g| g.name.clone()),
         None => local_game,
     };
     let world = ledger.online.as_ref().and_then(|o| o.world.clone()).unwrap_or(local_world);
     let mut out = format!("# The game \"{name}\"\n\n");
     let shared = match (&ledger.hosting, &ledger.online) {
         (Some(server), _) => format!("The player hosts it from this computer (port {}): others can join every world in it.", server.addr.port()),
-        (None, Some(online)) => format!("It's hosted at {}: the player joined it, and others may be playing.", online.addr),
+        (None, Some(online)) => format!("It's hosted at {}: the player joined it, and others may be playing.", crate::world::ledger::shown_addr(&online.addr)),
         (None, None) => "It's on the player's computer, not shared (host opens it to others).".into(),
     };
     let role = if ledger.land.is_admin(&ledger.profile.id) {

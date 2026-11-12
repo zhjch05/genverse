@@ -314,8 +314,8 @@ pub static OPS: &[Op] = &[
         .note("The world's setting world.logic.paused: timers wait and players' game actions are refused until it's resumed. Building and talking go on. Recorded like any rule change, so undo takes it back."),
     op("verify", "", "Check every change is signed by its player", &[], verify),
     op("play", "", "Join a world on your network, or open this one", &[], play).chat_only(),
-    op("host", "", "Open this game, every world in it, to others", &[], host).settled().ask().last(),
-    op("join", "<host[:port]>", "Play in a hosted game", &[word("addr", "the server: host or host:port")], join).settled().ask().last(),
+    op("host", "", "Open this game, every world in it, to others: on the network by address, anywhere by invite", &[], host).settled().ask().last(),
+    op("join", "<host[:port] or invite>", "Play in a hosted game", &[word("addr", "the server: host, host:port, or an invite")], join).settled().ask().last(),
     op("leave", "", "Back to your own game", &[], leave).settled().ask(),
     op("packages", "", "The game rules in this world", &[], packages),
     op("save", "<name>", "Bookmark the world as it is now", &[rest("name", "the save's name, up to 40 characters")], save)
@@ -670,7 +670,7 @@ fn host(cx: &mut Context, _: &Args) -> Reply {
 }
 
 fn join(cx: &mut Context, args: &Args) -> Reply {
-    let addr = args.text("addr").ok_or("Usage: /join <host[:port]>")?;
+    let addr = args.text("addr").ok_or("Usage: /join <host[:port] or invite>")?;
     online::join(cx.ledger, &addr)
 }
 

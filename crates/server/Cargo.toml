@@ -18,3 +18,7 @@ getrandom = "0.3"
 too_many_arguments = "allow"
 type_complexity = "allow"
 large_enum_variant = "allow"
+
+[dev-dependencies]
+# The internet test joins by invite, through iroh.
+genverse_net = { path = "../net", features = ["internet"] }

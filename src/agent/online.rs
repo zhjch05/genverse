@@ -28,13 +28,16 @@ pub fn join(ledger: &mut Ledger, addr: &str) -> Reply {
         return Err("Already online; /leave first.".into());
     }
     match ledger.go_online(addr) {
+        Ok(()) if genverse_net::internet::is_invite(addr) => Ok("Joining by invite… finding the host can take a few seconds.".into()),
         Ok(()) => Ok(format!("Joining {addr}…")),
         Err(e) => Err(format!("⚠ {e}")),
     }
 }
 
 /// Opens this world to others: starts a server in the game on the world's own save
-/// (so changes made together are kept with it) and joins it.
+/// (so changes made together are kept with it) and joins it. Others on the network
+/// join at its address; anyone else, with its invite over the internet
+/// ([`genverse_net::internet`]), while this game stays the server.
 pub fn host(ledger: &mut Ledger) -> Reply {
     if ledger.is_online() {
         return Err("Already online; only your local world can be hosted.".into());
@@ -55,8 +58,19 @@ pub fn host(ledger: &mut Ledger) -> Reply {
         return Err(format!("⚠ {e}"));
     }
     let lan = lan_ip().map_or(format!("this computer's address, port {port}"), |ip| format!("{ip}:{port}"));
-    Ok(format!("Hosting this world; Leave closes it. Others on your network join with {lan}."))
+    // The same key gives the same invite each time this player hosts.
+    let internet = match genverse_net::internet::Host::start(port, ledger.derive_secret("internet host")) {
+        Ok(door) => {
+            info!("hosting over the internet with the invite {}", door.invite());
+            let invite = " Friends anywhere join with your invite: copy it under Play together once it's ready.".to_string();
+            ledger.internet = Some(door);
+            invite
+        }
+        Err(e) => format!(" (Not open to the internet: {e}.)"),
+    };
+    Ok(format!("Hosting this world; Leave closes it. Others on your network join with {lan}.{internet}"))
 }
+
 
 /// Leaves the server for the local world; a hosted one closes on the way out.
 pub fn leave(ledger: &mut Ledger, travel: &mut super::worlds::Travel) -> Reply {
@@ -68,9 +82,30 @@ pub fn leave(ledger: &mut Ledger, travel: &mut super::worlds::Travel) -> Reply {
     Ok(String::new())
 }
 
-/// This computer's address on the local network: the one a route to the internet would
-/// use (connecting a UDP socket sends nothing).
+/// Where others on the network join the game this one hosts (`ip:port`), looked up
+/// again every few seconds as networks change.
+pub fn lan_address(port: u16) -> Option<String> {
+    use std::{sync::Mutex, time::Instant};
+    static CACHE: Mutex<Option<(Instant, Option<std::net::IpAddr>)>> = Mutex::new(None);
+    let mut cache = CACHE.lock().ok()?;
+    let ip = match *cache {
+        Some((at, ip)) if at.elapsed().as_secs() < 5 => ip,
+        _ => {
+            let ip = lan_ip();
+            *cache = Some((Instant::now(), ip));
+            ip
+        }
+    };
+    Some(format!("{}:{port}", ip?))
+}
+
+/// This computer's address on the local network: a private one on a real interface,
+/// else the one a route to the internet would use (connecting a UDP socket sends
+/// nothing; behind a VPN, that's the tunnel's).
 fn lan_ip() -> Option<std::net::IpAddr> {
+    if let Some(ip) = genverse_net::lan::local_ipv4() {
+        return Some(ip.into());
+    }
     let socket = std::net::UdpSocket::bind("0.0.0.0:0").ok()?;
     socket.connect("8.8.8.8:80").ok()?;
     Some(socket.local_addr().ok()?.ip())
@@ -125,8 +160,10 @@ pub fn sync_online(
         match event {
             ClientEvent::Closed(why) => {
                 let Some(online) = &mut ledger.online else { continue };
+                // Through a tunnel, the tunnel knows why better than the client does.
+                let why = online.tunnel.as_ref().and_then(|t| t.error()).unwrap_or(why);
                 if online.closed.is_none() {
-                    chat.say(Role::System, format!("⚠ Lost the connection to {} ({why}); reconnecting…", online.addr));
+                    chat.say(Role::System, format!("⚠ Lost the connection to {} ({why}); reconnecting…", crate::world::ledger::shown_addr(&online.addr)));
                 }
                 online.closed = Some(why);
                 *retry_at = Some(time.elapsed_secs() + backoff(online.attempts));
@@ -221,7 +258,7 @@ pub fn sync_online(
                     loading.restart(&name);
                 }
                 worlds_window.refresh();
-                let addr = ledger.online.as_ref().map(|o| o.addr.clone()).unwrap_or_default();
+                let addr = ledger.online.as_ref().map(|o| crate::world::ledger::shown_addr(&o.addr)).unwrap_or_default();
                 chat.say(
                     Role::System,
                     format!("In {name} on {addr}: {} changes, {} builds.", ledger.log.changes.len(), full.builds.len()),

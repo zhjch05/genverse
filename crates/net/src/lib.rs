@@ -12,6 +12,8 @@
 //! crate already serializes everything. [`Client`] runs the connection on background
 //! threads for the game.
 
+#[cfg(feature = "internet")]
+pub mod internet;
 pub mod lan;
 
 use std::{
