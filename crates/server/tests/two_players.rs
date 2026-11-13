@@ -91,7 +91,7 @@ fn land_someone_is_working_on_waits_for_them() {
     let dir = std::env::temp_dir().join(format!("genverse-server-locks-{}", std::process::id()));
     let _ = std::fs::remove_dir_all(&dir);
     let server = start(ServerConfig { data_dir: dir.clone(), port: 0, seed: 1337, flat: false }).unwrap();
-    let addr = server.addr.to_string();
+    let addr = format!("127.0.0.1:{}", server.addr.port());
     let ada = Player::join(&addr, 1, "Ada");
     let bo = Player::join(&addr, 2, "Bo");
 
@@ -142,7 +142,7 @@ fn two_players_share_one_ordered_world() {
     let dir = std::env::temp_dir().join(format!("genverse-server-test-{}", std::process::id()));
     let _ = std::fs::remove_dir_all(&dir);
     let server = start(ServerConfig { data_dir: dir.clone(), port: 0, seed: 1337, flat: false }).unwrap();
-    let addr = server.addr.to_string();
+    let addr = format!("127.0.0.1:{}", server.addr.port());
 
     // Ada joins first and becomes the admin; Bo joins after.
     let ada = Player::join(&addr, 1, "Ada");
@@ -218,7 +218,7 @@ fn two_players_share_one_ordered_world() {
     // A restarted server has the same log.
     drop((ada, bo));
     let again = start(ServerConfig { data_dir: dir.clone(), port: 0, seed: 1337, flat: false }).unwrap();
-    let dee = Player::join(&again.addr.to_string(), 4, "Dee");
+    let dee = Player::join(&format!("127.0.0.1:{}", again.addr.port()), 4, "Dee");
     drop(dee);
     let saved = genverse_rules::store::LogFile::open(&dir.join("worlds/main")).unwrap().1.unwrap();
     assert_eq!(saved.changes.len(), 3);
@@ -260,7 +260,7 @@ fn packages_travel_with_the_change_that_installs_them() {
     let dir = std::env::temp_dir().join(format!("genverse-packages-{}", std::process::id()));
     let _ = std::fs::remove_dir_all(&dir);
     let server = start(ServerConfig { data_dir: dir.clone(), port: 0, seed: 1337, flat: false }).unwrap();
-    let addr = server.addr.to_string();
+    let addr = format!("127.0.0.1:{}", server.addr.port());
     let ada = Player::join(&addr, 1, "Ada");
     let bo = Player::join(&addr, 2, "Bo");
 
@@ -323,7 +323,7 @@ fn the_server_runs_timers() {
     let dir = std::env::temp_dir().join(format!("genverse-timers-{}", std::process::id()));
     let _ = std::fs::remove_dir_all(&dir);
     let server = start(ServerConfig { data_dir: dir.clone(), port: 0, seed: 1337, flat: true }).unwrap();
-    let addr = server.addr.to_string();
+    let addr = format!("127.0.0.1:{}", server.addr.port());
     let ada = Player::join(&addr, 1, "Ada");
     let bo = Player::join(&addr, 2, "Bo");
     let script = r#"
@@ -383,7 +383,7 @@ fn saves_load_for_everyone() {
     let dir = std::env::temp_dir().join(format!("genverse-saves-{}", std::process::id()));
     let _ = std::fs::remove_dir_all(&dir);
     let server = start(ServerConfig { data_dir: dir.clone(), port: 0, seed: 1337, flat: true }).unwrap();
-    let addr = server.addr.to_string();
+    let addr = format!("127.0.0.1:{}", server.addr.port());
     let ada = Player::join(&addr, 1, "Ada");
     let bo = Player::join(&addr, 2, "Bo");
     let committed = |p: &Player| match p.next() {
@@ -431,7 +431,7 @@ fn a_game_hosts_many_worlds() {
     let dir = std::env::temp_dir().join(format!("genverse-game-{}", std::process::id()));
     let _ = std::fs::remove_dir_all(&dir);
     let server = start(ServerConfig { data_dir: dir.clone(), port: 0, seed: 1337, flat: true }).unwrap();
-    let addr = server.addr.to_string();
+    let addr = format!("127.0.0.1:{}", server.addr.port());
     let ada = Player::join(&addr, 1, "Ada");
     let bo = Player::join(&addr, 2, "Bo");
     let game_change = |p: &Player, request: u64, action: GameAction| {
@@ -500,7 +500,7 @@ fn items_and_rules_follow_the_game() {
     let dir = std::env::temp_dir().join(format!("genverse-follow-{}", std::process::id()));
     let _ = std::fs::remove_dir_all(&dir);
     let server = start(ServerConfig { data_dir: dir.clone(), port: 0, seed: 1337, flat: true }).unwrap();
-    let ada = Player::join(&server.addr.to_string(), 1, "Ada");
+    let ada = Player::join(&format!("127.0.0.1:{}", server.addr.port()), 1, "Ada");
     let now = || SystemTime::now().duration_since(UNIX_EPOCH).unwrap().as_secs();
     let game_change = |request: u64, by: Provenance, action: GameAction| {
         let sig = ada.key.sign(&game_bytes(&by, &action));
