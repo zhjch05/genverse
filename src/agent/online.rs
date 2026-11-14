@@ -199,6 +199,10 @@ pub fn sync_online(
                 peers.clear(&mut commands);
                 let Some(online) = &mut ledger.online else { continue };
                 online.others.clear();
+                // Worlds renamed while we were away are the same worlds.
+                let renamed = |w: Option<String>| w.map(|w| game.current(&w).unwrap_or(w));
+                online.world = renamed(online.world.take());
+                online.shown = renamed(online.shown.take());
                 // A reconnect lands in the game's first world: back to where we were.
                 if let Some(wanted) = online.world.clone().filter(|w| *w != name && game.world(w).is_some()) {
                     online.game = Some(game);
@@ -273,6 +277,10 @@ pub fn sync_online(
                 if request.is_some() && let Some(reply) = super::worlds::game_reply(game.changes.last().map(|c| &c.action)) {
                     chat.say(Role::System, reply);
                 }
+                // The world we're in renamed: we're still in it.
+                let renamed = |w: Option<String>| w.map(|w| game.current(&w).unwrap_or(w));
+                online.world = renamed(online.world.take());
+                online.shown = renamed(online.shown.take());
                 online.game = Some(game);
                 worlds_window.refresh();
             }

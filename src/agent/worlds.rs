@@ -78,9 +78,14 @@ impl Travel {
     pub fn portal(&mut self, to: &PortalTo, ledger: &Ledger) -> Result<(), String> {
         let (trip, from) = match to {
             PortalTo::Server { addr } => (Trip::Server(addr.clone()), here(ledger)),
-            PortalTo::World { name } if ledger.is_online() => (Trip::Remote { world: name.clone() }, world_of(ledger)),
-            PortalTo::World { name } => (Trip::Local { game: game_name(), world: name.clone() }, world_name()),
-            PortalTo::Game { game, world } => (Trip::Local { game: game.clone(), world: world.clone() }, here(ledger)),
+            // Portals keep the name a world had when they were linked; it may have been
+            // renamed since.
+            PortalTo::World { name } if ledger.is_online() => {
+                let name = ledger.online.as_ref().and_then(|o| o.game.as_ref()?.current(name)).unwrap_or(name.clone());
+                (Trip::Remote { world: name }, world_of(ledger))
+            }
+            PortalTo::World { name } => (Trip::Local { game: game_name(), world: ledger::read_game(&game_name()).current(name).unwrap_or(name.clone()) }, world_name()),
+            PortalTo::Game { game, world } => (Trip::Local { game: game.clone(), world: ledger::read_game(game).current(world).unwrap_or(world.clone()) }, here(ledger)),
         };
         if let Trip::Local { game, world } = &trip
             && ledger::read_game(game).world(world).is_none()
@@ -347,6 +352,8 @@ pub struct WorldsWindow {
     new_game: String,
     /// A world to remove, waiting for "yes".
     removing: Option<String>,
+    /// A world being renamed, and the name typed so far.
+    renaming: Option<(String, String)>,
     save_name: String,
     game_save_name: String,
     /// The save to fork, and the new world's name.
@@ -368,6 +375,7 @@ impl Default for WorldsWindow {
             new_flat: true,
             new_game: String::new(),
             removing: None,
+            renaming: None,
             save_name: String::new(),
             game_save_name: String::new(),
             fork: None,
@@ -402,6 +410,7 @@ enum Do {
     Leave,
     NewWorld,
     RemoveWorld(String),
+    RenameWorld(String, String),
     Save,
     Load(u64),
     Fork(String, String),
@@ -563,7 +572,7 @@ pub fn worlds_window(
                             }
                         });
                     } else {
-                        theme::note(ui, "The game's admins make and remove worlds.");
+                        theme::note(ui, "The game's admins make, rename and remove worlds.");
                     }
                     ui.add_space(6.0);
                     egui::ScrollArea::vertical().auto_shrink(false).show(ui, |ui| {
@@ -579,6 +588,18 @@ pub fn worlds_window(
                                 };
                                 ui.label(egui::RichText::new(detail).small().color(p.muted));
                                 ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                                    if let Some((from, to)) = window.renaming.as_mut().filter(|(from, _)| *from == w.name) {
+                                        let ok = !to.trim().is_empty() && to.trim() != from;
+                                        let rename = ui.add_enabled(ok, egui::Button::new("Rename")).clicked();
+                                        let cancel = ui.button("Cancel").clicked();
+                                        let typed = ui.add(egui::TextEdit::singleline(to).hint_text("new name").desired_width(120.0));
+                                        if rename || (ok && typed.lost_focus() && ui.input(|i| i.key_pressed(egui::Key::Enter))) {
+                                            todo = Some(Do::RenameWorld(from.clone(), to.trim().to_string()));
+                                        } else if cancel {
+                                            window.renaming = None;
+                                        }
+                                        return;
+                                    }
                                     if window.removing.as_deref() == Some(w.name.as_str()) {
                                         if ui.button("Yes, remove it").clicked() {
                                             todo = Some(Do::RemoveWorld(w.name.clone()));
@@ -593,6 +614,9 @@ pub fn worlds_window(
                                         && theme::icon_button(ui, icon::TRASH, "Remove it (its files go to the trash)")
                                     {
                                         window.removing = Some(w.name.clone());
+                                    }
+                                    if admin && window.removing.is_none() && theme::icon_button(ui, icon::PENCIL_SIMPLE, "Rename it") {
+                                        window.renaming = Some((w.name.clone(), w.name.clone()));
                                     }
                                     if current {
                                         ui.label(egui::RichText::new("here").small().color(p.primary));
@@ -849,6 +873,10 @@ pub fn worlds_window(
             window.removing = None;
             ("removeworld", json!({ "name": name }))
         }
+        Do::RenameWorld(from, to) => {
+            window.renaming = None;
+            ("renameworld", json!({ "from": from, "to": to }))
+        }
         Do::Save => ("save", json!({ "name": std::mem::take(&mut window.save_name) })),
         Do::SaveGame => ("savegame", json!({ "name": std::mem::take(&mut window.game_save_name) })),
         Do::LoadGame(name) => ("loadgame", json!({ "name": name })),
@@ -888,6 +916,7 @@ pub fn game_reply(action: Option<&GameAction>) -> Option<String> {
     Some(match action? {
         GameAction::CreateWorld { name, .. } => format!("Made the world {name}; enter it from the Game window (O)."),
         GameAction::RemoveWorld { name } => format!("Removed {name}."),
+        GameAction::RenameWorld { from, to } => format!("Renamed {from} to {to}."),
         GameAction::SetAdmins { .. } => "Changed who runs the game.".into(),
         GameAction::Save { name, worlds } => format!("Saved the game as \"{name}\" ({} worlds).", worlds.len()),
         GameAction::AddPackage { package } => format!("The game has {} v{} now.", package.manifest.title, package.manifest.version),

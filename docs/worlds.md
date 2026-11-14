@@ -39,6 +39,7 @@ directory is one game the same way (a `world.jsonl` from before becomes its worl
 ```rust
 GameAction::CreateWorld { name, seed, flat, recipe } // recipe: its landscape, if not the usual
 GameAction::RemoveWorld { name }      // moved to saves/trash, never deleted
+GameAction::RenameWorld { from, to }  // its folder moves; saves and portals follow it
 GameAction::SetAdmins { admins }
 GameAction::Save { name, worlds }     // world name â†’ its last change: a save of everything
 GameAction::LoadSave { name, signed } // the admin's signed Load for each world
@@ -52,6 +53,12 @@ state, as loading a world's save is; the game is saved first ("before loading â€
 loading that brings it back. On a server the admin signs each world's load (without the
 state, which the server fills in), so every world change stays signed by whoever made it;
 the server checks the signatures and makes them all.
+
+Renaming a world (`/renameworld`, or the pencil in the Game window) changes nothing in
+its own log. A save names worlds as they were called then, and a portal names the world
+it was linked to, so both are read through the game's renames (`GameLog::current`): an
+old name leads to the world that has it now, unless a world has since been made with
+that name. Players in the renamed world stay where they are.
 
 ## Game packages
 
@@ -91,7 +98,8 @@ One server, one game, one address. Each player is in one world at a time:
   `Welcome` (log, snapshot) and the game (its worlds and admins).
 - Proposals apply to the world the player is in. Commits go to the players in that
   world; presence too. Game changes (a new world) go to everyone.
-- Admins make worlds on the server from the window or `/newworld`.
+- Admins make and rename worlds on the server from the window, `/newworld` or
+  `/renameworld`.
 - Timers run in every world, near the players in it.
 
 ## Portals

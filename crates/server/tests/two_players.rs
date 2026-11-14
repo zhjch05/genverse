@@ -474,11 +474,26 @@ fn a_game_hosts_many_worlds() {
         }
         other => panic!("{other:?}"),
     }
+    assert!(matches!(ada.next(), ToClient::Game { request: None, .. }));
+    // Ada renames the arena while Bo stands in it: he stays, and builds on in it.
+    game_change(&ada, 4, GameAction::RenameWorld { from: "arena".into(), to: "pit".into() });
+    match ada.next() {
+        ToClient::Game { request: Some(4), game } => {
+            assert!(game.world("arena").is_none() && game.world("pit").is_some());
+            assert_eq!(game.current("arena").as_deref(), Some("pit"));
+            assert!(game.save_named("both").unwrap().contains_key("pit"));
+        }
+        other => panic!("{other:?}"),
+    }
+    assert!(matches!(bo.next(), ToClient::Game { request: None, .. }));
+    bo.propose(5, lamp(2, 70.0, 70.0));
+    assert!(matches!(bo.next(), ToClient::Committed { request: Some(5), .. }));
     drop((ada, bo));
-    // Each world keeps its own log.
-    for world in ["main", "arena"] {
+    // Each world keeps its own log, the renamed one in its new folder.
+    assert!(!dir.join("worlds").join("arena").exists());
+    for (world, builds) in [("main", 1), ("pit", 2)] {
         let log = genverse_rules::store::LogFile::open(&dir.join("worlds").join(world)).unwrap().1.unwrap();
-        assert_eq!(genverse_rules::log::replay(&log).builds.len(), 1, "{world}");
+        assert_eq!(genverse_rules::log::replay(&log).builds.len(), builds, "{world}");
     }
     let _ = std::fs::remove_dir_all(&dir);
 }

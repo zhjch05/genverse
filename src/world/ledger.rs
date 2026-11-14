@@ -779,6 +779,37 @@ impl Ledger {
         Ok(())
     }
 
+    /// Gives a world of this (local) game a new name; its folder moves with it. Renaming
+    /// the world we're in keeps us in it. Returns the new name.
+    pub fn rename_world(&mut self, from: &str, to: &str) -> Result<String, String> {
+        let to = clean_name(to).ok_or("A world's name is letters, digits, - and _.")?;
+        let game = game_name();
+        let mut game_log = read_game(&game);
+        let by = Provenance::new(&self.profile.id, &self.profile.name, None, None, now());
+        game_log.push(by, GameAction::RenameWorld { from: from.into(), to: to.clone() })?;
+        #[cfg(not(target_arch = "wasm32"))]
+        {
+            let worlds = game_dir_of(&game).join("worlds");
+            let (old, new) = (worlds.join(from), worlds.join(&to));
+            if new.exists() {
+                return Err(format!("There's a folder for \"{to}\" already ({}).", new.display()));
+            }
+            // A world never entered may have no folder yet.
+            if old.exists() {
+                std::fs::rename(&old, &new).map_err(|e| format!("Couldn't move {}: {e}", old.display()))?;
+            }
+        }
+        write_game(&game, &game_log);
+        if world_name() == from {
+            set_place(&game, &to);
+            #[cfg(not(target_arch = "wasm32"))]
+            if self.file.is_some() {
+                self.file = Some(genverse_rules::store::LogFile::open(std::path::Path::new(&world_dir())).map_err(|e| e.to_string())?.0);
+            }
+        }
+        Ok(to)
+    }
+
     /// Saves every world of this (local) game at once.
     pub fn save_game(&mut self, name: &str) -> Result<usize, String> {
         let game = game_name();
@@ -834,7 +865,7 @@ impl Ledger {
         #[cfg(not(target_arch = "wasm32"))]
         if let Some(online) = &self.online {
             let game = online.game.as_ref().ok_or("the server hasn't welcomed us yet")?;
-            let worlds = game.save_named(name).ok_or(format!("There's no game save \"{name}\"."))?.clone();
+            let worlds = game.save_named(name).ok_or(format!("There's no game save \"{name}\"."))?;
             let by = Provenance::new(&self.profile.id, &self.profile.name, None, None, now());
             let signed = worlds
                 .iter()
@@ -848,7 +879,7 @@ impl Ledger {
         let game_log = read_game(&game);
         let (_, _, worlds) = game_log.saves().rev().find(|(_, n, _)| n.eq_ignore_ascii_case(name)).ok_or(format!("There's no game save \"{name}\"."))?;
         let mut n = 0;
-        for (world, to) in worlds {
+        for (world, to) in &worlds {
             if *world == world_name() {
                 if self.log.changes.last().map_or(0, |c| c.id) > *to {
                     let state = Some(Box::new(self.state_of_save(*to)));

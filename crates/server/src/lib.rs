@@ -585,7 +585,7 @@ impl Server {
         // Loading a game save: every world's load must be signed by the admin.
         let mut loads = Vec::new();
         if let GameAction::LoadSave { name, signed } = &action {
-            let worlds = self.game.save_named(name).ok_or(format!("there's no game save \"{name}\""))?.clone();
+            let worlds = self.game.save_named(name).ok_or(format!("there's no game save \"{name}\""))?;
             for (world, to) in worlds {
                 if self.game.world(&world).is_none() {
                     continue;
@@ -623,6 +623,30 @@ impl Server {
                 let trash = self.dir.join("trash");
                 let _ = std::fs::create_dir_all(&trash);
                 let _ = std::fs::rename(self.dir.join("worlds").join(name), trash.join(format!("{name}-{}", now())));
+            }
+            GameAction::RenameWorld { from, to } => {
+                // Its folder, the loaded world and whoever is in it all take the new name;
+                // players stay where they stand.
+                let worlds = self.dir.join("worlds");
+                if let Err(e) = std::fs::rename(worlds.join(from), worlds.join(to))
+                    && worlds.join(from).exists()
+                {
+                    eprintln!("couldn't move {from}'s folder to {to}: {e}");
+                }
+                if let Some(mut place) = self.places.remove(from) {
+                    match LogFile::open(&worlds.join(to)) {
+                        Ok((file, _)) => {
+                            place.file = file;
+                            place.snapshot_path = worlds.join(to).join("snapshot.json");
+                            self.places.insert(to.clone(), place);
+                        }
+                        // Read again from its folder when it's next entered.
+                        Err(e) => eprintln!("couldn't open {to} after renaming it: {e}"),
+                    }
+                }
+                for c in self.conns.values_mut().filter(|c| c.world.as_deref() == Some(from.as_str())) {
+                    c.world = Some(to.clone());
+                }
             }
             GameAction::SetAdmins { .. } => self.admins_changed(),
             GameAction::Save { worlds, .. } => {

@@ -373,6 +373,15 @@ pub static OPS: &[Op] = &[
     )
     .admin(),
     op("removeworld", "<name>", "Take a world out of this game (to the trash)", &[word("name", "the world to remove")], remove_world).admin().ask(),
+    op(
+        "renameworld",
+        "<from> <to>",
+        "Give a world of this game a new name",
+        &[word("from", "the world's name now"), word("to", "its new name: letters, digits, - and _")],
+        rename_world,
+    )
+    .admin()
+    .note("Its builds, history and saves go with it, and portals that name the old name still lead there."),
     op("loadgame", "<name>", "Put every world back to a game save", &[rest("name", "the game save's name")], load_game).admin().settled().ask(),
     op(
         "load",
@@ -838,6 +847,20 @@ fn remove_world(cx: &mut Context, args: &Args) -> Reply {
     }
     cx.ledger.remove_world(&name)?;
     Ok(format!("Removed {name}; its files are in saves/trash."))
+}
+
+/// Gives a world of this game a new name.
+fn rename_world(cx: &mut Context, args: &Args) -> Reply {
+    let usage = "Usage: /renameworld <from> <to>";
+    let (from, to) = (args.text("from").ok_or(usage)?, args.text("to").ok_or(usage)?);
+    let from = clean_name(&from).unwrap_or(from);
+    if cx.ledger.is_online() {
+        let to = clean_name(&to).ok_or("A world's name is letters, digits, - and _.")?;
+        cx.ledger.propose_game(GameAction::RenameWorld { from: from.clone(), to: to.clone() })?;
+        return Ok(format!("Asking the server to rename {from} to {to}…"));
+    }
+    let to = cx.ledger.rename_world(&from, &to)?;
+    Ok(format!("Renamed {from} to {to}."))
 }
 
 /// Saves every world of the game at once.
@@ -1388,6 +1411,7 @@ cover!(action_cover, ACTION_COVER, Action {
 cover!(game_cover, GAME_COVER, GameAction {
     GameAction::CreateWorld { .. } => Cover::Op("newworld"),
     GameAction::RemoveWorld { .. } => Cover::Op("removeworld"),
+    GameAction::RenameWorld { .. } => Cover::Op("renameworld"),
     GameAction::SetAdmins { .. } => Cover::Later("set when a game is made; nothing changes it yet"),
     GameAction::Save { .. } => Cover::Op("savegame"),
     GameAction::AddPackage { .. } => Cover::Later("added when the agent installs a package"),

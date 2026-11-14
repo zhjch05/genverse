@@ -33,6 +33,9 @@ pub enum GameAction {
     },
     /// Takes a world out of the game (its files move to the trash; nothing is deleted).
     RemoveWorld { name: String },
+    /// Gives a world a new name. Its log, its place in saves and the portals that name
+    /// it go with it ([`GameLog::current`]).
+    RenameWorld { from: String, to: String },
     /// Who runs the game, and every world in it.
     SetAdmins { admins: Vec<String> },
     /// A save of every world at once: each world's last change then.
@@ -103,10 +106,39 @@ impl GameLog {
                     out.push((name.clone(), Ground { seed: *seed, flat: *flat, recipe: *recipe }));
                 }
                 GameAction::RemoveWorld { name } => out.retain(|(n, _)| n != name),
+                GameAction::RenameWorld { from, to } => {
+                    if let Some(world) = out.iter_mut().find(|(n, _)| n == from) {
+                        world.0 = to.clone();
+                    }
+                }
                 _ => {}
             }
         }
         out
+    }
+
+    /// What the world once called `name` is called now: itself while a world has that
+    /// name, else where its renames led (portals and saves keep the old name). `None`
+    /// if it's gone.
+    pub fn current(&self, name: &str) -> Option<String> {
+        if self.world(name).is_some() {
+            return Some(name.to_string());
+        }
+        self.renamed_after(name, 0).filter(|now| self.world(now).is_some())
+    }
+
+    /// What the world called `name` as of change `id` is called now, following the
+    /// renames after it; `None` if it was taken out since.
+    fn renamed_after(&self, name: &str, id: u64) -> Option<String> {
+        let mut now = name.to_string();
+        for c in self.changes.iter().filter(|c| c.id > id) {
+            match &c.action {
+                GameAction::RenameWorld { from, to } if *from == now => now = to.clone(),
+                GameAction::RemoveWorld { name } if *name == now => return None,
+                _ => {}
+            }
+        }
+        Some(now)
     }
 
     pub fn world(&self, name: &str) -> Option<Ground> {
@@ -133,10 +165,14 @@ impl GameLog {
         self.admins().iter().any(|a| a == player)
     }
 
-    /// Game saves, newest last: the change, its name, and each world's last change.
-    pub fn saves(&self) -> impl DoubleEndedIterator<Item = (&GameChange, &str, &BTreeMap<String, u64>)> {
+    /// Game saves, newest last: the change, its name, and each world's last change, by
+    /// the world's name now (worlds taken out since are left out).
+    pub fn saves(&self) -> impl DoubleEndedIterator<Item = (&GameChange, &str, BTreeMap<String, u64>)> {
         self.changes.iter().filter_map(|c| match &c.action {
-            GameAction::Save { name, worlds } => Some((c, name.as_str(), worlds)),
+            GameAction::Save { name, worlds } => {
+                let worlds = worlds.iter().filter_map(|(w, last)| Some((self.renamed_after(w, c.id)?, *last))).collect();
+                Some((c, name.as_str(), worlds))
+            }
             _ => None,
         })
     }
@@ -168,7 +204,7 @@ impl GameLog {
     }
 
     /// The save named `name`, newest first.
-    pub fn save_named(&self, name: &str) -> Option<&BTreeMap<String, u64>> {
+    pub fn save_named(&self, name: &str) -> Option<BTreeMap<String, u64>> {
         self.saves().rev().find(|(_, n, _)| n.eq_ignore_ascii_case(name)).map(|(_, _, w)| w)
     }
 
@@ -213,6 +249,20 @@ impl GameLog {
                 }
                 if self.worlds().len() == 1 {
                     return Err("a game keeps at least one world".into());
+                }
+            }
+            GameAction::RenameWorld { from, to } => {
+                if !admin {
+                    return Err("only the game's admins rename worlds".into());
+                }
+                if self.world(from).is_none() {
+                    return Err(format!("there's no world \"{from}\""));
+                }
+                if clean_name(to).as_deref() != Some(to.as_str()) {
+                    return Err("a world's name is lowercase letters, digits, - and _".into());
+                }
+                if self.world(to).is_some() {
+                    return Err(format!("there's already a world called \"{to}\""));
                 }
             }
             GameAction::SetAdmins { admins } => {
@@ -302,6 +352,39 @@ mod tests {
         let worlds = BTreeMap::from([("sokoban".to_string(), 7)]);
         game.push(by("bo"), GameAction::Save { name: "before".into(), worlds }).unwrap();
         assert_eq!(game.saves().count(), 1);
+    }
+
+    #[test]
+    fn renamed_worlds_keep_their_place_saves_and_portals() {
+        let mut game = GameLog::new("local");
+        game.push(by("ada"), GameAction::SetAdmins { admins: vec!["ada".into()] }).unwrap();
+        let ground = |seed| GameAction::CreateWorld { name: "home".into(), seed, flat: false, recipe: Default::default() };
+        game.push(by("ada"), ground(1)).unwrap();
+        game.push(by("ada"), GameAction::CreateWorld { name: "arena".into(), seed: 2, flat: true, recipe: Default::default() }).unwrap();
+        game.push(by("ada"), GameAction::Save { name: "before".into(), worlds: BTreeMap::from([("home".into(), 3), ("arena".into(), 4)]) }).unwrap();
+        let rename = |from: &str, to: &str| GameAction::RenameWorld { from: from.into(), to: to.into() };
+        assert!(game.push(by("bo"), rename("home", "base")).is_err());
+        assert!(game.push(by("ada"), rename("home", "arena")).unwrap_err().contains("already"));
+        assert!(game.push(by("ada"), rename("home", "Big Base")).is_err());
+        assert!(game.push(by("ada"), rename("nowhere", "base")).is_err());
+        game.push(by("ada"), rename("home", "base")).unwrap();
+        // Same ground, same place in the order: still where players start.
+        assert_eq!(game.start().as_deref(), Some("base"));
+        assert_eq!(game.world("base").map(|g| g.seed), Some(1));
+        assert!(game.world("home").is_none());
+        // Portals naming the old name find it; saves name it by its new one.
+        assert_eq!(game.current("home").as_deref(), Some("base"));
+        assert_eq!(game.save_named("before").unwrap(), BTreeMap::from([("base".into(), 3), ("arena".into(), 4)]));
+        // Renamed again, then the old name given to a new world: that one wins.
+        game.push(by("ada"), rename("base", "camp")).unwrap();
+        assert_eq!(game.current("home").as_deref(), Some("camp"));
+        game.push(by("ada"), ground(9)).unwrap();
+        assert_eq!(game.current("home").as_deref(), Some("home"));
+        assert_eq!(game.save_named("before").unwrap().keys().collect::<Vec<_>>(), ["arena", "camp"]);
+        // A world taken out leaves its saves.
+        game.push(by("ada"), GameAction::RemoveWorld { name: "arena".into() }).unwrap();
+        assert_eq!(game.current("arena"), None);
+        assert_eq!(game.save_named("before").unwrap().keys().collect::<Vec<_>>(), ["camp"]);
     }
 
     #[test]

@@ -230,7 +230,7 @@ servers. Ask the agent for "a stone arch, a portal to sokoban" and it builds a p
 once, then turn them on per world in the Rules tab. Design: [docs/worlds.md](docs/worlds.md).
 
 Chat commands: `/history [n]`, `/undo <id>`, `/rules`, `/pause`, `/verify`, `/save`, `/saves`, `/load`,
-`/fork`, `/land`, `/rate`, `/worlds`, `/world`, `/newworld`, `/games`, `/game`, `/newgame`,
+`/fork`, `/land`, `/rate`, `/worlds`, `/world`, `/newworld`, `/renameworld`, `/games`, `/game`, `/newgame`,
 `/savegame`, `/loadgame`, `/portal`, `/packages`, `/uninstall`, `/host`, `/join`, `/play`,
 `/leave`.
 
