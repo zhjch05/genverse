@@ -8,7 +8,8 @@
 //! - **Agents:** an app opened from the desktop gets a short `PATH` that rarely has
 //!   `claude` or `codex` (or the `node` they need), so on macOS and Linux the login
 //!   shell's `PATH` is added. [`find_program`] also follows Windows' `PATHEXT`, which a
-//!   bare `Command::new("codex")` doesn't.
+//!   bare `Command::new("codex")` doesn't, and [`command`] runs npm's `.cmd` shims
+//!   through `node` directly, since Windows can't pass a prompt to a batch file.
 
 use std::path::{Path, PathBuf};
 
@@ -120,6 +121,44 @@ pub fn find_program(name: &str) -> Option<PathBuf> {
     })
 }
 
+/// A command that runs `program`. An npm-installed CLI on Windows is a `.cmd` shim, and
+/// Rust refuses to give a batch file arguments that cmd.exe can't quote safely (any
+/// newline or quote: every prompt), so the shim's script is run with `node` instead.
+pub fn command(program: &Path) -> std::process::Command {
+    let is_batch = program.extension().is_some_and(|e| e.eq_ignore_ascii_case("cmd") || e.eq_ignore_ascii_case("bat"));
+    if is_batch
+        && let Some(dir) = program.parent()
+        && let Ok(text) = std::fs::read_to_string(program)
+        && let Some(script) = shim_script(&text, dir)
+        && script.is_file()
+    {
+        let bundled = dir.join("node.exe");
+        let node = if bundled.is_file() { Some(bundled) } else { find_program("node") };
+        if let Some(node) = node {
+            let mut cmd = std::process::Command::new(node);
+            cmd.arg(script);
+            return cmd;
+        }
+    }
+    std::process::Command::new(program)
+}
+
+/// The script an npm `.cmd` shim runs: the quoted path after `%dp0%` (or `%~dp0`), which
+/// stands for the shim's own folder.
+fn shim_script(text: &str, dir: &Path) -> Option<PathBuf> {
+    // Older shims name `"%~dp0\node.exe"` on the same line, so take the last match that
+    // isn't node itself.
+    let relative = ["\"%dp0%\\", "\"%~dp0\\"]
+        .iter()
+        .flat_map(|start| text.match_indices(start).map(move |(at, _)| at + start.len()))
+        .filter_map(|from| text[from..].find('"').map(|to| &text[from..from + to]))
+        .filter(|path| !path.eq_ignore_ascii_case("node.exe"))
+        .max_by_key(|path| text.find(path))?;
+    let mut path = dir.to_path_buf();
+    path.extend(relative.split(['\\', '/']).filter(|part| !part.is_empty()));
+    Some(path)
+}
+
 fn is_program(path: &Path) -> bool {
     #[cfg(unix)]
     {
@@ -141,5 +180,16 @@ mod tests {
         let name = if cfg!(windows) { "cmd" } else { "sh" };
         assert!(find_program(name).is_some_and(|p| p.is_absolute()));
         assert!(find_program("genverse-surely-not-installed").is_none());
+    }
+
+    #[test]
+    fn reads_the_script_out_of_an_npm_shim() {
+        let dir = Path::new("npm");
+        let now = "endLocal & goto #_undefined_# 2>NUL || title %COMSPEC% & \"%_prog%\"  \"%dp0%\\node_modules\\@openai\\codex\\bin\\codex.js\" %*";
+        let old = "  \"%~dp0\\node.exe\"  \"%~dp0\\node_modules\\@anthropic-ai\\claude-code\\cli.js\" %*";
+        let expect = |parts: &[&str]| parts.iter().fold(dir.to_path_buf(), |path, part| path.join(part));
+        assert_eq!(shim_script(&format!("@ECHO off\n{now}\n"), dir), Some(expect(&["node_modules", "@openai", "codex", "bin", "codex.js"])));
+        assert_eq!(shim_script(old, dir), Some(expect(&["node_modules", "@anthropic-ai", "claude-code", "cli.js"])));
+        assert_eq!(shim_script("@ECHO off\ncodex.exe %*", dir), None);
     }
 }

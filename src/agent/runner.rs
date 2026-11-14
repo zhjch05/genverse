@@ -8,7 +8,7 @@
 use std::{
     io::{BufRead, BufReader},
     path::PathBuf,
-    process::{Command, Stdio},
+    process::Stdio,
     sync::{
         Arc,
         atomic::{AtomicBool, Ordering},
@@ -119,7 +119,7 @@ fn run(
     let last_message = scratch.join("codex-last-message.json");
     match provider {
         Provider::Claude => {
-            cmd = Command::new(program("claude", provider)?);
+            cmd = crate::platform::command(&program("claude", provider)?);
             // Partial messages: what it says arrives as it's written, for the live feed.
             cmd.args(["-p", prompt, "--output-format", "stream-json", "--verbose", "--include-partial-messages"])
                 .args(["--json-schema", SCHEMA, "--system-prompt", system])
@@ -147,7 +147,7 @@ fn run(
             let schema = scratch.join("build_spec.schema.json");
             std::fs::write(&schema, SCHEMA).map_err(|e| e.to_string())?;
             let _ = std::fs::remove_file(&last_message);
-            cmd = Command::new(program("codex", provider)?);
+            cmd = crate::platform::command(&program("codex", provider)?);
             cmd.args(["exec", "--json", "--ignore-user-config", "--ephemeral", "--skip-git-repo-check"])
                 .args(["--sandbox", if files { "workspace-write" } else { "read-only" }, "-c", "model_reasoning_effort=\"low\""]);
             if let Some(tools) = tools {

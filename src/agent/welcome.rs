@@ -8,7 +8,7 @@
 
 use std::{
     path::PathBuf,
-    process::{Command, Stdio},
+    process::Stdio,
     sync::{Arc, Mutex},
     time::{Duration, Instant},
 };
@@ -93,7 +93,7 @@ fn install_page(provider: Provider) -> &'static str {
 /// Finds the CLI and asks its version, giving up on one that doesn't answer.
 fn look_for(provider: Provider) -> Found {
     let Some(path) = crate::platform::find_program(command(provider)) else { return Found::Missing };
-    let child = Command::new(&path).arg("--version").stdin(Stdio::null()).stdout(Stdio::piped()).stderr(Stdio::null()).spawn();
+    let child = crate::platform::command(&path).arg("--version").stdin(Stdio::null()).stdout(Stdio::piped()).stderr(Stdio::null()).spawn();
     let Ok(mut child) = child else { return Found::Installed(path, String::new()) };
     let deadline = Instant::now() + Duration::from_secs(5);
     while matches!(child.try_wait(), Ok(None)) && Instant::now() < deadline {
