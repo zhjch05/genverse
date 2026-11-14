@@ -38,6 +38,12 @@ impl Loading {
         self.ready_at.is_some()
     }
 
+    /// How much of the view has loaded, from 0 to 1.
+    pub fn progress(&self) -> f32 {
+        let (loaded, total) = self.chunks;
+        if total == 0 { 0.0 } else { loaded as f32 / total as f32 }
+    }
+
     /// Covers the view again while another world loads.
     pub fn restart(&mut self, world: &str) {
         *self = Self { entering: Some(world.to_string()), ..Self::default() };
@@ -75,7 +81,17 @@ pub fn track_loading(
     }
 }
 
-pub fn loading_screen(mut contexts: EguiContexts, time: Res<Time<Real>>, loading: Res<Loading>) -> Result {
+pub fn loading_screen(
+    mut contexts: EguiContexts,
+    time: Res<Time<Real>>,
+    loading: Res<Loading>,
+    start: Res<super::start::StartScreen>,
+    welcome: Res<super::welcome::Welcome>,
+) -> Result {
+    // The start screen and the welcome show the world growing behind them instead.
+    if start.open || welcome.open {
+        return Ok(());
+    }
     let shown = loading.ready_at.map_or(1.0, |at| 1.0 - (time.elapsed_secs() - at) / FADE);
     if shown <= 0.0 {
         return Ok(());

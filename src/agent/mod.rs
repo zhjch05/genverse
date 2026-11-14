@@ -37,7 +37,9 @@ mod runner;
 mod stream;
 mod activity;
 mod settings;
+mod start;
 mod theme;
+mod welcome;
 use genverse_rules::build as spec;
 mod tools;
 mod workspace;
@@ -122,6 +124,10 @@ impl Plugin for AgentPlugin {
             .init_resource::<worlds::Travel>()
             .init_resource::<worlds::WorldsWindow>()
             .init_resource::<menu::GameMenu>()
+            .init_resource::<welcome::Welcome>()
+            .init_resource::<start::StartScreen>()
+            .add_systems(Startup, start::open_at_launch)
+            .add_systems(Update, (welcome::open_if_asked, start::follow_start))
             .init_gizmo_group::<AreaGizmos>()
             .init_gizmo_group::<presence::RingGizmos>()
             .add_systems(Startup, (attach_interface.after(graphics::spawn_screen), settings::load_settings))
@@ -174,6 +180,7 @@ impl Plugin for AgentPlugin {
                     .after(worlds::worlds_window)
                     .after(loading::loading_screen),
             )
+            .add_systems(EguiPrimaryContextPass, (start::start_screen, welcome::welcome_window).chain().after(menu::menu_window))
             // How games show things: effects, sounds, the sky, heroes' looks.
             // Decals follow the pieces they're under.
             .add_systems(Update, decal::sync_decals.after(game::walk_pieces))
@@ -278,7 +285,8 @@ impl Default for Chat {
     fn default() -> Self {
         Self {
             open: true,
-            provider: Provider::Claude,
+            // The agent picked last time.
+            provider: if prefs::get("agent").is_some_and(|v| v == "codex") { Provider::Codex } else { Provider::Claude },
             input: String::new(),
             messages: vec![Message {
                 role: Role::System,
@@ -759,12 +767,14 @@ fn block_game_input(
     egui: Res<EguiWantsInput>,
     chat: Res<Chat>,
     menu: Res<menu::GameMenu>,
+    welcome: Res<welcome::Welcome>,
+    start: Res<start::StartScreen>,
     windows: Query<&Window, With<PrimaryWindow>>,
     mut blocked: ResMut<InputBlocked>,
     mut over_ui: ResMut<PointerOverUi>,
 ) {
     // The hero doesn't move under the game menu.
-    blocked.0 = egui.wants_keyboard_input() || menu.open;
+    blocked.0 = egui.wants_keyboard_input() || menu.open || welcome.open || start.open;
     // egui only knows about its windows and popups; the panel is drawn on the background,
     // so the pointer counts as over it by its rectangle.
     let cursor = windows.single().ok().and_then(|w| w.cursor_position());
@@ -1353,7 +1363,12 @@ fn shortcut_hints(
     play: Res<game::Play>,
     inventory: Res<inventory::Inventory>,
     binds: Res<Bindings>,
+    (start, welcome): (Res<start::StartScreen>, Res<welcome::Welcome>),
 ) -> Result {
+    // The start screen and the welcome say what to do themselves.
+    if start.open || welcome.open {
+        return Ok(());
+    }
     // Each hint names the keys the player has on that action now.
     let k = |action: &str| binds.label(action);
     // What the mouse does by pointing keeps its usual name ("Click") until it's moved.
@@ -2055,7 +2070,9 @@ fn chat_panel(
                                     .selected_text(format!("{} {}", icon::ROBOT, chat.provider.label()))
                                     .show_ui(ui, |ui| {
                                         for p in Provider::ALL {
-                                            ui.selectable_value(&mut chat.provider, p, p.label());
+                                            if ui.selectable_value(&mut chat.provider, p, p.label()).clicked() {
+                                                prefs::set("agent", if p == Provider::Codex { "codex" } else { "claude" });
+                                            }
                                         }
                                     })
                                     .response

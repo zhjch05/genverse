@@ -46,6 +46,7 @@ impl Plugin for PlayerPlugin {
             .init_resource::<ScriptedHero>()
             .init_resource::<PointerOverUi>()
             .init_resource::<OrbitLock>()
+            .init_resource::<Showcase>()
             .init_resource::<SolidAreas>()
             .add_systems(Startup, spawn_player)
             .add_systems(
@@ -125,6 +126,11 @@ pub struct PointerOverUi(pub bool);
 #[derive(Resource, Default)]
 pub struct OrbitLock(pub bool);
 
+/// While set, the camera circles the hero slowly from a little way off, as a backdrop
+/// (the start screen).
+#[derive(Resource, Default)]
+pub struct Showcase(pub bool);
+
 #[derive(Component)]
 pub struct Player {
     velocity: Vec3,
@@ -181,20 +187,46 @@ impl Player {
 }
 
 /// Where the hero starts on `terrain`: the first dry ground walking out from `origin`
-/// (in voxels), feet in meters.
+/// (in voxels), feet in meters. On the varied land of version 3 and up, the first such
+/// ground with a view: open around, and water in sight.
 pub fn spawn_point(terrain: Terrain, origin: IVec2) -> Vec3 {
+    let scenic = !terrain.flat && terrain.version >= 3;
     let (mut x, mut z) = (origin.x, origin.y);
+    let mut dry = None;
     // A spiral out to about 300 m: past the widest lakes and bays.
     for i in 0..4000 {
         let angle = i as f32 * 2.4;
         let r = (i as f32).sqrt() * 20.0;
         (x, z) = (origin.x + (angle.cos() * r) as i32, origin.y + (angle.sin() * r) as i32);
-        if terrain.height(x, z) > terrain.sea_level() + 2 {
+        if terrain.height(x, z) <= terrain.sea_level() + 2 {
+            continue;
+        }
+        dry.get_or_insert((x, z));
+        // Worlds from before keep the start their builds grew around.
+        if !scenic || has_a_view(terrain, x, z) {
+            break;
+        }
+        if i >= 1500 {
+            // Nowhere near has one: the first dry ground it is.
+            (x, z) = dry.unwrap_or((x, z));
             break;
         }
     }
     let ground = terrain.height(x, z) + 1;
     Vec3::new(x as f32 + 0.5, ground as f32 + 1.0, z as f32 + 0.5) * VOXEL_SIZE
+}
+
+/// Whether the ground around column `(x, z)` is open enough to look around from (no
+/// hill or cliff close by, which the camera would have to duck in front of) and has
+/// water within sight.
+fn has_a_view(terrain: Terrain, x: i32, z: i32) -> bool {
+    let here = terrain.height(x, z);
+    let around = |r: f32| (0..12).map(move |i| i as f32 * std::f32::consts::TAU / 12.0).map(move |a| (x + (a.cos() * r) as i32, z + (a.sin() * r) as i32));
+    // Voxels away, and how far the ground may rise by there.
+    let open = [(8.0, 3), (16.0, 5), (40.0, 8), (72.0, 14)]
+        .into_iter()
+        .all(|(r, rise)| around(r).all(|(x, z)| (here - 24..=here + rise).contains(&terrain.height(x, z))));
+    open && [70.0, 100.0, 130.0, 160.0].into_iter().any(|r| around(r).any(|(x, z)| terrain.height(x, z) < terrain.sea_level()))
 }
 
 /// One animated limb; `rest` is its translation relative to its parent joint.
@@ -214,6 +246,10 @@ const FIRST_PERSON: f32 = -0.15;
 const PROBE: f32 = 0.22;
 /// Room kept between the camera and whatever is in the way.
 const MARGIN: f32 = 0.2;
+/// How far down the start screen's circling camera looks over open ground, and the
+/// most it looks down to clear a hill, radians.
+const SHOWCASE_PITCH: f32 = 0.3;
+const SHOWCASE_STEEPEST: f32 = 1.25;
 /// How far below the eyes the middle of the hero is, where the cutout centers.
 const CUTOUT_DROP: f32 = 0.5;
 /// The cutout's radius around the hero, in meters: the whole hero and a little more.
@@ -234,6 +270,14 @@ pub struct FollowCamera {
     #[cfg_attr(target_arch = "wasm32", allow(dead_code))]
     grabbed: bool,
     target: Vec3,
+    /// How far down the start screen's circling camera wants to look: higher while a
+    /// hill is in its way, so it rises over the hill rather than ducking in front of it.
+    crane: f32,
+    /// The pitch and distance the player had before the start screen's camera took
+    /// over, to go back to after.
+    before: Option<(f32, f32)>,
+    /// The pitch to ease back to after the start screen, until the player looks around.
+    settle: Option<f32>,
 }
 
 impl FollowCamera {
@@ -262,6 +306,9 @@ impl Default for FollowCamera {
             pull: 0.0,
             grabbed: false,
             target: Vec3::ZERO,
+            crane: SHOWCASE_PITCH,
+            before: None,
+            settle: None,
         }
     }
 }
@@ -761,6 +808,7 @@ pub fn follow_camera(
     lock: Res<OrbitLock>,
     world: Res<VoxelWorld>,
     scripted: Res<ScriptedHero>,
+    showcase: Res<Showcase>,
     (solids, areas): (Query<(&VoxelModel, &GlobalTransform), With<SolidModel>>, Res<SolidAreas>),
     mut cutout: ResMut<CameraCutout>,
     players: Query<(&Transform, &Player), Without<FollowCamera>>,
@@ -778,9 +826,30 @@ pub fn follow_camera(
         // Turning follows the mouse directly, as in any third-person game.
         // While a drag selects ground, the button that selects doesn't also look around.
         let dragging = if lock.0 { binds.pressed_without("look", "click") } else { binds.pressed("look") };
-        if dragging {
-            cam.yaw -= motion.delta.x * 0.005;
-            cam.pitch = (cam.pitch + motion.delta.y * 0.004).clamp(-1.2, 1.45);
+        if showcase.0 {
+            if cam.before.is_none() {
+                cam.before = Some((cam.pitch, cam.distance));
+                cam.crane = SHOWCASE_PITCH;
+            }
+            cam.yaw += dt * 0.07;
+            cam.pitch += (cam.crane - cam.pitch) * ease(1.5);
+            cam.distance += (10.0 - cam.distance) * ease(1.2);
+        } else {
+            // Back from the start screen: the view the player had.
+            if let Some((pitch, distance)) = cam.before.take() {
+                cam.distance = distance;
+                cam.settle = Some(pitch);
+            }
+            if dragging {
+                cam.settle = None;
+                cam.yaw -= motion.delta.x * 0.005;
+                cam.pitch = (cam.pitch + motion.delta.y * 0.004).clamp(-1.2, 1.45);
+            } else if let Some(pitch) = cam.settle {
+                cam.pitch += (pitch - cam.pitch) * ease(2.5);
+                if (pitch - cam.pitch).abs() < 0.005 {
+                    cam.settle = None;
+                }
+            }
         }
         // Once a press turns into a drag, hold the cursor in place (a click stays a click).
         #[cfg(not(target_arch = "wasm32"))]
@@ -834,7 +903,7 @@ pub fn follow_camera(
         let dir = Dir3::new_unchecked((rotation * Vec3::Z).normalize());
         // Pull in front of anything between the camera and the hero: quickly, so the
         // view rarely sees inside a wall, but eased rather than a jump; then drift back out.
-        let limit = if cam.zoom > 0.0 {
+        let around = (cam.zoom > 0.0).then(|| {
             let r = cam.zoom + THIN + 1.0;
             let models = areas
                 .0
@@ -843,12 +912,38 @@ pub fn follow_camera(
                 .filter_map(|entity| solids.get(entity).ok())
                 .map(|(model, transform)| (model, transform.affine().inverse()))
                 .collect();
-            clearance(&Solids { world: &world, models }, cam.target, dir, cam.zoom)
-        } else {
-            cam.zoom
-        };
+            Solids { world: &world, models }
+        });
+        let limit = around.as_ref().map_or(cam.zoom, |solids| clearance(solids, cam.target, dir, cam.zoom));
+        // The start screen's camera looks where it's heading: with a hill in the way, or
+        // soon to be, it climbs until it sees over, and comes back down once past.
+        if showcase.0
+            && let Some(solids) = &around
+        {
+            let (yaw, zoom, target) = (cam.yaw, cam.zoom, cam.target);
+            let blocked = |pitch: f32| {
+                [0.0, 0.2, 0.4].into_iter().any(|ahead| {
+                    let rotation = Quat::from_euler(EulerRot::YXZ, yaw + ahead, -pitch, 0.0);
+                    let dir = Dir3::new_unchecked((rotation * Vec3::Z).normalize());
+                    clearance(solids, target, dir, zoom) < zoom - 0.5
+                })
+            };
+            if blocked(cam.crane) {
+                cam.crane = (cam.crane + dt * 0.9).min(SHOWCASE_STEEPEST);
+            } else if cam.crane > SHOWCASE_PITCH && !blocked(cam.crane - 0.15) {
+                cam.crane = (cam.crane - dt * 0.25).max(SHOWCASE_PITCH);
+            }
+        }
         let wanted_pull = cam.zoom - limit;
-        let rate = if wanted_pull > cam.pull { 16.0 } else { 3.5 };
+        // Moving in is quick, so the view rarely sees inside a wall; gentler on the start
+        // screen, where the climb above does most of it.
+        let rate = if wanted_pull <= cam.pull {
+            3.5
+        } else if showcase.0 {
+            5.0
+        } else {
+            16.0
+        };
         cam.pull += (wanted_pull - cam.pull) * ease(rate);
         cam.pull = cam.pull.clamp(0.0, cam.zoom.max(0.0));
         let reach = cam.zoom - cam.pull;

@@ -283,6 +283,8 @@ screenshots:
 | `GENVERSE_AS=Bo` | plays as a non-admin guest for one run |
 | `GENVERSE_SERVER=host` | joins a server |
 | `GENVERSE_MENU=1` | opens the game menu (Esc) at start |
+| `GENVERSE_START=1` | shows the start screen (runs driven by these variables skip it otherwise) |
+| `GENVERSE_WELCOME=1` (+ `_STEP=0-2`) | opens the new-player welcome at start |
 | `GENVERSE_SHOT=out.png` (+ `_YAW`, `_PITCH`, `_DIST`, `_AFTER`) | renders one still and exits |
 | `GENVERSE_QUALITY=low\|medium\|high\|ultra` | graphics quality |
 

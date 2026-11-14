@@ -54,6 +54,7 @@ pub fn toggle_menu(
     play: Res<Play>,
     (mut settings, mut worlds_window, mut history, mut panels): (ResMut<SettingsWindow>, ResMut<WorldsWindow>, ResMut<History>, ResMut<Panels>),
     mut started: Local<bool>,
+    (welcome, start): (Res<super::welcome::Welcome>, Res<super::start::StartScreen>),
 ) {
     // `GENVERSE_MENU=1` opens it at start.
     if !*started {
@@ -65,7 +66,7 @@ pub fn toggle_menu(
     if !windows && !menu.open {
         menu.back_to_menu = false;
     }
-    if !keys.just_pressed(KeyCode::Escape) {
+    if !keys.just_pressed(KeyCode::Escape) || welcome.open || start.open {
         return;
     }
     if menu.open {
@@ -99,13 +100,13 @@ pub fn toggle_menu(
 }
 
 /// While the menu is up the world dims, and offline its games wait for you.
-pub fn follow_menu(menu: Res<GameMenu>, mut dim: ResMut<crate::graphics::Dim>, mut ledger: ResMut<Ledger>) {
+pub fn follow_menu(menu: Res<GameMenu>, welcome: Res<super::welcome::Welcome>, start: Res<super::start::StartScreen>, mut dim: ResMut<crate::graphics::Dim>, mut ledger: ResMut<Ledger>) {
     // Linear light: 0.15 shows at about 40%.
-    let want = if menu.open { 0.15 } else { 1.0 };
+    let want = if menu.open || welcome.open { 0.15 } else { 1.0 };
     if dim.0 != want {
         dim.0 = want;
     }
-    let hold = menu.open && !ledger.is_online();
+    let hold = (menu.open || welcome.open || start.open) && !ledger.is_online();
     if ledger.hold != hold {
         ledger.hold = hold;
     }
@@ -120,6 +121,7 @@ enum Pick {
     PlayTogether,
     PauseWorld,
     Theme,
+    Welcome,
     Quit,
 }
 
@@ -132,6 +134,7 @@ pub fn menu_window(
     mut chat: ResMut<Chat>,
     (mut settings, mut worlds_window, mut history, mut panels): (ResMut<SettingsWindow>, ResMut<WorldsWindow>, ResMut<History>, ResMut<Panels>),
     mut exit: MessageWriter<AppExit>,
+    mut welcome: ResMut<super::welcome::Welcome>,
 ) -> Result {
     if !menu.open {
         return Ok(());
@@ -211,6 +214,9 @@ pub fn menu_window(
                         if item(ui, glyph, label, "", Tone::Plain) {
                             pick = Some(Pick::Theme);
                         }
+                        if item(ui, icon::HAND_WAVING, "Getting started", "", Tone::Plain) {
+                            pick = Some(Pick::Welcome);
+                        }
                         if cfg!(not(target_arch = "wasm32")) {
                             ui.add_space(10.0);
                             let label = if menu.quitting { "Click again to quit" } else { "Quit to desktop" };
@@ -263,6 +269,10 @@ pub fn menu_window(
         }
         Pick::PauseWorld => panels.ask("pause", serde_json::json!({})),
         Pick::Theme => theme::toggle(ctx),
+        Pick::Welcome => {
+            welcome.show(&ledger);
+            menu.open = false;
+        }
         Pick::Quit if menu.quitting => {
             exit.write(AppExit::Success);
         }
@@ -310,7 +320,7 @@ fn header(ui: &mut egui::Ui, world: &str, status: &str, online: bool, me: &str, 
 }
 
 /// A menu entry: a wide block with an icon, its label, and its key on the right.
-fn entry(ui: &mut egui::Ui, glyph: &str, label: &str, key: &str, tone: Tone) -> egui::Response {
+pub(super) fn entry(ui: &mut egui::Ui, glyph: &str, label: &str, key: &str, tone: Tone) -> egui::Response {
     let p = theme::palette(ui.ctx());
     let (fill, text) = match tone {
         Tone::Plain => (p.raised, p.text),
