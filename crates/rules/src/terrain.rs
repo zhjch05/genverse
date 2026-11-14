@@ -17,9 +17,11 @@ use crate::voxel::{
 pub const VOXEL_SIZE: f32 = 0.25;
 /// The world is this many voxels (128 m) tall; below is bedrock, above is sky.
 pub const WORLD_HEIGHT: i32 = 512;
-/// The terrain new worlds are made with: continents, valleys and mountain ranges up to
-/// about 100 m over a sea 16 m up.
-pub const TERRAIN_VERSION: u32 = 2;
+/// The terrain new worlds are made with: the continents, valleys and mountain ranges of
+/// version 2 (up to about 100 m over a sea 16 m up), with more to see on them: rivers
+/// through the lowlands, pines and bushes among the trees, boulders, flower meadows,
+/// bare earth and pebble shores.
+pub const TERRAIN_VERSION: u32 = 3;
 /// The first terrain, for worlds made before there were versions: hills up to about
 /// 18 m over a sea 7.5 m up, in a world 32 m tall.
 pub const LEGACY_TERRAIN: u32 = 1;
@@ -137,6 +139,16 @@ pub const FLAT_GROUND: i32 = LEGACY_SEA + 4;
 const TREE_CELL: i32 = 18;
 /// Farthest a tree's leaves reach from its trunk, including noise.
 const TREE_REACH: i32 = 14;
+/// Boulders are placed one candidate per cell of this many voxels,
+const ROCK_CELL: i32 = 26;
+/// reach at most this far from their middle,
+const ROCK_REACH: i32 = 6;
+/// and rise at most this far over the ground.
+const ROCK_RISE: i32 = 6;
+
+/// The kinds of tree, since version 3. A natural tree's key says which, in its `y`.
+const PINE: i32 = -1;
+const BUSH: i32 = -2;
 
 /// Column heights over a rectangle, with one more column (or coarse cell) around it,
 /// for working out slopes at its edge.
@@ -217,6 +229,12 @@ impl Terrain {
         !self.flat && self.version >= 2
     }
 
+    /// Whether this is the varied land of version 3 and up: rivers, more kinds of
+    /// tree, boulders, meadows.
+    fn lush(&self) -> bool {
+        !self.flat && self.version >= 3
+    }
+
     /// Height of the top solid voxel in column `(x, z)`.
     pub fn height(&self, x: i32, z: i32) -> i32 {
         if self.flat {
@@ -249,6 +267,18 @@ impl Terrain {
         let rock = (fbm_xz(p / 40.0, self.seed + 31) - 0.5) * (4.0 + range * 24.0) * part(r.roughness);
         let grain = (value_xz(p / 9.0, self.seed + 30) - 0.5) * 3.0 * part(r.roughness);
         let h = lowlands + hills + mountains + rock + grain;
+        // Rivers (since version 3): winding channels cut down to just under the sea,
+        // through the lowlands only, their banks easing up to the land beside them.
+        let h = if self.version >= 3 && r.water {
+            let bed = SEA as f32 - 5.0;
+            let off = (fbm_xz(p / (420.0 * wide), self.seed + 70) - 0.5).abs();
+            let channel = 1.0 - smooth(0.010, 0.040, off);
+            let low = 1.0 - smooth(SEA as f32 + 24.0, SEA as f32 + 64.0, h);
+            // Shallower where the recipe's land rolls less: level ground stays level.
+            if h > bed { h + (bed - h) * channel * low * part(r.hills).min(1.0) } else { h }
+        } else {
+            h
+        };
         // A recipe with higher mountains than the usual would be cut off flat at the top
         // of the world: its heights ease toward the top instead, so peaks stay peaks.
         let h = if r.is_default() { h } else { ease_under(h, self.max_ground() as f32) };
@@ -298,9 +328,12 @@ impl Terrain {
             return ground;
         }
         let mut top = if self.wet() { (ground + 1).max(self.sea_level()) } else { ground + 1 };
+        if self.lush() {
+            top = top.max(ground + ROCK_RISE);
+        }
         for cell in Self::tree_cells(min, max) {
             if let Some((base, key)) = self.tree_in(cell) {
-                let (_, blobs) = self.tree_shape(base, key);
+                let (_, blobs, _) = self.tree_shape(base, key);
                 for (center, radii) in blobs {
                     top = top.max((center.y + radii.y * 1.35).ceil() as i32);
                 }
@@ -362,10 +395,19 @@ impl Terrain {
             return grid;
         }
         let local = |p: IVec3| p - min;
+        let lush = self.lush();
+        // Boulders, half sunk in the ground (and the shallows).
+        if lush {
+            for cell in Self::rock_cells(min.xz(), max.xz()) {
+                self.place_rock(&mut grid, min, cell);
+            }
+        }
         // Trees, one candidate per jittered cell.
         for cell in Self::tree_cells(min.xz(), max.xz()) {
             self.place_tree(&mut grid, min, cell);
         }
+        let plants = self.recipe.plants as f32 / 100.0;
+        let sea = self.sea_level();
 
         // Grass tufts and flowers on exposed grass.
         for z in min.z..max.z {
@@ -376,15 +418,33 @@ impl Terrain {
                 }
                 let top = IVec3::new(x, h, z);
                 let above = top + IVec3::Y;
-                if !block::GRASS.contains(&get(&grid, min, top)) || get(&grid, min, above) != AIR {
+                if get(&grid, min, above) != AIR {
+                    continue;
+                }
+                let on = get(&grid, min, top);
+                // Reeds along the water's edge.
+                if lush && self.wet() && h <= sea + 1 && block::SAND.contains(&on) {
+                    if hash01(top, self.seed + 54) < 0.07 * plants.min(2.0) {
+                        grid.set(local(above), block::TUFT);
+                    }
+                    continue;
+                }
+                if !block::GRASS.contains(&on) {
                     continue;
                 }
                 let roll = hash01(top, self.seed + 50);
-                let plants = self.recipe.plants as f32 / 100.0;
-                if roll < 0.006 * plants {
+                let (mut flowers, mut tufts) = (0.006, 0.03);
+                // Meadows thick with flowers, and stretches of long grass, between
+                // plainer ground. Only the columns that could grow something ask.
+                if lush && roll < 0.23 * plants {
+                    let q = top.xz().as_vec2();
+                    flowers *= 1.0 + 12.0 * smooth(0.58, 0.72, fbm_xz(q / 28.0, self.seed + 52));
+                    tufts = flowers + 0.024 * (1.0 + 5.0 * smooth(0.52, 0.68, fbm_xz(q / 20.0, self.seed + 53)));
+                }
+                if roll < flowers * plants {
                     let flower = pick(block::FLOWERS, value(top.as_vec3() / 20.0, self.seed + 51));
                     grid.set(local(above), flower);
-                } else if roll < 0.03 * plants {
+                } else if roll < tufts * plants {
                     grid.set(local(above), block::TUFT);
                 }
             }
@@ -408,11 +468,18 @@ impl Terrain {
         if depth == 0 && h > self.snow_line(p) {
             block::SNOW
         } else if beach && depth < 4 {
-            pick(block::SAND, patch())
+            // Stretches of pebble shore between the sands.
+            if self.lush() && value_xz(p.xz().as_vec2() / 22.0, self.seed + 45) > 0.66 {
+                pick(block::STONE, stone())
+            } else {
+                pick(block::SAND, patch())
+            }
         } else if steep && depth < 4 {
             pick(block::STONE, stone())
         } else if depth == 0 {
             match self.recipe.ground {
+                // Patches of bare earth in the grass.
+                Cover::Grass if self.lush() && fbm_xz(p.xz().as_vec2() / 16.0, self.seed + 44) > 0.70 => pick(block::DIRT, patch()),
                 Cover::Grass => pick(block::GRASS, fbm(p.as_vec3() / 12.0, self.seed + 41) * 1.4 - 0.2),
                 Cover::Sand => pick(block::SAND, patch()),
                 Cover::Snow => block::SNOW,
@@ -452,7 +519,10 @@ impl Terrain {
         let grove = fbm_xz(cell.as_vec2() / 6.0, self.seed + 59);
         // More trees fill the groves, then the meadows between them.
         let trees = self.recipe.trees as f32 / 100.0;
-        if hash01(key, self.seed + 60) > (grove - 0.35) * 1.4 * trees + (trees - 1.0).max(0.0) * 0.25 {
+        let outside = hash01(key, self.seed + 60) > (grove - 0.35) * 1.4 * trees + (trees - 1.0).max(0.0) * 0.25;
+        // The meadows aren't bare: a bush here and there.
+        let stray = outside && self.lush() && hash01(key, self.seed + 72) < 0.10 * trees.min(1.5);
+        if outside && !stray {
             return None;
         }
         let jitter = |k: u32| (hash01(key, self.seed + k) * (TREE_CELL - 6) as f32) as i32 + 3;
@@ -463,7 +533,73 @@ impl Terrain {
         if (self.wet() && ground <= self.sea_level() + 1) || ground > self.tree_line() || steep > 5 {
             return None;
         }
-        Some((IVec3::new(x, ground, z), key))
+        // Which kind (since version 3): pines take over as the ground climbs, and
+        // stand in woods of their own lower down; bushes fill in under the others.
+        let kind = if !self.lush() {
+            0
+        } else if stray {
+            BUSH
+        } else {
+            let high = smooth(SEA as f32 + 30.0, SEA as f32 + 120.0, ground as f32);
+            let cold = high + (fbm_xz(cell.as_vec2() / 5.0, self.seed + 68) - 0.5) * 1.2;
+            if hash01(key, self.seed + 69) < cold {
+                PINE
+            } else if hash01(key, self.seed + 71) < 0.2 {
+                BUSH
+            } else {
+                0
+            }
+        };
+        Some((IVec3::new(x, ground, z), IVec3::new(key.x, kind, key.z)))
+    }
+
+    /// The rock cells whose boulders can reach world columns `min..max`.
+    fn rock_cells(min: IVec2, max: IVec2) -> impl Iterator<Item = IVec2> {
+        let cells = |a: i32, b: i32| (a - ROCK_REACH).div_euclid(ROCK_CELL)..=(b + ROCK_REACH).div_euclid(ROCK_CELL);
+        cells(min.y, max.y).flat_map(move |cz| cells(min.x, max.x).map(move |cx| IVec2::new(cx, cz)))
+    }
+
+    /// The boulder of rock cell `cell`, if it has one: its middle and radii, in world
+    /// voxels.
+    fn rock_in(&self, cell: IVec2) -> Option<(Vec3, Vec3)> {
+        let key = IVec3::new(cell.x, 1, cell.y);
+        if hash01(key, self.seed + 80) > 0.22 {
+            return None;
+        }
+        let jitter = |k: u32| (hash01(key, self.seed + k) * (ROCK_CELL - 12) as f32) as i32 + 6;
+        let (x, z) = (cell.x * ROCK_CELL + jitter(81), cell.y * ROCK_CELL + jitter(82));
+        let size = hash01(key, self.seed + 83);
+        let r = 1.6 + size * size * 3.4;
+        // It sits on the lowest ground under it, so no side hangs in the air; not on
+        // cliffs, nor out in deep water.
+        let d = r as i32;
+        let grounds = [(0, 0), (d, 0), (-d, 0), (0, d), (0, -d)].map(|(dx, dz)| self.height(x + dx, z + dz));
+        let (low, high) = (*grounds.iter().min().unwrap(), *grounds.iter().max().unwrap());
+        if high - low > 4 || (self.wet() && low < self.sea_level() - 2) {
+            return None;
+        }
+        let radii = Vec3::new(r, r * 0.75, r * (0.7 + 0.3 * hash01(key, self.seed + 84)));
+        Some((Vec3::new(x as f32 + 0.5, low as f32 + r * 0.2, z as f32 + 0.5), radii))
+    }
+
+    fn place_rock(&self, grid: &mut VoxelGrid, min: IVec3, cell: IVec2) {
+        let Some((center, radii)) = self.rock_in(cell) else {
+            return;
+        };
+        let lo = (center - radii - 1.0).floor().as_ivec3().max(min);
+        let hi = (center + radii + 1.0).ceil().as_ivec3().min(min + grid.size().as_ivec3() - 1);
+        for pz in lo.z..=hi.z {
+            for py in lo.y..=hi.y {
+                for px in lo.x..=hi.x {
+                    let p = IVec3::new(px, py, pz);
+                    let q = p.as_vec3() + 0.5;
+                    let lumps = (value(q / 2.5, self.seed + 85) - 0.5) * 0.3;
+                    if ((q - center) / radii).length() <= 1.0 + lumps && matches!(get(grid, min, p), AIR | block::WATER) {
+                        grid.set(p - min, pick(block::STONE, value(q / 4.0, self.seed + 42)));
+                    }
+                }
+            }
+        }
     }
 
     /// The tree cells whose trees can reach world columns `min..max`.
@@ -484,8 +620,29 @@ impl Terrain {
     }
 
     /// The shape of the tree whose 2x2 trunk stands on `base`: the top of its trunk,
-    /// and its crown's leaf blobs as centers and radii.
-    fn tree_shape(&self, base: IVec3, key: IVec3) -> (IVec3, [(Vec3, Vec3); 2]) {
+    /// its crown's leaf blobs as centers and radii, and how dark its leaves are.
+    fn tree_shape(&self, base: IVec3, key: IVec3) -> (IVec3, [(Vec3, Vec3); 2], f32) {
+        let middle = base.as_vec3() + Vec3::new(1.0, 0.0, 1.0);
+        if self.lush() && key.y == PINE {
+            // A tall trunk in a narrow cone of dark needles: a wide skirt, a spire over it.
+            let height = 18.0 + (hash01(key, self.seed + 63) * 8.0).floor();
+            let radius = 4.4 + hash01(key, self.seed + 65) * 1.4;
+            let blobs = [
+                (middle + Vec3::Y * height * 0.5, Vec3::new(radius, height * 0.3, radius)),
+                (middle + Vec3::Y * height * 0.88, Vec3::new(radius * 0.55, height * 0.28, radius * 0.55)),
+            ];
+            return (base + IVec3::Y * height as i32, blobs, 0.45);
+        }
+        if self.lush() && key.y == BUSH {
+            // Leaves nearly down to the ground, and lighter than a tree's.
+            let radius = 2.6 + hash01(key, self.seed + 65) * 1.6;
+            let lean = (hash01(key, self.seed + 63) - 0.5) * radius;
+            let blobs = [
+                (middle + Vec3::Y * 3.0, Vec3::new(radius, radius * 0.7, radius)),
+                (middle + Vec3::new(lean, 3.0 + radius * 0.35, -lean), Vec3::splat(radius * 0.6)),
+            ];
+            return (base + IVec3::Y * 2, blobs, -0.15);
+        }
         let trunk_height = 13 + (hash01(key, self.seed + 63) * 8.0) as i32;
         let crown = IVec3::new(base.x, base.y + trunk_height, base.z);
         let radius = 5.5 + hash01(key, self.seed + 65) * 2.5;
@@ -493,12 +650,12 @@ impl Terrain {
             (crown.as_vec3() + Vec3::new(1.0, 0.0, 1.0), Vec3::new(radius, radius * 0.75, radius)),
             (crown.as_vec3() + Vec3::new(1.0, radius * 0.6, 1.0), Vec3::splat(radius * 0.65)),
         ];
-        (crown, blobs)
+        (crown, blobs, 0.0)
     }
 
     /// Whether the point `q` (in world voxels) is inside a leaf blob, and if so the
-    /// leaves there.
-    fn leaf_at(&self, q: Vec3, (center, radii): (Vec3, Vec3)) -> Option<VoxelId> {
+    /// leaves there: darker with a higher `tone`.
+    fn leaf_at(&self, q: Vec3, (center, radii): (Vec3, Vec3), tone: f32) -> Option<VoxelId> {
         // The wobble is within ±0.35, so past that it can't reach.
         let reach = ((q - center) / radii).length();
         if reach > 1.35 {
@@ -509,14 +666,14 @@ impl Terrain {
             return None;
         }
         let shade = fbm(q / 4.0, self.seed + 67) + (q.y - center.y) / radii.y * 0.3;
-        Some(pick(block::LEAVES, 1.0 - shade))
+        Some(pick(block::LEAVES, 1.0 - shade + tone))
     }
 
     /// Grows a tree whose 2x2 trunk stands on `base` (the ground voxel), into the part
     /// of `grid` (covering world voxels from `min`) it reaches. `key` picks its variation.
     pub fn grow_tree(&self, grid: &mut VoxelGrid, min: IVec3, base: IVec3, key: IVec3) {
         let (x, ground, z) = (base.x, base.y, base.z);
-        let (crown, blobs) = self.tree_shape(base, key);
+        let (crown, blobs, tone) = self.tree_shape(base, key);
 
         // 2x2 trunk.
         for y in ground + 1..crown.y {
@@ -536,7 +693,7 @@ impl Terrain {
                 for py in lo.y..=hi.y {
                     for px in lo.x..=hi.x {
                         let p = IVec3::new(px, py, pz);
-                        if let Some(leaves) = self.leaf_at(p.as_vec3() + 0.5, blob) {
+                        if let Some(leaves) = self.leaf_at(p.as_vec3() + 0.5, blob, tone) {
                             set_if_air(grid, min, p, leaves);
                         }
                     }
@@ -605,11 +762,32 @@ impl Terrain {
         }
 
         let (lo, hi) = (min * step, max * step);
+        // Boulders, while they're still as big as a cell.
+        if self.lush() && step <= 4 {
+            for cell in Self::rock_cells(lo.xz(), hi.xz()) {
+                let Some((center, radii)) = self.rock_in(cell) else {
+                    continue;
+                };
+                let lo = ((center - radii) / step as f32).floor().as_ivec3().max(min);
+                let hi = ((center + radii) / step as f32).floor().as_ivec3().min(max - 1);
+                for cz in lo.z..=hi.z {
+                    for cy in lo.y..=hi.y {
+                        for cx in lo.x..=hi.x {
+                            let c = IVec3::new(cx, cy, cz);
+                            let q = (c * step).as_vec3() + half;
+                            if ((q - center) / radii).length() <= 1.0 && matches!(grid.get(c - min), AIR | block::WATER) {
+                                grid.set(c - min, block::STONE[1]);
+                            }
+                        }
+                    }
+                }
+            }
+        }
         for cell in Self::tree_cells(lo.xz(), hi.xz()) {
             let Some((base, key)) = self.tree_in(cell) else {
                 continue;
             };
-            let (crown, blobs) = self.tree_shape(base, key);
+            let (crown, blobs, tone) = self.tree_shape(base, key);
             let set = |grid: &mut VoxelGrid, c: IVec3, id: VoxelId| {
                 let l = c - min;
                 if grid.contains(l) && grid.get(l) == AIR {
@@ -631,7 +809,7 @@ impl Terrain {
                     for cy in lo.y..=hi.y {
                         for cx in lo.x..=hi.x {
                             let c = IVec3::new(cx, cy, cz);
-                            if let Some(leaves) = self.leaf_at((c * step).as_vec3() + half, blob) {
+                            if let Some(leaves) = self.leaf_at((c * step).as_vec3() + half, blob, tone) {
                                 set(&mut grid, c, leaves);
                             }
                         }
@@ -710,7 +888,7 @@ mod tests {
     /// recipe is that generator, voxel for voxel. The fingerprint is from before recipes.
     #[test]
     fn the_usual_recipe_is_the_terrain_from_before_recipes() {
-        let t = Terrain::new(1337, false);
+        let t = Terrain { version: 2, ..Terrain::new(1337, false) };
         let mut h: u64 = 0xcbf29ce484222325;
         let mut eat = |b: u8| h = (h ^ b as u64).wrapping_mul(0x100000001b3);
         let regions = [
@@ -845,6 +1023,35 @@ mod tests {
                 assert!(highest.unwrap() <= top, "{t:?} at {x}, {z}: {highest:?} over {top}");
             }
         }
+    }
+
+    /// Version 3 lays more on the ground of version 2: rivers, boulders, and three
+    /// kinds of tree.
+    #[test]
+    fn new_terrain_has_rivers_rocks_and_kinds_of_tree() {
+        let t = Terrain::new(1337, false);
+        let before = Terrain { version: 2, ..t };
+        let columns = || (-150..150).flat_map(|z| (-150..150).map(move |x| (x * 16, z * 16)));
+        // Rivers only ever lower the ground, and only some of it.
+        let cut = columns().filter(|(x, z)| t.height(*x, *z) < before.height(*x, *z)).count();
+        assert!(columns().all(|(x, z)| t.height(x, z) <= before.height(x, z)));
+        assert!((500..30000).contains(&cut), "{cut} of 90000 columns in a river");
+        let cells = || (-60..60).flat_map(|z| (-60..60).map(move |x| IVec2::new(x, z)));
+        let kinds = |kind: i32| cells().filter_map(|c| t.tree_in(c)).filter(|(_, key)| key.y == kind).count();
+        assert!(kinds(0) > 100 && kinds(PINE) > 100 && kinds(BUSH) > 100, "{} {} {}", kinds(0), kinds(PINE), kinds(BUSH));
+        assert!(cells().filter_map(|c| before.tree_in(c)).all(|(_, key)| key.y == 0));
+        // Boulders stand clear of the ground they sit on, and no higher or wider than
+        // `top` and the cells that look for them allow.
+        let rocks: Vec<(Vec3, Vec3)> = cells().filter_map(|c| t.rock_in(c)).collect();
+        assert!(rocks.len() > 500, "{} boulders", rocks.len());
+        assert!(rocks.iter().all(|(_, r)| r.y * 1.15 + r.x * 0.2 <= ROCK_RISE as f32 && r.x * 1.15 <= ROCK_REACH as f32));
+        let stands = |(center, _): &(Vec3, Vec3)| {
+            let c = center.floor().as_ivec3();
+            let above = IVec3::new(c.x, t.height(c.x, c.z) + 1, c.z);
+            block::STONE.contains(&t.generate(above, UVec3::ONE).get(IVec3::ZERO))
+        };
+        let big: Vec<_> = rocks.iter().filter(|(_, r)| r.x > 3.0).take(40).collect();
+        assert!(big.iter().filter(|rock| stands(rock)).count() > 30);
     }
 
     #[test]

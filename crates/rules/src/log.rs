@@ -85,7 +85,7 @@ pub const WORLD: &str = "world";
 
 /// Bumped when the rules change in a way that rasterizes the same log differently, or
 /// games can do something an older copy would refuse (2: `travel` and `portal`).
-pub const RULES_VERSION: u32 = 3;
+pub const RULES_VERSION: u32 = 4;
 
 /// Who made a change, and how.
 #[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
