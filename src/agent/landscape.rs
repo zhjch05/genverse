@@ -37,6 +37,12 @@ use crate::{
 /// A click without a drag selects a square this wide, in meters.
 const CLICK_AREA_M: f32 = 6.0;
 
+/// How far from the camera, along the ground, a drag's corner can go.
+const DRAG_REACH_M: f32 = 150.0;
+
+/// How fast the drag plane follows the ground under the corner, per second.
+const DRAG_FOLLOW: f32 = 8.0;
+
 /// How a voxel was before a change touched it.
 struct Before {
     p: IVec3,
@@ -66,6 +72,10 @@ pub struct Landscape {
     pub selecting: bool,
     pub area: Option<Area>,
     drag_from: Option<IVec2>,
+    /// The height, in meters, of the plane the dragged corner moves on. It starts on the
+    /// ground where the drag began and eases toward the ground under the corner, so the
+    /// corner moves smoothly over ridges and doesn't jump behind them.
+    drag_y: f32,
     pub draft: Option<TerrainDraft>,
     /// Kept changes the server may still refuse or redo (online).
     kept: Vec<Kept>,
@@ -389,7 +399,15 @@ fn surface_code(id: VoxelId) -> char {
 }
 
 /// G mode: drag on the ground to select an area; a click selects a small square.
+///
+/// The drag starts where the cursor meets the ground. After that the corner follows
+/// the cursor on a level plane, not the ground: on hills the ground under the cursor
+/// jumps across ridges and slides on slopes facing away, and a plane does neither. The
+/// plane eases up and down to the ground under the corner, so on flat land it is the
+/// ground, and on hills the corner settles under the cursor once the mouse stops.
+#[allow(clippy::too_many_arguments)]
 pub fn select_area(
+    time: Res<Time>,
     binds: Res<crate::bindings::Bindings>,
     windows: Query<&Window, With<PrimaryWindow>>,
     cameras: Query<(&Camera, &GlobalTransform), With<Camera3d>>,
@@ -408,21 +426,31 @@ pub fn select_area(
         landscape.drag_from = None;
         return;
     }
-    let cell = cursor_ray(&windows, &cameras, &over_ui).and_then(|(_, ray)| {
-        // Through trees and plants to the ground, so the corner doesn't jump onto them.
+    let ray = cursor_ray(&windows, &cameras, &over_ui).map(|(_, ray)| ray);
+    // Through trees and plants to the ground, so the corner doesn't jump onto them.
+    let ground = ray.and_then(|ray| {
         let hit = world.raycast_ground(ray, 60.0)?;
-        Some(VoxelWorld::voxel_at(ray.get_point(hit.distance) - hit.normal * 0.01).xz())
+        Some(ray.get_point(hit.distance) - hit.normal * 0.01)
     });
     if binds.just_pressed("click") {
-        landscape.drag_from = cell;
+        landscape.drag_from = ground.map(|p| VoxelWorld::voxel_at(p).xz());
+        if let Some(p) = ground {
+            landscape.drag_y = (p.y / VOXEL_SIZE).ceil() * VOXEL_SIZE;
+        }
     }
     let Some(from) = landscape.drag_from else {
         return;
     };
     let max = (ledger.rules.terrain.max_area_m / VOXEL_SIZE) as i32 - 1;
-    if let Some(to) = cell {
+    let corner = ray.and_then(|ray| on_plane(ray, landscape.drag_y).or(ground));
+    if let Some(p) = corner {
+        let to = VoxelWorld::voxel_at(p).xz();
         let to = from + (to - from).clamp(IVec2::splat(-max), IVec2::splat(max));
         landscape.area = Some(Area::from_corners(from, to));
+        if let Some(y) = ground_height(&world, to) {
+            let k = 1.0 - (-DRAG_FOLLOW * time.delta_secs()).exp();
+            landscape.drag_y = landscape.drag_y.lerp(y, k);
+        }
     }
     if binds.just_released("click") {
         landscape.drag_from = None;
@@ -433,6 +461,37 @@ pub fn select_area(
             landscape.area = Some(Area::from_corners(from - half, from + half - 1));
         }
     }
+}
+
+/// Where `ray` meets the level plane at height `y`, at most [`DRAG_REACH_M`] away along
+/// the ground. Toward the horizon, and above it, the point stays at that reach in the
+/// direction the ray points, so the corner moves on instead of stopping or running off.
+/// `None` when the plane is above the camera and the ray points down (or straight down
+/// with the plane above): the plane can't be reached, and the ground is used instead.
+fn on_plane(ray: Ray3d, y: f32) -> Option<Vec3> {
+    let dir = *ray.direction;
+    let flat = dir.xz().normalize_or_zero();
+    let along = dir.xz().length();
+    let t = (y - ray.origin.y) / dir.y;
+    let reach = if t.is_finite() && t > 0.0 {
+        (t * along).min(DRAG_REACH_M)
+    } else if ray.origin.y > y && flat != Vec2::ZERO {
+        // Looking level or up from above the plane: it meets it only at the horizon.
+        DRAG_REACH_M
+    } else {
+        return None;
+    };
+    let p = ray.origin.xz() + flat * reach;
+    Some(Vec3::new(p.x, y, p.y))
+}
+
+/// The top of the ground (or water) in column `c`, in meters, if it's loaded.
+fn ground_height(world: &VoxelWorld, c: IVec2) -> Option<f32> {
+    let mut column = vec![AIR; WORLD_HEIGHT as usize];
+    world.column(c.x, c.y, &mut column).then(|| {
+        let (g, w, _) = surface(&column);
+        (g.max(w) + 1) as f32 * VOXEL_SIZE
+    })
 }
 
 /// Gizmos for the area outline: thick, and drawn slightly in front of the ground so
@@ -789,6 +848,36 @@ pub fn spawn_label(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn ray(origin: Vec3, dir: Vec3) -> Ray3d {
+        Ray3d::new(origin, Dir3::new(dir).unwrap())
+    }
+
+    #[test]
+    fn plane_point_follows_the_ray_down_to_it() {
+        let p = on_plane(ray(Vec3::new(0.0, 10.0, 0.0), Vec3::new(1.0, -1.0, 0.0)), 2.0).unwrap();
+        assert!(p.distance(Vec3::new(8.0, 2.0, 0.0)) < 1e-4, "{p}");
+    }
+
+    #[test]
+    fn plane_point_stays_at_reach_toward_and_past_the_horizon() {
+        let eye = Vec3::new(0.0, 10.0, 0.0);
+        // Just below the horizon: far, but capped.
+        let near_level = on_plane(ray(eye, Vec3::new(1.0, -0.001, 0.0)), 0.0).unwrap();
+        assert!((near_level.x - DRAG_REACH_M).abs() < 1e-3, "{near_level}");
+        // Level and above: the same point, so crossing the horizon doesn't jump.
+        for dir in [Vec3::X, Vec3::new(1.0, 0.5, 0.0)] {
+            let p = on_plane(ray(eye, dir), 0.0).unwrap();
+            assert!(p.distance(near_level) < 1e-3, "{p}");
+        }
+    }
+
+    #[test]
+    fn plane_above_the_camera_is_out_of_reach_looking_down() {
+        assert!(on_plane(ray(Vec3::new(0.0, 1.0, 0.0), Vec3::new(1.0, -1.0, 0.0)), 5.0).is_none());
+        // Looking up at it, it's met.
+        assert!(on_plane(ray(Vec3::new(0.0, 1.0, 0.0), Vec3::new(1.0, 1.0, 0.0)), 5.0).is_some());
+    }
 
     #[test]
     fn perimeter_has_each_corner_once() {

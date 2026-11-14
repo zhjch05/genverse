@@ -283,10 +283,11 @@ Events: `interact`, `use_item`, `enter_region`, `leave_region`, `day_start`,
 `timer`, `tick` (rate limited), `turn` (in turn-based modes). (Built instead: `on_place`,
 `on_interact`, `on_use`, `on_key` and `on_timer`; no tick. See [Timers](#timers).)
 
-A script never changes the world directly. It returns **intents** (set a component,
-spawn an entity, give an item, open a dialogue, place a build spec). The kernel
-checks each intent against the package's permissions and the installer's budgets,
-then applies it.
+A script never changes the world directly. Each change it asks for (set a component,
+spawn an entity, give an item, open a panel, place a build) goes through a **batch**
+that checks it at once against the package's permissions, the world's limits and the
+installer's budgets, so the script hears right away when something isn't allowed. The
+batch applies all of the action's changes or none of them.
 
 Wasm (wasmtime with fuel metering) is the option for heavier mods later. It isn't the
 place to start: agents would need a compiler toolchain, and the host interface is a lot
@@ -340,25 +341,39 @@ the log stays small and replay can still rebuild the world exactly.
 2. **Scripts see nothing they aren't given.** No I/O, no network, no wall-clock time.
    They get world time and a random generator seeded from the change id and event.
    That makes them deterministic, so replay keeps working.
-3. **Hard limits.** Each handler call has a cap on work done and on memory. Each
-   package also has a budget per tick. A package that keeps going over is turned off
-   automatically and the admin is told.
-4. **Permissions in the manifest**, for example:
+3. **Hard limits.** There is no tick: a game moves only on timers, so a quiet game
+   costs nothing. An action's scripts get at most 200,000 Luau steps and 16 MB of
+   memory ([`script`](../crates/rules/src/logic/script.rs)); `on_frame` gets 50,000
+   steps and 8 MB per frame ([`frame`](../crates/rules/src/logic/frame.rs)). A script
+   that goes over fails, and its action changes nothing. The world also limits:
+   - effects per player action, over all packages (`max_effects`, 256 by default)
+     and entities per package (`max_entities`, 10,000), both set in the world's
+     rules ([`logic`](../crates/rules/src/logic/mod.rs));
+   - per package: 256 waiting timers (at most 64 fire at once), 16 HUD entries per
+     screen, 4 KB per component or stored value, 9,999 of one item;
+   - a package's size: 512 KB, 2,000 definitions, 64 scripts and 64 models
+     ([`package`](../crates/rules/src/logic/package.rs)); an install covers at most
+     256 parcels.
+
+   Packages that keep going over aren't turned off automatically yet.
+4. **Permissions in the manifest**:
 
    ```ron
    permissions: [
-       Components("farm:*"),
-       Inventory(write: ["farm:*"]),
-       Spawn(scope: SelfRegion),
-       Voxels(budget: 20000),
+       Read(namespace: "farm"),   // read another package's components
+       Write(namespace: "farm"),  // change them; needs an admin
+       Spawn,                     // create entities where it's installed
+       Build,                     // place builds and reshape land there
    ]
    ```
 
-   A default set is allowed without asking. Anything beyond it needs an admin to
-   approve it at install time.
-5. **Someone is always accountable.** Every change a script makes counts against the
-   installer's budget, land access and rate limits. "Last changed by" reads
-   "farm-pack (installed by Alex)".
+   Only `Write` and installing for the whole world need an admin to approve.
+5. **Someone is always accountable.** Every build or terrain change a game makes
+   counts against the installer's land and budget, under the world's own rules
+   ([`budget`](../crates/rules/src/budget.rs)). By default a parcel holds 12 builds,
+   40,000 visible faces, 150,000 build voxels and 4,000 glowing voxels; a player holds
+   60 builds and 1,500,000 build voxels, and may change 2,000,000 voxels of terrain.
+   Each server sets its own. "Last changed by" reads "farm-pack (installed by Alex)".
 6. **Proven before it goes live.** See [Lifecycle](#lifecycle).
 7. **Rollback.** A player can undo their own installs and upgrades (undo puts the old
    version back). Admins go back further by loading a save.
