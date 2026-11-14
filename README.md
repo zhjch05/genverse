@@ -264,8 +264,11 @@ they're working on, previews of their land changes, and "Claude Code is designin
 connection drops, the game reconnects by itself. Chunk fingerprints catch floating-point
 drift between machines.
 
-Messages are signed but not encrypted yet, so host on a local or private network (Tailscale,
-WireGuard).
+Messages are always signed. Games joined by invite over the internet go through
+[iroh](https://iroh.computer), which encrypts the connection (directly between the two machines
+when it can, through n0's public relays when it can't). Direct TCP connections to a server
+(LAN games, or `genverse_server` on its port) are not encrypted, so host those on a local or
+private network (Tailscale, WireGuard).
 
 ## Scripting a run
 
