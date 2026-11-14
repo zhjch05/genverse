@@ -13,6 +13,8 @@ env:
   CARGO_TERM_COLOR: always
   # Incremental builds only help locally; in CI they cost cache space.
   CARGO_INCREMENTAL: 0
+  # Bevy's full debug info is large enough to crash the Linux runner's linker (bus error).
+  CARGO_PROFILE_DEV_DEBUG: line-tables-only
 
 jobs:
   test:

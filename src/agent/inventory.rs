@@ -303,8 +303,8 @@ pub fn hotbar(mut contexts: EguiContexts, time: Res<Time>, chat: Res<Chat>, ledg
             let mut row = |ui: &mut egui::Ui, from: usize| {
                 ui.horizontal(|ui| {
                     ui.spacing_mut().item_spacing.x = 4.0;
-                    for i in from..from + HOTBAR {
-                        if slot(ui, &ledger, inventory.slots[i].as_deref(), false, size, p).clicked() {
+                    for (i, item) in inventory.slots.iter().enumerate().skip(from).take(HOTBAR) {
+                        if slot(ui, &ledger, item.as_deref(), false, size, p).clicked() {
                             clicked = Some(i);
                         }
                     }
