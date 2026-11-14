@@ -182,6 +182,11 @@ impl VoxelWorld {
         (pos / VOXEL_SIZE).floor().as_ivec3()
     }
 
+    /// The color of block `id`, as the world's palette has it.
+    pub fn color_of(&self, id: VoxelId) -> Option<Color> {
+        self.palette.entries.get(id as usize).map(|e| e.color.into())
+    }
+
     /// The voxel at world voxel coordinate `p`, or `None` if its chunk isn't loaded.
     pub fn get(&self, p: IVec3) -> Option<VoxelId> {
         if p.y >= WORLD_HEIGHT {
