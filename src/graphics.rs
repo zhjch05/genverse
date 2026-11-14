@@ -47,7 +47,7 @@ impl Plugin for GraphicsPlugin {
             // picture in the same frame.
             .add_systems(PostUpdate, (apply_graphics, adjust_scale, fit_render_target).chain().before(CameraUpdateSystems))
             .init_resource::<Dim>()
-            .add_systems(PostUpdate, dim_picture);
+            .add_systems(PostUpdate, (dim_picture, apply_build_animation));
     }
 }
 
@@ -115,6 +115,10 @@ pub struct Graphics {
     /// Lowers the render scale while frames run slow, and raises it back when they
     /// have room ([`AutoScale`]).
     pub auto_scale: bool,
+    /// What the agent builds, and land it changes, arrives voxel by voxel
+    /// (`voxel/reveal.rs`) instead of all at once. The player's own, like the render
+    /// scale: no preset changes it.
+    pub build_animation: bool,
 }
 
 impl Default for Graphics {
@@ -164,7 +168,7 @@ impl Quality {
             Quality::High => (Antialias::Taa, Level::Low, Level::High, false, true),
             Quality::Ultra => (Antialias::Taa, Level::High, Level::Ultra, true, true),
         };
-        Graphics { antialias, ambient_occlusion, shadows, contact_shadows, bloom, render_scale, auto_scale }
+        Graphics { antialias, ambient_occlusion, shadows, contact_shadows, bloom, render_scale, auto_scale, build_animation: true }
     }
 }
 
@@ -172,7 +176,9 @@ impl Quality {
 impl Graphics {
     /// The preset these settings match, if any ("Custom" otherwise).
     pub fn preset(&self) -> Option<Quality> {
-        Quality::ALL.into_iter().find(|q| q.settings(self.render_scale, self.auto_scale) == *self)
+        Quality::ALL
+            .into_iter()
+            .find(|q| Graphics { build_animation: self.build_animation, ..q.settings(self.render_scale, self.auto_scale) } == *self)
     }
 
     fn ssao(&self) -> Option<ScreenSpaceAmbientOcclusionQualityLevel> {
@@ -364,6 +370,13 @@ pub fn spawn_screen(mut commands: Commands, mut meshes: ResMut<Assets<Mesh>>, mu
         MeshMaterial2d(materials.add(ColorMaterial { alpha_mode: AlphaMode2d::Opaque, ..default() })),
         RenderLayers::layer(SCREEN_LAYER),
     ));
+}
+
+/// Switches reveals on and off with the player's setting. Ones already running finish.
+fn apply_build_animation(graphics: Res<Graphics>, mut reveals: ResMut<crate::voxel::Reveals>) {
+    if reveals.enabled != graphics.build_animation {
+        reveals.enabled = graphics.build_animation;
+    }
 }
 
 /// Sets up the world camera and the sun for the current settings, at the start and

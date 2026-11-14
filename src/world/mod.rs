@@ -11,6 +11,9 @@
 //! Terrain changes are stored as a sparse layer of voxel edits on top of the seed
 //! ([`VoxelWorld::set`]), applied whenever a chunk is (re)built. The edits are what the
 //! change log in [`ledger`] replays to, so the world stays "seed + changes".
+//!
+//! A land change can be revealed voxel by voxel ([`VoxelWorld::reveal`]): the voxels
+//! are changed at once, and the chunks holding them are drawn arriving for a moment.
 
 pub mod ledger;
 pub mod lod;
@@ -21,6 +24,7 @@ use std::sync::Arc;
 
 use bevy::{
     light::NotShadowCaster,
+    mesh::MeshTag,
     platform::collections::{HashMap, HashSet},
     prelude::*,
     tasks::{AsyncComputeTaskPool, Task, futures::check_ready},
@@ -28,7 +32,8 @@ use bevy::{
 
 use crate::voxel::{
     AIR, Palette, SurfaceMaterial, VoxelGrid, VoxelId, VoxelMaterial,
-    mesher::mesh_region,
+    Reveals,
+    mesher::{Fresh, mesh_region, mesh_region_fresh},
     query::{Hit, march},
 };
 use genverse_rules::content::Content;
@@ -90,6 +95,45 @@ struct LoadedChunk {
 struct BuiltChunk {
     voxels: VoxelGrid,
     meshes: Vec<(usize, Mesh)>,
+    /// Built for the land reveal with this id: its meshes carry the order, and
+    /// `ghosts` are the meshes of what the change took away.
+    reveal: Option<u64>,
+    ghosts: Vec<(usize, Mesh)>,
+}
+
+/// One voxel of a land change being revealed: what was there, what is there now, and
+/// its place in the order (1 to 255).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct Shift {
+    pub old: VoxelId,
+    pub new: VoxelId,
+    pub arrival: u8,
+}
+
+/// The voxels of a reveal, by position, with the reveal's id.
+type Shifts = (u64, Arc<HashMap<IVec3, Shift>>);
+
+/// A land change with more changed voxels than this just appears.
+const MAX_REVEALED: usize = 400_000;
+
+/// How long a reveal waits for its chunks to be meshed before it starts without them.
+const REVEAL_WAIT: f32 = 2.0;
+
+/// A land change being drawn voxel by voxel (`voxel/reveal.rs`).
+struct LandReveal {
+    id: u64,
+    cells: Arc<HashMap<IVec3, Shift>>,
+    /// Every chunk whose voxels or border hold one of the cells.
+    chunks: HashSet<IVec3>,
+    /// Those still drawn as they were before the change. The reveal starts when
+    /// they're all in, so it runs on one clock.
+    waiting: HashSet<IVec3>,
+    seconds: f32,
+    slot: Option<usize>,
+    /// The meshes of what's going, by chunk.
+    ghosts: HashMap<IVec3, Vec<Entity>>,
+    started: bool,
+    waited: f32,
 }
 
 struct PendingChunk {
@@ -148,6 +192,12 @@ pub struct VoxelWorld {
     unsaved: bool,
     /// Set while a terrain preview is applied, so it isn't saved until it's kept.
     pub hold_saves: bool,
+    /// Whether land changes are revealed (the player's `graphics.build_animation`).
+    pub animate: bool,
+    reveal: Option<LandReveal>,
+    /// Reveals that are over, for [`finish_chunks`] to clear away.
+    ended: Vec<LandReveal>,
+    reveal_count: u64,
 }
 
 fn chunk_of(p: IVec3) -> IVec3 {
@@ -272,6 +322,51 @@ impl VoxelWorld {
         true
     }
 
+    /// Draws a change that was just made arriving voxel by voxel, in `seconds`: each of
+    /// `cells` is a voxel it changed. The voxels themselves are already changed. One
+    /// reveal runs at a time; the one before ends here.
+    #[cfg_attr(target_arch = "wasm32", allow(dead_code))]
+    pub fn reveal(&mut self, cells: impl IntoIterator<Item = (IVec3, Shift)>, seconds: f32) {
+        self.end_reveal();
+        if !self.animate {
+            return;
+        }
+        let cells: HashMap<IVec3, Shift> = cells.into_iter().filter(|(_, s)| s.old != s.new).collect();
+        if cells.is_empty() || cells.len() > MAX_REVEALED {
+            return;
+        }
+        let mut chunks: HashSet<IVec3> = default();
+        for p in cells.keys() {
+            let (lo, hi) = (chunk_of(*p - IVec3::ONE), chunk_of(*p + IVec3::ONE));
+            for z in lo.z..=hi.z {
+                for y in lo.y..=hi.y {
+                    for x in lo.x..=hi.x {
+                        chunks.insert(IVec3::new(x, y, z));
+                    }
+                }
+            }
+        }
+        let waiting: HashSet<IVec3> = chunks.iter().copied().filter(|c| self.loaded.contains_key(c)).collect();
+        self.dirty.extend(waiting.iter().copied());
+        self.reveal_count += 1;
+        self.reveal = Some(LandReveal {
+            id: self.reveal_count,
+            cells: Arc::new(cells),
+            chunks,
+            waiting,
+            seconds,
+            slot: None,
+            ghosts: default(),
+            started: false,
+            waited: 0.0,
+        });
+    }
+
+    /// Ends the reveal running, if one is: its chunks are drawn as they are.
+    pub fn end_reveal(&mut self) {
+        self.ended.extend(self.reveal.take());
+    }
+
     /// Queues a rebuild of the loaded coarse chunks whose region holds any of `lo..=hi`.
     fn mark_coarse(&mut self, lo: IVec3, hi: IVec3) {
         for level in 1..LEVELS {
@@ -289,6 +384,7 @@ impl VoxelWorld {
     /// stack of undos: rollbacks, restores, and later other players' changes.
     #[cfg_attr(target_arch = "wasm32", allow(dead_code))]
     pub fn replace_edits(&mut self, edits: impl IntoIterator<Item = (IVec3, VoxelId)>) {
+        self.end_reveal();
         let mut next: HashMap<IVec3, HashMap<IVec3, VoxelId>> = default();
         for (p, id) in edits {
             next.entry(chunk_of(p)).or_default().insert(p, id);
@@ -329,6 +425,7 @@ impl VoxelWorld {
         for e in self.coarse.drain().flat_map(|(_, list)| list) {
             commands.entity(e).despawn();
         }
+        self.end_reveal();
         self.pending.clear();
         self.columns.clear();
         self.coarse_pending.clear();
@@ -615,7 +712,9 @@ impl VoxelWorld {
         let palette = self.palette.clone();
         let edits = self.edits_for(c);
         let version = self.versions.get(&c).copied().unwrap_or_default();
-        let task = AsyncComputeTaskPool::get().spawn(async move { build_chunk(terrain, &palette, c, existing, &edits, None) });
+        let reveal: Option<Shifts> = self.reveal.as_ref().filter(|r| r.chunks.contains(&c)).map(|r| (r.id, r.cells.clone()));
+        let task =
+            AsyncComputeTaskPool::get().spawn(async move { build_chunk(terrain, &palette, c, existing, &edits, None, reveal.as_ref()) });
         self.pending.insert(c, PendingChunk { task, version });
     }
 }
@@ -658,6 +757,10 @@ fn setup_world(mut commands: Commands, mut materials: ResMut<Assets<VoxelMateria
         coarse_regen: default(),
         unsaved: false,
         hold_saves: false,
+        animate: true,
+        reveal: None,
+        ended: Vec::new(),
+        reveal_count: 0,
     });
 }
 
@@ -806,7 +909,7 @@ fn build_column(terrain: Terrain, palette: &Palette, column: IVec2, edits: &[Vec
         .chunks()
         .zip(edits)
         .map(|(c, edits)| {
-            (!edits.is_empty() || !ground.sky(0, c)).then(|| build_chunk(terrain, palette, c, None, edits, Some(&ground.heights)))
+            (!edits.is_empty() || !ground.sky(0, c)).then(|| build_chunk(terrain, palette, c, None, edits, Some(&ground.heights), None))
         })
         .collect()
 }
@@ -820,6 +923,7 @@ fn build_chunk(
     existing: Option<Arc<VoxelGrid>>,
     edits: &[(IVec3, VoxelId)],
     heights: Option<&Heights>,
+    reveal: Option<&Shifts>,
 ) -> BuiltChunk {
     let origin = chunk * CHUNK;
     let padded_min = origin - IVec3::ONE;
@@ -832,8 +936,16 @@ fn build_chunk(
     for (p, id) in edits {
         voxels.set(*p - padded_min, *id);
     }
-    let meshes = mesh_region(|p| voxels.get(p - padded_min), palette, origin, origin + IVec3::splat(CHUNK));
-    BuiltChunk { voxels, meshes }
+    let end = origin + IVec3::splat(CHUNK);
+    let Some((id, cells)) = reveal else {
+        let meshes = mesh_region(|p| voxels.get(p - padded_min), palette, origin, end);
+        return BuiltChunk { voxels, meshes, reveal: None, ghosts: Vec::new() };
+    };
+    // A voxel put where another was changes at once; the rest grow in, or shrink away.
+    let fresh = |p: IVec3| cells.get(&p).map_or(Fresh::default(), |s| Fresh { arrival: s.arrival, swap: s.old != AIR && s.new != AIR });
+    let meshes = mesh_region_fresh(|p| voxels.get(p - padded_min), Some(&fresh), palette, origin, end);
+    let ghosts = mesh_region_fresh(|p| cells.get(&p).map_or(AIR, |s| s.old), Some(&fresh), palette, origin, end);
+    BuiltChunk { voxels, meshes, reveal: Some(*id), ghosts }
 }
 
 /// Spawns the meshes of a chunk at `translation`, in voxels of `scale` meters.
@@ -868,8 +980,12 @@ fn finish_chunks(
     mut commands: Commands,
     mut world: ResMut<VoxelWorld>,
     mut meshes: ResMut<Assets<Mesh>>,
+    mut reveals: ResMut<Reveals>,
+    time: Res<Time>,
 ) {
     let world = &mut *world;
+    world.animate = reveals.enabled;
+    let mut reveal = world.reveal.take();
     // Built chunks, with their edit versions when they started; `None` is sky.
     let mut done: Vec<(IVec3, u32, Option<BuiltChunk>)> = Vec::new();
     for (c, pending) in world.pending.iter_mut() {
@@ -892,7 +1008,8 @@ fn finish_chunks(
         world.columns.remove(&column);
     }
     for (c, version, built) in done {
-        let mut built = built.map_or_else(|| (world.sky.clone(), Vec::new()), |b| (Arc::new(b.voxels), b.meshes));
+        let mut built = built
+            .map_or_else(|| (world.sky.clone(), Vec::new(), None, Vec::new()), |b| (Arc::new(b.voxels), b.meshes, b.reveal, b.ghosts));
         // Edits made while the task ran: the loaded voxels already have them, so keep
         // those (for collision) and remesh again. A chunk loading for the first time
         // just starts over.
@@ -903,8 +1020,13 @@ fn finish_chunks(
             }
             match world.loaded.get(&c) {
                 Some(loaded) => {
-                    built.0 = loaded.voxels.clone();
                     world.dirty.insert(c);
+                    // A reveal waits for this chunk: it stays as it was until the
+                    // meshes made for the reveal are in.
+                    if reveal.as_ref().is_some_and(|r| r.waiting.contains(&c)) {
+                        continue;
+                    }
+                    built.0 = loaded.voxels.clone();
                 }
                 None => {
                     world.spawn_task(c, None);
@@ -916,10 +1038,66 @@ fn finish_chunks(
         // Hidden until its whole cell is in; see `stream_chunks`.
         let visibility = if world.shown.contains(&Node::of_column(c.xz())) { Visibility::Inherited } else { Visibility::Hidden };
         let entities = spawn_meshes(&mut commands, &mut meshes, world, built.1, translation, VOXEL_SIZE, visibility);
+        if let Some(r) = reveal.as_mut().filter(|r| built.2 == Some(r.id)) {
+            r.waiting.remove(&c);
+            for e in r.ghosts.remove(&c).unwrap_or_default() {
+                commands.entity(e).try_despawn();
+            }
+            if r.slot.is_none() && !r.started {
+                r.slot = reveals.open(r.seconds, false, None);
+            }
+            // Without a free slot the chunk goes untagged, and so shows whole.
+            if let Some(slot) = r.slot {
+                for e in &entities {
+                    commands.entity(*e).insert(Reveals::tag(slot, false));
+                }
+                let ghosts = spawn_meshes(&mut commands, &mut meshes, world, built.3, translation, VOXEL_SIZE, visibility);
+                for e in &ghosts {
+                    commands.entity(*e).insert(Reveals::tag(slot, true));
+                }
+                r.ghosts.insert(c, ghosts);
+            }
+        }
         // A remesh replaces the old meshes only now, so edits never flash a hole.
         if let Some(old) = world.loaded.insert(c, LoadedChunk { voxels: built.0, entities }) {
             for e in old.entities {
                 commands.entity(e).despawn();
+            }
+        }
+    }
+
+    // The reveal starts once its chunks are all in, and ends when its time is up.
+    let mut over = false;
+    if let Some(r) = &mut reveal {
+        if !r.started {
+            r.waited += time.delta_secs();
+            if r.waiting.is_empty() || r.waited > REVEAL_WAIT {
+                r.started = true;
+                if let Some(slot) = r.slot {
+                    reveals.start(slot);
+                }
+            }
+        }
+        over = r.started && r.slot.is_none_or(|slot| reveals.done(slot));
+    }
+    if over {
+        world.ended.extend(reveal.take());
+    }
+    world.reveal = reveal;
+    // What a reveal leaves behind: the ghosts go, and its chunks are meshed plain again.
+    for r in std::mem::take(&mut world.ended) {
+        if let Some(slot) = r.slot {
+            reveals.close(slot);
+        }
+        for e in r.ghosts.into_values().flatten() {
+            commands.entity(e).try_despawn();
+        }
+        for c in r.chunks {
+            if let Some(chunk) = world.loaded.get(&c) {
+                for e in &chunk.entities {
+                    commands.entity(*e).try_remove::<MeshTag>();
+                }
+                world.dirty.insert(c);
             }
         }
     }
@@ -984,11 +1162,15 @@ mod tests {
             coarse_regen: default(),
             unsaved: false,
             hold_saves: false,
+            animate: true,
+            reveal: None,
+            ended: Vec::new(),
+            reveal_count: 0,
         }
     }
 
     fn load(world: &mut VoxelWorld, c: IVec3) {
-        let built = build_chunk(world.terrain, &world.palette.clone(), c, None, &world.edits_for(c), None);
+        let built = build_chunk(world.terrain, &world.palette.clone(), c, None, &world.edits_for(c), None, None);
         world.loaded.insert(c, LoadedChunk { voxels: Arc::new(built.voxels), entities: Vec::new() });
     }
 
@@ -1047,6 +1229,7 @@ mod tests {
         let mut app = App::new();
         app.add_plugins(MinimalPlugins)
             .init_resource::<Assets<Mesh>>()
+            .init_resource::<Reveals>()
             .insert_resource(world())
             .add_systems(Update, (stream_chunks, finish_chunks).chain());
         app
@@ -1094,6 +1277,46 @@ mod tests {
             std::thread::yield_now();
         }
         panic!("the view never loaded");
+    }
+
+    /// A land change is revealed in the chunks that hold it: they're tagged, the ghost
+    /// of what it dug away is drawn, and when the time is up both are gone.
+    #[test]
+    fn a_land_change_is_revealed_and_then_meshed_plain() {
+        let mut app = streaming_app();
+        app.world_mut().spawn((ChunkLoader, GlobalTransform::default()));
+        run_until_loaded(&mut app, Vec3::ZERO);
+        app.update();
+        let tagged = |app: &mut App| app.world_mut().query::<&MeshTag>().iter(app.world()).map(|t| t.value).collect::<Vec<u32>>();
+        // Dig out the top of the ground under the start, well inside one chunk.
+        let (p, old) = {
+            let world = app.world().resource::<VoxelWorld>();
+            let top = (1..WORLD_HEIGHT).rev().map(|y| IVec3::new(5, y, 5)).find(|p| world.get(*p).is_some_and(|id| id != AIR)).unwrap();
+            (top, world.get(top).unwrap())
+        };
+        {
+            let mut world = app.world_mut().resource_mut::<VoxelWorld>();
+            assert!(world.set(p, AIR));
+            world.reveal([(p, Shift { old, new: AIR, arrival: 9 })], 1.0);
+        }
+        for _ in 0..10_000 {
+            app.update();
+            if app.world().resource::<VoxelWorld>().reveal.as_ref().is_some_and(|r| r.started) {
+                break;
+            }
+            std::thread::yield_now();
+        }
+        let reveal = app.world().resource::<VoxelWorld>().reveal.as_ref().expect("the reveal is running");
+        assert_eq!((reveal.slot, reveal.ghosts.values().flatten().count()), (Some(0), 1));
+        let tags = tagged(&mut app);
+        assert!(tags.contains(&1) && tags.contains(&(1 | 1 << 31)), "{tags:?}");
+
+        app.world_mut().resource_mut::<Reveals>().skip(10.0);
+        app.update();
+        app.update();
+        assert!(app.world().resource::<VoxelWorld>().reveal.is_none());
+        assert!(tagged(&mut app).is_empty());
+        assert_eq!(app.world_mut().resource_mut::<Reveals>().open(1.0, true, None), Some(0));
     }
 
     #[test]

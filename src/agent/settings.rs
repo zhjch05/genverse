@@ -107,7 +107,7 @@ pub fn load_settings(
         *graphics = saved;
     }
     if let Some(q) = std::env::var("GENVERSE_QUALITY").ok().and_then(|k| Quality::from_key(&k)) {
-        *graphics = q.settings(graphics.render_scale, graphics.auto_scale);
+        *graphics = Graphics { build_animation: graphics.build_animation, ..q.settings(graphics.render_scale, graphics.auto_scale) };
     }
     let display: Display = prefs::get("display").and_then(|v| serde_json::from_value(v).ok()).unwrap_or_default();
     settings.display = display;
@@ -268,7 +268,7 @@ pub fn settings_window(
                     if pick(ui, "preset", &mut preset, &choices, shown)
                         && let Some(q) = preset
                     {
-                        g = q.settings(g.render_scale, g.auto_scale);
+                        g = Graphics { build_animation: g.build_animation, ..q.settings(g.render_scale, g.auto_scale) };
                     }
                     ui.end_row();
 
@@ -290,6 +290,10 @@ pub fn settings_window(
 
                     ui.label("Bloom").on_hover_text("A glow around bright things");
                     toggle(ui, "bloom", &mut g.bloom);
+                    ui.end_row();
+
+                    ui.label("Build animation").on_hover_text("New builds and land changes arrive voxel by voxel, instead of all at once");
+                    toggle(ui, "build_animation", &mut g.build_animation);
                     ui.end_row();
                 });
                 ui.add_space(6.0);

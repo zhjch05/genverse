@@ -14,7 +14,7 @@ use crate::{logic::data::GameSpec, sculpt::TerrainSpec};
 use crate::voxel::{
     ModelData,
     faces::count_visible,
-    model::{Fill, Geom, ModelDef, NoiseDef, OpDef, PaletteDef, SurfaceDef, build},
+    model::{Fill, Geom, ModelDef, NoiseDef, OpDef, PaletteDef, SurfaceDef, build_ordered},
 };
 
 pub const SCHEMA: &str = include_str!("build_spec.schema.json");
@@ -139,6 +139,19 @@ fn vec3(v: &[f64], what: &str, errors: &mut Vec<String>) -> (f32, f32, f32) {
 /// Checks the spec, rasterizes it, and measures the result.
 /// Errors are phrased so they can be shown to the player or fed back to the agent.
 pub fn compile(spec: &BuildSpec, limits: &BuildLimits) -> Result<CompiledBuild, Vec<String>> {
+    compile_ordered(spec, limits, None)
+}
+
+/// Which shape of `spec` made each voxel of its model: the index of the last shape to
+/// change the cell, in the grid's layout. For showing a build arrive in the order it
+/// was written. `None` if the spec doesn't compile.
+pub fn shape_order(spec: &BuildSpec) -> Option<Vec<u16>> {
+    let mut order = Vec::new();
+    compile_ordered(spec, &BuildLimits::ACCEPTED, Some(&mut order)).ok()?;
+    Some(order)
+}
+
+fn compile_ordered(spec: &BuildSpec, limits: &BuildLimits, order: Option<&mut Vec<u16>>) -> Result<CompiledBuild, Vec<String>> {
     let BuildLimits { max_size, max_shapes, max_colors, max_voxels, max_faces, max_glow_voxels, max_glass_voxels } =
         *limits;
     let mut errors = Vec::new();
@@ -260,7 +273,8 @@ pub fn compile(spec: &BuildSpec, limits: &BuildLimits) -> Result<CompiledBuild, 
         lights: Vec::new(),
         parts: Vec::new(),
     };
-    let model = build(def).map_err(|e| vec![e])?;
+    // One op per shape, in the spec's order, so an op's index is its shape's.
+    let model = build_ordered(def, order).map_err(|e| vec![e])?;
 
     let mut stats = BuildStats { size, ..Default::default() };
     let (mut glass, grid) = (0, &model.grid);
@@ -334,6 +348,15 @@ mod tests {
         assert_eq!(build.stats.size, UVec3::new(7, 22, 7));
         assert_eq!(build.stats.glow, 5 * 4 * 5);
         assert!(build.stats.faces > 0);
+    }
+
+    #[test]
+    fn shape_order_names_the_last_shape_to_touch_a_voxel() {
+        let order = shape_order(&lamp()).unwrap();
+        let at = |x: u32, y: u32, z: u32| order[(x + 7 * (y + 22 * z)) as usize];
+        // The base, the pole, the lamp and the cap, from the ground up.
+        assert_eq!([at(3, 0, 3), at(3, 10, 3), at(3, 18, 3), at(3, 21, 3)], [0, 1, 2, 3]);
+        assert_eq!(order.len(), 7 * 22 * 7);
     }
 
     #[test]

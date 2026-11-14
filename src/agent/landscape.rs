@@ -13,6 +13,7 @@ use bevy::{
     gizmos::config::GizmoLineJoint,
     light::NotShadowCaster,
     mesh::{Indices, PrimitiveTopology},
+    platform::collections::HashMap,
     prelude::*,
     window::PrimaryWindow,
 };
@@ -28,7 +29,7 @@ use crate::{
     player::{OrbitLock, PointerOverUi},
     voxel::{AIR, VoxelId},
     world::{
-        VoxelWorld,
+        Shift, VoxelWorld,
         ledger::Ledger,
         terrain::{VOXEL_SIZE, WORLD_HEIGHT, block},
     },
@@ -42,6 +43,31 @@ const DRAG_REACH_M: f32 = 150.0;
 
 /// How fast the drag plane follows the ground under the corner, per second.
 const DRAG_FOLLOW: f32 = 8.0;
+
+/// What's shown now in the cells of `before`.
+fn shown(world: &VoxelWorld, before: &[Before]) -> Vec<(IVec3, VoxelId)> {
+    before.iter().filter_map(|b| Some((b.p, world.get(b.p)?))).collect()
+}
+
+/// Shows the land arriving voxel by voxel after a change: `was` is what each cell it
+/// touched showed before. The voxels spread out from the middle of the change.
+fn reveal(world: &mut VoxelWorld, was: impl IntoIterator<Item = (IVec3, VoxelId)>) {
+    let cells: Vec<(IVec3, VoxelId, VoxelId)> =
+        was.into_iter().filter_map(|(p, old)| world.get(p).filter(|new| *new != old).map(|new| (p, old, new))).collect();
+    let Some(first) = cells.first() else {
+        return;
+    };
+    let (lo, hi) = cells.iter().fold((first.0.xz(), first.0.xz()), |(lo, hi), c| (lo.min(c.0.xz()), hi.max(c.0.xz())));
+    let middle = (lo + hi).as_vec2() / 2.0;
+    let reach = ((hi - lo).as_vec2() / 2.0).length().max(1.0);
+    let seconds = crate::voxel::reveal::seconds_for(cells.len() / 4);
+    let cells = cells.into_iter().map(|(p, old, new)| {
+        let out = p.xz().as_vec2().distance(middle) / reach;
+        let arrival = crate::voxel::reveal::order(out * 0.8 + crate::voxel::noise::hash01(p, 23) * 0.2);
+        (p, Shift { old, new, arrival })
+    });
+    world.reveal(cells.collect::<Vec<_>>(), seconds);
+}
 
 /// How a voxel was before a change touched it.
 struct Before {
@@ -99,12 +125,19 @@ impl Landscape {
     ) -> Result<SculptStats, PreviewError> {
         let area = self.target().ok_or_else(|| PreviewError::Invalid(vec!["no area is selected".to_string()]))?;
         let old = self.draft.take();
+        // What the old preview showed: the new one arrives in its place.
+        let mut was: HashMap<IVec3, VoxelId> = default();
         if let Some(old) = &old {
+            was.extend(shown(world, &old.before));
             revert(world, &old.before);
         }
         match prepare(world, ledger, &spec, area) {
             Ok(edit) => {
                 let before = apply(world, &edit.edits);
+                for b in &before {
+                    was.entry(b.p).or_insert(b.visible);
+                }
+                reveal(world, was);
                 world.hold_saves = true;
                 self.draft = Some(TerrainDraft { spec, prompt, provider, area, stats: edit.stats, before });
                 Ok(edit.stats)
@@ -161,6 +194,7 @@ impl Landscape {
         }
         let edit = prepare(world, ledger, &spec, area)?;
         let before = apply(world, &edit.edits);
+        reveal(world, before.iter().map(|b| (b.p, b.visible)));
         self.draft = Some(TerrainDraft { spec, prompt, provider, area, stats: edit.stats, before });
         let (_, name) = self.keep(world, ledger).expect("the draft was just set");
         Ok((name, edit.stats))
@@ -168,7 +202,9 @@ impl Landscape {
 
     pub fn discard(&mut self, world: &mut VoxelWorld) {
         if let Some(draft) = self.draft.take() {
+            let was = shown(world, &draft.before);
             revert(world, &draft.before);
+            reveal(world, was);
             world.hold_saves = false;
         }
     }

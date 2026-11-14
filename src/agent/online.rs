@@ -369,7 +369,9 @@ fn committed(
                     }
                 }
                 (_, Some(_)) => {}
-                (Action::PlaceBuild(b) | Action::UpdateBuild(b), None) => creations.upsert(commands, b),
+                // What someone else just built arrives the way one's own does.
+                (Action::PlaceBuild(b), None) => creations.upsert_arriving(commands, b, None),
+                (Action::UpdateBuild(b), None) => creations.upsert(commands, b),
                 (Action::RemoveBuild { build }, None) => creations.remove(commands, *build),
                 (_, None) => {
                     // `GENVERSE_DESYNC=1` drops some of others' land edits, to watch

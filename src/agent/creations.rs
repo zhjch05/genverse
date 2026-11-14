@@ -13,7 +13,7 @@ use genverse_rules::{
 
 use super::spec::{BuildSpec, BuildStats, VOXEL_SIZE, compile};
 use crate::{
-    voxel::{Coarse, DepthBias, Dormant, ModelData, VoxelModel},
+    voxel::{Coarse, DepthBias, Dormant, ModelData, Palette, Reveal, VoxelGrid, VoxelModel},
     world::{CHUNK, ChunkLoader, SolidModel, VoxelWorld, ledger::Ledger, terrain::{self, is_solid}},
 };
 
@@ -132,6 +132,17 @@ fn spawn(commands: &mut Commands, model: &ModelData, name: &str, position: Vec3,
         .id()
 }
 
+/// How a build made from `spec` arrives: whole, or in place of `old` (the voxels and
+/// palette shown until now) only where it differs. `None` if it doesn't differ. Its
+/// voxels come in the order the spec's shapes were written.
+fn arrival(spec: &BuildSpec, model: &ModelData, old: Option<(&VoxelGrid, &std::sync::Arc<Palette>)>) -> Option<Reveal> {
+    let shapes = genverse_rules::build::shape_order(spec);
+    match old {
+        Some(old) => Reveal::between(old, (&model.grid, &model.palette), shapes.as_deref()),
+        None => Some(Reveal::whole(&model.grid, shapes.as_deref())),
+    }
+}
+
 /// A spot in front of the player, on the ground, with the build's front facing them.
 pub fn anchor_in_front(player: &Transform, world: &VoxelWorld, size: UVec3) -> (Vec3, f32) {
     let facing = player.rotation.to_euler(EulerRot::YXZ).0;
@@ -164,6 +175,8 @@ impl Creations {
         draft: (BuildSpec, BuildStats, String, String),
         at: (Vec3, f32),
     ) {
+        // A revision arrives in place of the draft it revises: only what differs moves.
+        let revised = self.draft.as_ref().and_then(|old| compile(&old.spec, &BuildLimits::ACCEPTED).ok());
         let (replaces, lift, follow) = self.draft.take().map_or((None, 0.0, true), |old| {
             commands.entity(old.entity).despawn();
             (old.replaces, old.lift, old.follow)
@@ -171,6 +184,9 @@ impl Creations {
         let (spec, stats, prompt, provider) = draft;
         let entity = spawn(commands, model, &spec.name, at.0, at.1);
         commands.entity(entity).insert(DraftMarker);
+        if let Some(reveal) = arrival(&spec, model, revised.as_ref().map(|old| (&old.model.grid, &old.model.palette))) {
+            commands.entity(entity).insert(reveal);
+        }
         self.draft = Some(Draft { entity, spec, stats, prompt, provider, replaces, lift, blocked: false, denied: None, follow, by_agent: true, portal: None });
     }
 
@@ -300,6 +316,23 @@ impl Creations {
         }
         self.take_placed(commands, build.build);
         self.restore(commands, build.clone());
+    }
+
+    /// [`upsert`](Self::upsert), with the build arriving voxel by voxel: whole, or in
+    /// place of `old` (the voxels and palette it was drawn with) where it differs.
+    pub fn upsert_arriving(&mut self, commands: &mut Commands, build: &SavedCreation, old: Option<(&VoxelGrid, &std::sync::Arc<Palette>)>) {
+        if self.draft.as_ref().and_then(|d| d.replaces.as_ref()).is_some_and(|r| r.build == build.build) {
+            return;
+        }
+        self.take_placed(commands, build.build);
+        let Ok(compiled) = compile(&build.spec, &BuildLimits::ACCEPTED) else {
+            return;
+        };
+        let entity = spawn_placed(commands, &compiled.model, build);
+        if let Some(reveal) = arrival(&build.spec, &compiled.model, old) {
+            commands.entity(entity).insert(reveal);
+        }
+        self.placed.push((entity, build.clone()));
     }
 
     /// Removes a build someone else removed (online).
@@ -461,7 +494,7 @@ impl Creations {
 
 /// Brings into view the builds placed, changed and removed without a draft. A build
 /// that was selected stays selected.
-pub fn show_builds(mut commands: Commands, mut creations: ResMut<Creations>) {
+pub fn show_builds(mut commands: Commands, mut creations: ResMut<Creations>, models: Query<&VoxelModel>) {
     if creations.shown.is_empty() {
         return;
     }
@@ -469,7 +502,9 @@ pub fn show_builds(mut commands: Commands, mut creations: ResMut<Creations>) {
         match shown {
             Shown::Put(build) => {
                 let selected = creations.selected().is_some_and(|s| s.build == build.build);
-                creations.upsert(&mut commands, &build);
+                // A revised build changes where it stands; a new one arrives whole.
+                let old = creations.placed.iter().find(|(_, c)| c.build == build.build).and_then(|(e, _)| models.get(*e).ok());
+                creations.upsert_arriving(&mut commands, &build, old.map(|m| (&m.grid, &m.palette)));
                 if selected {
                     creations.selected = creations.placed.iter().find(|(_, c)| c.build == build.build).map(|(e, _)| *e);
                 }

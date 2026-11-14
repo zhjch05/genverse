@@ -244,6 +244,12 @@ fn color(hex: &str) -> Result<Srgba, String> {
 }
 
 pub fn build(def: ModelDef) -> Result<ModelData, String> {
+    build_ordered(def, None)
+}
+
+/// [`build`], also noting in `order` which op last changed each cell (in the grid's
+/// layout; cells no op changed keep 0).
+pub fn build_ordered(def: ModelDef, mut order: Option<&mut Vec<u16>>) -> Result<ModelData, String> {
     let surfaces = def
         .surfaces
         .iter()
@@ -287,8 +293,17 @@ pub fn build(def: ModelDef) -> Result<ModelData, String> {
     let palette = Palette { surfaces, entries };
 
     let mut grid = VoxelGrid::new(UVec3::new(def.size.0, def.size.1, def.size.2));
-    for op in &def.ops {
+    if let Some(order) = order.as_deref_mut() {
+        *order = vec![0; grid.cells().len()];
+    }
+    for (i, op) in def.ops.iter().enumerate() {
+        let before = order.is_some().then(|| grid.cells().to_vec());
         apply_op(&mut grid, &palette, op)?;
+        if let (Some(order), Some(before)) = (order.as_deref_mut(), before) {
+            for (cell, _) in before.iter().zip(grid.cells()).enumerate().filter(|(_, (was, is))| was != is) {
+                order[cell] = i as u16;
+            }
+        }
     }
 
     let lights = def

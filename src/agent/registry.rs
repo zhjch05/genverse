@@ -131,6 +131,7 @@ pub static SETTINGS: &[Setting] = &[
     graphic("graphics.bloom", "/bloom", Kind::Flag, "A glow around bright things"),
     graphic("graphics.render_scale", "/render_scale", number(0.5, 1.0), "The share of the window's pixels the world is drawn at"),
     graphic("graphics.auto_scale", "/auto_scale", Kind::Flag, "Lower the render scale while frames run slow"),
+    graphic("graphics.build_animation", "/build_animation", Kind::Flag, "New builds and land changes arrive voxel by voxel instead of all at once"),
 ];
 
 /// Fields of the stores that aren't settings, and why.

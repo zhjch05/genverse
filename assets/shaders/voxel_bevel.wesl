@@ -41,6 +41,7 @@ fn lean(d: f32, edge: u32) -> f32 {
 
 // UV 0 is the position across the face (0..1 on both axes), UV 1's x the edge flags:
 // bit 0 for u = 0, 1 for u = 1, 2 for v = 0, 3 for v = 1. The tangent points along u.
+// UV 1's y is how freshly the voxel arrived in a reveal (1 just now, 0 long since).
 fn rounded_normal(in: VertexOutput, n: vec3<f32>) -> vec3<f32> {
     let edges = u32(in.uv_b.x + 0.5);
     let t = normalize(in.world_tangent.xyz);
@@ -73,6 +74,9 @@ fn fragment(
     out = deferred_output(in, pbr_input);
 } @else {
     out.color = apply_pbr_lighting(pbr_input);
+    // A voxel that just arrived glows for a moment, like the cursor after a word.
+    let fresh = in.uv_b.y * in.uv_b.y;
+    out.color = vec4(out.color.rgb + (out.color.rgb * 1.5 + vec3(0.2)) * fresh, out.color.a);
     out.color = main_pass_post_lighting_processing(pbr_input, out.color);
 }
     return out;

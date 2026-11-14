@@ -14,6 +14,10 @@
 //! which face (3) and corner (2) it is, its light (2), and the face's edge flags (4).
 //! The second holds the voxel's sRGB color. Positions are in voxels, so chunk entities
 //! are scaled by the voxel size.
+//!
+//! A mesh that's being revealed (`reveal.rs`) also carries, per voxel, when it arrives
+//! ([`Fresh`]): the order in the second word's top byte, and one more bit in the first
+//! for voxels that change in place.
 
 use bevy::{
     asset::RenderAssetUsages,
@@ -32,6 +36,25 @@ pub const CHUNK_SIZE: i32 = 32;
 /// The packed vertex, see the module docs.
 pub const ATTRIBUTE_VOXEL: MeshVertexAttribute =
     MeshVertexAttribute::new("Voxel", 0x7c3e_91a4_5b02_d6f1, VertexFormat::Uint32x2);
+
+/// A voxel's part in a reveal: `arrival` 0 is a voxel that was there all along, 1 to
+/// 255 its place in the order. A voxel that `swap`s takes the place of another one and
+/// changes all at once; the others grow in (or, in the mesh of what's going, shrink away).
+#[derive(Clone, Copy, Default, PartialEq, Eq, Debug)]
+pub struct Fresh {
+    pub arrival: u8,
+    pub swap: bool,
+}
+
+impl Fresh {
+    /// Whether the voxel isn't there (or not whole) for part of the reveal.
+    fn grows(self) -> bool {
+        self.arrival > 0 && !self.swap
+    }
+}
+
+/// Looks up a voxel's part in a reveal.
+pub type FreshAt<'a> = &'a dyn Fn(IVec3) -> Fresh;
 
 struct Face {
     normal: IVec3,
@@ -188,11 +211,36 @@ fn corner_light(cells: &Cells, i: usize, [side1, side2, corner]: [isize; 3]) -> 
 /// (which may lie outside the region) through `get`. Returns one mesh per surface,
 /// positioned relative to `min`, in voxels.
 pub fn mesh_region(get: impl Fn(IVec3) -> VoxelId, palette: &Palette, min: IVec3, max: IVec3) -> Vec<(usize, Mesh)> {
+    mesh_region_fresh(get, None, palette, min, max)
+}
+
+/// [`mesh_region`] for a reveal: each voxel carries what `fresh` says of it. A voxel
+/// that stays also keeps the faces that voxels still to arrive will cover, so the
+/// reveal never opens a hole; the mesh is replaced by a plain one when it's over.
+pub fn mesh_region_fresh(
+    get: impl Fn(IVec3) -> VoxelId,
+    fresh: Option<FreshAt>,
+    palette: &Palette,
+    min: IVec3,
+    max: IVec3,
+) -> Vec<(usize, Mesh)> {
     let size = max - min;
     assert!(size.cmple(IVec3::splat(CHUNK_SIZE)).all(), "region too large to pack: {min}..{max}");
     let mut builders: Vec<MeshBuilder> = palette.surfaces.iter().map(|_| MeshBuilder::new()).collect();
     let cells = Cells::new(get, palette, min, max);
     let offsets = FACES.each_ref().map(|face| FaceOffsets::new(&cells, face));
+    // In the cells' order, border included.
+    let marks: Option<Vec<Fresh>> = fresh.map(|fresh| {
+        let mut marks = Vec::with_capacity(cells.cells.len());
+        for z in -1..=size.z {
+            for y in -1..=size.y {
+                for x in -1..=size.x {
+                    marks.push(fresh(min + IVec3::new(x, y, z)));
+                }
+            }
+        }
+        marks
+    });
 
     for z in 0..size.z {
         for y in 0..size.y {
@@ -206,17 +254,20 @@ pub fn mesh_region(get: impl Fn(IVec3) -> VoxelId, palette: &Palette, min: IVec3
                 let local = IVec3::new(x, y, z);
                 let entry = palette.entry(id);
                 let builder = &mut builders[entry.surface];
+                let mark = marks.as_ref().map_or(Fresh::default(), |m| m[i]);
                 // Only for voxels with a face showing: most are buried.
                 let mut color = None;
 
                 for (f, (face, offsets)) in FACES.iter().zip(&offsets).enumerate() {
-                    if !cells.visible(id, cells.at(i, offsets.normal)) {
+                    let covered_later =
+                        || marks.as_ref().is_some_and(|m| !mark.grows() && m[(i as isize + offsets.normal) as usize].grows());
+                    if !cells.visible(id, cells.at(i, offsets.normal)) && !covered_later() {
                         continue;
                     }
                     let color = *color.get_or_insert_with(|| {
                         let jitter = 1.0 + entry.variation * (hash01(min + local, id as u32) * 2.0 - 1.0);
                         let [r, g, b, _] = Srgba::from(entry.color * jitter).to_u8_array();
-                        r as u32 | (g as u32) << 8 | (b as u32) << 16
+                        r as u32 | (g as u32) << 8 | (b as u32) << 16 | (mark.arrival as u32) << 24
                     });
                     let light = offsets.light.map(|l| corner_light(&cells, i, l));
                     let edges = outside_edges(&cells, i, id, offsets);
@@ -231,7 +282,8 @@ pub fn mesh_region(get: impl Fn(IVec3) -> VoxelId, palette: &Palette, min: IVec3
                             | (f as u32) << 18
                             | (c as u32) << 21
                             | (l as u32) << 23
-                            | edges << 25;
+                            | edges << 25
+                            | (mark.swap as u32) << 29;
                         builder.vertices.push([packed, color]);
                     }
                     // Split the quad along the brighter diagonal so AO
@@ -257,6 +309,11 @@ pub fn mesh_region(get: impl Fn(IVec3) -> VoxelId, palette: &Palette, min: IVec3
 
 /// Meshes a whole grid in [`CHUNK_SIZE`] chunks.
 pub fn mesh_grid(grid: &VoxelGrid, palette: &Palette) -> Vec<ChunkMesh> {
+    mesh_grid_fresh(grid, None, palette)
+}
+
+/// [`mesh_grid`] for a reveal; see [`mesh_region_fresh`].
+pub fn mesh_grid_fresh(grid: &VoxelGrid, fresh: Option<FreshAt>, palette: &Palette) -> Vec<ChunkMesh> {
     let size = grid.size().as_ivec3();
     let chunk_counts = (size + IVec3::splat(CHUNK_SIZE - 1)) / CHUNK_SIZE;
     let mut out = Vec::new();
@@ -265,7 +322,7 @@ pub fn mesh_grid(grid: &VoxelGrid, palette: &Palette) -> Vec<ChunkMesh> {
             for cx in 0..chunk_counts.x {
                 let origin = IVec3::new(cx, cy, cz) * CHUNK_SIZE;
                 let end = (origin + IVec3::splat(CHUNK_SIZE)).min(size);
-                for (surface, mesh) in mesh_region(|p| grid.get(p), palette, origin, end) {
+                for (surface, mesh) in mesh_region_fresh(|p| grid.get(p), fresh, palette, origin, end) {
                     out.push(ChunkMesh { origin, surface, mesh });
                 }
             }
@@ -277,6 +334,35 @@ pub fn mesh_grid(grid: &VoxelGrid, palette: &Palette) -> Vec<ChunkMesh> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use bevy::mesh::VertexAttributeValues;
+
+    fn words(mesh: &Mesh) -> Vec<[u32; 2]> {
+        match mesh.attribute(ATTRIBUTE_VOXEL) {
+            Some(VertexAttributeValues::Uint32x2(words)) => words.clone(),
+            _ => panic!("no packed vertices"),
+        }
+    }
+
+    /// A voxel on the way sits on one that stays: it carries its order, and the one
+    /// under it keeps its top face until it's covered.
+    #[test]
+    fn fresh_voxels_carry_their_order_and_leave_no_hole() {
+        let palette = crate::world::terrain::palette();
+        let mut grid = VoxelGrid::new(UVec3::splat(4));
+        grid.set(IVec3::new(1, 0, 1), 1);
+        grid.set(IVec3::new(1, 1, 1), 1);
+        let fresh = |p: IVec3| Fresh { arrival: if p == IVec3::new(1, 1, 1) { 7 } else { 0 }, swap: false };
+        let quads = |meshes: &[ChunkMesh]| meshes.iter().map(|m| words(&m.mesh).len() / 4).sum::<usize>();
+        let plain = mesh_grid(&grid, &palette);
+        let revealed = mesh_grid_fresh(&grid, Some(&fresh), &palette);
+        // Two stacked cubes show ten faces; the lower one's top makes eleven.
+        assert_eq!((quads(&plain), quads(&revealed)), (10, 11));
+        // Five faces of the arriving voxel carry its order; the six of the other don't.
+        let orders: Vec<u32> = revealed.iter().flat_map(|m| words(&m.mesh)).map(|[_, b]| b >> 24).collect();
+        assert_eq!(orders.iter().filter(|o| **o == 7).count(), 20);
+        assert_eq!(orders.iter().filter(|o| **o == 0).count(), 24);
+        assert!(plain.iter().flat_map(|m| words(&m.mesh)).all(|[a, b]| b >> 24 == 0 && a >> 29 == 0));
+    }
 
     /// `voxel_vertex.wesl` hard-codes each face's normal and tangent (u) and takes the
     /// tangent's w as 1, which holds while every bitangent `normal × u` points along v.
