@@ -25,6 +25,9 @@ the `assets` folder next to it.
 **The agent.** Building, reshaping and making games need [Claude Code](https://code.claude.com/docs/en/setup)
 or [Codex CLI](https://github.com/openai/codex), installed and signed in once from a
 terminal. Requests run on your own Claude or ChatGPT plan and count toward its usage.
+They use the model and provider your CLI is set up with: a custom Codex `model_provider`
+in `~/.codex/config.toml`, or Bedrock, Vertex or a proxy in the `env` block of
+`~/.claude/settings.json`, carries over.
 Without either you can still walk around, play games and join others. Genverse sends no
 telemetry.
 
@@ -74,8 +77,10 @@ GENVERSE_WORLD=sokoban cargo run      # start in (or create) a named world
 ## Talking to the agent
 
 Everything that changes the world goes through one chat panel. Pick **Claude Code** or
-**Codex CLI** at the top, then press `T` and describe what you want. What the message does
-depends on what's selected:
+**Codex CLI** at the top, then press `T` and describe what you want. The picker under the
+message box sets the model and the reasoning level (more is more thorough, but slower);
+**Default** uses your CLI's own model, and on Codex the low level, unless you set your own
+provider. What the message does depends on what's selected:
 
 - **nothing selected**: a new build, a game, or a change to the world's game logic
 - **a build selected**: a revision of that build
@@ -104,7 +109,8 @@ game over MCP on `127.0.0.1` with a per-run token:
 - **Checking its work:** `check_build`, `test_game` (plays a game in a throwaway copy of the
   world), and `look` (renders a screenshot so it sees what it made)
 
-It gets nothing else: no shell, no other MCP servers, no user config. Its answer must match
+It gets nothing else: no shell, no other MCP servers, and none of your own CLI config but
+which model and provider to use, and how to reach it. Its answer must match
 `crates/rules/src/build_spec.schema.json`, and the game checks it before anything changes.
 
 ## Builds
@@ -280,6 +286,7 @@ screenshots:
 | `GENVERSE_WORLD`, `GENVERSE_GAME` | which world and game to start in (created if new) |
 | `GENVERSE_PROMPT` | sends a message (or `;`-separated chat commands) at start |
 | `GENVERSE_AGENT=codex` | uses Codex instead of Claude Code |
+| `GENVERSE_MODEL`, `GENVERSE_EFFORT` | the agent's model and reasoning level, as in the picker |
 | `GENVERSE_AREA=14`, `GENVERSE_KEEP=1` | selects an area in front of the hero for a land change, and keeps the preview |
 | `GENVERSE_SELECT_LAST=1` | revises the most recent build |
 | `GENVERSE_PLAY="go 15 0; wait 4; hit"` | plays steps once the agent is done |

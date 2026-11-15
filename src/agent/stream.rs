@@ -24,6 +24,12 @@ pub enum Kind {
 #[derive(Debug, PartialEq, Eq)]
 pub enum Activity {
     Thinking,
+    /// Something went wrong that it may get past. `retry`: a request to the model failed
+    /// and is being tried again.
+    Warning {
+        text: String,
+        retry: bool,
+    },
     /// The agent starts saying something to the player.
     Note(String),
     /// More of what it's saying, as it's written.
@@ -69,6 +75,22 @@ impl Stream {
     pub fn claude(&mut self, event: &Value) -> Vec<Activity> {
         let mut out = Vec::new();
         match event["type"].as_str() {
+            // A request to the model failed and is tried again.
+            Some("system") if event["subtype"] == "api_retry" => {
+                let status = event["error_status"]
+                    .as_u64()
+                    .map(|s| format!("HTTP {s}, "))
+                    .unwrap_or_default();
+                let error = event["error"].as_str().unwrap_or("error");
+                out.push(Activity::Warning {
+                    text: format!(
+                        "Retrying the model ({}/{}): {status}{error}",
+                        event["attempt"].as_u64().unwrap_or(0),
+                        event["max_retries"].as_u64().unwrap_or(0),
+                    ),
+                    retry: true,
+                });
+            }
             // Text arrives a few words at a time.
             Some("stream_event") => {
                 let event = &event["event"];
@@ -152,6 +174,11 @@ impl Stream {
         let started = match event["type"].as_str() {
             Some("item.started") => true,
             Some("item.completed") => false,
+            // Reconnecting, or what ended the turn.
+            Some("error") => {
+                out.extend(event["message"].as_str().map(|m| warning(m, true)));
+                return out;
+            }
             _ => return out,
         };
         // Something follows the message kept back, so it wasn't the answer.
@@ -164,6 +191,10 @@ impl Stream {
                     self.held = Some(said(item["text"].as_str().unwrap_or_default()))
                         .filter(|text| !text.is_empty());
                 }
+                return out;
+            }
+            Some("error") => {
+                out.extend(item["message"].as_str().map(|m| warning(m, false)));
                 return out;
             }
             Some("reasoning") => {
@@ -241,6 +272,15 @@ fn command(line: &str) -> String {
         .or_else(|| quoted('"'))
         .unwrap_or(inner)
         .to_string()
+}
+
+/// A warning's first line, at most a few lines long once wrapped.
+fn warning(text: &str, retry: bool) -> Activity {
+    let line = text.lines().next().unwrap_or_default();
+    Activity::Warning {
+        text: line.chars().take(300).collect(),
+        retry,
+    }
 }
 
 /// One line, short enough for the feed.
@@ -364,6 +404,29 @@ mod tests {
                     ok: false
                 },
             ]
+        );
+    }
+
+    #[test]
+    fn retries_and_errors_show_as_warnings() {
+        let mut stream = Stream::new(Path::new("/w"));
+        assert_eq!(
+            stream.codex(&json!({"type": "error", "message": "Reconnecting... 1/5 (boom)"})),
+            [Activity::Warning {
+                text: "Reconnecting... 1/5 (boom)".into(),
+                retry: true
+            }]
+        );
+        assert_eq!(
+            stream.codex(&json!({"type": "item.completed", "item": {"id": "item_0", "type": "error", "message": "no metadata"}})),
+            [Activity::Warning { text: "no metadata".into(), retry: false }]
+        );
+        assert_eq!(
+            stream.claude(&json!({"type": "system", "subtype": "api_retry", "attempt": 2, "max_retries": 10, "error_status": 401, "error": "authentication_failed"})),
+            [Activity::Warning {
+                text: "Retrying the model (2/10): HTTP 401, authentication_failed".into(),
+                retry: true
+            }]
         );
     }
 

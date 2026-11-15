@@ -16,6 +16,8 @@ const SHOWN: usize = 8;
 
 enum Step {
     Note(String),
+    /// A retry or an error it may get past.
+    Warning(String),
     /// `done` is how it went, once it's over.
     Tool {
         id: String,
@@ -46,6 +48,11 @@ impl Feed {
         self.thinking = matches!(activity, Activity::Thinking);
         match activity {
             Activity::Thinking => {}
+            // Retries come one after another; the latest says how it's going.
+            Activity::Warning { text, .. } => match self.steps.last_mut() {
+                Some(Step::Warning(last)) => *last = text,
+                _ => self.steps.push(Step::Warning(text)),
+            },
             Activity::Note(text) => self.steps.push(Step::Note(text)),
             Activity::NoteMore(more) => match self.steps.last_mut() {
                 Some(Step::Note(text)) => text.push_str(&more),
@@ -122,6 +129,13 @@ impl Feed {
                     match step {
                         Step::Note(text) => {
                             ui.label(egui::RichText::new(text.trim()).color(p.text));
+                        }
+                        Step::Warning(text) => {
+                            ui.label(
+                                egui::RichText::new(format!("{} {text}", icon::WARNING))
+                                    .size(12.0)
+                                    .color(p.warn),
+                            );
                         }
                         Step::Tool {
                             kind, what, done, ..

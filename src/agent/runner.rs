@@ -3,14 +3,15 @@
 //!
 //! It works in the world's folder ([`super::workspace`]): it may read and search it, and
 //! edit files there (the game's packages), and use the game's world tools, but nothing
-//! else: no shell, no other MCP servers, no user config.
+//! else: no shell, no other MCP servers, and of the player's own config only which model
+//! and provider to use ([`super::config`]).
 
 use std::{
     io::{BufRead, BufReader},
     path::PathBuf,
     process::Stdio,
     sync::{
-        Arc,
+        Arc, Mutex,
         atomic::{AtomicBool, Ordering},
         mpsc::{self, Receiver, RecvTimeoutError, Sender},
     },
@@ -21,7 +22,9 @@ use std::{
 use serde_json::Value;
 
 use super::{
+    config,
     mcp::{McpServer, SERVER_NAME},
+    models::Choice,
     spec::{AgentAnswer, SCHEMA},
     stream::{Activity, Stream},
 };
@@ -29,6 +32,17 @@ use super::{
 /// How long one request may take. A world game is designed, built and played through
 /// with `test_game` before it's answered, which takes a while; Stop ends it sooner.
 const TIMEOUT: Duration = Duration::from_secs(900);
+
+/// How long the model may stay silent before its first word, thought or tool call. An
+/// endpoint that takes the request and never answers would otherwise hold the chat for
+/// the whole [`TIMEOUT`] while the CLI waits on it.
+const FIRST_SIGN: Duration = Duration::from_secs(240);
+/// The same, once a request to the model has failed and is being retried.
+const FIRST_SIGN_AFTER_ERROR: Duration = Duration::from_secs(90);
+
+/// Codex's reasoning level when nothing else names one: builds are many small steps,
+/// so faster beats deeper.
+pub const CODEX_EFFORT: &str = "low";
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Provider {
@@ -76,6 +90,7 @@ struct ToolServer {
 /// scratch folder.
 pub fn start(
     provider: Provider,
+    choice: Choice,
     system: String,
     prompt: String,
     tools: Option<&McpServer>,
@@ -91,6 +106,7 @@ pub fn start(
     thread::spawn(move || {
         let result = run(
             provider,
+            &choice,
             &system,
             &prompt,
             tools.as_ref(),
@@ -122,6 +138,7 @@ fn scratch_dir() -> Result<PathBuf, String> {
 
 fn run(
     provider: Provider,
+    choice: &Choice,
     system: &str,
     prompt: &str,
     tools: Option<&ToolServer>,
@@ -149,6 +166,16 @@ fn run(
             .args(["--json-schema", SCHEMA, "--system-prompt", system])
             .args(["--strict-mcp-config", "--setting-sources", ""])
             .args(["--disable-slash-commands", "--no-session-persistence"]);
+            // Of the player's settings, only how to reach their model.
+            if let Some(settings) = config::claude().settings {
+                cmd.args(["--settings", &settings.to_string()]);
+            }
+            if let Some(model) = &choice.model {
+                cmd.args(["--model", model]);
+            }
+            if let Some(effort) = &choice.effort {
+                cmd.args(["--effort", effort]);
+            }
             // In the world's folder: reading and searching it, and editing files in it
             // (edits are accepted only inside the working folder).
             if files {
@@ -191,9 +218,27 @@ fn run(
                 } else {
                     "read-only"
                 },
-                "-c",
-                "model_reasoning_effort=\"low\"",
             ]);
+            // The player's config is left out, all but how to reach their model.
+            let user = config::codex();
+            for setting in &user.overrides {
+                cmd.arg("-c").arg(setting);
+            }
+            if let Some(model) = &choice.model {
+                cmd.arg("-m").arg(model);
+            }
+            // On their own endpoint, the level they set for it (or the model's own), since
+            // it may not take ours.
+            let effort = choice.effort.clone().or(match user.custom_provider {
+                Some(_) => user.effort,
+                None => Some(CODEX_EFFORT.into()),
+            });
+            if let Some(effort) = effort {
+                cmd.arg("-c").arg(format!(
+                    "model_reasoning_effort={}",
+                    toml::Value::String(effort)
+                ));
+            }
             if let Some(tools) = tools {
                 cmd.arg("-c")
                     .arg(format!("mcp_servers.{SERVER_NAME}.url=\"{}\"", tools.url))
@@ -235,19 +280,24 @@ fn run(
     // Read stdout on its own thread so we can enforce the timeout and cancellation.
     let stdout = child.stdout.take().expect("stdout is piped");
     // Drain stderr too, or a chatty CLI could fill the pipe and stall.
+    // Its tail is shared rather than joined: a CLI started through a wrapper (npm's
+    // `codex`) leaves the real program holding the pipe open after the wrapper is killed.
     let stderr = child.stderr.take().expect("stderr is piped");
-    let stderr = thread::spawn(move || {
-        let mut tail = String::new();
-        for line in BufReader::new(stderr).lines().map_while(Result::ok) {
-            tail.push_str(&line);
-            tail.push('\n');
-            if tail.len() > 4096 {
-                let cut = tail.ceil_char_boundary(tail.len() - 4096);
-                tail.drain(..cut);
+    let tail = Arc::new(Mutex::new(String::new()));
+    let stderr = {
+        let tail = tail.clone();
+        thread::spawn(move || {
+            for line in BufReader::new(stderr).lines().map_while(Result::ok) {
+                let Ok(mut tail) = tail.lock() else { break };
+                tail.push_str(&line);
+                tail.push('\n');
+                if tail.len() > 4096 {
+                    let cut = tail.ceil_char_boundary(tail.len() - 4096);
+                    tail.drain(..cut);
+                }
             }
-        }
-        tail
-    });
+        })
+    };
     let (line_tx, lines) = mpsc::channel::<String>();
     thread::spawn(move || {
         for line in BufReader::new(stdout).lines().map_while(Result::ok) {
@@ -257,18 +307,43 @@ fn run(
         }
     });
 
-    let deadline = Instant::now() + TIMEOUT;
+    let started = Instant::now();
+    let deadline = started + TIMEOUT;
     let mut answer: Option<Value> = None;
     let mut failure: Option<String> = None;
+    // The latest retry or error, to say why if it never gets through.
+    let mut warning: Option<String> = None;
+    let mut retrying = false;
+    // The model has answered something: a word, a thought or a tool call.
+    let mut heard = false;
     let mut stream = Stream::new(&dir);
     loop {
-        if cancel.load(Ordering::Relaxed) || Instant::now() > deadline {
+        let silent = !heard
+            && started.elapsed()
+                > if retrying {
+                    FIRST_SIGN_AFTER_ERROR
+                } else {
+                    FIRST_SIGN
+                };
+        if cancel.load(Ordering::Relaxed) || Instant::now() > deadline || silent {
             let _ = child.kill();
             let _ = child.wait();
-            return Err(if cancel.load(Ordering::Relaxed) {
-                "stopped".into()
+            if cancel.load(Ordering::Relaxed) {
+                return Err("stopped".into());
+            }
+            let stderr = tail.lock().map(|t| t.clone()).unwrap_or_default();
+            let why = warning
+                .or_else(|| stderr.trim().lines().last().map(str::to_string))
+                .map(|w| format!(" Last: {w}"))
+                .unwrap_or_default();
+            return Err(if silent {
+                format!(
+                    "no answer from the model after {}s.{why} Check that {} can reach the model you use (its provider, endpoint and key).",
+                    started.elapsed().as_secs(),
+                    provider.label()
+                )
             } else {
-                "timed out".into()
+                format!("timed out.{why}")
             });
         }
         let line = match lines.recv_timeout(Duration::from_millis(200)) {
@@ -284,6 +359,13 @@ fn run(
             Provider::Codex => stream.codex(&event),
         };
         for activity in activities {
+            match &activity {
+                Activity::Warning { text, retry } => {
+                    warning = Some(text.clone());
+                    retrying |= retry;
+                }
+                _ => heard = true,
+            }
             let _ = tx.send(AgentEvent::Activity(activity));
         }
         match (provider, event["type"].as_str()) {
@@ -308,7 +390,8 @@ fn run(
                     answer = Some(event["structured_output"].clone());
                 }
             }
-            (Provider::Codex, Some("turn.failed" | "error")) => {
+            // An `error` alone may be a retry that gets through; it's kept as the warning.
+            (Provider::Codex, Some("turn.failed")) => {
                 let message = event["error"]["message"]
                     .as_str()
                     .or(event["message"].as_str());
@@ -322,14 +405,20 @@ fn run(
         return Err(failure);
     }
     if provider == Provider::Codex {
-        let text = std::fs::read_to_string(&last_message)
-            .map_err(|_| format!("Codex exited ({status}) without an answer"))?;
+        let text = std::fs::read_to_string(&last_message).map_err(|_| {
+            let why = warning
+                .as_deref()
+                .map(|w| format!(": {w}"))
+                .unwrap_or_default();
+            format!("Codex exited ({status}) without an answer{why}")
+        })?;
         answer = Some(
             serde_json::from_str(&text).map_err(|e| format!("Codex answer wasn't JSON: {e}"))?,
         );
     }
     let answer = answer.ok_or_else(|| {
-        let stderr = stderr.join().unwrap_or_default();
+        let _ = stderr.join();
+        let stderr = tail.lock().map(|t| t.clone()).unwrap_or_default();
         format!(
             "{} exited ({status}) without an answer. {}",
             provider.label(),

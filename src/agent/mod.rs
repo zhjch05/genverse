@@ -13,6 +13,7 @@
 
 mod activity;
 mod commands;
+pub(crate) mod config;
 mod creations;
 mod decal;
 mod fps;
@@ -27,6 +28,7 @@ mod landscape;
 mod loading;
 mod mcp;
 mod menu;
+mod models;
 mod online;
 mod ops;
 mod panels;
@@ -346,6 +348,13 @@ struct Pending {
 struct Chat {
     open: bool,
     provider: Provider,
+    /// The model and reasoning level picked for each of [`Provider::ALL`].
+    choices: [models::Choice; 2],
+    /// What the model picker offers, and the reasoning level it defaults to, for the
+    /// provider it was listed for.
+    models: Option<(Provider, Vec<models::Model>, Option<String>)>,
+    /// A model id being typed into the picker.
+    custom_model: String,
     input: String,
     messages: Vec<Message>,
     /// What the agent has done and said so far on the request it's working on.
@@ -400,6 +409,9 @@ impl Default for Chat {
             open: true,
             // The agent picked last time.
             provider: if prefs::get("agent").is_some_and(|v| v == "codex") { Provider::Codex } else { Provider::Claude },
+            choices: Provider::ALL.map(models::Choice::load),
+            models: None,
+            custom_model: String::new(),
             input: String::new(),
             messages: vec![Message {
                 role: Role::System,
@@ -461,6 +473,7 @@ impl Chat {
     ) {
         let job = runner::start(
             provider,
+            self.choices[slot(provider)].clone(),
             prompt::system(tools.is_some(), rules),
             request,
             tools,
@@ -520,6 +533,131 @@ impl Chat {
         }
         self.say(Role::Player, text.clone());
         self.start(tools, rules, self.provider, text, request, 0, restore);
+    }
+}
+
+/// Where `provider` is in [`Provider::ALL`].
+fn slot(provider: Provider) -> usize {
+    Provider::ALL
+        .iter()
+        .position(|p| *p == provider)
+        .unwrap_or(0)
+}
+
+/// Which agent answers: Claude Code or Codex CLI.
+fn agent_picker(ui: &mut egui::Ui, chat: &mut Chat) {
+    egui::ComboBox::from_id_salt("provider")
+        .selected_text(
+            egui::RichText::new(format!("{} {}", icon::ROBOT, chat.provider.label())).size(11.5),
+        )
+        .show_ui(ui, |ui| {
+            for p in Provider::ALL {
+                if ui
+                    .selectable_value(&mut chat.provider, p, p.label())
+                    .clicked()
+                {
+                    prefs::set(
+                        "agent",
+                        if p == Provider::Codex {
+                            "codex"
+                        } else {
+                            "claude"
+                        },
+                    );
+                }
+            }
+        })
+        .response
+        .on_hover_text("Which agent builds for you");
+}
+
+/// The model and reasoning level for the agent picked beside it.
+fn model_picker(ui: &mut egui::Ui, chat: &mut Chat) {
+    let provider = chat.provider;
+    if chat.models.as_ref().is_none_or(|(p, ..)| *p != provider) {
+        let default_effort = match provider {
+            Provider::Codex => models::codex_default_effort(),
+            Provider::Claude => None,
+        };
+        chat.models = Some((provider, models::list(provider), default_effort));
+    }
+    let (list, default_effort) = chat
+        .models
+        .as_ref()
+        .map(|(_, list, effort)| (list.clone(), effort.clone()))
+        .unwrap_or_default();
+    let p = theme::palette(ui.ctx());
+    let mut choice = chat.choices[slot(provider)].clone();
+    egui::ComboBox::from_id_salt("model")
+        .selected_text(
+            egui::RichText::new(format!("{} {}", icon::CPU, choice.label(&list))).size(11.5),
+        )
+        .close_behavior(egui::PopupCloseBehavior::CloseOnClickOutside)
+        .show_ui(ui, |ui| {
+            ui.set_min_width(200.0);
+            ui.label(egui::RichText::new("Model").size(11.0).color(p.faint));
+            for model in &list {
+                ui.selectable_value(&mut choice.model, model.id.clone(), &model.label);
+            }
+            let typed = choice
+                .model
+                .as_ref()
+                .filter(|id| !list.iter().any(|m| m.id.as_ref() == Some(id)));
+            if let Some(id) = typed {
+                let _ = ui.selectable_label(true, id.as_str());
+            }
+            ui.horizontal(|ui| {
+                let field = ui.add(
+                    egui::TextEdit::singleline(&mut chat.custom_model)
+                        .hint_text("another model id")
+                        .desired_width(150.0),
+                );
+                let enter = field.lost_focus() && ui.input(|i| i.key_pressed(egui::Key::Enter));
+                let id = chat.custom_model.trim().to_string();
+                if (ui
+                    .add_enabled(!id.is_empty(), egui::Button::new("Use"))
+                    .clicked()
+                    || enter)
+                    && !id.is_empty()
+                {
+                    choice.model = Some(id);
+                    chat.custom_model.clear();
+                }
+            });
+        })
+        .response
+        .on_hover_text("Which model answers");
+    // The reasoning level, beside it.
+    let levels = models::efforts(&list, &choice, provider);
+    let shown = match (&choice.effort, &default_effort) {
+        (Some(level), _) => level.clone(),
+        (None, Some(level)) => format!("{level} (default)"),
+        (None, None) => "default".to_string(),
+    };
+    egui::ComboBox::from_id_salt("effort")
+        .selected_text(egui::RichText::new(format!("{} {shown}", icon::BRAIN)).size(11.5))
+        .show_ui(ui, |ui| {
+            ui.label(egui::RichText::new("Reasoning").size(11.0).color(p.faint));
+            let default = match &default_effort {
+                Some(level) => format!("Default ({level})"),
+                None => "Default".to_string(),
+            };
+            ui.selectable_value(&mut choice.effort, None, default);
+            for level in levels {
+                ui.selectable_value(&mut choice.effort, Some(level.clone()), level);
+            }
+        })
+        .response
+        .on_hover_text("Reasoning level: more is more thorough, but slower");
+    // A level the new model doesn't take goes back to its default.
+    if let Some(effort) = &choice.effort
+        && !models::efforts(&list, &choice, provider).contains(effort)
+    {
+        choice.effort = None;
+    }
+    if choice != chat.choices[slot(provider)] {
+        choice.save(provider);
+        chat.choices[slot(provider)] = choice;
     }
 }
 
@@ -2783,19 +2921,6 @@ fn chat_panel(
                             if theme::icon_button(ui, icon::GLOBE_HEMISPHERE_WEST, "Worlds, saves and portals (O)") {
                                 worlds_window.open = !worlds_window.open;
                             }
-                            ui.add_enabled_ui(chat.pending.is_none(), |ui| {
-                                egui::ComboBox::from_id_salt("provider")
-                                    .selected_text(format!("{} {}", icon::ROBOT, chat.provider.label()))
-                                    .show_ui(ui, |ui| {
-                                        for p in Provider::ALL {
-                                            if ui.selectable_value(&mut chat.provider, p, p.label()).clicked() {
-                                                prefs::set("agent", if p == Provider::Codex { "codex" } else { "claude" });
-                                            }
-                                        }
-                                    })
-                                    .response
-                                    .on_hover_text("Which agent builds for you");
-                            });
                         });
                     });
                 });
@@ -3147,7 +3272,16 @@ fn chat_panel(
                             });
                         });
 
-                    // Under the composer: who's working (like "is typing…"), or the tally.
+                    // Under the composer: which agent and model answer, on a row of their own.
+                    ui.add_space(4.0);
+                    ui.add_enabled_ui(chat.pending.is_none(), |ui| {
+                        ui.horizontal_wrapped(|ui| {
+                            agent_picker(ui, chat);
+                            model_picker(ui, chat);
+                        });
+                    });
+
+                    // Then who's working (like "is typing…"), or the tally.
                     ui.horizontal(|ui| {
                         ui.set_min_height(22.0);
                         if let Some(job) = &chat.pending {
@@ -3157,10 +3291,6 @@ fn chat_panel(
                             if ui.add(theme::Block::new(format!("{} Stop", icon::STOP), theme::Tone::Plain)).clicked() {
                                 action = Some(Action::Stop);
                             }
-                        } else {
-                            let placed = creations.placed.len();
-                            let builds = if placed == 1 { "build" } else { "builds" };
-                            ui.label(egui::RichText::new(format!("{placed} {builds} placed · / for commands")).size(11.5).color(p.faint));
                         }
                         ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
                             let undo = ui
@@ -3171,6 +3301,17 @@ fn chat_panel(
                                 .on_hover_text("Ctrl/Cmd+Z");
                             if undo.clicked() {
                                 action = Some(Action::Undo);
+                            }
+                            // The tally takes what's left, cut short on a narrow panel.
+                            if chat.pending.is_none() {
+                                let placed = creations.placed.len();
+                                let builds = if placed == 1 { "build" } else { "builds" };
+                                ui.with_layout(egui::Layout::left_to_right(egui::Align::Center), |ui| {
+                                    ui.add(
+                                        egui::Label::new(egui::RichText::new(format!("{placed} {builds} placed · / for commands")).size(11.5).color(p.faint))
+                                            .truncate(),
+                                    );
+                                });
                             }
                         });
                     });
