@@ -24,9 +24,15 @@
 //! after. A data directory from before games (one `world.jsonl`) becomes the world
 //! `main`. With each land change the server sends fingerprints of the chunks it
 //! touched; a player whose chunks disagree fetches the server's.
+//!
+//! The game has one chat for everyone on the server, whatever world they're in
+//! ([`chat`]): its latest messages are kept in `chat.jsonl` and sent to players as they
+//! join.
+
+pub mod chat;
 
 use std::{
-    collections::HashMap,
+    collections::{HashMap, VecDeque},
     io,
     net::{SocketAddr, TcpListener, TcpStream},
     path::{Path, PathBuf},
@@ -40,7 +46,8 @@ use std::{
 };
 
 use genverse_net::{
-    Presence, ToClient, ToServer, VERSION, hello_bytes, read_messages, write_message,
+    Member, Presence, Said, ToClient, ToServer, VERSION, chat_text, hello_bytes, read_messages,
+    write_message,
 };
 use genverse_rules::{
     game::{self, GameAction, GameLog},
@@ -128,6 +135,8 @@ struct Conn {
     /// What others see of them, once they've sent it, and when it last came: the land
     /// it holds ([`Presence::locks`]) is held until a while after that.
     presence: Option<(Presence, std::time::Instant)>,
+    /// When they last said things in the chat, for its rate limit.
+    said: VecDeque<std::time::Instant>,
 }
 
 /// One world of the game, loaded.
@@ -214,6 +223,7 @@ struct Server {
     places: HashMap<String, Place>,
     conns: HashMap<u64, Conn>,
     players: Arc<AtomicUsize>,
+    chat: chat::Chat,
 }
 
 /// Makes a data directory into a game, once: a world from before games becomes `main`.
@@ -282,12 +292,14 @@ pub fn start(config: ServerConfig) -> io::Result<Running> {
         .name("accept".into())
         .spawn(move || accept(listener, accept_events, &accept_stopping))?;
     let players = Arc::new(AtomicUsize::new(0));
+    let chat = chat::Chat::open(&config.data_dir)?;
     let mut server = Server {
         dir: config.data_dir,
         game,
         places: HashMap::new(),
         conns: HashMap::new(),
         players: players.clone(),
+        chat,
     };
     // The first world is ready before anyone asks.
     if let Some(start) = server.game.start() {
@@ -399,6 +411,7 @@ fn run(mut server: Server, events: Receiver<Event>) {
                         player: None,
                         world: None,
                         presence: None,
+                        said: VecDeque::new(),
                     },
                 );
             }
@@ -409,6 +422,7 @@ fn run(mut server: Server, events: Receiver<Event>) {
                     server.players.fetch_sub(1, Ordering::Relaxed);
                     println!("{name} left");
                     server.tell_world(&world, conn, ToClient::Gone { player });
+                    server.roster_changed();
                 }
             }
             Event::Message { conn, message } => server.handle(conn, message),
@@ -714,7 +728,13 @@ impl Server {
                 let start = self.game.start().unwrap_or("main".into());
                 if let Err(why) = self.enter(conn, &start) {
                     let _ = out.send(ToClient::Bye { why });
+                    return;
                 }
+                let messages = self.chat.messages();
+                if !messages.is_empty() {
+                    let _ = out.send(ToClient::ChatHistory { messages });
+                }
+                self.roster_changed();
             }
             ToServer::Enter { world: to } => {
                 if player.is_none() {
@@ -729,6 +749,7 @@ impl Server {
                 if let Err(why) = self.enter(conn, &to) {
                     eprintln!("couldn't open world {to}: {why}");
                 }
+                self.roster_changed();
             }
             ToServer::Presence(presence) => {
                 let Some(c) = self.conns.get_mut(&conn) else {
@@ -738,7 +759,12 @@ impl Server {
                 else {
                     return;
                 };
+                let shown = |p: Option<&Presence>| p.map(|p| (p.name.trim().to_string(), p.color));
+                let renamed = shown(c.presence.as_ref().map(|p| &p.0)) != shown(Some(&presence));
                 c.presence = Some((presence.clone(), std::time::Instant::now()));
+                if renamed {
+                    self.roster_changed();
+                }
                 self.tell_world(
                     &world,
                     conn,
@@ -762,6 +788,11 @@ impl Server {
                 let _ = out.send(ToClient::Chunks {
                     chunks: edits.into_iter().map(|(c, e)| (c.to_array(), e)).collect(),
                 });
+            }
+            ToServer::Say { text } => {
+                if let Err(why) = self.say(conn, &text) {
+                    let _ = out.send(ToClient::Unsaid { why });
+                }
             }
             ToServer::Propose {
                 request,
@@ -1035,6 +1066,72 @@ impl Server {
     }
 
     /// Sends `message` to every player in `world` but the one on `from`.
+    /// Passes on what the player on `conn` said to everyone in the game, and keeps it.
+    /// The sender hears it back too, in order.
+    fn say(&mut self, conn: u64, text: &str) -> Result<(), String> {
+        let c = self.conns.get(&conn).ok_or("say hello first")?;
+        if c.player.is_none() || c.world.is_none() {
+            return Err("say hello first".into());
+        }
+        let text = chat_text(text)?;
+        let c = self.conns.get_mut(&conn).expect("checked above");
+        if !chat::allowed(&mut c.said, std::time::Instant::now()) {
+            return Err("you're saying a lot: wait a few seconds".into());
+        }
+        let (from, joined_as) = c.player.clone().expect("checked above");
+        // The name they go by now.
+        let name = c
+            .presence
+            .as_ref()
+            .map(|(p, _)| p.name.trim())
+            .filter(|n| !n.is_empty())
+            .map_or(joined_as, str::to_string);
+        let said = Said {
+            from,
+            name,
+            world: c.world.clone().expect("checked above"),
+            text,
+            at: now(),
+        };
+        if let Err(e) = self.chat.keep(said.clone()) {
+            eprintln!("couldn't keep the chat: {e}");
+        }
+        for c in self.conns.values().filter(|c| c.player.is_some()) {
+            let _ = c.out.send(ToClient::Said(said.clone()));
+        }
+        Ok(())
+    }
+
+    /// Tells everyone who's in the game now.
+    fn roster_changed(&self) {
+        let mut players: Vec<Member> = self
+            .conns
+            .values()
+            .filter_map(|c| {
+                let (player, joined_as) = c.player.as_ref()?;
+                let presence = c.presence.as_ref().map(|p| &p.0);
+                let name = presence
+                    .map(|p| p.name.trim())
+                    .filter(|n| !n.is_empty())
+                    .unwrap_or(joined_as);
+                Some(Member {
+                    player: player.clone(),
+                    name: name.to_string(),
+                    world: c.world.clone()?,
+                    color: presence.and_then(|p| p.color),
+                })
+            })
+            .collect();
+        players.sort_by(|a, b| a.name.cmp(&b.name).then(a.player.cmp(&b.player)));
+        // One player on two connections is one player.
+        players.dedup_by(|a, b| a.player == b.player);
+        for c in self.conns.values().filter(|c| c.player.is_some()) {
+            let _ = c.out.send(ToClient::Players {
+                players: players.clone(),
+            });
+        }
+    }
+
     fn tell_world(&self, world: &str, from: u64, message: ToClient) {
         for (conn, c) in &self.conns {
             if *conn != from && c.player.is_some() && c.world.as_deref() == Some(world) {

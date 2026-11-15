@@ -313,6 +313,90 @@ pub fn swatch(ui: &mut egui::Ui, color: Color32, picked: bool) -> egui::Response
     response
 }
 
+/// One choice of a [`switch`]: its icon, its label, what hovering it says, and a count
+/// of what's new there (0 for none).
+pub struct Choice<'a> {
+    pub icon: &'a str,
+    pub label: &'a str,
+    pub tip: &'a str,
+    pub new: usize,
+}
+
+/// A segmented switch: the choices side by side in a sunken track, the picked one
+/// raised like a [`Block`]. Returns the one clicked.
+pub fn switch(ui: &mut egui::Ui, choices: &[Choice], picked: usize) -> Option<usize> {
+    let p = palette(ui.ctx());
+    let mut clicked = None;
+    egui::Frame::new()
+        .fill(p.input)
+        .stroke(Stroke::new(1.0, p.line))
+        .corner_radius(ROUND + 2)
+        .inner_margin(egui::Margin::same(3))
+        .show(ui, |ui| {
+            ui.spacing_mut().item_spacing.x = 3.0;
+            ui.horizontal(|ui| {
+                for (i, choice) in choices.iter().enumerate() {
+                    let on = i == picked;
+                    let color = if on { p.strong } else { p.muted };
+                    let text = egui::RichText::new(format!("{}  {}", choice.icon, choice.label))
+                        .size(14.0)
+                        .strong()
+                        .color(color);
+                    // Room on the right for the count.
+                    let pad = if choice.new > 0 && !on { 22.0 } else { 0.0 };
+                    let button = egui::Button::new(text)
+                        .fill(if on { p.raised } else { Color32::TRANSPARENT })
+                        .stroke(if on {
+                            Stroke::new(1.0, shade(p.raised, 0.8))
+                        } else {
+                            Stroke::NONE
+                        })
+                        .corner_radius(ROUND)
+                        .min_size(egui::vec2(88.0 + pad, 30.0));
+                    let response = ui.add(button).on_hover_text(choice.tip);
+                    let rect = response.rect;
+                    if on {
+                        let lip = egui::Rect::from_min_max(
+                            egui::pos2(rect.left(), rect.bottom() - 2.0),
+                            rect.max,
+                        );
+                        let corners = CornerRadius {
+                            nw: 0,
+                            ne: 0,
+                            sw: ROUND,
+                            se: ROUND,
+                        };
+                        ui.painter()
+                            .rect_filled(lip, corners, shade(p.raised, 0.72));
+                    } else if response.hovered() {
+                        ui.painter().rect_filled(rect, ROUND, p.hover);
+                    }
+                    if choice.new > 0 && !on {
+                        let center = egui::pos2(rect.right() - 14.0, rect.center().y);
+                        let count = choice.new.min(99).to_string();
+                        let size = egui::vec2(if count.len() > 1 { 22.0 } else { 17.0 }, 17.0);
+                        ui.painter().rect_filled(
+                            egui::Rect::from_center_size(center, size),
+                            8.5,
+                            p.danger,
+                        );
+                        ui.painter().text(
+                            center,
+                            egui::Align2::CENTER_CENTER,
+                            count,
+                            FontId::proportional(10.5),
+                            Color32::WHITE,
+                        );
+                    }
+                    if response.clicked() {
+                        clicked = Some(i);
+                    }
+                }
+            });
+        });
+    clicked
+}
+
 /// A frameless icon button, like the ones in Discord's headers.
 pub fn icon_button(ui: &mut egui::Ui, icon: &str, tip: &str) -> bool {
     let muted = palette(ui.ctx()).muted;

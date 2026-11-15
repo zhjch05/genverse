@@ -164,7 +164,7 @@ impl Plugin for AgentPlugin {
                     center_view,
                     stream_creations,
                     (
-                        online::sync_online,
+                        (online::sync_online, online::scripted_chat).chain(),
                         lan::update_lan,
                         update_build_site,
                         answer_tool_calls,
@@ -325,6 +325,23 @@ enum Role {
     /// Carries which agent answered.
     Agent(&'static str),
     System,
+    /// Someone in the game's chat (us too): their id, name and marker color; `note` is
+    /// where they were, when it's another world ("in arena").
+    Peer {
+        id: String,
+        name: String,
+        marker: u8,
+        note: String,
+    },
+}
+
+/// Which conversation the chat shows, and where what's typed goes. Playing together,
+/// there are two: the player's own with their agent, and the game's, with everyone.
+#[derive(Clone, Copy, PartialEq, Default)]
+enum Tab {
+    #[default]
+    Agent,
+    Game,
 }
 
 struct Message {
@@ -357,6 +374,12 @@ struct Chat {
     custom_model: String,
     input: String,
     messages: Vec<Message>,
+    /// The tab showing, playing together; alone, it's always the agent's.
+    tab: Tab,
+    /// The game's chat: what everyone on the server said, in any world.
+    game: Vec<Message>,
+    /// Messages in the game's chat since the player last looked at it.
+    unread: usize,
     /// What the agent has done and said so far on the request it's working on.
     activity: activity::Feed,
     pending: Option<Pending>,
@@ -413,6 +436,9 @@ impl Default for Chat {
             models: None,
             custom_model: String::new(),
             input: String::new(),
+            tab: Tab::Agent,
+            game: Vec::new(),
+            unread: 0,
             messages: vec![Message {
                 role: Role::System,
                 text: "Describe something to build, e.g. \"a cozy wooden bench\" or \"a glowing mushroom lamp\". \
@@ -451,6 +477,35 @@ impl Chat {
     /// The marker color this player shows others.
     fn marker(&self, me: &str) -> u8 {
         self.marker.unwrap_or_else(|| presence::default_marker(me))
+    }
+
+    /// A message in the game's chat; counted as unread unless it's ours or in view.
+    pub(super) fn hear(&mut self, role: Role, text: String, at: Instant, mine: bool) {
+        self.game.push(Message { role, text, at });
+        if !mine && !(self.open && self.tab == Tab::Game) {
+            self.unread += 1;
+        }
+    }
+
+    /// A note from the game (not the agent) in the game's chat.
+    pub(super) fn note_game(&mut self, text: impl Into<String>) {
+        self.game.push(Message {
+            role: Role::System,
+            text: text.into(),
+            at: Instant::now(),
+        });
+    }
+
+    /// What the player typed and what came of it, in the conversation they typed it in.
+    fn note_here(&mut self, role: Role, text: impl Into<String>) {
+        match self.tab {
+            Tab::Agent => self.say(role, text),
+            Tab::Game => self.game.push(Message {
+                role,
+                text: text.into(),
+                at: Instant::now(),
+            }),
+        }
     }
 
     pub(super) fn say(&mut self, role: Role, text: impl Into<String>) {
@@ -1119,7 +1174,7 @@ fn auto_prompt(
 
 /// Echoes a chat command and its reply.
 fn run_command(chat: &mut Chat, text: &str, cx: &mut ops::Context) {
-    chat.say(Role::Player, text);
+    chat.note_here(Role::Player, text);
     // Play together is the panel's, not a world command.
     if text.trim() == "/play" {
         chat.play_together = true;
@@ -1129,7 +1184,7 @@ fn run_command(chat: &mut Chat, text: &str, cx: &mut ops::Context) {
     let reply = commands::run(text, cx);
     info!("{text} -> {reply}");
     if !reply.is_empty() {
-        chat.say(Role::System, reply);
+        chat.note_here(Role::System, reply);
     }
 }
 
@@ -1639,10 +1694,19 @@ fn shortcuts(
         prefs::set("hints", chat.hints);
         return;
     }
-    // T opens the chat to talk to the agent, like Minecraft's chat key.
+    // T opens the chat where the player last typed, like Minecraft's chat key; Y opens
+    // the game's, like a team-chat key.
     if binds.just_pressed("chat") {
         chat.open = true;
         chat.focus_input = true;
+        return;
+    }
+    if binds.just_pressed("game_chat") {
+        chat.open = true;
+        chat.focus_input = true;
+        if ledger.online.is_some() {
+            chat.tab = Tab::Game;
+        }
         return;
     }
 
@@ -2293,6 +2357,9 @@ fn sender(
         Role::Agent(name) if name.starts_with("Claude") => (name.to_string(), p.claude),
         Role::Agent(name) => (name.to_string(), p.codex),
         Role::System => (String::new(), p.faint),
+        Role::Peer { name, marker, .. } => {
+            (name.clone(), theme::color(presence::marker_color(*marker)))
+        }
     }
 }
 
@@ -2353,6 +2420,11 @@ fn show_messages(ui: &mut egui::Ui, messages: &[Message], me: &str, mine: egui::
                         ui.label(egui::RichText::new(&name).strong().color(readable));
                         if matches!(m.role, Role::Agent(_)) {
                             theme::tag(ui, "AGENT", p.primary, p.on_primary);
+                        }
+                        if let Role::Peer { note, .. } = &m.role
+                            && !note.is_empty()
+                        {
+                            ui.label(egui::RichText::new(note).size(11.0).color(p.muted));
                         }
                         ui.label(
                             egui::RichText::new(ago(m.at, false))
@@ -2901,9 +2973,32 @@ fn chat_panel(
                 .frame(egui::Frame::new().fill(p.panel).inner_margin(egui::Margin::symmetric(12, 8)))
                 .show(ui, |ui| {
                     ui.horizontal(|ui| {
-                        ui.label(egui::RichText::new(icon::HASH).size(20.0).color(p.faint));
-                        ui.label(egui::RichText::new("builder").size(16.0).strong().color(p.strong))
-                            .on_hover_text("Describe something; an agent builds it in front of you");
+                        if ledger.online.is_none() {
+                            ui.label(egui::RichText::new(format!("{}  Builder", icon::ROBOT)).size(16.0).strong().color(p.strong))
+                                .on_hover_text("Describe something; an agent builds it in front of you");
+                        } else {
+                            // Playing together: your agent's conversation, and the game's.
+                            let tabs = [Tab::Agent, Tab::Game];
+                            let choices = [
+                                theme::Choice {
+                                    icon: icon::ROBOT,
+                                    label: "Agent",
+                                    tip: "Your own conversation with your agent; only you see it (T)",
+                                    new: 0,
+                                },
+                                theme::Choice {
+                                    icon: icon::USERS_THREE,
+                                    label: "Game",
+                                    tip: "Everyone in this game, in any world (Y). Tab switches while typing.",
+                                    new: chat.unread,
+                                },
+                            ];
+                            let picked = tabs.iter().position(|t| *t == chat.tab).unwrap_or(0);
+                            if let Some(i) = theme::switch(ui, &choices, picked) {
+                                chat.tab = tabs[i];
+                                chat.focus_input = true;
+                            }
+                        }
                         ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
                             if theme::icon_button(ui, icon::SIDEBAR_SIMPLE, "Hide (Tab)") {
                                 hide = true;
@@ -2935,6 +3030,9 @@ fn chat_panel(
                     if online && !chat.was_online {
                         chat.network = true;
                         chat.name = None;
+                    }
+                    if !online {
+                        chat.tab = Tab::Agent;
                     }
                     chat.was_online = online;
                     if chat.name.is_some() {
@@ -3010,7 +3108,11 @@ fn chat_panel(
                 .frame(egui::Frame::new().fill(p.panel).inner_margin(egui::Margin { left: 12, right: 12, top: 4, bottom: 6 }))
                 .show_separator_line(false)
                 .show(ui, |ui| {
-                    if let Some(draft) = &creations.draft {
+                    let in_game = chat.tab == Tab::Game;
+                    // The cards are for the agent's conversation: in the game's, the world
+                    // still shows them and their keys work.
+                    if in_game {
+                    } else if let Some(draft) = &creations.draft {
                         let accent = if draft.denied.is_some() || draft.blocked { p.warn } else { p.primary };
                         theme::card(ui, accent, |ui| {
                             theme::card_title(ui, icon::CUBE, &format!("Draft · {}", draft.spec.name));
@@ -3153,7 +3255,10 @@ fn chat_panel(
                     }
 
                     // The composer: one rounded box, like Discord's message bar.
-                    let hint = if let Some(job) = &chat.pending {
+                    let game_name = ledger.online.as_ref().and_then(|o| o.game.as_ref()).map_or("the game".to_string(), |g| g.name.clone());
+                    let hint = if in_game {
+                        format!("Message everyone in {game_name}…  (Y)")
+                    } else if let Some(job) = &chat.pending {
                         format!("{} is working…", job.provider.label())
                     } else if creations.selected.is_some() {
                         "Change it…  (T)".to_string()
@@ -3162,7 +3267,8 @@ fn chat_panel(
                     } else {
                         "Build me…  (T)".to_string()
                     };
-                    let idle = chat.pending.is_none();
+                    // While the agent works, the game's chat is still open.
+                    let idle = chat.pending.is_none() || in_game;
                     // Typing a slash command: the commands it could be, or how to finish it.
                     let composer = egui::Id::new("composer");
                     let admin = ledger.land.is_admin(&ledger.profile.id);
@@ -3185,7 +3291,16 @@ fn chat_panel(
                     chat.suggestion = chat.suggestion.min(matches.len().saturating_sub(1));
                     let mut complete = None;
                     let mut moved = false;
-                    if !matches.is_empty() && ui.memory(|m| m.has_focus(composer)) {
+                    let focused = ui.memory(|m| m.has_focus(composer));
+                    if matches.is_empty()
+                        && focused
+                        && ledger.online.is_some()
+                        && ui.input_mut(|i| i.consume_key(egui::Modifiers::NONE, egui::Key::Tab))
+                    {
+                        // Tab switches between the agent and the game while typing.
+                        chat.tab = if in_game { Tab::Agent } else { Tab::Game };
+                    }
+                    if !matches.is_empty() && focused {
                         let (up, down, tab) = ui.input_mut(|i| {
                             (
                                 i.consume_key(egui::Modifiers::NONE, egui::Key::ArrowUp),
@@ -3274,12 +3389,14 @@ fn chat_panel(
 
                     // Under the composer: which agent and model answer, on a row of their own.
                     ui.add_space(4.0);
-                    ui.add_enabled_ui(chat.pending.is_none(), |ui| {
-                        ui.horizontal_wrapped(|ui| {
-                            agent_picker(ui, chat);
-                            model_picker(ui, chat);
+                    if !in_game {
+                        ui.add_enabled_ui(chat.pending.is_none(), |ui| {
+                            ui.horizontal_wrapped(|ui| {
+                                agent_picker(ui, chat);
+                                model_picker(ui, chat);
+                            });
                         });
-                    });
+                    }
 
                     // Then who's working (like "is typing…"), or the tally.
                     ui.horizontal(|ui| {
@@ -3322,6 +3439,17 @@ fn chat_panel(
                 .stick_to_bottom(true)
                 .show(ui, |ui| {
                     ui.add_space(8.0);
+                    if chat.tab == Tab::Game {
+                        if chat.game.is_empty() {
+                            theme::note(ui, "Everyone in this game sees what you write here, whichever world they're in. Your agent doesn't read this: switch to agent (Tab) to ask it.");
+                        }
+                        show_messages(ui, &chat.game, &me, mine);
+                        if chat.open {
+                            chat.unread = 0;
+                        }
+                        ui.add_space(12.0);
+                        return;
+                    }
                     show_messages(ui, &chat.messages, &me, mine);
                     if let Some(pending) = &chat.pending {
                         let (name, color) = sender(&Role::Agent(pending.provider.label()), &me, mine, p);
@@ -3364,6 +3492,8 @@ fn chat_panel(
                 let busy = chat.pending.is_some();
                 let label = if busy {
                     format!("{} Working…", icon::CHATS_CIRCLE)
+                } else if chat.unread > 0 {
+                    format!("{} {}", icon::CHATS_CIRCLE, chat.unread.min(99))
                 } else {
                     icon::CHATS_CIRCLE.to_string()
                 };
@@ -3396,6 +3526,14 @@ fn chat_panel(
                 panels: &mut panels,
             };
             run_command(&mut chat, text.trim(), cx);
+        }
+        Some(Action::Send) if chat.tab == Tab::Game => {
+            let text = std::mem::take(&mut chat.input);
+            if let Err(why) = online::say(&ledger, &text) {
+                chat.note_game(format!("⚠ {why}"));
+                // Kept, to fix and send again.
+                chat.input = text;
+            }
         }
         Some(Action::Send) => {
             if let Some(why) = land_refusal(&creations, &landscape, &ledger) {

@@ -244,7 +244,18 @@ pub static ACTIONS: &[Action] = &[
     action("Playing", "hand_7", "Hold hotbar slot 7", &["7"]),
     action("Playing", "hand_8", "Hold hotbar slot 8", &["8"]),
     action("Playing", "hand_9", "Hold hotbar slot 9", &["9"]),
-    action("Building", "chat", "Type to the agent", &["t"]),
+    action(
+        "Building",
+        "chat",
+        "Type in the chat (to the agent, or the game)",
+        &["t"],
+    ),
+    action(
+        "Building",
+        "game_chat",
+        "Type to everyone in the game, when playing together",
+        &["y"],
+    ),
     action(
         "Building",
         "select_area",
