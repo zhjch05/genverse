@@ -7,7 +7,9 @@
 //!   build never writes beside the executable or into `/`. `GENVERSE_HOME` picks the folder.
 //! - **Agents:** an app opened from the desktop gets a short `PATH` that rarely has
 //!   `claude` or `codex` (or the `node` they need), so on macOS and Linux the login
-//!   shell's `PATH` is added. [`find_program`] also follows Windows' `PATHEXT`, which a
+//!   shell's `PATH` is added, with the variables the agents' providers read their keys
+//!   and endpoints from (an `OPENAI_API_KEY` or `ANTHROPIC_BASE_URL` exported in
+//!   `.zshrc`, say) that ours lacks. [`find_program`] also follows Windows' `PATHEXT`, which a
 //!   bare `Command::new("codex")` doesn't, and [`command`] runs npm's `.cmd` shims
 //!   through `node` directly, since Windows can't pass a prompt to a batch file.
 
@@ -74,7 +76,7 @@ fn add_login_shell_path() {
     // into. Markers keep out whatever its startup files print.
     let shell = std::env::var("SHELL").unwrap_or_else(|_| "/bin/sh".into());
     if let Ok(mut child) = Command::new(&shell)
-        .args(["-ilc", "printf '\\n__GV__%s__GV__\\n' \"$PATH\""])
+        .args(["-ilc", "printf '\\n__GV__%s__GV__\\n' \"$PATH\"; env -0"])
         .stdin(std::process::Stdio::null())
         .stdout(std::process::Stdio::piped())
         .stderr(std::process::Stdio::null())
@@ -88,8 +90,12 @@ fn add_login_shell_path() {
         if matches!(child.try_wait(), Ok(Some(_))) {
             if let Ok(out) = child.wait_with_output() {
                 let text = String::from_utf8_lossy(&out.stdout);
-                if let Some(path) = text.split("__GV__").nth(1) {
+                let mut parts = text.splitn(3, "__GV__").skip(1);
+                if let Some(path) = parts.next() {
                     std::env::split_paths(path).for_each(&mut add);
+                }
+                if let Some(env) = parts.next() {
+                    add_provider_env(env.trim_start_matches('\n'));
                 }
             }
         } else {
@@ -114,6 +120,22 @@ fn add_login_shell_path() {
     if let Ok(path) = std::env::join_paths(dirs) {
         // SAFETY: called from `main` before the app, or any other thread, starts.
         unsafe { std::env::set_var("PATH", path) };
+    }
+}
+
+/// Sets the variables in `env` (`env -0`'s output) that the agents' providers read and
+/// that aren't set already.
+#[cfg(unix)]
+fn add_provider_env(env: &str) {
+    let wanted = crate::agent::config::wanted_env();
+    for line in env.split('\0') {
+        let Some((name, value)) = line.split_once('=') else {
+            continue;
+        };
+        if wanted(name) && std::env::var_os(name).is_none() {
+            // SAFETY: called from `main` before the app, or any other thread, starts.
+            unsafe { std::env::set_var(name, value) };
+        }
     }
 }
 

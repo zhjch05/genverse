@@ -42,7 +42,7 @@ impl Default for TerrainLimits {
             max_height_change_m: 8.0,
             max_path_points: 32,
             max_trees: 60,
-            max_changed_voxels: 600_000,
+            max_changed_voxels: 1_200_000,
         }
     }
 }

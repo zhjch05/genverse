@@ -45,7 +45,7 @@ impl Default for BudgetLimits {
             parcel_glow: 4_000,
             player_builds: 60,
             player_voxels: 1_500_000,
-            player_terrain: 2_000_000,
+            player_terrain: 20_000_000,
         }
     }
 }

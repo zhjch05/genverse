@@ -36,6 +36,8 @@ genverse_net = { path = "crates/net", features = ["internet"] }
 # Hosting a world from the game.
 genverse_server = { path = "crates/server" }
 serde_json = "1"
+# Reading the agent CLIs' own model and provider settings.
+toml = { version = "0.9", default-features = false, features = ["parse", "display", "serde"] }
 # Random player keys.
 getrandom = "0.3"
 
