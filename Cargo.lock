@@ -3561,7 +3561,7 @@ dependencies = [
 
 [[package]]
 name = "genverse"
-version = "0.1.2"
+version = "0.2.0"
 dependencies = [
  "bevy",
  "bevy_egui",
@@ -3581,7 +3581,7 @@ dependencies = [
 
 [[package]]
 name = "genverse_net"
-version = "0.1.2"
+version = "0.2.0"
 dependencies = [
  "genverse_rules",
  "if-addrs",
@@ -3595,7 +3595,7 @@ dependencies = [
 
 [[package]]
 name = "genverse_rules"
-version = "0.1.2"
+version = "0.2.0"
 dependencies = [
  "bevy_color",
  "bevy_math",
@@ -3610,7 +3610,7 @@ dependencies = [
 
 [[package]]
 name = "genverse_server"
-version = "0.1.2"
+version = "0.2.0"
 dependencies = [
  "genverse_net",
  "genverse_rules",
