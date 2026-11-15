@@ -1395,10 +1395,18 @@ fn finish_chunks(
 }
 
 #[cfg(test)]
+impl VoxelWorld {
+    /// A world with nothing loaded, for tests elsewhere that need one to read.
+    pub fn for_tests() -> Self {
+        tests::world()
+    }
+}
+
+#[cfg(test)]
 mod tests {
     use super::*;
 
-    fn world() -> VoxelWorld {
+    pub(super) fn world() -> VoxelWorld {
         VoxelWorld {
             terrain: Terrain::new(SEED, false),
             palette: Arc::new(Content::default().palette(Terrain::new(SEED, false))),

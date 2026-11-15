@@ -29,7 +29,7 @@ use super::{
     mcp::{McpServer, ToolCall, ToolResult},
     ops::{self, Op},
     panels::Panels,
-    spec::{BuildSpec, VOXEL_SIZE, compile},
+    spec::{AgentAnswer, BuildSpec, SCHEMA, VOXEL_SIZE, compile},
     worlds::{Travel, Trip},
 };
 use crate::{
@@ -213,9 +213,73 @@ impl BuildSite {
     }
 }
 
+/// The tool an agent hands its answer in with, so a malformed one is refused while it can
+/// still fix it rather than after its turn is over.
+pub const SUBMIT_ANSWER: &str = "submit_answer";
+
+/// The answer schema, as the input `submit_answer` takes.
+fn answer_schema() -> Value {
+    serde_json::from_str(SCHEMA).expect("the answer schema is valid JSON")
+}
+
+/// Checks a handed-in answer against the answer schema, as the runner reads a final one.
+fn check_answer(args: Value) -> Result<AgentAnswer, String> {
+    serde_json::from_value(args).map_err(|e| {
+        format!(
+            "not accepted: it doesn't match the answer schema ({e}). Fix that and call {SUBMIT_ANSWER} \
+             again with the whole answer."
+        )
+    })
+}
+
+/// Checks a handed-in answer and keeps it for the request going on: it must match the
+/// schema, and what it changes must go through as the game would apply it (land, game
+/// rules with the folder's edits, portal, build), so it's fixed now rather than after.
+fn submit_answer(
+    args: Value,
+    chat: &mut Chat,
+    ledger: &Ledger,
+    world: &mut VoxelWorld,
+    landscape: &mut Landscape,
+) -> Result<String, String> {
+    if chat.pending.is_none() {
+        return Err("no request is going on".into());
+    }
+    let answer = check_answer(args)?;
+    let folder = super::workspace::current();
+    let problems = super::answer_problems(&answer, folder.as_deref(), ledger, world, landscape);
+    if !problems.is_empty() {
+        return Err(refusal(&problems));
+    }
+    if let Some(pending) = chat.pending.as_mut() {
+        pending.submitted = Some(answer);
+    }
+    Ok("Accepted. End your turn now with one short line; don't write the answer again.".into())
+}
+
+/// What the game would refuse, for the agent to fix.
+fn refusal(problems: &[String]) -> String {
+    format!(
+        "not accepted: the game would refuse {}:\n- {}\nFix that (in the answer, or in your folder's files \
+         for the game rules) and call {SUBMIT_ANSWER} again with the whole answer.",
+        if problems.len() == 1 { "this" } else { "these" },
+        problems.join("\n- ")
+    )
+}
+
 pub fn definitions(rules: &WorldRules) -> Value {
     let size = json!({ "type": "integer", "minimum": 2, "maximum": rules.build.max_size });
     let mut tools = json!([
+        {
+            "name": SUBMIT_ANSWER,
+            "description": "Hand in your final answer to the player's request: the same JSON your answer would be \
+                (\"reply\", \"build\", \"terrain\", \"game\", \"portal\", \"describe\"). It is checked \
+                as the game will apply it: against the answer schema, then the build against the limits, the land \
+                change against the selected area and its rules, the game rules (with what you edited in your folder) \
+                and the portal. Nothing is applied yet. If it's refused, the result says what's wrong: fix that and \
+                call it again with the whole answer. Once it's accepted, end your turn with one short line.",
+            "inputSchema": answer_schema(),
+        },
         {
             "name": "get_build_site",
             "description": "Ground heights and surface types under a footprint centered on the build site, \
@@ -604,6 +668,19 @@ pub fn answer_tool_calls(
     }
     let hero = players.single().ok().map(|t| t.translation);
     for ToolCall { name, args, reply } in calls {
+        if name == SUBMIT_ANSWER {
+            let result = submit_answer(args, &mut chat, &ledger, &mut world, &mut landscape);
+            info!(
+                "agent tool {name}: {}",
+                if result.is_ok() {
+                    "accepted"
+                } else {
+                    "refused"
+                }
+            );
+            let _ = reply.send(result);
+            continue;
+        }
         // A picture takes a few frames: it answers when it's saved.
         if name == "look" {
             let point = |v: &Value| {
@@ -1008,5 +1085,44 @@ impl Ctx<'_> {
             let _ = write!(out, "Its bounds overlap: {}.", overlaps.join(", "));
         }
         Ok(out)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn submit_answer_is_offered_with_the_answer_schema() {
+        let tools = definitions(&WorldRules::default());
+        let tool = tools
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|t| t["name"] == SUBMIT_ANSWER)
+            .expect("submit_answer is listed");
+        assert_eq!(tool["inputSchema"], answer_schema());
+    }
+
+    #[test]
+    fn a_well_formed_answer_is_accepted() {
+        let answer = check_answer(json!({
+            "reply": "Done.", "build": null, "terrain": null, "game": null, "portal": null,
+            "describe": null,
+        }))
+        .unwrap();
+        assert_eq!(answer.reply, "Done.");
+    }
+
+    #[test]
+    fn a_malformed_answer_is_refused_with_what_to_fix() {
+        // What Codex sent for "add slabs in front of the cave": "describe" as a string.
+        let why = check_answer(json!({
+            "reply": "Added steps.", "build": null, "terrain": null, "game": null, "portal": null,
+            "describe": "place:Cave entrance steps (5x8 m at x-72.5, z-101)",
+        }))
+        .unwrap_err();
+        assert!(why.contains("expected a sequence"), "{why}");
+        assert!(why.contains(SUBMIT_ANSWER), "{why}");
     }
 }
