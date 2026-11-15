@@ -372,7 +372,7 @@ the log stays small and replay can still rebuild the world exactly.
    counts against the installer's land and budget, under the world's own rules
    ([`budget`](../crates/rules/src/budget.rs)). By default a parcel holds 12 builds,
    40,000 visible faces, 150,000 build voxels and 4,000 glowing voxels; a player holds
-   60 builds and 1,500,000 build voxels, and may change 2,000,000 voxels of terrain.
+   60 builds and 1,500,000 build voxels, and may change 20,000,000 voxels of terrain.
    Each server sets its own. "Last changed by" reads "farm-pack (installed by Alex)".
 6. **Proven before it goes live.** See [Lifecycle](#lifecycle).
 7. **Rollback.** A player can undo their own installs and upgrades (undo puts the old
