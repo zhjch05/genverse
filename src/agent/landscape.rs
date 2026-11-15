@@ -182,6 +182,35 @@ impl Landscape {
         }
     }
 
+    /// What [`Self::preview`] would say about `spec`, without showing it: compiled against
+    /// the ground without the current preview, which is put back after.
+    pub fn check(
+        &mut self,
+        world: &mut VoxelWorld,
+        ledger: &Ledger,
+        spec: &TerrainSpec,
+    ) -> Result<SculptStats, PreviewError> {
+        let area = self
+            .target()
+            .ok_or_else(|| PreviewError::Invalid(vec!["no area is selected".to_string()]))?;
+        let Some(old) = self.draft.take() else {
+            return prepare(world, ledger, spec, area).map(|edit| edit.stats);
+        };
+        revert(world, &old.before);
+        let result = prepare(world, ledger, spec, area).map(|edit| edit.stats);
+        match prepare(world, ledger, &old.spec, old.area) {
+            Ok(edit) => {
+                self.draft = Some(TerrainDraft {
+                    before: apply(world, &edit.edits),
+                    ..old
+                });
+            }
+            // The ground changed under it since: it goes, as a rejected preview's would.
+            Err(_) => world.hold_saves = false,
+        }
+        result
+    }
+
     /// Keeps the preview, recording it in the change log. Returns its change id (for
     /// the shared undo history) and name.
     pub fn keep(&mut self, world: &mut VoxelWorld, ledger: &mut Ledger) -> Option<(u64, String)> {

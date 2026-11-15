@@ -87,7 +87,7 @@ use landscape::{
     draw_area, draw_spawn, highlight_area, land_summary, select_area,
 };
 use mcp::McpServer;
-use runner::{AgentEvent, AgentJob, Provider};
+use runner::{AgentEvent, AgentJob, Provider, RunError};
 use spec::compile;
 use tools::{BuildSite, answer_tool_calls, update_build_site};
 
@@ -359,6 +359,8 @@ struct Pending {
     /// This request turned the selected build into a pinned draft; if no new build
     /// comes back, put the original back.
     restore: bool,
+    /// The answer it handed in with `submit_answer`, checked against the schema.
+    submitted: Option<spec::AgentAnswer>,
 }
 
 #[derive(Resource)]
@@ -541,6 +543,7 @@ impl Chat {
             prompt,
             repairs,
             restore,
+            submitted: None,
         });
     }
 
@@ -1317,7 +1320,14 @@ fn poll_agent(
     let Some(result) = finished else {
         return;
     };
-    let pending = chat.pending.take().expect("checked above");
+    let mut pending = chat.pending.take().expect("checked above");
+    // What it handed in, already checked, counts over what its last message says, unless
+    // the player stopped it.
+    let result = match (result, pending.submitted.take()) {
+        (Err(RunError::Stopped), _) => Err(RunError::Stopped),
+        (_, Some(submitted)) => Ok(submitted),
+        (result, None) => result,
+    };
     // The panels it wrote in its folder are the player's now.
     if let Some(folder) = workspace::current() {
         let (done, wrong) = panels::take_from(&folder);
@@ -1350,6 +1360,29 @@ fn poll_agent(
     };
     let answer = match result {
         Ok(answer) => answer,
+        // An answer it couldn't read: ask once more for just the answer. Its work stands, and
+        // so does what waits for the end of its turn.
+        Err(RunError::Malformed { raw, why }) if pending.repairs == 0 => {
+            warn!(
+                "{} answer unreadable, asking again: {why}",
+                pending.provider.label()
+            );
+            chat.say(
+                Role::System,
+                format!("The answer couldn't be read ({why}); asking again…"),
+            );
+            let request = prompt::repair_format(&pending.prompt, &raw, &why);
+            chat.start(
+                tools.as_deref(),
+                &ledger.rules,
+                pending.provider,
+                pending.prompt.clone(),
+                request,
+                pending.repairs + 1,
+                pending.restore,
+            );
+            return;
+        }
         Err(e) => {
             warn!("{} failed: {e}", pending.provider.label());
             chat.say(
@@ -1450,21 +1483,12 @@ fn poll_agent(
     let describe = answer.describe.clone().unwrap_or_default();
     if let Some(change) = workspace::merge(edited, answer.game.map(|g| *g)) {
         let provider = pending.provider.label();
-        // A change to what the world runs: it adds to it, by name.
-        let base = ledger
-            .logic
-            .installed
-            .get(&change.name)
-            .and_then(|i| ledger.logic.package(i))
-            .map(GameSpec::from_package);
-        let summary = change.change_summary(base.as_ref());
-        let game = change.onto(base.as_ref());
-        let version = ledger
-            .logic
-            .installed
-            .get(&game.name)
-            .map_or(1, |i| i.package.version + 1);
-        let package = game.to_package(version);
+        let NextGame {
+            game,
+            version,
+            package,
+            summary,
+        } = next_game(&change, &ledger);
         match package.check() {
             Err(errors) if pending.repairs == 0 && !repairing => {
                 warn!("game rules rejected, asking for a fix: {errors:?}");
@@ -1652,6 +1676,96 @@ fn poll_agent(
             keep_original(&mut creations, &mut chat);
         }
     }
+}
+
+/// What a change to the world's game logic makes, as installing it would.
+struct NextGame {
+    game: GameSpec,
+    version: u32,
+    package: genverse_rules::logic::Package,
+    /// What it changes, in a few words.
+    summary: String,
+}
+
+/// A change to what the world runs adds to it, by name.
+fn next_game(change: &GameSpec, ledger: &Ledger) -> NextGame {
+    let base = ledger
+        .logic
+        .installed
+        .get(&change.name)
+        .and_then(|i| ledger.logic.package(i))
+        .map(GameSpec::from_package);
+    let summary = change.change_summary(base.as_ref());
+    let game = change.onto(base.as_ref());
+    let version = ledger
+        .logic
+        .installed
+        .get(&game.name)
+        .map_or(1, |i| i.package.version + 1);
+    let package = game.to_package(version);
+    NextGame {
+        game,
+        version,
+        package,
+        summary,
+    }
+}
+
+/// What the game would refuse about an answer, checked as [`poll_agent`] applies it but
+/// without applying anything: the land change, the game rules (with what the agent edited
+/// in its folder), the portal and the build. Empty when it would all go through.
+fn answer_problems(
+    answer: &spec::AgentAnswer,
+    folder: Option<&std::path::Path>,
+    ledger: &Ledger,
+    world: &mut VoxelWorld,
+    landscape: &mut Landscape,
+) -> Vec<String> {
+    let mut problems = Vec::new();
+    if let Some(terrain) = &answer.terrain {
+        match landscape.target() {
+            None => problems.push(
+                "\"terrain\": no area is selected, so there's no land to change: make it null"
+                    .to_string(),
+            ),
+            Some(_) => match landscape.check(world, ledger, terrain) {
+                Ok(_) => {}
+                Err(PreviewError::Invalid(errors)) => {
+                    problems.extend(errors.into_iter().map(|e| format!("\"terrain\": {e}")));
+                }
+                Err(PreviewError::Refused(why)) => problems.push(format!(
+                    "\"terrain\": this land can't be changed ({why}); no change would help, so make it \
+                     null and tell the player in \"reply\""
+                )),
+            },
+        }
+    }
+    let edited = match folder.map(|dir| workspace::changed_game(dir, ledger)) {
+        Some(Ok(change)) => change,
+        Some(Err(why)) => {
+            problems.push(format!("the game files in your folder: {why}"));
+            None
+        }
+        None => None,
+    };
+    if let Some(change) = workspace::merge(edited, answer.game.as_deref().cloned())
+        && let Err(errors) = next_game(&change, ledger).package.check()
+    {
+        problems.extend(errors.into_iter().map(|e| format!("game rules: {e}")));
+    }
+    if let Some(Err(why)) = answer
+        .portal
+        .as_deref()
+        .map(genverse_rules::log::PortalTo::parse)
+    {
+        problems.push(format!("\"portal\": it can't lead there: {why}"));
+    }
+    if let Some(build) = &answer.build
+        && let Err(errors) = compile(build, &ledger.rules.build)
+    {
+        problems.extend(errors.into_iter().map(|e| format!("\"build\": {e}")));
+    }
+    problems
 }
 
 /// Keyboard shortcuts. They depend on context (a draft, a selection, or neither) and
@@ -3666,4 +3780,64 @@ fn chat_panel(
         None => {}
     }
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use serde_json::json;
+
+    fn problems(answer: serde_json::Value) -> Vec<String> {
+        let answer: spec::AgentAnswer = serde_json::from_value(answer).unwrap();
+        answer_problems(
+            &answer,
+            None,
+            &Ledger::for_tests(),
+            &mut VoxelWorld::for_tests(),
+            &mut Landscape::default(),
+        )
+    }
+
+    fn answer(build: serde_json::Value, terrain: serde_json::Value) -> serde_json::Value {
+        json!({
+            "reply": "Done.", "build": build, "terrain": terrain, "game": null, "portal": null,
+            "describe": null,
+        })
+    }
+
+    fn lamp(size: [i64; 3]) -> serde_json::Value {
+        json!({
+            "name": "Lamp", "size": size,
+            "palette": [{"name": "iron", "hex": "#3d4248", "material": "metal",
+                "roughness": null, "metallic": null, "glow": null, "alpha": null}],
+            "shapes": [{"kind": "box", "color": "iron", "from": [0, 0, 0], "to": [2, 4, 2],
+                "radius": null, "wobble": null}],
+        })
+    }
+
+    #[test]
+    fn an_answer_the_game_takes_has_no_problems() {
+        assert_eq!(
+            problems(answer(lamp([2, 4, 2]), json!(null))),
+            Vec::<String>::new()
+        );
+    }
+
+    #[test]
+    fn a_build_over_the_limits_is_a_problem() {
+        let found = problems(answer(lamp([2, 9999, 2]), json!(null)));
+        assert!(!found.is_empty());
+        assert!(
+            found.iter().all(|p| p.starts_with("\"build\": ")),
+            "{found:?}"
+        );
+    }
+
+    #[test]
+    fn land_changes_with_no_area_selected_are_a_problem() {
+        let terrain = json!({"name": "Hill", "ops": []});
+        let found = problems(answer(json!(null), terrain));
+        assert_eq!(found.len(), 1, "{found:?}");
+        assert!(found[0].contains("no area is selected"), "{found:?}");
+    }
 }

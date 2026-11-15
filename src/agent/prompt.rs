@@ -258,6 +258,44 @@ pub fn repair_terrain(spec: &TerrainSpec, errors: &[String]) -> String {
     )
 }
 
+/// How an agent with the world tools answers: through the `submit_answer` tool, which
+/// checks it as the game reads it while the agent can still fix it.
+pub const SUBMIT_NOTE: &str = "How to answer: when your work is done, call the submit_answer tool with your \
+answer as its input. Its input schema is the answer schema: \"reply\", \"build\", \"terrain\", \"game\", \
+\"portal\", \"describe\", each with the type it gives (a list where it asks for a list, null where you have \
+nothing). It checks the answer as the game will apply it: the schema, the build against the limits, the \
+land change against the selected area and its rules, the game rules with what you edited in your folder, and the \
+portal. If it's refused, read why, fix it (in the answer, or in your folder's files) and call it again with the \
+whole answer. Your turn isn't done until it's accepted. Then end with one short line; don't write the answer out \
+again.";
+
+/// How much of a malformed answer goes back with the request to fix it.
+const MALFORMED_SHOWN: usize = 6000;
+
+/// Asks the agent again for an answer that came back as something other than JSON matching
+/// the schema. It starts with no memory of the turn, so this says what was asked; what it
+/// did then (files it edited, tools it used) stands and isn't redone.
+pub fn repair_format(message: &str, raw: &str, why: &str) -> String {
+    let raw = raw.trim();
+    let shown = if raw.is_empty() {
+        "(nothing)".to_string()
+    } else if raw.chars().count() > MALFORMED_SHOWN {
+        let cut: String = raw.chars().take(MALFORMED_SHOWN).collect();
+        format!("{cut}… (cut)")
+    } else {
+        raw.to_string()
+    };
+    format!(
+        "You just worked on this request from the player:\n{message}\n\nThe work you did then is kept: \
+         files you edited in your folder are still edited, and what you did with tools already \
+         happened, so don't redo it. But your final answer couldn't be read ({why}). It was:\n{shown}\n\n\
+         Answer again with one JSON object that matches the answer schema exactly (through the \
+         submit_answer tool if you have it): every field with the type it gives (a list where it asks \
+         for a list, null where you have nothing), no prose or code fences around it. Keep what that \
+         answer meant to say."
+    )
+}
+
 /// Asks the agent to fix game rules the game rejected.
 pub fn repair_game(spec: &GameSpec, errors: &[String]) -> String {
     format!(
@@ -584,3 +622,29 @@ packages/world/coins.luau:
     if #find("coin") == 0 then notify(ev.player, "All coins!") end
   end
 "##;
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn repair_format_says_what_was_asked_and_what_went_wrong() {
+        let request = repair_format(
+            "add slabs in front of the cave",
+            r#"{"build": {"place": "Cave entrance steps"}}"#,
+            "answer didn't match the build schema: expected a sequence",
+        );
+        assert!(request.contains("add slabs in front of the cave"));
+        assert!(request.contains("expected a sequence"));
+        assert!(request.contains("Cave entrance steps"));
+    }
+
+    #[test]
+    fn repair_format_cuts_a_long_answer_and_names_an_empty_one() {
+        let long = "é".repeat(MALFORMED_SHOWN + 10);
+        let request = repair_format("x", &long, "not JSON");
+        assert!(request.contains("… (cut)"));
+        assert!(!request.contains(&long));
+        assert!(repair_format("x", "  ", "not JSON").contains("(nothing)"));
+    }
+}

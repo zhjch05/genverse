@@ -64,7 +64,46 @@ impl Provider {
 pub enum AgentEvent {
     /// Something it did or said while working, as it happens.
     Activity(Activity),
-    Finished(Box<Result<AgentAnswer, String>>),
+    Finished(Box<Result<AgentAnswer, RunError>>),
+}
+
+/// Why a request ended without an answer.
+#[derive(Debug)]
+pub enum RunError {
+    /// It answered, but not with JSON that matches the build schema. Its work in the
+    /// folder is done; it can be asked for the answer again.
+    Malformed {
+        /// What it answered, as it came.
+        raw: String,
+        /// What's wrong with it.
+        why: String,
+    },
+    /// The player stopped it.
+    Stopped,
+    /// Anything else: it couldn't start, failed or timed out.
+    Failed(String),
+}
+
+impl std::fmt::Display for RunError {
+    fn fmt(&self, f: &mut std::fmt::Formatter) -> std::fmt::Result {
+        match self {
+            RunError::Malformed { why, .. } => f.write_str(why),
+            RunError::Stopped => f.write_str("stopped"),
+            RunError::Failed(why) => f.write_str(why),
+        }
+    }
+}
+
+impl From<String> for RunError {
+    fn from(why: String) -> Self {
+        RunError::Failed(why)
+    }
+}
+
+impl From<&str> for RunError {
+    fn from(why: &str) -> Self {
+        RunError::Failed(why.to_string())
+    }
 }
 
 /// A running agent request. Dropping it doesn't stop the process; call [`AgentJob::cancel`].
@@ -145,12 +184,23 @@ fn run(
     folder: Option<PathBuf>,
     tx: &Sender<AgentEvent>,
     cancel: &AtomicBool,
-) -> Result<AgentAnswer, String> {
+) -> Result<AgentAnswer, RunError> {
     let scratch = scratch_dir()?;
     let files = folder.is_some();
     let dir = folder.unwrap_or_else(|| scratch.clone());
     let mut cmd;
     let last_message = scratch.join("codex-last-message.json");
+    // With the world tools, the answer is handed in with `submit_answer`, which refuses a
+    // malformed one while the agent can still fix it: not only JSON that breaks the schema
+    // but anything the game can't read as an answer. Its last message is then a line.
+    // Without them, the CLI is held to the schema (`--json-schema`, `--output-schema`).
+    let handing_in = tools.is_some();
+    let system = if handing_in {
+        format!("{system}\n\n{}", super::prompt::SUBMIT_NOTE)
+    } else {
+        system.to_string()
+    };
+    let system = system.as_str();
     match provider {
         Provider::Claude => {
             cmd = crate::platform::command(&program("claude", provider)?);
@@ -163,10 +213,13 @@ fn run(
                 "--verbose",
                 "--include-partial-messages",
             ])
-            .args(["--json-schema", SCHEMA, "--system-prompt", system])
+            .args(["--system-prompt", system])
             .args(["--strict-mcp-config", "--setting-sources", ""])
             .args(["--disable-slash-commands", "--no-session-persistence"]);
             // Of the player's settings, only how to reach their model.
+            if !handing_in {
+                cmd.args(["--json-schema", SCHEMA]);
+            }
             if let Some(settings) = config::claude().settings {
                 cmd.args(["--settings", &settings.to_string()]);
             }
@@ -254,9 +307,12 @@ fn run(
                     ))
                     .env("GENVERSE_MCP_TOKEN", &tools.token);
             }
-            cmd.arg("--output-schema")
-                .arg(&schema)
-                .arg("-o")
+            // Codex doesn't hold its last message to `--output-schema` itself (that's up to
+            // the model's provider), so it's only the fallback without the world tools.
+            if !handing_in {
+                cmd.arg("--output-schema").arg(&schema);
+            }
+            cmd.arg("-o")
                 .arg(&last_message)
                 .arg("-C")
                 .arg(&dir)
@@ -310,6 +366,8 @@ fn run(
     let started = Instant::now();
     let deadline = started + TIMEOUT;
     let mut answer: Option<Value> = None;
+    // Claude's last message, when it wasn't held to the schema.
+    let mut final_text: Option<String> = None;
     let mut failure: Option<String> = None;
     // The latest retry or error, to say why if it never gets through.
     let mut warning: Option<String> = None;
@@ -329,14 +387,14 @@ fn run(
             let _ = child.kill();
             let _ = child.wait();
             if cancel.load(Ordering::Relaxed) {
-                return Err("stopped".into());
+                return Err(RunError::Stopped);
             }
             let stderr = tail.lock().map(|t| t.clone()).unwrap_or_default();
             let why = warning
                 .or_else(|| stderr.trim().lines().last().map(str::to_string))
                 .map(|w| format!(" Last: {w}"))
                 .unwrap_or_default();
-            return Err(if silent {
+            return Err(RunError::Failed(if silent {
                 format!(
                     "no answer from the model after {}s.{why} Check that {} can reach the model you use (its provider, endpoint and key).",
                     started.elapsed().as_secs(),
@@ -344,7 +402,7 @@ fn run(
                 )
             } else {
                 format!("timed out.{why}")
-            });
+            }));
         }
         let line = match lines.recv_timeout(Duration::from_millis(200)) {
             Ok(line) => line,
@@ -386,8 +444,11 @@ fn run(
                             )
                         });
                     failure = Some(why);
-                } else {
+                } else if !event["structured_output"].is_null() {
                     answer = Some(event["structured_output"].clone());
+                } else {
+                    // No schema to hold it to (it handed its answer in): its last words.
+                    final_text = event["result"].as_str().map(str::to_string);
                 }
             }
             // An `error` alone may be a retry that gets through; it's kept as the warning.
@@ -402,18 +463,25 @@ fn run(
     }
     let status = child.wait().map_err(|e| e.to_string())?;
     if let Some(failure) = failure {
-        return Err(failure);
+        return Err(RunError::Failed(failure));
     }
     if provider == Provider::Codex {
-        let text = std::fs::read_to_string(&last_message).map_err(|_| {
+        final_text = Some(std::fs::read_to_string(&last_message).map_err(|_| {
             let why = warning
                 .as_deref()
                 .map(|w| format!(": {w}"))
                 .unwrap_or_default();
             format!("Codex exited ({status}) without an answer{why}")
-        })?;
+        })?);
+    }
+    if answer.is_none()
+        && let Some(text) = final_text
+    {
         answer = Some(
-            serde_json::from_str(&text).map_err(|e| format!("Codex answer wasn't JSON: {e}"))?,
+            serde_json::from_str(&text).map_err(|e| RunError::Malformed {
+                why: format!("{} answer wasn't JSON: {e}", provider.label()),
+                raw: text.clone(),
+            })?,
         );
     }
     let answer = answer.ok_or_else(|| {
@@ -425,5 +493,9 @@ fn run(
             stderr.trim()
         )
     })?;
-    serde_json::from_value(answer).map_err(|e| format!("answer didn't match the build schema: {e}"))
+    let raw = answer.to_string();
+    serde_json::from_value(answer).map_err(|e| RunError::Malformed {
+        why: format!("answer didn't match the build schema: {e}"),
+        raw,
+    })
 }
