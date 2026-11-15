@@ -107,6 +107,7 @@ fn claude(configured: Option<String>) -> Vec<Model> {
     };
     vec![
         entry(None, &default),
+        entry(Some("fable"), "Fable"),
         entry(Some("opus"), "Opus"),
         entry(Some("sonnet"), "Sonnet"),
         entry(Some("haiku"), "Haiku"),
