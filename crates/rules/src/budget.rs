@@ -85,13 +85,19 @@ pub fn build_usage(spec: &BuildSpec) -> Usage {
     if let Some(usage) = cache.lock().ok().and_then(|c| c.get(&key).copied()) {
         return usage;
     }
-    let usage = compile(spec, &BuildLimits::ACCEPTED).map_or(Usage { builds: 1, ..Default::default() }, |b| Usage {
-        builds: 1,
-        voxels: b.stats.voxels,
-        faces: b.stats.faces,
-        glow: b.stats.glow,
-        terrain: 0,
-    });
+    let usage = compile(spec, &BuildLimits::ACCEPTED).map_or(
+        Usage {
+            builds: 1,
+            ..Default::default()
+        },
+        |b| Usage {
+            builds: 1,
+            voxels: b.stats.voxels,
+            faces: b.stats.faces,
+            glow: b.stats.glow,
+            terrain: 0,
+        },
+    );
     if let Ok(mut cache) = cache.lock() {
         cache.insert(key, usage);
     }
@@ -128,7 +134,12 @@ impl Budgets {
 
     /// Whether adding `new` (replacing `old`, if a build is being changed) fits. The
     /// reason names the budget it breaks.
-    pub fn check(&self, new: &Footprint, old: Option<&Footprint>, limits: &BudgetLimits) -> Result<(), String> {
+    pub fn check(
+        &self,
+        new: &Footprint,
+        old: Option<&Footprint>,
+        limits: &BudgetLimits,
+    ) -> Result<(), String> {
         let BudgetLimits {
             parcel_builds,
             parcel_faces,
@@ -144,10 +155,15 @@ impl Budgets {
                 u.sub(old.usage);
             }
             u.add(new.usage);
-            let problem = over("this parcel", "builds", u.builds as usize, parcel_builds as usize)
-                .or_else(|| over("this parcel", "visible build faces", u.faces, parcel_faces))
-                .or_else(|| over("this parcel", "build voxels", u.voxels, parcel_voxels))
-                .or_else(|| over("this parcel", "glowing voxels", u.glow, parcel_glow));
+            let problem = over(
+                "this parcel",
+                "builds",
+                u.builds as usize,
+                parcel_builds as usize,
+            )
+            .or_else(|| over("this parcel", "visible build faces", u.faces, parcel_faces))
+            .or_else(|| over("this parcel", "build voxels", u.voxels, parcel_voxels))
+            .or_else(|| over("this parcel", "glowing voxels", u.glow, parcel_glow));
             if let Some(problem) = problem {
                 return Err(problem);
             }
@@ -159,7 +175,14 @@ impl Budgets {
         u.add(new.usage);
         over("you", "builds", u.builds as usize, player_builds as usize)
             .or_else(|| over("you", "build voxels", u.voxels, player_voxels))
-            .or_else(|| over("you", "voxels changed by terrain changes", u.terrain, player_terrain))
+            .or_else(|| {
+                over(
+                    "you",
+                    "voxels changed by terrain changes",
+                    u.terrain,
+                    player_terrain,
+                )
+            })
             .map_or(Ok(()), Err)
     }
 
@@ -167,14 +190,20 @@ impl Budgets {
         for parcel in &f.parcels {
             self.parcels.entry(*parcel).or_default().add(f.usage);
         }
-        self.players.entry(f.owner.clone()).or_default().add(f.usage);
+        self.players
+            .entry(f.owner.clone())
+            .or_default()
+            .add(f.usage);
     }
 
     pub fn remove(&mut self, f: &Footprint) {
         for parcel in &f.parcels {
             self.parcels.entry(*parcel).or_default().sub(f.usage);
         }
-        self.players.entry(f.owner.clone()).or_default().sub(f.usage);
+        self.players
+            .entry(f.owner.clone())
+            .or_default()
+            .sub(f.usage);
     }
 }
 
@@ -183,7 +212,15 @@ mod tests {
     use super::*;
 
     fn footprint(owner: &str, parcels: &[IVec2], faces: usize) -> Footprint {
-        Footprint { owner: owner.into(), parcels: parcels.to_vec(), usage: Usage { builds: 1, faces, ..Default::default() } }
+        Footprint {
+            owner: owner.into(),
+            parcels: parcels.to_vec(),
+            usage: Usage {
+                builds: 1,
+                faces,
+                ..Default::default()
+            },
+        }
     }
 
     #[test]
@@ -193,19 +230,51 @@ mod tests {
         let big = footprint("a", &here, 30_000);
         budgets.add(&big);
         // Another 30k faces on the same parcel is too much...
-        let err = budgets.check(&footprint("b", &here, 30_000), None, &BudgetLimits::default()).unwrap_err();
+        let err = budgets
+            .check(
+                &footprint("b", &here, 30_000),
+                None,
+                &BudgetLimits::default(),
+            )
+            .unwrap_err();
         assert!(err.contains("visible build faces"), "{err}");
         // ...but fine next door, or as a replacement of the big one.
-        assert!(budgets.check(&footprint("b", &[IVec2::new(4, 3)], 30_000), None, &BudgetLimits::default()).is_ok());
-        assert!(budgets.check(&footprint("a", &here, 35_000), Some(&big), &BudgetLimits::default()).is_ok());
+        assert!(
+            budgets
+                .check(
+                    &footprint("b", &[IVec2::new(4, 3)], 30_000),
+                    None,
+                    &BudgetLimits::default()
+                )
+                .is_ok()
+        );
+        assert!(
+            budgets
+                .check(
+                    &footprint("a", &here, 35_000),
+                    Some(&big),
+                    &BudgetLimits::default()
+                )
+                .is_ok()
+        );
         budgets.remove(&big);
-        assert!(budgets.check(&footprint("b", &here, 30_000), None, &BudgetLimits::default()).is_ok());
+        assert!(
+            budgets
+                .check(
+                    &footprint("b", &here, 30_000),
+                    None,
+                    &BudgetLimits::default()
+                )
+                .is_ok()
+        );
 
         // Build count per parcel.
         for _ in 0..BudgetLimits::default().parcel_builds {
             budgets.add(&footprint("c", &here, 10));
         }
-        let err = budgets.check(&footprint("c", &here, 10), None, &BudgetLimits::default()).unwrap_err();
+        let err = budgets
+            .check(&footprint("c", &here, 10), None, &BudgetLimits::default())
+            .unwrap_err();
         assert_eq!(err, "this parcel would have 13 builds (the budget is 12)");
     }
 }

@@ -47,7 +47,10 @@ struct StillShot {
 
 /// Seconds to wait before the still; `GENVERSE_SHOT_AFTER` overrides it.
 fn shot_delay() -> f32 {
-    std::env::var("GENVERSE_SHOT_AFTER").ok().and_then(|v| v.parse().ok()).unwrap_or(7.0)
+    std::env::var("GENVERSE_SHOT_AFTER")
+        .ok()
+        .and_then(|v| v.parse().ok())
+        .unwrap_or(7.0)
 }
 
 fn setup(mut commands: Commands, mut media: ResMut<Assets<ScatteringMedium>>) {
@@ -98,7 +101,10 @@ fn setup(mut commands: Commands, mut media: ResMut<Assets<ScatteringMedium>>) {
     #[cfg(target_arch = "wasm32")]
     commands.spawn((
         Text::new("WASD: move   Shift: run   Space: jump   Drag: look   Scroll: zoom"),
-        TextFont { font_size: FontSize::Px(14.0), ..default() },
+        TextFont {
+            font_size: FontSize::Px(14.0),
+            ..default()
+        },
         TextColor(Color::srgba(1.0, 1.0, 1.0, 0.75)),
         Node {
             position_type: PositionType::Absolute,
@@ -117,7 +123,9 @@ fn underwater(
     mut above: Local<Option<DistanceFog>>,
     mut cameras: Query<(&Transform, &mut DistanceFog), With<FollowCamera>>,
 ) {
-    let Ok((at, mut fog)) = cameras.single_mut() else { return };
+    let Ok((at, mut fog)) = cameras.single_mut() else {
+        return;
+    };
     let voxel = VoxelWorld::voxel_at(at.translation);
     if world.get(voxel) != Some(block::WATER) {
         // Surfaced: the air's fog again.
@@ -131,14 +139,22 @@ fn underwater(
     if above.is_none() {
         *above = Some(fog.clone());
     }
-    let water = world.color_of(block::WATER).unwrap_or(Color::srgb(0.29, 0.64, 0.77)).to_srgba();
+    let water = world
+        .color_of(block::WATER)
+        .unwrap_or(Color::srgb(0.29, 0.64, 0.77))
+        .to_srgba();
     // The haze is about as bright as the sunlit ground it covers (the scene is lit in
     // HDR, so a dark haze would barely show); deeper is a little darker, and thicker.
-    let depth = (1..64).take_while(|dy| world.get(voxel + IVec3::Y * *dy) == Some(block::WATER)).count() as f32 * VOXEL_SIZE;
+    let depth = (1..64)
+        .take_while(|dy| world.get(voxel + IVec3::Y * *dy) == Some(block::WATER))
+        .count() as f32
+        * VOXEL_SIZE;
     let shade = 1.1 / (1.0 + depth * 0.04);
     fog.color = Color::srgb(water.red * shade, water.green * shade, water.blue * shade);
     fog.directional_light_color = Color::NONE;
-    fog.falloff = FogFalloff::Exponential { density: 0.22 + depth * 0.01 };
+    fog.falloff = FogFalloff::Exponential {
+        density: 0.22 + depth * 0.01,
+    };
 }
 
 fn take_still_shot(

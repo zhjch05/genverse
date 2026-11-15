@@ -24,15 +24,18 @@ fn main() -> AppExit {
     // On the desktop it opens maximized, filling the screen but keeping its title bar.
     window.set_maximized(true);
     let mut app = App::new();
-    app.add_plugins(DefaultPlugins.set(WindowPlugin { primary_window: Some(window), ..default() }))
-        .add_plugins((
-            bindings::BindingsPlugin,
-            voxel::VoxelPlugin,
-            world::WorldPlugin,
-            player::PlayerPlugin,
-            scene::ScenePlugin,
-            graphics::GraphicsPlugin,
-        ));
+    app.add_plugins(DefaultPlugins.set(WindowPlugin {
+        primary_window: Some(window),
+        ..default()
+    }))
+    .add_plugins((
+        bindings::BindingsPlugin,
+        voxel::VoxelPlugin,
+        world::WorldPlugin,
+        player::PlayerPlugin,
+        scene::ScenePlugin,
+        graphics::GraphicsPlugin,
+    ));
     // Local agents (Claude Code, Codex CLI) only exist on desktop.
     #[cfg(not(target_arch = "wasm32"))]
     app.add_plugins(agent::AgentPlugin);

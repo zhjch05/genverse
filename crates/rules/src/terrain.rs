@@ -191,12 +191,20 @@ impl Heights {
 impl Terrain {
     /// Ground for a new world, on the current terrain.
     pub fn new(seed: u32, flat: bool) -> Self {
-        Self { seed, flat, version: TERRAIN_VERSION, recipe: Recipe::NATURAL }
+        Self {
+            seed,
+            flat,
+            version: TERRAIN_VERSION,
+            recipe: Recipe::NATURAL,
+        }
     }
 
     /// Ground for a new world with a landscape of its own.
     pub fn made(seed: u32, flat: bool, recipe: Recipe) -> Self {
-        Self { recipe: recipe.bounded(), ..Self::new(seed, flat) }
+        Self {
+            recipe: recipe.bounded(),
+            ..Self::new(seed, flat)
+        }
     }
 
     /// The colors of this ground's blocks: the usual palette, with the recipe's.
@@ -214,14 +222,22 @@ impl Terrain {
     /// The sea's top voxel: open water fills up to it. Flat worlds have no sea, but
     /// heights are given relative to this, so theirs stays where it always was.
     pub fn sea_level(&self) -> i32 {
-        if self.flat || self.version < 2 { LEGACY_SEA } else { SEA }
+        if self.flat || self.version < 2 {
+            LEGACY_SEA
+        } else {
+            SEA
+        }
     }
 
     /// The highest the ground goes, natural or reshaped: room is left above it for
     /// trees.
     pub fn max_ground(&self) -> i32 {
         // The first terrain's world was 128 voxels tall.
-        if self.version < 2 { 88 } else { WORLD_HEIGHT - 40 }
+        if self.version < 2 {
+            88
+        } else {
+            WORLD_HEIGHT - 40
+        }
     }
 
     /// Whether this is the taller terrain of version 2 and up.
@@ -257,14 +273,22 @@ impl Terrain {
         let land = smooth(0.30, 0.50, continent);
         let lowlands = SEA as f32 - 40.0 + land * 56.0;
         // Rolling hills and valleys, gentler near the sea.
-        let hills = (fbm_xz(p / (220.0 * wide), self.seed + 10) - 0.5) * 48.0 * (0.3 + land) * part(r.hills);
+        let hills = (fbm_xz(p / (220.0 * wide), self.seed + 10) - 0.5)
+            * 48.0
+            * (0.3 + land)
+            * part(r.hills);
         // Mountain ranges, where a broad noise is high inland: sharp ridges between
         // deep valleys, lifted as a whole too.
-        let range = smooth(0.42, 0.62, fbm_xz(p / (760.0 * wide), self.seed + 5) + lean(r.ranges, 0.4)) * land;
+        let range = smooth(
+            0.42,
+            0.62,
+            fbm_xz(p / (760.0 * wide), self.seed + 5) + lean(r.ranges, 0.4),
+        ) * land;
         let ridge = 1.0 - (fbm_xz(p / (320.0 * wide), self.seed + 20) * 2.0 - 1.0).abs();
         let mountains = range * (40.0 + ridge.powi(3) * 300.0) * part(r.mountains);
         // Rocky detail, rougher in the mountains.
-        let rock = (fbm_xz(p / 40.0, self.seed + 31) - 0.5) * (4.0 + range * 24.0) * part(r.roughness);
+        let rock =
+            (fbm_xz(p / 40.0, self.seed + 31) - 0.5) * (4.0 + range * 24.0) * part(r.roughness);
         let grain = (value_xz(p / 9.0, self.seed + 30) - 0.5) * 3.0 * part(r.roughness);
         let h = lowlands + hills + mountains + rock + grain;
         // Rivers (since version 3): winding channels cut down to just under the sea,
@@ -275,13 +299,21 @@ impl Terrain {
             let channel = 1.0 - smooth(0.010, 0.040, off);
             let low = 1.0 - smooth(SEA as f32 + 24.0, SEA as f32 + 64.0, h);
             // Shallower where the recipe's land rolls less: level ground stays level.
-            if h > bed { h + (bed - h) * channel * low * part(r.hills).min(1.0) } else { h }
+            if h > bed {
+                h + (bed - h) * channel * low * part(r.hills).min(1.0)
+            } else {
+                h
+            }
         } else {
             h
         };
         // A recipe with higher mountains than the usual would be cut off flat at the top
         // of the world: its heights ease toward the top instead, so peaks stay peaks.
-        let h = if r.is_default() { h } else { ease_under(h, self.max_ground() as f32) };
+        let h = if r.is_default() {
+            h
+        } else {
+            ease_under(h, self.max_ground() as f32)
+        };
         (h.round() as i32).clamp(2, self.max_ground())
     }
 
@@ -309,7 +341,9 @@ impl Terrain {
     /// a cell.
     pub fn coarse_heights(&self, min: IVec2, size: IVec2, step: i32) -> Heights {
         let samples = step.min(4);
-        let offsets: Vec<i32> = (0..samples).map(|i| (2 * i + 1) * step / (2 * samples)).collect();
+        let offsets: Vec<i32> = (0..samples)
+            .map(|i| (2 * i + 1) * step / (2 * samples))
+            .collect();
         Heights::new(min, size, |c| {
             let mut sum = 0;
             for dz in &offsets {
@@ -327,7 +361,11 @@ impl Terrain {
         if self.flat {
             return ground;
         }
-        let mut top = if self.wet() { (ground + 1).max(self.sea_level()) } else { ground + 1 };
+        let mut top = if self.wet() {
+            (ground + 1).max(self.sea_level())
+        } else {
+            ground + 1
+        };
         if self.lush() {
             top = top.max(ground + ROCK_RISE);
         }
@@ -376,7 +414,14 @@ impl Terrain {
                 for y in min.y..max.y.min(h + 1).max(min.y) {
                     let p = IVec3::new(x, y, z);
                     let depth = h - y;
-                    let id = self.ground_block(p, depth, beach, steep, || patches.get(local(p)), || stones.get(local(p)));
+                    let id = self.ground_block(
+                        p,
+                        depth,
+                        beach,
+                        steep,
+                        || patches.get(local(p)),
+                        || stones.get(local(p)),
+                    );
                     grid.set(local(p), id);
                 }
                 if self.wet() {
@@ -390,7 +435,13 @@ impl Terrain {
     }
 
     /// Trees, then tufts and flowers, in a grid of ground.
-    fn add_trees(&self, mut grid: VoxelGrid, min: IVec3, max: IVec3, height: &impl Fn(i32, i32) -> i32) -> VoxelGrid {
+    fn add_trees(
+        &self,
+        mut grid: VoxelGrid,
+        min: IVec3,
+        max: IVec3,
+        height: &impl Fn(i32, i32) -> i32,
+    ) -> VoxelGrid {
         if self.flat {
             return grid;
         }
@@ -439,7 +490,9 @@ impl Terrain {
                 if lush && roll < 0.23 * plants {
                     let q = top.xz().as_vec2();
                     flowers *= 1.0 + 12.0 * smooth(0.58, 0.72, fbm_xz(q / 28.0, self.seed + 52));
-                    tufts = flowers + 0.024 * (1.0 + 5.0 * smooth(0.52, 0.68, fbm_xz(q / 20.0, self.seed + 53)));
+                    tufts = flowers
+                        + 0.024
+                            * (1.0 + 5.0 * smooth(0.52, 0.68, fbm_xz(q / 20.0, self.seed + 53)));
                 }
                 if roll < flowers * plants {
                     let flower = pick(block::FLOWERS, value(top.as_vec3() / 20.0, self.seed + 51));
@@ -479,8 +532,15 @@ impl Terrain {
         } else if depth == 0 {
             match self.recipe.ground {
                 // Patches of bare earth in the grass.
-                Cover::Grass if self.lush() && fbm_xz(p.xz().as_vec2() / 16.0, self.seed + 44) > 0.70 => pick(block::DIRT, patch()),
-                Cover::Grass => pick(block::GRASS, fbm(p.as_vec3() / 12.0, self.seed + 41) * 1.4 - 0.2),
+                Cover::Grass
+                    if self.lush() && fbm_xz(p.xz().as_vec2() / 16.0, self.seed + 44) > 0.70 =>
+                {
+                    pick(block::DIRT, patch())
+                }
+                Cover::Grass => pick(
+                    block::GRASS,
+                    fbm(p.as_vec3() / 12.0, self.seed + 41) * 1.4 - 0.2,
+                ),
                 Cover::Sand => pick(block::SAND, patch()),
                 Cover::Snow => block::SNOW,
                 Cover::Stone => pick(block::STONE, stone()),
@@ -503,7 +563,8 @@ impl Terrain {
             return 78;
         }
         // The recipe brings it down to the sea, or lifts it over the highest ground.
-        SEA + 230 - self.recipe.snow as i32 * 23 / 10 + ((value_xz(p.xz().as_vec2() / 30.0, self.seed + 43) - 0.5) * 32.0) as i32
+        SEA + 230 - self.recipe.snow as i32 * 23 / 10
+            + ((value_xz(p.xz().as_vec2() / 30.0, self.seed + 43) - 0.5) * 32.0) as i32
     }
 
     /// Trees grow on ground up to this.
@@ -519,18 +580,23 @@ impl Terrain {
         let grove = fbm_xz(cell.as_vec2() / 6.0, self.seed + 59);
         // More trees fill the groves, then the meadows between them.
         let trees = self.recipe.trees as f32 / 100.0;
-        let outside = hash01(key, self.seed + 60) > (grove - 0.35) * 1.4 * trees + (trees - 1.0).max(0.0) * 0.25;
+        let outside = hash01(key, self.seed + 60)
+            > (grove - 0.35) * 1.4 * trees + (trees - 1.0).max(0.0) * 0.25;
         // The meadows aren't bare: a bush here and there.
         let stray = outside && self.lush() && hash01(key, self.seed + 72) < 0.10 * trees.min(1.5);
         if outside && !stray {
             return None;
         }
         let jitter = |k: u32| (hash01(key, self.seed + k) * (TREE_CELL - 6) as f32) as i32 + 3;
-        let (x, z) = (cell.x * TREE_CELL + jitter(61), cell.y * TREE_CELL + jitter(62));
+        let (x, z) = (
+            cell.x * TREE_CELL + jitter(61),
+            cell.y * TREE_CELL + jitter(62),
+        );
         let ground = self.height(x, z);
         let steep = (self.height(x + 2, z) - self.height(x - 2, z)).abs()
             + (self.height(x, z + 2) - self.height(x, z - 2)).abs();
-        if (self.wet() && ground <= self.sea_level() + 1) || ground > self.tree_line() || steep > 5 {
+        if (self.wet() && ground <= self.sea_level() + 1) || ground > self.tree_line() || steep > 5
+        {
             return None;
         }
         // Which kind (since version 3): pines take over as the ground climbs, and
@@ -555,8 +621,11 @@ impl Terrain {
 
     /// The rock cells whose boulders can reach world columns `min..max`.
     fn rock_cells(min: IVec2, max: IVec2) -> impl Iterator<Item = IVec2> {
-        let cells = |a: i32, b: i32| (a - ROCK_REACH).div_euclid(ROCK_CELL)..=(b + ROCK_REACH).div_euclid(ROCK_CELL);
-        cells(min.y, max.y).flat_map(move |cz| cells(min.x, max.x).map(move |cx| IVec2::new(cx, cz)))
+        let cells = |a: i32, b: i32| {
+            (a - ROCK_REACH).div_euclid(ROCK_CELL)..=(b + ROCK_REACH).div_euclid(ROCK_CELL)
+        };
+        cells(min.y, max.y)
+            .flat_map(move |cz| cells(min.x, max.x).map(move |cx| IVec2::new(cx, cz)))
     }
 
     /// The boulder of rock cell `cell`, if it has one: its middle and radii, in world
@@ -567,19 +636,29 @@ impl Terrain {
             return None;
         }
         let jitter = |k: u32| (hash01(key, self.seed + k) * (ROCK_CELL - 12) as f32) as i32 + 6;
-        let (x, z) = (cell.x * ROCK_CELL + jitter(81), cell.y * ROCK_CELL + jitter(82));
+        let (x, z) = (
+            cell.x * ROCK_CELL + jitter(81),
+            cell.y * ROCK_CELL + jitter(82),
+        );
         let size = hash01(key, self.seed + 83);
         let r = 1.6 + size * size * 3.4;
         // It sits on the lowest ground under it, so no side hangs in the air; not on
         // cliffs, nor out in deep water.
         let d = r as i32;
-        let grounds = [(0, 0), (d, 0), (-d, 0), (0, d), (0, -d)].map(|(dx, dz)| self.height(x + dx, z + dz));
-        let (low, high) = (*grounds.iter().min().unwrap(), *grounds.iter().max().unwrap());
+        let grounds =
+            [(0, 0), (d, 0), (-d, 0), (0, d), (0, -d)].map(|(dx, dz)| self.height(x + dx, z + dz));
+        let (low, high) = (
+            *grounds.iter().min().unwrap(),
+            *grounds.iter().max().unwrap(),
+        );
         if high - low > 4 || (self.wet() && low < self.sea_level() - 2) {
             return None;
         }
         let radii = Vec3::new(r, r * 0.75, r * (0.7 + 0.3 * hash01(key, self.seed + 84)));
-        Some((Vec3::new(x as f32 + 0.5, low as f32 + r * 0.2, z as f32 + 0.5), radii))
+        Some((
+            Vec3::new(x as f32 + 0.5, low as f32 + r * 0.2, z as f32 + 0.5),
+            radii,
+        ))
     }
 
     fn place_rock(&self, grid: &mut VoxelGrid, min: IVec3, cell: IVec2) {
@@ -587,14 +666,19 @@ impl Terrain {
             return;
         };
         let lo = (center - radii - 1.0).floor().as_ivec3().max(min);
-        let hi = (center + radii + 1.0).ceil().as_ivec3().min(min + grid.size().as_ivec3() - 1);
+        let hi = (center + radii + 1.0)
+            .ceil()
+            .as_ivec3()
+            .min(min + grid.size().as_ivec3() - 1);
         for pz in lo.z..=hi.z {
             for py in lo.y..=hi.y {
                 for px in lo.x..=hi.x {
                     let p = IVec3::new(px, py, pz);
                     let q = p.as_vec3() + 0.5;
                     let lumps = (value(q / 2.5, self.seed + 85) - 0.5) * 0.3;
-                    if ((q - center) / radii).length() <= 1.0 + lumps && matches!(get(grid, min, p), AIR | block::WATER) {
+                    if ((q - center) / radii).length() <= 1.0 + lumps
+                        && matches!(get(grid, min, p), AIR | block::WATER)
+                    {
                         grid.set(p - min, pick(block::STONE, value(q / 4.0, self.seed + 42)));
                     }
                 }
@@ -604,8 +688,11 @@ impl Terrain {
 
     /// The tree cells whose trees can reach world columns `min..max`.
     fn tree_cells(min: IVec2, max: IVec2) -> impl Iterator<Item = IVec2> {
-        let cells = |a: i32, b: i32| (a - TREE_REACH).div_euclid(TREE_CELL)..=(b + TREE_REACH).div_euclid(TREE_CELL);
-        cells(min.y, max.y).flat_map(move |cz| cells(min.x, max.x).map(move |cx| IVec2::new(cx, cz)))
+        let cells = |a: i32, b: i32| {
+            (a - TREE_REACH).div_euclid(TREE_CELL)..=(b + TREE_REACH).div_euclid(TREE_CELL)
+        };
+        cells(min.y, max.y)
+            .flat_map(move |cz| cells(min.x, max.x).map(move |cx| IVec2::new(cx, cz)))
     }
 
     fn place_tree(&self, grid: &mut VoxelGrid, min: IVec3, cell: IVec2) {
@@ -628,8 +715,14 @@ impl Terrain {
             let height = 18.0 + (hash01(key, self.seed + 63) * 8.0).floor();
             let radius = 4.4 + hash01(key, self.seed + 65) * 1.4;
             let blobs = [
-                (middle + Vec3::Y * height * 0.5, Vec3::new(radius, height * 0.3, radius)),
-                (middle + Vec3::Y * height * 0.88, Vec3::new(radius * 0.55, height * 0.28, radius * 0.55)),
+                (
+                    middle + Vec3::Y * height * 0.5,
+                    Vec3::new(radius, height * 0.3, radius),
+                ),
+                (
+                    middle + Vec3::Y * height * 0.88,
+                    Vec3::new(radius * 0.55, height * 0.28, radius * 0.55),
+                ),
             ];
             return (base + IVec3::Y * height as i32, blobs, 0.45);
         }
@@ -638,8 +731,14 @@ impl Terrain {
             let radius = 2.6 + hash01(key, self.seed + 65) * 1.6;
             let lean = (hash01(key, self.seed + 63) - 0.5) * radius;
             let blobs = [
-                (middle + Vec3::Y * 3.0, Vec3::new(radius, radius * 0.7, radius)),
-                (middle + Vec3::new(lean, 3.0 + radius * 0.35, -lean), Vec3::splat(radius * 0.6)),
+                (
+                    middle + Vec3::Y * 3.0,
+                    Vec3::new(radius, radius * 0.7, radius),
+                ),
+                (
+                    middle + Vec3::new(lean, 3.0 + radius * 0.35, -lean),
+                    Vec3::splat(radius * 0.6),
+                ),
             ];
             return (base + IVec3::Y * 2, blobs, -0.15);
         }
@@ -647,8 +746,14 @@ impl Terrain {
         let crown = IVec3::new(base.x, base.y + trunk_height, base.z);
         let radius = 5.5 + hash01(key, self.seed + 65) * 2.5;
         let blobs = [
-            (crown.as_vec3() + Vec3::new(1.0, 0.0, 1.0), Vec3::new(radius, radius * 0.75, radius)),
-            (crown.as_vec3() + Vec3::new(1.0, radius * 0.6, 1.0), Vec3::splat(radius * 0.65)),
+            (
+                crown.as_vec3() + Vec3::new(1.0, 0.0, 1.0),
+                Vec3::new(radius, radius * 0.75, radius),
+            ),
+            (
+                crown.as_vec3() + Vec3::new(1.0, radius * 0.6, 1.0),
+                Vec3::splat(radius * 0.65),
+            ),
         ];
         (crown, blobs, 0.0)
     }
@@ -688,7 +793,10 @@ impl Terrain {
             let (center, radii) = blob;
             // Only visit the part of the blob inside this grid.
             let lo = (center - radii - 2.0).floor().as_ivec3().max(min);
-            let hi = (center + radii + 2.0).ceil().as_ivec3().min(min + grid.size().as_ivec3() - 1);
+            let hi = (center + radii + 2.0)
+                .ceil()
+                .as_ivec3()
+                .min(min + grid.size().as_ivec3() - 1);
             for pz in lo.z..=hi.z {
                 for py in lo.y..=hi.y {
                     for px in lo.x..=hi.x {
@@ -718,7 +826,13 @@ impl Terrain {
 
     /// Like [`generate_coarse`](Self::generate_coarse), with its cells' mean heights
     /// (from [`coarse_heights`](Self::coarse_heights)) already worked out.
-    pub fn generate_coarse_in(&self, heights: &Heights, min: IVec3, size: UVec3, step: i32) -> VoxelGrid {
+    pub fn generate_coarse_in(
+        &self,
+        heights: &Heights,
+        min: IVec3,
+        size: UVec3,
+        step: i32,
+    ) -> VoxelGrid {
         let mut grid = VoxelGrid::new(size);
         let max = min + size.as_ivec3();
         let half = step as f32 / 2.0;
@@ -737,8 +851,17 @@ impl Terrain {
                         // The cell's topmost ground voxel. On a landscape of its own, the
                         // column's top cell shows the surface (snow, sand), not what's
                         // under it; the usual one is left as it always looked from afar.
-                        let surface = !self.recipe.is_default() && (bottom + step) as f32 + half > mean + 0.5;
-                        let p = IVec3::new(center.x, if surface { h } else { (bottom + step - 1).min(h) }, center.y);
+                        let surface =
+                            !self.recipe.is_default() && (bottom + step) as f32 + half > mean + 0.5;
+                        let p = IVec3::new(
+                            center.x,
+                            if surface {
+                                h
+                            } else {
+                                (bottom + step - 1).min(h)
+                            },
+                            center.y,
+                        );
                         let q = p.as_vec3();
                         let id = self.ground_block(
                             p,
@@ -769,13 +892,18 @@ impl Terrain {
                     continue;
                 };
                 let lo = ((center - radii) / step as f32).floor().as_ivec3().max(min);
-                let hi = ((center + radii) / step as f32).floor().as_ivec3().min(max - 1);
+                let hi = ((center + radii) / step as f32)
+                    .floor()
+                    .as_ivec3()
+                    .min(max - 1);
                 for cz in lo.z..=hi.z {
                     for cy in lo.y..=hi.y {
                         for cx in lo.x..=hi.x {
                             let c = IVec3::new(cx, cy, cz);
                             let q = (c * step).as_vec3() + half;
-                            if ((q - center) / radii).length() <= 1.0 && matches!(grid.get(c - min), AIR | block::WATER) {
+                            if ((q - center) / radii).length() <= 1.0
+                                && matches!(grid.get(c - min), AIR | block::WATER)
+                            {
                                 grid.set(c - min, block::STONE[1]);
                             }
                         }
@@ -798,7 +926,11 @@ impl Terrain {
                 // The trunk's middle, between its two columns.
                 let column = (base.xz() + 1).div_euclid(IVec2::splat(step));
                 for cy in (base.y + 1).div_euclid(step)..=(crown.y - 1).div_euclid(step) {
-                    set(&mut grid, IVec3::new(column.x, cy, column.y), block::BARK[0]);
+                    set(
+                        &mut grid,
+                        IVec3::new(column.x, cy, column.y),
+                        block::BARK[0],
+                    );
                 }
             }
             for blob in blobs {
@@ -809,7 +941,9 @@ impl Terrain {
                     for cy in lo.y..=hi.y {
                         for cx in lo.x..=hi.x {
                             let c = IVec3::new(cx, cy, cz);
-                            if let Some(leaves) = self.leaf_at((c * step).as_vec3() + half, blob, tone) {
+                            if let Some(leaves) =
+                                self.leaf_at((c * step).as_vec3() + half, blob, tone)
+                            {
                                 set(&mut grid, c, leaves);
                             }
                         }
@@ -860,7 +994,9 @@ mod tests {
 
     /// The top ground cell of a coarse column, in coarse cells.
     fn top(grid: &VoxelGrid, x: i32, z: i32) -> Option<i32> {
-        (0..grid.size().y as i32).rev().find(|y| is_ground(grid.get(IVec3::new(x, *y, z))))
+        (0..grid.size().y as i32)
+            .rev()
+            .find(|y| is_ground(grid.get(IVec3::new(x, *y, z))))
     }
 
     #[test]
@@ -880,7 +1016,10 @@ mod tests {
             }
             // Steep slopes can differ by more than a cell between a column's mean and
             // its middle; most columns don't.
-            assert!(off < 16, "step {step}: {off} columns off by more than a cell");
+            assert!(
+                off < 16,
+                "step {step}: {off} columns off by more than a cell"
+            );
         }
     }
 
@@ -888,7 +1027,10 @@ mod tests {
     /// recipe is that generator, voxel for voxel. The fingerprint is from before recipes.
     #[test]
     fn the_usual_recipe_is_the_terrain_from_before_recipes() {
-        let t = Terrain { version: 2, ..Terrain::new(1337, false) };
+        let t = Terrain {
+            version: 2,
+            ..Terrain::new(1337, false)
+        };
         let mut h: u64 = 0xcbf29ce484222325;
         let mut eat = |b: u8| h = (h ^ b as u64).wrapping_mul(0x100000001b3);
         let regions = [
@@ -902,14 +1044,27 @@ mod tests {
             }
         }
         for step in [2, 4, 8] {
-            for c in t.generate_coarse(IVec3::new(-20, 0, 7), UVec3::new(34, (WORLD_HEIGHT / step) as u32, 34), step).cells() {
+            for c in t
+                .generate_coarse(
+                    IVec3::new(-20, 0, 7),
+                    UVec3::new(34, (WORLD_HEIGHT / step) as u32, 34),
+                    step,
+                )
+                .cells()
+            {
                 eat(*c);
             }
         }
-        for c in Terrain::new(7, true).generate(IVec3::new(-10, 0, -10), UVec3::new(20, 64, 20)).cells() {
+        for c in Terrain::new(7, true)
+            .generate(IVec3::new(-10, 0, -10), UVec3::new(20, 64, 20))
+            .cells()
+        {
             eat(*c);
         }
-        assert_eq!(t.top(IVec2::new(-64, -64), IVec2::new(64, 64), 80), USUAL_TOP);
+        assert_eq!(
+            t.top(IVec2::new(-64, -64), IVec2::new(64, 64), 80),
+            USUAL_TOP
+        );
         assert_eq!(h, USUAL_PRINT);
     }
     const USUAL_PRINT: u64 = 4852745813946194973;
@@ -930,40 +1085,122 @@ mod tests {
         let grass = |t: Terrain| share(t, |c| block::GRASS.contains(&c));
         // No sea in a desert, nor grass, nor trees; sand instead.
         let desert = made("desert");
-        assert_eq!((water(desert), grass(desert), leaves(desert)), (0.0, 0.0, 0.0));
-        assert!(share(desert, |c| block::SAND.contains(&c)) > share(usual, |c| block::SAND.contains(&c)));
+        assert_eq!(
+            (water(desert), grass(desert), leaves(desert)),
+            (0.0, 0.0, 0.0)
+        );
+        assert!(
+            share(desert, |c| block::SAND.contains(&c))
+                > share(usual, |c| block::SAND.contains(&c))
+        );
         // Islands are mostly sea; a forest has many more leaves; tundra is under snow.
         assert!(water(made("islands")) > water(usual));
-        assert!(leaves(made("forest")) > leaves(usual) * 1.5, "{} vs {}", leaves(made("forest")), leaves(usual));
+        assert!(
+            leaves(made("forest")) > leaves(usual) * 1.5,
+            "{} vs {}",
+            leaves(made("forest")),
+            leaves(usual)
+        );
         assert!(share(made("tundra"), |c| c == block::SNOW) > 0.0 && grass(made("tundra")) == 0.0);
         // Dry low ground: no water anywhere, and no beaches for it.
-        let dry = Terrain::made(1337, false, Recipe { water: false, ..Recipe::NATURAL });
+        let dry = Terrain::made(
+            1337,
+            false,
+            Recipe {
+                water: false,
+                ..Recipe::NATURAL
+            },
+        );
         assert_eq!(water(dry), 0.0);
         // Level ground: every column at about the same height.
-        let level = Terrain::made(1337, false, Recipe { land: 100, hills: 0, mountains: 0, roughness: 0, ..Recipe::NATURAL });
+        let level = Terrain::made(
+            1337,
+            false,
+            Recipe {
+                land: 100,
+                hills: 0,
+                mountains: 0,
+                roughness: 0,
+                ..Recipe::NATURAL
+            },
+        );
         let heights: Vec<i32> = (-50..50).map(|x| level.height(x * 7, x * 3)).collect();
-        assert!(heights.iter().max().unwrap() - heights.iter().min().unwrap() <= 1, "{heights:?}");
+        assert!(
+            heights.iter().max().unwrap() - heights.iter().min().unwrap() <= 1,
+            "{heights:?}"
+        );
         // Much taller mountains don't flatten off at the top of the world: no wide
         // level plateau at the highest ground.
-        let giant = Terrain::made(1337, false, Recipe { land: 100, mountains: 300, ranges: 100, ..Recipe::NATURAL });
-        let tops: Vec<i32> = (-80..80).flat_map(|x| (-80..80).map(move |z| (x, z))).map(|(x, z)| giant.height(x * 11, z * 11)).collect();
+        let giant = Terrain::made(
+            1337,
+            false,
+            Recipe {
+                land: 100,
+                mountains: 300,
+                ranges: 100,
+                ..Recipe::NATURAL
+            },
+        );
+        let tops: Vec<i32> = (-80..80)
+            .flat_map(|x| (-80..80).map(move |z| (x, z)))
+            .map(|(x, z)| giant.height(x * 11, z * 11))
+            .collect();
         let highest = *tops.iter().max().unwrap();
-        assert!(highest < giant.max_ground(), "peaks ease under the top of the world");
-        assert!(tops.iter().filter(|h| **h == highest).count() < tops.len() / 100, "the highest ground isn't a plateau");
+        assert!(
+            highest < giant.max_ground(),
+            "peaks ease under the top of the world"
+        );
+        assert!(
+            tops.iter().filter(|h| **h == highest).count() < tops.len() / 100,
+            "the highest ground isn't a plateau"
+        );
         // From afar, a snowy land's tops are snow, not the dirt under it.
         let snowy = made("tundra");
-        let far = snowy.generate_coarse(IVec3::new(-16, 0, -16), UVec3::new(32, (WORLD_HEIGHT / 8) as u32, 32), 8);
-        let top_cells: Vec<VoxelId> = (0..32).flat_map(|x| (0..32).map(move |z| (x, z))).filter_map(|(x, z)| top(&far, x, z).map(|y| far.get(IVec3::new(x, y, z)))).collect();
-        assert!(!top_cells.is_empty() && top_cells.iter().all(|c| !block::DIRT.contains(c)), "no dirt shows through the snow from afar");
+        let far = snowy.generate_coarse(
+            IVec3::new(-16, 0, -16),
+            UVec3::new(32, (WORLD_HEIGHT / 8) as u32, 32),
+            8,
+        );
+        let top_cells: Vec<VoxelId> = (0..32)
+            .flat_map(|x| (0..32).map(move |z| (x, z)))
+            .filter_map(|(x, z)| top(&far, x, z).map(|y| far.get(IVec3::new(x, y, z))))
+            .collect();
+        assert!(
+            !top_cells.is_empty() && top_cells.iter().all(|c| !block::DIRT.contains(c)),
+            "no dirt shows through the snow from afar"
+        );
         // Taller mountains reach higher than the usual ones somewhere.
-        let peak = |t: Terrain| (-60..60).flat_map(|x| (-60..60).map(move |z| (x, z))).map(|(x, z)| t.height(x * 40, z * 40)).max().unwrap();
+        let peak = |t: Terrain| {
+            (-60..60)
+                .flat_map(|x| (-60..60).map(move |z| (x, z)))
+                .map(|(x, z)| t.height(x * 40, z * 40))
+                .max()
+                .unwrap()
+        };
         assert!(peak(made("mountains")) > peak(usual));
         // A flat world keeps its level ground, with the recipe's cover.
-        let sands = Terrain::made(7, true, Recipe { ground: Cover::Sand, ..Recipe::NATURAL });
+        let sands = Terrain::made(
+            7,
+            true,
+            Recipe {
+                ground: Cover::Sand,
+                ..Recipe::NATURAL
+            },
+        );
         assert_eq!(sands.height(5, 5), FLAT_GROUND);
-        assert!(block::SAND.contains(&sands.generate(IVec3::new(0, FLAT_GROUND, 0), UVec3::ONE).get(IVec3::ZERO)));
+        assert!(
+            block::SAND.contains(
+                &sands
+                    .generate(IVec3::new(0, FLAT_GROUND, 0), UVec3::ONE)
+                    .get(IVec3::ZERO)
+            )
+        );
         // The coarse terrain far away agrees about water.
-        let far = dry.generate_coarse(IVec3::new(-16, 0, -16), UVec3::new(32, (WORLD_HEIGHT / 8) as u32, 32), 8);
+        let far = dry.generate_coarse(
+            IVec3::new(-16, 0, -16),
+            UVec3::new(32, (WORLD_HEIGHT / 8) as u32, 32),
+            8,
+        );
         assert!(!far.cells().contains(&block::WATER));
     }
     const USUAL_TOP: i32 = 81;
@@ -972,35 +1209,67 @@ mod tests {
     /// edits are laid over it. The fingerprint is of the generator before versions.
     #[test]
     fn legacy_terrain_is_unchanged() {
-        let t = Terrain { version: LEGACY_TERRAIN, ..Terrain::new(1337, false) };
+        let t = Terrain {
+            version: LEGACY_TERRAIN,
+            ..Terrain::new(1337, false)
+        };
         let mut h: u64 = 0xcbf29ce484222325;
         let mut eat = |b: u8| h = (h ^ b as u64).wrapping_mul(0x100000001b3);
-        for (min, size) in [(IVec3::new(-40, 0, -40), UVec3::new(80, 128, 80)), (IVec3::new(300, 20, -500), UVec3::new(34, 34, 34))] {
+        for (min, size) in [
+            (IVec3::new(-40, 0, -40), UVec3::new(80, 128, 80)),
+            (IVec3::new(300, 20, -500), UVec3::new(34, 34, 34)),
+        ] {
             for c in t.generate(min, size).cells() {
                 eat(*c);
             }
         }
         for step in [2, 4, 8] {
-            for c in t.generate_coarse(IVec3::new(-20, 0, 7), UVec3::new(34, (128 / step) as u32, 34), step).cells() {
+            for c in t
+                .generate_coarse(
+                    IVec3::new(-20, 0, 7),
+                    UVec3::new(34, (128 / step) as u32, 34),
+                    step,
+                )
+                .cells()
+            {
                 eat(*c);
             }
         }
-        let flat = Terrain { version: LEGACY_TERRAIN, ..Terrain::new(7, true) };
-        for c in flat.generate(IVec3::new(-10, 0, -10), UVec3::new(20, 64, 20)).cells() {
+        let flat = Terrain {
+            version: LEGACY_TERRAIN,
+            ..Terrain::new(7, true)
+        };
+        for c in flat
+            .generate(IVec3::new(-10, 0, -10), UVec3::new(20, 64, 20))
+            .cells()
+        {
             eat(*c);
         }
         assert_eq!(h, 0x189374ed716d187c);
         // Above the first world's top, there's only sky.
-        assert!(t.generate(IVec3::new(-40, 128, -40), UVec3::new(80, 64, 80)).cells().iter().all(|c| *c == AIR));
+        assert!(
+            t.generate(IVec3::new(-40, 128, -40), UVec3::new(80, 64, 80))
+                .cells()
+                .iter()
+                .all(|c| *c == AIR)
+        );
     }
 
     /// The new terrain uses the taller world: real mountains, a sea, and lowlands.
     #[test]
     fn terrain_has_mountains_and_sea() {
         let t = Terrain::new(1337, false);
-        let heights: Vec<i32> = (-60..60).flat_map(|z| (-60..60).map(move |x| (x * 40, z * 40))).map(|(x, z)| t.height(x, z)).collect();
-        let share = |f: &dyn Fn(i32) -> bool| heights.iter().filter(|h| f(**h)).count() as f32 / heights.len() as f32;
-        assert!(heights.iter().max().unwrap() - t.sea_level() > 300, "peaks over 75 m");
+        let heights: Vec<i32> = (-60..60)
+            .flat_map(|z| (-60..60).map(move |x| (x * 40, z * 40)))
+            .map(|(x, z)| t.height(x, z))
+            .collect();
+        let share = |f: &dyn Fn(i32) -> bool| {
+            heights.iter().filter(|h| f(**h)).count() as f32 / heights.len() as f32
+        };
+        assert!(
+            heights.iter().max().unwrap() - t.sea_level() > 300,
+            "peaks over 75 m"
+        );
         assert!(*heights.iter().max().unwrap() <= t.max_ground());
         let sea = share(&|h| h < t.sea_level());
         assert!((0.05..0.4).contains(&sea), "{sea} under the sea");
@@ -1011,7 +1280,14 @@ mod tests {
     /// `top` bounds everything the seed fills, trees and water included.
     #[test]
     fn nothing_grows_above_the_top() {
-        for t in [Terrain::new(1337, false), Terrain { version: LEGACY_TERRAIN, ..Terrain::new(1337, false) }, Terrain::new(3, true)] {
+        for t in [
+            Terrain::new(1337, false),
+            Terrain {
+                version: LEGACY_TERRAIN,
+                ..Terrain::new(1337, false)
+            },
+            Terrain::new(3, true),
+        ] {
             for (x, z) in [(0, 0), (-700, 260), (1500, -900), (37, 4100)] {
                 let (min, size) = (IVec2::new(x, z), IVec2::new(48, 48));
                 let heights = t.heights(min, size);
@@ -1020,7 +1296,10 @@ mod tests {
                 let highest = (0..WORLD_HEIGHT).rev().find(|y| {
                     (0..48).any(|dz| (0..48).any(|dx| grid.get(IVec3::new(dx, *y, dz)) != AIR))
                 });
-                assert!(highest.unwrap() <= top, "{t:?} at {x}, {z}: {highest:?} over {top}");
+                assert!(
+                    highest.unwrap() <= top,
+                    "{t:?} at {x}, {z}: {highest:?} over {top}"
+                );
             }
         }
     }
@@ -1033,18 +1312,43 @@ mod tests {
         let before = Terrain { version: 2, ..t };
         let columns = || (-150..150).flat_map(|z| (-150..150).map(move |x| (x * 16, z * 16)));
         // Rivers only ever lower the ground, and only some of it.
-        let cut = columns().filter(|(x, z)| t.height(*x, *z) < before.height(*x, *z)).count();
+        let cut = columns()
+            .filter(|(x, z)| t.height(*x, *z) < before.height(*x, *z))
+            .count();
         assert!(columns().all(|(x, z)| t.height(x, z) <= before.height(x, z)));
-        assert!((500..30000).contains(&cut), "{cut} of 90000 columns in a river");
+        assert!(
+            (500..30000).contains(&cut),
+            "{cut} of 90000 columns in a river"
+        );
         let cells = || (-60..60).flat_map(|z| (-60..60).map(move |x| IVec2::new(x, z)));
-        let kinds = |kind: i32| cells().filter_map(|c| t.tree_in(c)).filter(|(_, key)| key.y == kind).count();
-        assert!(kinds(0) > 100 && kinds(PINE) > 100 && kinds(BUSH) > 100, "{} {} {}", kinds(0), kinds(PINE), kinds(BUSH));
-        assert!(cells().filter_map(|c| before.tree_in(c)).all(|(_, key)| key.y == 0));
+        let kinds = |kind: i32| {
+            cells()
+                .filter_map(|c| t.tree_in(c))
+                .filter(|(_, key)| key.y == kind)
+                .count()
+        };
+        assert!(
+            kinds(0) > 100 && kinds(PINE) > 100 && kinds(BUSH) > 100,
+            "{} {} {}",
+            kinds(0),
+            kinds(PINE),
+            kinds(BUSH)
+        );
+        assert!(
+            cells()
+                .filter_map(|c| before.tree_in(c))
+                .all(|(_, key)| key.y == 0)
+        );
         // Boulders stand clear of the ground they sit on, and no higher or wider than
         // `top` and the cells that look for them allow.
         let rocks: Vec<(Vec3, Vec3)> = cells().filter_map(|c| t.rock_in(c)).collect();
         assert!(rocks.len() > 500, "{} boulders", rocks.len());
-        assert!(rocks.iter().all(|(_, r)| r.y * 1.15 + r.x * 0.2 <= ROCK_RISE as f32 && r.x * 1.15 <= ROCK_REACH as f32));
+        assert!(
+            rocks
+                .iter()
+                .all(|(_, r)| r.y * 1.15 + r.x * 0.2 <= ROCK_RISE as f32
+                    && r.x * 1.15 <= ROCK_REACH as f32)
+        );
         let stands = |(center, _): &(Vec3, Vec3)| {
             let c = center.floor().as_ivec3();
             let above = IVec3::new(c.x, t.height(c.x, c.z) + 1, c.z);
@@ -1064,4 +1368,3 @@ mod tests {
         assert!(count(block::BARK[0]) > 0);
     }
 }
-

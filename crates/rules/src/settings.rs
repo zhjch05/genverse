@@ -6,7 +6,10 @@
 
 use serde::{Deserialize, Serialize};
 
-use crate::{budget::BudgetLimits, build::BuildLimits, content::Content, land::Spawn, logic::LogicRules, sculpt::TerrainLimits};
+use crate::{
+    budget::BudgetLimits, build::BuildLimits, content::Content, land::Spawn, logic::LogicRules,
+    sculpt::TerrainLimits,
+};
 
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
@@ -61,7 +64,12 @@ pub struct HeroRules {
 
 impl Default for HeroRules {
     fn default() -> Self {
-        Self { walk_speed: 4.0, run_speed: 7.0, jump_speed: 7.5, gravity: 24.0 }
+        Self {
+            walk_speed: 4.0,
+            run_speed: 7.0,
+            jump_speed: 7.5,
+            gravity: 24.0,
+        }
     }
 }
 
@@ -72,7 +80,13 @@ impl HeroRules {
 
     /// The rules kept within what a hero can be moved by, whatever a log says.
     pub fn bounded(self) -> Self {
-        let within = |v: f32, lo: f32, hi: f32, usual: f32| if v.is_finite() { v.clamp(lo, hi) } else { usual };
+        let within = |v: f32, lo: f32, hi: f32, usual: f32| {
+            if v.is_finite() {
+                v.clamp(lo, hi)
+            } else {
+                usual
+            }
+        };
         Self {
             walk_speed: within(self.walk_speed, 0.5, 20.0, 4.0),
             run_speed: within(self.run_speed, 0.5, 40.0, 7.0),
@@ -116,14 +130,42 @@ mod tests {
     fn default_look_leaves_signed_rules_unchanged() {
         // Rules signed before `look` existed must serialize to the same bytes.
         let json = serde_json::to_string(&WorldRules::default()).unwrap();
-        assert!(!json.contains("look") && !json.contains("logic") && !json.contains("hero") && !json.contains("content"));
+        assert!(
+            !json.contains("look")
+                && !json.contains("logic")
+                && !json.contains("hero")
+                && !json.contains("content")
+        );
         // Hero rules travel the same way, and are bounded where they're used.
-        let rules = WorldRules { hero: HeroRules { run_speed: 14.0, gravity: 1e9, ..Default::default() }, ..Default::default() };
-        let back: WorldRules = serde_json::from_str(&serde_json::to_string(&rules).unwrap()).unwrap();
-        assert_eq!((back.hero.run_speed, back.hero.bounded().gravity), (14.0, 100.0));
-        assert_eq!(HeroRules { jump_speed: f32::NAN, ..Default::default() }.bounded().jump_speed, 7.5);
-        let rules = WorldRules { look: Look { bevel: 0.12 }, ..Default::default() };
-        let back: WorldRules = serde_json::from_str(&serde_json::to_string(&rules).unwrap()).unwrap();
+        let rules = WorldRules {
+            hero: HeroRules {
+                run_speed: 14.0,
+                gravity: 1e9,
+                ..Default::default()
+            },
+            ..Default::default()
+        };
+        let back: WorldRules =
+            serde_json::from_str(&serde_json::to_string(&rules).unwrap()).unwrap();
+        assert_eq!(
+            (back.hero.run_speed, back.hero.bounded().gravity),
+            (14.0, 100.0)
+        );
+        assert_eq!(
+            HeroRules {
+                jump_speed: f32::NAN,
+                ..Default::default()
+            }
+            .bounded()
+            .jump_speed,
+            7.5
+        );
+        let rules = WorldRules {
+            look: Look { bevel: 0.12 },
+            ..Default::default()
+        };
+        let back: WorldRules =
+            serde_json::from_str(&serde_json::to_string(&rules).unwrap()).unwrap();
         assert_eq!(back.look.bevel, 0.12);
     }
 }

@@ -89,7 +89,12 @@ pub struct PaletteDef {
 pub enum Fill {
     Solid(String),
     /// Picks among `mats` using 3D fractal noise with features about `scale` voxels wide.
-    Noise { mats: Vec<String>, scale: f32, #[serde(default)] seed: u32 },
+    Noise {
+        mats: Vec<String>,
+        scale: f32,
+        #[serde(default)]
+        seed: u32,
+    },
 }
 
 #[derive(Deserialize, Clone, Copy)]
@@ -102,12 +107,27 @@ pub struct NoiseDef {
 
 #[derive(Deserialize)]
 pub enum Geom {
-    Box { min: V3, max: V3 },
-    Ellipsoid { center: V3, radii: V3 },
+    Box {
+        min: V3,
+        max: V3,
+    },
+    Ellipsoid {
+        center: V3,
+        radii: V3,
+    },
     /// Tapered capsule between two points: trunks, branches, pillars.
-    Capsule { a: V3, b: V3, radius_a: f32, radius_b: f32 },
+    Capsule {
+        a: V3,
+        b: V3,
+        radius_a: f32,
+        radius_b: f32,
+    },
     /// Vertical cylinder standing on `base`.
-    Cylinder { base: V3, radius: f32, height: f32 },
+    Cylinder {
+        base: V3,
+        radius: f32,
+        height: f32,
+    },
 }
 
 #[derive(Deserialize)]
@@ -279,7 +299,12 @@ pub fn build_ordered(def: ModelDef, mut order: Option<&mut Vec<u16>>) -> Result<
         let surface = surfaces
             .iter()
             .position(|s| s.name == p.surface)
-            .ok_or_else(|| format!("palette entry {:?} uses unknown surface {:?}", p.name, p.surface))?;
+            .ok_or_else(|| {
+                format!(
+                    "palette entry {:?} uses unknown surface {:?}",
+                    p.name, p.surface
+                )
+            })?;
         entries.push(PaletteEntry {
             name: p.name.clone(),
             color: color(&p.color)?.into(),
@@ -300,7 +325,12 @@ pub fn build_ordered(def: ModelDef, mut order: Option<&mut Vec<u16>>) -> Result<
         let before = order.is_some().then(|| grid.cells().to_vec());
         apply_op(&mut grid, &palette, op)?;
         if let (Some(order), Some(before)) = (order.as_deref_mut(), before) {
-            for (cell, _) in before.iter().zip(grid.cells()).enumerate().filter(|(_, (was, is))| was != is) {
+            for (cell, _) in before
+                .iter()
+                .zip(grid.cells())
+                .enumerate()
+                .filter(|(_, (was, is))| was != is)
+            {
                 order[cell] = i as u16;
             }
         }
@@ -344,7 +374,11 @@ pub fn build_ordered(def: ModelDef, mut order: Option<&mut Vec<u16>>) -> Result<
 /// A [`Fill`] with material names resolved to palette ids.
 enum ResolvedFill {
     Solid(VoxelId),
-    Noise { ids: Vec<VoxelId>, scale: f32, seed: u32 },
+    Noise {
+        ids: Vec<VoxelId>,
+        scale: f32,
+        seed: u32,
+    },
 }
 
 impl ResolvedFill {
@@ -352,7 +386,10 @@ impl ResolvedFill {
         Ok(match fill {
             Fill::Solid(name) => Self::Solid(lookup(palette, name)?),
             Fill::Noise { mats, scale, seed } => Self::Noise {
-                ids: mats.iter().map(|m| lookup(palette, m)).collect::<Result<_, _>>()?,
+                ids: mats
+                    .iter()
+                    .map(|m| lookup(palette, m))
+                    .collect::<Result<_, _>>()?,
                 scale: *scale,
                 seed: *seed,
             },
@@ -372,16 +409,27 @@ impl ResolvedFill {
 }
 
 fn lookup(palette: &Palette, name: &str) -> Result<VoxelId, String> {
-    palette.find(name).ok_or_else(|| format!("unknown material {name:?}"))
+    palette
+        .find(name)
+        .ok_or_else(|| format!("unknown material {name:?}"))
 }
 
 fn apply_op(grid: &mut VoxelGrid, palette: &Palette, op: &OpDef) -> Result<(), String> {
     match op {
-        OpDef::Shape { geom, fill, noise, mask } => {
+        OpDef::Shape {
+            geom,
+            fill,
+            noise,
+            mask,
+        } => {
             let fill = ResolvedFill::new(fill, palette)?;
             let mask = mask
                 .as_ref()
-                .map(|m| m.iter().map(|n| lookup(palette, n)).collect::<Result<Vec<_>, _>>())
+                .map(|m| {
+                    m.iter()
+                        .map(|n| lookup(palette, n))
+                        .collect::<Result<Vec<_>, _>>()
+                })
                 .transpose()?;
             let (min, max) = geom_bounds(geom, noise.as_ref());
             for_each_cell(grid, min, max, |grid, p| {
@@ -399,7 +447,16 @@ fn apply_op(grid: &mut VoxelGrid, palette: &Palette, op: &OpDef) -> Result<(), S
                 }
             });
         }
-        OpDef::Island { center, top_y, radius, depth, hills, layers, core, seed } => {
+        OpDef::Island {
+            center,
+            top_y,
+            radius,
+            depth,
+            hills,
+            layers,
+            core,
+            seed,
+        } => {
             let layers = layers
                 .iter()
                 .map(|(f, t)| Ok((ResolvedFill::new(f, palette)?, *t as i32)))
@@ -438,8 +495,19 @@ fn apply_op(grid: &mut VoxelGrid, palette: &Palette, op: &OpDef) -> Result<(), S
                 }
             }
         }
-        OpDef::Scatter { on, fill, chance, mode, height, region, seed } => {
-            let on = on.iter().map(|n| lookup(palette, n)).collect::<Result<Vec<_>, _>>()?;
+        OpDef::Scatter {
+            on,
+            fill,
+            chance,
+            mode,
+            height,
+            region,
+            seed,
+        } => {
+            let on = on
+                .iter()
+                .map(|n| lookup(palette, n))
+                .collect::<Result<Vec<_>, _>>()?;
             let fill = ResolvedFill::new(fill, palette)?;
             let size = grid.size().as_ivec3();
             let (min, max) = match region {
@@ -478,7 +546,9 @@ fn apply_op(grid: &mut VoxelGrid, palette: &Palette, op: &OpDef) -> Result<(), S
             let mut ids = BTreeMap::new();
             for (&key, name) in legend {
                 if key == '.' || key == ' ' {
-                    return Err(format!("legend key {key:?} is reserved for \"leave as is\""));
+                    return Err(format!(
+                        "legend key {key:?} is reserved for \"leave as is\""
+                    ));
                 }
                 ids.insert(key, lookup(palette, name)?);
             }
@@ -491,7 +561,9 @@ fn apply_op(grid: &mut VoxelGrid, palette: &Palette, op: &OpDef) -> Result<(), S
                             continue;
                         }
                         let id = *ids.get(&key).ok_or_else(|| {
-                            format!("painted voxel {key:?} (layer {dz}, row {row}) is not in the legend")
+                            format!(
+                                "painted voxel {key:?} (layer {dz}, row {row}) is not in the legend"
+                            )
                         })?;
                         grid.set(at + IVec3::new(dx as i32, y, dz as i32), id);
                     }
@@ -499,7 +571,10 @@ fn apply_op(grid: &mut VoxelGrid, palette: &Palette, op: &OpDef) -> Result<(), S
             }
         }
         OpDef::Settle { mats, region } => {
-            let mats = mats.iter().map(|n| lookup(palette, n)).collect::<Result<Vec<_>, _>>()?;
+            let mats = mats
+                .iter()
+                .map(|n| lookup(palette, n))
+                .collect::<Result<Vec<_>, _>>()?;
             let (min, max) = (v3(region.0), v3(region.1));
             // Cells are visited y-ascending, so removals cascade upward within one pass.
             for_each_cell(grid, min, max, |grid, p| {
@@ -508,7 +583,12 @@ fn apply_op(grid: &mut VoxelGrid, palette: &Palette, op: &OpDef) -> Result<(), S
                 }
             });
         }
-        OpDef::Spill { mat, region, length, thickness } => {
+        OpDef::Spill {
+            mat,
+            region,
+            length,
+            thickness,
+        } => {
             let id = lookup(palette, mat)?;
             let mut sources = Vec::new();
             for_each_cell(grid, v3(region.0), v3(region.1), |grid, p| {
@@ -543,7 +623,12 @@ fn smoothstep(e0: f32, e1: f32, x: f32) -> f32 {
     t * t * (3.0 - 2.0 * t)
 }
 
-fn for_each_cell(grid: &mut VoxelGrid, min: Vec3, max: Vec3, mut f: impl FnMut(&mut VoxelGrid, IVec3)) {
+fn for_each_cell(
+    grid: &mut VoxelGrid,
+    min: Vec3,
+    max: Vec3,
+    mut f: impl FnMut(&mut VoxelGrid, IVec3),
+) {
     let size = grid.size().as_ivec3();
     let lo = min.floor().as_ivec3().max(IVec3::ZERO);
     let hi = max.ceil().as_ivec3().min(size);
@@ -565,11 +650,20 @@ fn geom_bounds(geom: &Geom, noise: Option<&NoiseDef>) -> (Vec3, Vec3) {
             let r = v3(*radii) * grow;
             (v3(*center) - r, v3(*center) + r)
         }
-        Geom::Capsule { a, b, radius_a, radius_b } => {
+        Geom::Capsule {
+            a,
+            b,
+            radius_a,
+            radius_b,
+        } => {
             let r = Vec3::splat(radius_a.max(*radius_b) * grow);
             (v3(*a).min(v3(*b)) - r, v3(*a).max(v3(*b)) + r)
         }
-        Geom::Cylinder { base, radius, height } => {
+        Geom::Cylinder {
+            base,
+            radius,
+            height,
+        } => {
             let r = radius * grow;
             let b = v3(*base);
             (b - Vec3::new(r, 0.0, r), b + Vec3::new(r, *height, r))
@@ -585,14 +679,23 @@ fn geom_distance(geom: &Geom, p: Vec3) -> f32 {
             if inside { 0.0 } else { f32::INFINITY }
         }
         Geom::Ellipsoid { center, radii } => ((p - v3(*center)) / v3(*radii)).length(),
-        Geom::Capsule { a, b, radius_a, radius_b } => {
+        Geom::Capsule {
+            a,
+            b,
+            radius_a,
+            radius_b,
+        } => {
             let (a, b) = (v3(*a), v3(*b));
             let ab = b - a;
             let t = ((p - a).dot(ab) / ab.length_squared()).clamp(0.0, 1.0);
             let radius = radius_a + (radius_b - radius_a) * t;
             p.distance(a + ab * t) / radius
         }
-        Geom::Cylinder { base, radius, height } => {
+        Geom::Cylinder {
+            base,
+            radius,
+            height,
+        } => {
             let b = v3(*base);
             if p.y < b.y || p.y > b.y + height {
                 f32::INFINITY
@@ -648,7 +751,10 @@ mod tests {
             "#,
         )
         .unwrap();
-        let (red, blue) = (m.palette.find("red").unwrap(), m.palette.find("blue").unwrap());
+        let (red, blue) = (
+            m.palette.find("red").unwrap(),
+            m.palette.find("blue").unwrap(),
+        );
         let at = |x, y, z| m.grid.get(IVec3::new(x, y, z));
         // The first row is the top of the layer.
         assert_eq!(at(0, 2, 0), red);
@@ -664,7 +770,10 @@ mod tests {
 
     #[test]
     fn painting_past_the_grid_is_clipped() {
-        let m = model(r#"Voxels(at: (2, 2, 1), legend: {'r': "red"}, layers: [["rrrr", "rrrr"], ["rrrr"]])"#).unwrap();
+        let m = model(
+            r#"Voxels(at: (2, 2, 1), legend: {'r': "red"}, layers: [["rrrr", "rrrr"], ["rrrr"]])"#,
+        )
+        .unwrap();
         let red = m.palette.find("red").unwrap();
         assert_eq!(m.grid.cells().iter().filter(|&&c| c == red).count(), 2);
         assert_eq!(m.grid.get(IVec3::new(3, 2, 1)), red);
@@ -683,7 +792,11 @@ mod tests {
     #[test]
     fn the_shipped_models_build() {
         for path in ["characters/hero.vox.ron", "models/sakura_island.vox.ron"] {
-            let text = std::fs::read_to_string(format!("{}/../../assets/{path}", env!("CARGO_MANIFEST_DIR"))).unwrap();
+            let text = std::fs::read_to_string(format!(
+                "{}/../../assets/{path}",
+                env!("CARGO_MANIFEST_DIR")
+            ))
+            .unwrap();
             build(parse(&text)).unwrap_or_else(|e| panic!("{path}: {e}"));
         }
     }

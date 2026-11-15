@@ -128,33 +128,67 @@ pub struct PlayerVm {
 impl PlayerVm {
     /// Loads `package`'s player scripts; `None` if it has none.
     pub fn new(package: &Package) -> Result<Option<Self>, String> {
-        let files: Vec<(&String, &String)> = package.scripts.iter().filter(|(f, _)| is_player_script(f)).collect();
+        let files: Vec<(&String, &String)> = package
+            .scripts
+            .iter()
+            .filter(|(f, _)| is_player_script(f))
+            .collect();
         if files.is_empty() {
             return Ok(None);
         }
-        let lua = Lua::new_with(StdLib::MATH | StdLib::STRING | StdLib::TABLE | StdLib::UTF8 | StdLib::BIT, LuaOptions::default()).map_err(|e| e.to_string())?;
-        lua.set_memory_limit(MAX_MEMORY).map_err(|e| e.to_string())?;
+        let lua = Lua::new_with(
+            StdLib::MATH | StdLib::STRING | StdLib::TABLE | StdLib::UTF8 | StdLib::BIT,
+            LuaOptions::default(),
+        )
+        .map_err(|e| e.to_string())?;
+        lua.set_memory_limit(MAX_MEMORY)
+            .map_err(|e| e.to_string())?;
         let steps = Rc::new(RefCell::new(0u64));
         let counter = steps.clone();
         lua.set_interrupt(move |_| {
             let mut n = counter.borrow_mut();
             *n += 1;
-            if *n > MAX_STEPS { Err(fail("on_frame ran too long for one frame")) } else { Ok(VmState::Continue) }
+            if *n > MAX_STEPS {
+                Err(fail("on_frame ran too long for one frame"))
+            } else {
+                Ok(VmState::Continue)
+            }
         });
         let globals = lua.globals();
-        for name in ["print", "loadstring", "getfenv", "setfenv", "collectgarbage", "gcinfo", "newproxy"] {
+        for name in [
+            "print",
+            "loadstring",
+            "getfenv",
+            "setfenv",
+            "collectgarbage",
+            "gcinfo",
+            "newproxy",
+        ] {
             globals.set(name, Value::Nil).map_err(|e| e.to_string())?;
         }
         let mut frames = Vec::new();
         for (file, source) in files {
             *steps.borrow_mut() = 0;
-            lua.load(source.as_str()).set_name(file.as_str()).exec().map_err(|e| format!("{file}: {e}"))?;
-            if let Some(f) = globals.get::<Option<Function>>("on_frame").map_err(|e| e.to_string())? {
+            lua.load(source.as_str())
+                .set_name(file.as_str())
+                .exec()
+                .map_err(|e| format!("{file}: {e}"))?;
+            if let Some(f) = globals
+                .get::<Option<Function>>("on_frame")
+                .map_err(|e| e.to_string())?
+            {
                 frames.push((file.clone(), f));
-                globals.set("on_frame", Value::Nil).map_err(|e| e.to_string())?;
+                globals
+                    .set("on_frame", Value::Nil)
+                    .map_err(|e| e.to_string())?;
             }
         }
-        Ok(Some(Self { lua, package: package.manifest.name.clone(), steps, frames }))
+        Ok(Some(Self {
+            lua,
+            package: package.manifest.name.clone(),
+            steps,
+            frames,
+        }))
     }
 
     /// Runs every file's `on_frame` for one frame, with `state` as the player's game has
@@ -162,13 +196,22 @@ impl PlayerVm {
     pub fn frame(&mut self, input: &FrameIn, state: &GameState) -> Result<FrameOut, String> {
         let lua = &self.lua;
         let ns = self.package.clone();
-        let full = move |name: &str| -> String { if name.contains(':') || RESERVED.contains(&name) { name.to_string() } else { format!("{ns}:{name}") } };
+        let full = move |name: &str| -> String {
+            if name.contains(':') || RESERVED.contains(&name) {
+                name.to_string()
+            } else {
+                format!("{ns}:{name}")
+            }
+        };
         let prefix = format!("{}:", self.package);
-        let short = |name: &str| -> String { name.strip_prefix(&prefix).unwrap_or(name).to_string() };
+        let short =
+            |name: &str| -> String { name.strip_prefix(&prefix).unwrap_or(name).to_string() };
         let out = RefCell::new(FrameOut::default());
         let now = input.now;
         let entity_table = |lua: &Lua, id: EntityId| -> mlua::Result<Value> {
-            let Some(e) = state.get(id) else { return Ok(Value::Nil) };
+            let Some(e) = state.get(id) else {
+                return Ok(Value::Nil);
+            };
             let t = lua.create_table()?;
             t.set("id", id_text(id))?;
             t.set("pos", pos_table(lua, position_at(e, now))?)?;
@@ -361,7 +404,11 @@ impl PlayerVm {
 }
 
 fn first_line(text: &str) -> String {
-    text.lines().take_while(|l| !l.starts_with("stack traceback")).take(2).collect::<Vec<_>>().join(" ")
+    text.lines()
+        .take_while(|l| !l.starts_with("stack traceback"))
+        .take(2)
+        .collect::<Vec<_>>()
+        .join(" ")
 }
 
 #[cfg(test)]
@@ -372,8 +419,25 @@ mod tests {
     use crate::logic::{Manifest, Permission};
 
     fn package(files: &[(&str, &str)]) -> Package {
-        let manifest = Manifest { name: "game".into(), version: 1, title: "Game".into(), permissions: vec![Permission::Spawn], depends: Vec::new(), renamed: Default::default(), api: 0 };
-        Package { shaders: Default::default(), manifest, defs: BTreeMap::new(), scripts: files.iter().map(|(n, s)| (n.to_string(), s.to_string())).collect(), models: BTreeMap::new() }
+        let manifest = Manifest {
+            name: "game".into(),
+            version: 1,
+            title: "Game".into(),
+            permissions: vec![Permission::Spawn],
+            depends: Vec::new(),
+            renamed: Default::default(),
+            api: 0,
+        };
+        Package {
+            shaders: Default::default(),
+            manifest,
+            defs: BTreeMap::new(),
+            scripts: files
+                .iter()
+                .map(|(n, s)| (n.to_string(), s.to_string()))
+                .collect(),
+            models: BTreeMap::new(),
+        }
     }
 
     fn input<'a>(keys: &'a [&'a str], pressed: &'a [&'a str]) -> FrameIn<'a> {
@@ -381,7 +445,11 @@ mod tests {
             dt: 0.016,
             now: 100.0,
             me: "ada",
-            hero: Hero { pos: [0.0, 9.0, 0.0], grounded: false, ..Default::default() },
+            hero: Hero {
+                pos: [0.0, 9.0, 0.0],
+                grounded: false,
+                ..Default::default()
+            },
             keys,
             pressed,
             actions: keys,
@@ -419,14 +487,29 @@ mod tests {
         assert_eq!(vm.frame(&input(&[], &[]), &state).unwrap().velocity, None);
         // Any key can be read by name, and the usual jump asked for without steering.
         let hop = "function on_frame(f) if f.pressed.j or f.acted.jump then jump() end end";
-        let mut hopper = PlayerVm::new(&package(&[("hop.player.luau", hop)])).unwrap().unwrap();
+        let mut hopper = PlayerVm::new(&package(&[("hop.player.luau", hop)]))
+            .unwrap()
+            .unwrap();
         let out = hopper.frame(&input(&["j"], &["j"]), &state).unwrap();
         assert!(out.jump && out.velocity.is_none());
         assert!(hopper.frame(&input(&[], &["jump"]), &state).unwrap().jump);
         assert!(!hopper.frame(&input(&["j"], &[]), &state).unwrap().jump);
         // A package with no player scripts has no VM; a runaway frame is stopped.
-        assert!(PlayerVm::new(&package(&[("main.luau", world_file)])).unwrap().is_none());
-        let mut slow = PlayerVm::new(&package(&[("slow.player.luau", "function on_frame(f) while true do end end")])).unwrap().unwrap();
-        assert!(slow.frame(&input(&[], &[]), &state).unwrap_err().contains("too long"));
+        assert!(
+            PlayerVm::new(&package(&[("main.luau", world_file)]))
+                .unwrap()
+                .is_none()
+        );
+        let mut slow = PlayerVm::new(&package(&[(
+            "slow.player.luau",
+            "function on_frame(f) while true do end end",
+        )]))
+        .unwrap()
+        .unwrap();
+        assert!(
+            slow.frame(&input(&[], &[]), &state)
+                .unwrap_err()
+                .contains("too long")
+        );
     }
 }

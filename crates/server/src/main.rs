@@ -8,7 +8,12 @@ use std::path::PathBuf;
 use genverse_server::{ServerConfig, start};
 
 fn main() {
-    let mut config = ServerConfig { data_dir: "server-data".into(), port: genverse_net::DEFAULT_PORT, seed: 1337, flat: false };
+    let mut config = ServerConfig {
+        data_dir: "server-data".into(),
+        port: genverse_net::DEFAULT_PORT,
+        seed: 1337,
+        flat: false,
+    };
     let mut args = std::env::args().skip(1);
     while let Some(arg) = args.next() {
         if arg == "--flat" {

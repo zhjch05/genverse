@@ -17,13 +17,13 @@ use std::time::SystemTime;
 
 use bevy::prelude::*;
 use bevy_egui::{EguiContexts, egui};
+use egui_phosphor::regular as icon;
 use genverse_rules::{
     build::VOXEL_SIZE as BUILD_VOXEL,
     game::GameAction,
     log::{Action, BuildState, PortalTo},
     logic::Package,
 };
-use egui_phosphor::regular as icon;
 use serde_json::json;
 
 use super::{
@@ -81,16 +81,38 @@ impl Travel {
             // Portals keep the name a world had when they were linked; it may have been
             // renamed since.
             PortalTo::World { name } if ledger.is_online() => {
-                let name = ledger.online.as_ref().and_then(|o| o.game.as_ref()?.current(name)).unwrap_or(name.clone());
+                let name = ledger
+                    .online
+                    .as_ref()
+                    .and_then(|o| o.game.as_ref()?.current(name))
+                    .unwrap_or(name.clone());
                 (Trip::Remote { world: name }, world_of(ledger))
             }
-            PortalTo::World { name } => (Trip::Local { game: game_name(), world: ledger::read_game(&game_name()).current(name).unwrap_or(name.clone()) }, world_name()),
-            PortalTo::Game { game, world } => (Trip::Local { game: game.clone(), world: ledger::read_game(game).current(world).unwrap_or(world.clone()) }, here(ledger)),
+            PortalTo::World { name } => (
+                Trip::Local {
+                    game: game_name(),
+                    world: ledger::read_game(&game_name())
+                        .current(name)
+                        .unwrap_or(name.clone()),
+                },
+                world_name(),
+            ),
+            PortalTo::Game { game, world } => (
+                Trip::Local {
+                    game: game.clone(),
+                    world: ledger::read_game(game)
+                        .current(world)
+                        .unwrap_or(world.clone()),
+                },
+                here(ledger),
+            ),
         };
         if let Trip::Local { game, world } = &trip
             && ledger::read_game(game).world(world).is_none()
         {
-            return Err(format!("There's no world \"{world}\" in the game \"{game}\" on this computer."));
+            return Err(format!(
+                "There's no world \"{world}\" in the game \"{game}\" on this computer."
+            ));
         }
         self.next = Some(trip);
         self.from_portal = Some(from);
@@ -109,7 +131,10 @@ pub(super) fn world_of(ledger: &Ledger) -> String {
 /// The game we're in, by name: the server's address while its game isn't known yet.
 pub(super) fn game_of(ledger: &Ledger) -> String {
     match &ledger.online {
-        Some(online) => online.game.as_ref().map_or(online.addr.clone(), |g| g.name.clone()),
+        Some(online) => online
+            .game
+            .as_ref()
+            .map_or(online.addr.clone(), |g| g.name.clone()),
         None => game_name(),
     }
 }
@@ -126,7 +151,11 @@ fn here(ledger: &Ledger) -> String {
 /// Where we are, for people: "home · local", "arena · 192.168.1.4:7878".
 pub fn current_title(ledger: &Ledger) -> String {
     match &ledger.online {
-        Some(online) => format!("{} · {}", online.world.as_deref().unwrap_or("…"), online.addr),
+        Some(online) => format!(
+            "{} · {}",
+            online.world.as_deref().unwrap_or("…"),
+            online.addr
+        ),
         None => format!("{} · {}", world_name(), game_name()),
     }
 }
@@ -135,7 +164,10 @@ pub fn current_title(ledger: &Ledger) -> String {
 fn trip_here(ledger: &Ledger) -> Trip {
     match &ledger.online {
         Some(online) => Trip::Server(online.addr.clone()),
-        None => Trip::Local { game: game_name(), world: world_name() },
+        None => Trip::Local {
+            game: game_name(),
+            world: world_name(),
+        },
     }
 }
 
@@ -153,7 +185,9 @@ pub fn travel(
     mut chat: ResMut<Chat>,
     mut heroes: Query<(&mut Transform, &mut Player)>,
 ) {
-    let Some(trip) = travel.next.take() else { return };
+    let Some(trip) = travel.next.take() else {
+        return;
+    };
     let from_portal = travel.from_portal.take();
     if creations.draft.is_some() || landscape.draft.is_some() {
         chat.say(Role::System, "Keep or discard your draft first.");
@@ -166,7 +200,10 @@ pub fn travel(
         // Closed before the trip, so its logs are done with when the local world loads them.
         ledger.internet = None;
         server.stop();
-        chat.say(Role::System, "Stopped hosting; the others were disconnected.");
+        chat.say(
+            Role::System,
+            "Stopped hosting; the others were disconnected.",
+        );
     }
     match trip {
         Trip::Remote { world: name } => {
@@ -175,7 +212,10 @@ pub fn travel(
             }
         }
         _ if ledger.hosting.is_some() => {
-            chat.say(Role::System, "You're hosting this game, so you stay; Leave closes it.");
+            chat.say(
+                Role::System,
+                "You're hosting this game, so you stay; Leave closes it.",
+            );
         }
         Trip::Server(addr) => {
             ledger.online = None;
@@ -194,16 +234,27 @@ pub fn travel(
                 return;
             }
             if ledger::read_game(&game).world(&name).is_none() {
-                chat.say(Role::System, format!("There's no world \"{name}\" in {game}."));
+                chat.say(
+                    Role::System,
+                    format!("There's no world \"{name}\" in {game}."),
+                );
                 return;
             }
             // Within a game, what the player carries goes with them.
             let me = ledger.profile.id.clone();
             let carried = ledger.logic.state.carried(&me);
             let stats = ledger.logic.state.carried_stats(&me);
-            let carry = !ledger.is_online() && game == game_name() && !(carried.is_empty() && stats.is_empty()) && ledger.land.is_admin(&me);
+            let carry = !ledger.is_online()
+                && game == game_name()
+                && !(carried.is_empty() && stats.is_empty())
+                && ledger.land.is_admin(&me);
             if carry {
-                let depart = Action::Depart { player: me.clone(), to: name.clone(), items: carried.clone(), stats: stats.clone() };
+                let depart = Action::Depart {
+                    player: me.clone(),
+                    to: name.clone(),
+                    items: carried.clone(),
+                    stats: stats.clone(),
+                };
                 ledger.record(None, None, depart);
             }
             let left_world = world_name();
@@ -216,7 +267,16 @@ pub fn travel(
             let (fresh, edits) = ledger::load_local(SEED);
             *ledger = fresh;
             if carry {
-                ledger.record(None, None, Action::Arrive { player: me, from: left_world, items: carried, stats });
+                ledger.record(
+                    None,
+                    None,
+                    Action::Arrive {
+                        player: me,
+                        from: left_world,
+                        items: carried,
+                        stats,
+                    },
+                );
             }
             world.reset(&mut commands, ledger.log.terrain(), edits);
             creations.resync(&mut commands, &ledger.builds);
@@ -232,7 +292,14 @@ pub fn travel(
             loading.restart(&name);
             travel.back = Some(leaving);
             let ground = if ledger.log.flat { "flat" } else { "natural" };
-            chat.say(Role::System, format!("Entered {} ({ground}, {} changes).", current_title(&ledger), ledger.log.changes.len()));
+            chat.say(
+                Role::System,
+                format!(
+                    "Entered {} ({ground}, {} changes).",
+                    current_title(&ledger),
+                    ledger.log.changes.len()
+                ),
+            );
         }
     }
 }
@@ -254,7 +321,10 @@ const REACH: f32 = 1.5;
 fn at_portal(build: &BuildState, feet: Vec3) -> bool {
     let size = |i: usize| build.spec.size.get(i).copied().unwrap_or(0) as f32 * BUILD_VOXEL;
     let local = Quat::from_rotation_y(-build.yaw) * (feet - Vec3::from_array(build.position));
-    local.x.abs() <= size(0) / 2.0 + REACH && local.z.abs() <= size(2) / 2.0 + REACH && local.y > -1.0 && local.y < size(1) + 0.5
+    local.x.abs() <= size(0) / 2.0 + REACH
+        && local.z.abs() <= size(2) / 2.0 + REACH
+        && local.y > -1.0
+        && local.y < size(1) + 0.5
 }
 
 /// Notices the portal the hero stands at; E goes through (unless a game piece is in
@@ -274,9 +344,19 @@ pub fn use_portals(
     travel.near = ledger
         .portals
         .iter()
-        .find(|(id, _)| ledger.builds.get(id).is_some_and(|b| at_portal(b, hero.translation)))
+        .find(|(id, _)| {
+            ledger
+                .builds
+                .get(id)
+                .is_some_and(|b| at_portal(b, hero.translation))
+        })
         .map(|(id, to)| (*id, to.clone()));
-    if blocked.0 || !loading.is_done() || play.near.is_some() || play.playing.is_some() || !binds.just_pressed("use") {
+    if blocked.0
+        || !loading.is_done()
+        || play.near.is_some()
+        || play.playing.is_some()
+        || !binds.just_pressed("use")
+    {
         return;
     }
     if let Some(to) = travel.near().cloned()
@@ -288,12 +368,17 @@ pub fn use_portals(
 
 /// Where the portal the hero stands at leads, over the view.
 pub fn portal_prompt(mut contexts: EguiContexts, travel: Res<Travel>, chat: Res<Chat>) -> Result {
-    let Some(to) = travel.near() else { return Ok(()) };
+    let Some(to) = travel.near() else {
+        return Ok(());
+    };
     let ctx = contexts.ctx_mut()?;
     let p = theme::palette(ctx);
     let covered = chat.covered * ctx.viewport_rect().width();
     egui::Area::new("portal_prompt".into())
-        .anchor(egui::Align2::CENTER_CENTER, egui::vec2(-covered / 2.0, -60.0))
+        .anchor(
+            egui::Align2::CENTER_CENTER,
+            egui::vec2(-covered / 2.0, -60.0),
+        )
         .interactable(false)
         .show(ctx, |ui| {
             egui::Frame::new()
@@ -308,8 +393,16 @@ pub fn portal_prompt(mut contexts: EguiContexts, travel: Res<Travel>, chat: Res<
                             PortalTo::Game { .. } => "A portal to another of your games",
                             PortalTo::Server { .. } => "A portal to a hosted game",
                         };
-                        ui.label(egui::RichText::new(format!("{} {}", icon::SPIRAL, to.label())).size(18.0).color(p.strong));
-                        ui.label(egui::RichText::new(format!("{kind} · E to go")).color(p.muted).small());
+                        ui.label(
+                            egui::RichText::new(format!("{} {}", icon::SPIRAL, to.label()))
+                                .size(18.0)
+                                .color(p.strong),
+                        );
+                        ui.label(
+                            egui::RichText::new(format!("{kind} · E to go"))
+                                .color(p.muted)
+                                .small(),
+                        );
                     });
                 });
         });
@@ -393,7 +486,12 @@ impl WorldsWindow {
 }
 
 /// O opens and closes it; `GENVERSE_WORLDS=1` opens it at start.
-pub fn toggle_worlds(binds: Res<crate::bindings::Bindings>, blocked: Res<InputBlocked>, mut window: ResMut<WorldsWindow>, mut started: Local<bool>) {
+pub fn toggle_worlds(
+    binds: Res<crate::bindings::Bindings>,
+    blocked: Res<InputBlocked>,
+    mut window: ResMut<WorldsWindow>,
+    mut started: Local<bool>,
+) {
     if !*started {
         *started = true;
         window.open = std::env::var("GENVERSE_WORLDS").is_ok();
@@ -427,7 +525,9 @@ enum Do {
 }
 
 fn ago(at: Option<SystemTime>) -> String {
-    let Some(seconds) = at.and_then(|t| t.elapsed().ok()).map(|d| d.as_secs()) else { return "never".into() };
+    let Some(seconds) = at.and_then(|t| t.elapsed().ok()).map(|d| d.as_secs()) else {
+        return "never".into();
+    };
     match seconds {
         0..60 => "just now".into(),
         60..3600 => format!("{} min ago", seconds / 60),
@@ -438,7 +538,9 @@ fn ago(at: Option<SystemTime>) -> String {
 
 /// The recent servers, newest first.
 fn recent_servers() -> Vec<String> {
-    super::prefs::get("recent_servers").and_then(|v| serde_json::from_value(v).ok()).unwrap_or_default()
+    super::prefs::get("recent_servers")
+        .and_then(|v| serde_json::from_value(v).ok())
+        .unwrap_or_default()
 }
 
 fn remember_server(addr: &str) {
@@ -456,7 +558,13 @@ fn ground(flat: bool) -> &'static str {
 
 /// A seed for a new natural world.
 pub fn fresh_seed(flat: bool) -> u32 {
-    if flat { SEED } else { SystemTime::now().duration_since(SystemTime::UNIX_EPOCH).map_or(SEED, |d| d.subsec_nanos()) }
+    if flat {
+        SEED
+    } else {
+        SystemTime::now()
+            .duration_since(SystemTime::UNIX_EPOCH)
+            .map_or(SEED, |d| d.subsec_nanos())
+    }
 }
 
 /// The current game's worlds, and the local games.
@@ -465,11 +573,24 @@ fn rows(ledger: &Ledger) -> (Vec<Row>, Vec<ledger::GameInfo>) {
         Some(online) => online
             .game
             .as_ref()
-            .map(|g| g.worlds().into_iter().map(|(name, ground)| Row { name, flat: ground.flat, detail: None }).collect())
+            .map(|g| {
+                g.worlds()
+                    .into_iter()
+                    .map(|(name, ground)| Row {
+                        name,
+                        flat: ground.flat,
+                        detail: None,
+                    })
+                    .collect()
+            })
             .unwrap_or_default(),
         None => ledger::list_worlds()
             .into_iter()
-            .map(|w| Row { name: w.name, flat: w.flat, detail: Some((w.changes, w.modified)) })
+            .map(|w| Row {
+                name: w.name,
+                flat: w.flat,
+                detail: Some((w.changes, w.modified)),
+            })
             .collect(),
     };
     (worlds, ledger::list_games())
@@ -486,7 +607,10 @@ pub fn worlds_window(
     mut landscape: ResMut<Landscape>,
     mut chat: ResMut<Chat>,
     mut binds: ResMut<crate::bindings::Bindings>,
-    (mut graphics, mut panels): (ResMut<crate::graphics::Graphics>, ResMut<super::panels::Panels>),
+    (mut graphics, mut panels): (
+        ResMut<crate::graphics::Graphics>,
+        ResMut<super::panels::Panels>,
+    ),
     heroes: Query<&Transform, With<Player>>,
 ) -> Result {
     if !window.open {
@@ -502,7 +626,11 @@ pub fn worlds_window(
     if window.rows.is_none() {
         window.rows = Some(rows(&ledger));
         let catalog = match &ledger.online {
-            Some(online) => online.game.as_ref().map(|g| g.packages()).unwrap_or_default(),
+            Some(online) => online
+                .game
+                .as_ref()
+                .map(|g| g.packages())
+                .unwrap_or_default(),
             None => ledger::read_game(&game_name()).packages(),
         };
         window.catalog = catalog.into_values().collect();
@@ -868,7 +996,10 @@ pub fn worlds_window(
         }
         Do::Leave => ("leave", json!({})),
         Do::Host => ("host", json!({})),
-        Do::NewWorld => ("newworld", json!({ "name": std::mem::take(&mut window.new_name), "ground": window.new_ground })),
+        Do::NewWorld => (
+            "newworld",
+            json!({ "name": std::mem::take(&mut window.new_name), "ground": window.new_ground }),
+        ),
         Do::RemoveWorld(name) => {
             window.removing = None;
             ("removeworld", json!({ "name": name }))
@@ -877,15 +1008,24 @@ pub fn worlds_window(
             window.renaming = None;
             ("renameworld", json!({ "from": from, "to": to }))
         }
-        Do::Save => ("save", json!({ "name": std::mem::take(&mut window.save_name) })),
-        Do::SaveGame => ("savegame", json!({ "name": std::mem::take(&mut window.game_save_name) })),
+        Do::Save => (
+            "save",
+            json!({ "name": std::mem::take(&mut window.save_name) }),
+        ),
+        Do::SaveGame => (
+            "savegame",
+            json!({ "name": std::mem::take(&mut window.game_save_name) }),
+        ),
         Do::LoadGame(name) => ("loadgame", json!({ "name": name })),
         Do::Fork(save, name) => {
             window.fork = None;
             ("fork", json!({ "save": save, "world": name }))
         }
         Do::Load(id) => ("load", json!({ "id": id })),
-        Do::NewGame => ("newgame", json!({ "name": std::mem::take(&mut window.new_game), "ground": ground(window.new_flat) })),
+        Do::NewGame => (
+            "newgame",
+            json!({ "name": std::mem::take(&mut window.new_game), "ground": ground(window.new_flat) }),
+        ),
         Do::TurnOn(name) => ("turn_on", json!({ "name": name })),
         Do::TurnOff(name) => ("uninstall", json!({ "name": name })),
         Do::RemovePackage(name) => ("remove_package", json!({ "name": name })),
@@ -914,13 +1054,22 @@ pub fn worlds_window(
 /// What to do about a change to the game the server sent: say it, if it's ours.
 pub fn game_reply(action: Option<&GameAction>) -> Option<String> {
     Some(match action? {
-        GameAction::CreateWorld { name, .. } => format!("Made the world {name}; enter it from the Game window (O)."),
+        GameAction::CreateWorld { name, .. } => {
+            format!("Made the world {name}; enter it from the Game window (O).")
+        }
         GameAction::RemoveWorld { name } => format!("Removed {name}."),
         GameAction::RenameWorld { from, to } => format!("Renamed {from} to {to}."),
         GameAction::SetAdmins { .. } => "Changed who runs the game.".into(),
-        GameAction::Save { name, worlds } => format!("Saved the game as \"{name}\" ({} worlds).", worlds.len()),
-        GameAction::AddPackage { package } => format!("The game has {} v{} now.", package.manifest.title, package.manifest.version),
+        GameAction::Save { name, worlds } => {
+            format!("Saved the game as \"{name}\" ({} worlds).", worlds.len())
+        }
+        GameAction::AddPackage { package } => format!(
+            "The game has {} v{} now.",
+            package.manifest.title, package.manifest.version
+        ),
         GameAction::RemovePackage { name } => format!("Took {name} out of the game."),
-        GameAction::LoadSave { name, .. } => format!("Loaded the game save \"{name}\": every world went back."),
+        GameAction::LoadSave { name, .. } => {
+            format!("Loaded the game save \"{name}\": every world went back.")
+        }
     })
 }

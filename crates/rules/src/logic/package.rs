@@ -112,7 +112,9 @@ pub struct PackageRef {
 pub fn valid_namespace(name: &str) -> bool {
     (2..=32).contains(&name.len())
         && name.starts_with(|c: char| c.is_ascii_lowercase())
-        && name.chars().all(|c| c.is_ascii_lowercase() || c.is_ascii_digit() || c == '_')
+        && name
+            .chars()
+            .all(|c| c.is_ascii_lowercase() || c.is_ascii_digit() || c == '_')
         && name != "core"
 }
 
@@ -121,7 +123,9 @@ pub fn split_name(name: &str) -> Option<(&str, &str)> {
     let (ns, local) = name.split_once(':')?;
     let ok = valid_namespace(ns)
         && (1..=64).contains(&local.len())
-        && local.chars().all(|c| c.is_ascii_lowercase() || c.is_ascii_digit() || c == '_' || c == '.');
+        && local
+            .chars()
+            .all(|c| c.is_ascii_lowercase() || c.is_ascii_digit() || c == '_' || c == '.');
     ok.then_some((ns, local))
 }
 
@@ -129,11 +133,18 @@ impl Package {
     /// SHA-256 of its JSON, in hex.
     pub fn hash(&self) -> String {
         let bytes = serde_json::to_vec(self).unwrap_or_default();
-        Sha256::digest(&bytes).iter().map(|b| format!("{b:02x}")).collect()
+        Sha256::digest(&bytes)
+            .iter()
+            .map(|b| format!("{b:02x}"))
+            .collect()
     }
 
     pub fn reference(&self) -> PackageRef {
-        PackageRef { name: self.manifest.name.clone(), version: self.manifest.version, hash: self.hash() }
+        PackageRef {
+            name: self.manifest.name.clone(),
+            version: self.manifest.version,
+            hash: self.hash(),
+        }
     }
 
     /// Everything wrong with it, phrased for the agent that wrote it.
@@ -154,55 +165,90 @@ impl Package {
         }
         let size = serde_json::to_vec(self).map_or(usize::MAX, |b| b.len());
         if size > MAX_PACKAGE_BYTES {
-            errors.push(format!("package is {size} bytes; the most is {MAX_PACKAGE_BYTES}"));
+            errors.push(format!(
+                "package is {size} bytes; the most is {MAX_PACKAGE_BYTES}"
+            ));
         }
         if self.defs.len() > MAX_DEFS {
-            errors.push(format!("{} definitions; the most is {MAX_DEFS}", self.defs.len()));
+            errors.push(format!(
+                "{} definitions; the most is {MAX_DEFS}",
+                self.defs.len()
+            ));
         }
         for name in self.defs.keys() {
             match split_name(name) {
                 Some((ns, _)) if ns == m.name => {}
-                _ => errors.push(format!("definition \"{name}\" must be named \"{}:<lowercase name>\"", m.name)),
+                _ => errors.push(format!(
+                    "definition \"{name}\" must be named \"{}:<lowercase name>\"",
+                    m.name
+                )),
             }
         }
         errors.extend(super::data::check(self));
         errors.extend(super::script::check(self));
         if self.models.len() > MAX_MODELS {
-            errors.push(format!("{} models; the most is {MAX_MODELS}", self.models.len()));
+            errors.push(format!(
+                "{} models; the most is {MAX_MODELS}",
+                self.models.len()
+            ));
         }
         for (name, spec) in &self.models {
             if split_name(&format!("{}:{name}", m.name)).is_none() || name.contains(':') {
-                errors.push(format!("model \"{name}\" needs a lowercase name (letters, digits, _)"));
+                errors.push(format!(
+                    "model \"{name}\" needs a lowercase name (letters, digits, _)"
+                ));
             }
             if let Err(problems) = compile(spec, &BuildLimits::default()) {
                 errors.push(format!("model \"{name}\": {}", problems.join("; ")));
             }
         }
         if self.shaders.len() > super::shader::MAX_SHADERS {
-            errors.push(format!("{} shaders; the most is {}", self.shaders.len(), super::shader::MAX_SHADERS));
+            errors.push(format!(
+                "{} shaders; the most is {}",
+                self.shaders.len(),
+                super::shader::MAX_SHADERS
+            ));
         }
         for (name, source) in &self.shaders {
             if !super::shader::valid_name(name) {
-                errors.push(format!("shader \"{name}\" needs a lowercase name (letters, digits, _; up to 32)"));
-            } else if let Err(e) = super::shader::check_decal(&format!("shaders/{name}.wgsl"), source) {
+                errors.push(format!(
+                    "shader \"{name}\" needs a lowercase name (letters, digits, _; up to 32)"
+                ));
+            } else if let Err(e) =
+                super::shader::check_decal(&format!("shaders/{name}.wgsl"), source)
+            {
                 errors.push(e);
             }
         }
         if self.scripts.len() > MAX_SCRIPTS {
-            errors.push(format!("{} scripts; the most is {MAX_SCRIPTS}", self.scripts.len()));
+            errors.push(format!(
+                "{} scripts; the most is {MAX_SCRIPTS}",
+                self.scripts.len()
+            ));
         }
         for file in self.scripts.keys() {
             // A player script is <name>.player.luau (`super::frame`).
-            let stem = file.strip_suffix(".player.luau").or_else(|| file.strip_suffix(".luau")).unwrap_or_default();
-            if stem.is_empty() || !stem.chars().all(|c| c.is_ascii_alphanumeric() || c == '_' || c == '-') {
-                errors.push(format!("script \"{file}\" must be a plain file name ending in .luau (or .player.luau)"));
+            let stem = file
+                .strip_suffix(".player.luau")
+                .or_else(|| file.strip_suffix(".luau"))
+                .unwrap_or_default();
+            if stem.is_empty()
+                || !stem
+                    .chars()
+                    .all(|c| c.is_ascii_alphanumeric() || c == '_' || c == '-')
+            {
+                errors.push(format!(
+                    "script \"{file}\" must be a plain file name ending in .luau (or .player.luau)"
+                ));
             }
         }
         for p in &m.permissions {
             if let Permission::Read { namespace } | Permission::Write { namespace } = p
                 && (!valid_namespace(namespace) || *namespace == m.name)
             {
-                errors.push(format!("permission names \"{namespace}\", which isn't another package's namespace"));
+                errors.push(format!(
+                    "permission names \"{namespace}\", which isn't another package's namespace"
+                ));
             }
         }
         for dep in &m.depends {
@@ -210,12 +256,19 @@ impl Package {
                 errors.push(format!("dependency \"{dep}\" isn't another package's name"));
             }
         }
-        if errors.is_empty() { Ok(()) } else { Err(errors) }
+        if errors.is_empty() {
+            Ok(())
+        } else {
+            Err(errors)
+        }
     }
 
     /// Whether installing it takes an admin, wherever it goes.
     pub fn needs_admin(&self) -> bool {
-        self.manifest.permissions.iter().any(Permission::needs_admin)
+        self.manifest
+            .permissions
+            .iter()
+            .any(Permission::needs_admin)
     }
 }
 
@@ -230,13 +283,21 @@ pub(crate) mod tests {
                 version,
                 title: "Farming".into(),
                 permissions: vec![Permission::Spawn],
-                depends: Vec::new(), renamed: Default::default(), api: 0,
+                depends: Vec::new(),
+                renamed: Default::default(),
+                api: 0,
             },
             models: BTreeMap::new(),
             shaders: BTreeMap::new(),
             defs: BTreeMap::from([
-                ("farm:turnip_seed".into(), serde_json::json!({ "kind": "item", "title": "Turnip seeds" })),
-                ("farm:turnip".into(), serde_json::json!({ "kind": "item", "title": "Turnip" })),
+                (
+                    "farm:turnip_seed".into(),
+                    serde_json::json!({ "kind": "item", "title": "Turnip seeds" }),
+                ),
+                (
+                    "farm:turnip".into(),
+                    serde_json::json!({ "kind": "item", "title": "Turnip" }),
+                ),
             ]),
             scripts: BTreeMap::new(),
         }
@@ -260,10 +321,18 @@ pub(crate) mod tests {
         let mut bad = farm(0);
         bad.defs.insert("fish:cod".into(), serde_json::json!({}));
         bad.scripts.insert("../x.luau".into(), String::new());
-        bad.manifest.permissions.push(Permission::Write { namespace: "farm".into() });
-        bad.shaders.insert("halo".into(), "fn decal(d: Decal) -> vec4<f32> { return d.colour; }".into());
+        bad.manifest.permissions.push(Permission::Write {
+            namespace: "farm".into(),
+        });
+        bad.shaders.insert(
+            "halo".into(),
+            "fn decal(d: Decal) -> vec4<f32> { return d.colour; }".into(),
+        );
         let errors = bad.check().unwrap_err();
         assert_eq!(errors.len(), 5);
-        assert!(errors.iter().any(|e| e.contains("shaders/halo.wgsl:1")), "{errors:?}");
+        assert!(
+            errors.iter().any(|e| e.contains("shaders/halo.wgsl:1")),
+            "{errors:?}"
+        );
     }
 }

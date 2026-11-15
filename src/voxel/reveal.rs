@@ -33,7 +33,8 @@ const GOING: u32 = 1 << 31;
 const NOT_YET: f32 = 1e30;
 
 /// The reveals' clock and slots, as `voxel_vertex.wesl` reads them.
-pub const REVEAL_BUFFER: Handle<ShaderBuffer> = uuid_handle!("b1d0a6c3-93f4-4f2a-8e57-0c6d2a9e4b77");
+pub const REVEAL_BUFFER: Handle<ShaderBuffer> =
+    uuid_handle!("b1d0a6c3-93f4-4f2a-8e57-0c6d2a9e4b77");
 
 #[derive(Clone, Copy)]
 struct Slot {
@@ -58,7 +59,13 @@ pub struct Reveals {
 
 impl Default for Reveals {
     fn default() -> Self {
-        Self { enabled: true, now: 0.0, previous: 0.0, slots: [None; SLOTS], stale: true }
+        Self {
+            enabled: true,
+            now: 0.0,
+            previous: 0.0,
+            slots: [None; SLOTS],
+            stale: true,
+        }
     }
 }
 
@@ -67,7 +74,11 @@ impl Reveals {
     /// change then just appears). It starts now, or waits for [`start`](Self::start).
     pub fn open(&mut self, seconds: f32, started: bool, owner: Option<Entity>) -> Option<usize> {
         let slot = self.slots.iter().position(Option::is_none)?;
-        self.slots[slot] = Some(Slot { start: if started { self.now } else { NOT_YET }, seconds: seconds.max(0.05), owner });
+        self.slots[slot] = Some(Slot {
+            start: if started { self.now } else { NOT_YET },
+            seconds: seconds.max(0.05),
+            owner,
+        });
         self.stale = true;
         Some(slot)
     }
@@ -113,7 +124,10 @@ impl Reveals {
 
 pub fn setup(app: &mut App) {
     app.init_resource::<Reveals>();
-    app.world_mut().resource_mut::<Assets<ShaderBuffer>>().insert(&REVEAL_BUFFER, Reveals::default().buffer()).ok();
+    app.world_mut()
+        .resource_mut::<Assets<ShaderBuffer>>()
+        .insert(&REVEAL_BUFFER, Reveals::default().buffer())
+        .ok();
 }
 
 /// Runs the clock and uploads it. Slots whose model is gone, or no longer being
@@ -137,7 +151,11 @@ pub fn tick(
         return;
     }
     reveals.previous = reveals.now;
-    reveals.now = if running { reveals.now + time.delta_secs() } else { 0.0 };
+    reveals.now = if running {
+        reveals.now + time.delta_secs()
+    } else {
+        0.0
+    };
     if !running {
         reveals.previous = 0.0;
     }
@@ -177,7 +195,11 @@ pub fn order(at: f32) -> u8 {
 fn cell(grid: &VoxelGrid, i: usize) -> IVec3 {
     let size = grid.size();
     let i = i as u32;
-    IVec3::new((i % size.x) as i32, (i / size.x % size.y) as i32, (i / (size.x * size.y)) as i32)
+    IVec3::new(
+        (i % size.x) as i32,
+        (i / size.x % size.y) as i32,
+        (i / (size.x * size.y)) as i32,
+    )
 }
 
 /// What a voxel looks like, to tell whether two palettes' voxels are the same.
@@ -188,7 +210,21 @@ fn look(palette: &Palette, id: VoxelId) -> [u32; 12] {
     let entry = palette.entry(id);
     let s = &palette.surfaces[entry.surface];
     let (c, e) = (entry.color, s.emissive);
-    [c.red, c.green, c.blue, s.roughness, s.metallic, s.reflectance, e.red, e.green, e.blue, e.alpha, s.alpha, 1.0].map(f32::to_bits)
+    [
+        c.red,
+        c.green,
+        c.blue,
+        s.roughness,
+        s.metallic,
+        s.reflectance,
+        e.red,
+        e.green,
+        e.blue,
+        e.alpha,
+        s.alpha,
+        1.0,
+    ]
+    .map(f32::to_bits)
 }
 
 impl Reveal {
@@ -199,19 +235,37 @@ impl Reveal {
     pub fn whole(grid: &VoxelGrid, shapes: Option<&[u16]>) -> Self {
         let arrival = arrivals(grid, shapes, |_| true);
         let voxels = arrival.iter().filter(|a| **a > 0).count();
-        Self { arrival: Arc::new(arrival), ghost: None, seconds: seconds_for(voxels) }
+        Self {
+            arrival: Arc::new(arrival),
+            ghost: None,
+            seconds: seconds_for(voxels),
+        }
     }
 
     /// The cells that differ between `old` and `new` change, and nothing else moves.
     /// `None` when nothing differs. Models of different sizes have no cells in common,
     /// so the new one arrives whole.
-    pub fn between(old: (&VoxelGrid, &Arc<Palette>), new: (&VoxelGrid, &Palette), shapes: Option<&[u16]>) -> Option<Self> {
+    pub fn between(
+        old: (&VoxelGrid, &Arc<Palette>),
+        new: (&VoxelGrid, &Palette),
+        shapes: Option<&[u16]>,
+    ) -> Option<Self> {
         if old.0.size() != new.0.size() {
             return Some(Self::whole(new.0, shapes));
         }
-        let looks = |palette: &Palette| -> Vec<[u32; 12]> { (0..palette.entries.len()).map(|id| look(palette, id as VoxelId)).collect() };
+        let looks = |palette: &Palette| -> Vec<[u32; 12]> {
+            (0..palette.entries.len())
+                .map(|id| look(palette, id as VoxelId))
+                .collect()
+        };
         let (was, is) = (looks(old.1), looks(new.1));
-        let changed: Vec<bool> = old.0.cells().iter().zip(new.0.cells()).map(|(a, b)| was[*a as usize] != is[*b as usize]).collect();
+        let changed: Vec<bool> = old
+            .0
+            .cells()
+            .iter()
+            .zip(new.0.cells())
+            .map(|(a, b)| was[*a as usize] != is[*b as usize])
+            .collect();
         let count = changed.iter().filter(|c| **c).count();
         if count == 0 {
             return None;
@@ -219,7 +273,13 @@ impl Reveal {
         let mut arrival = arrivals(new.0, shapes, |i| changed[i]);
         let mut ghost = VoxelGrid::new(old.0.size());
         let height = old.0.size().y.max(1) as f32;
-        for (i, id) in old.0.cells().iter().enumerate().filter(|(i, id)| changed[*i] && **id != AIR) {
+        for (i, id) in old
+            .0
+            .cells()
+            .iter()
+            .enumerate()
+            .filter(|(i, id)| changed[*i] && **id != AIR)
+        {
             let p = cell(old.0, i);
             ghost.set(p, *id);
             // What's only taken away has no place among the shapes: bottom up.
@@ -227,7 +287,11 @@ impl Reveal {
                 arrival[i] = order(p.y as f32 / height * 0.85 + hash01(p, 17) * 0.15);
             }
         }
-        Some(Self { arrival: Arc::new(arrival), ghost: Some((Arc::new(ghost), old.1.clone())), seconds: seconds_for(count) })
+        Some(Self {
+            arrival: Arc::new(arrival),
+            ghost: Some((Arc::new(ghost), old.1.clone())),
+            seconds: seconds_for(count),
+        })
     }
 
     /// A cell's part in the reveal, for the mesh of the model as it is now.
@@ -236,9 +300,16 @@ impl Reveal {
             return Fresh::default();
         }
         let size = grid.size();
-        let arrival = self.arrival[(p.x as u32 + size.x * (p.y as u32 + size.y * p.z as u32)) as usize];
-        let replaces = self.ghost.as_ref().is_some_and(|(ghost, _)| ghost.get(p) != AIR);
-        Fresh { arrival, swap: arrival > 0 && replaces && grid.get(p) != AIR }
+        let arrival =
+            self.arrival[(p.x as u32 + size.x * (p.y as u32 + size.y * p.z as u32)) as usize];
+        let replaces = self
+            .ghost
+            .as_ref()
+            .is_some_and(|(ghost, _)| ghost.get(p) != AIR);
+        Fresh {
+            arrival,
+            swap: arrival > 0 && replaces && grid.get(p) != AIR,
+        }
     }
 }
 
@@ -309,20 +380,32 @@ mod tests {
         let mut grid = VoxelGrid::new(UVec3::new(2, 4, 1));
         let mut shapes = vec![0u16; 8];
         // The second shape is the lower one: it still comes second.
-        for (p, shape) in [(IVec3::new(0, 3, 0), 0), (IVec3::new(1, 3, 0), 0), (IVec3::new(0, 0, 0), 5), (IVec3::new(1, 0, 0), 5)] {
+        for (p, shape) in [
+            (IVec3::new(0, 3, 0), 0),
+            (IVec3::new(1, 3, 0), 0),
+            (IVec3::new(0, 0, 0), 5),
+            (IVec3::new(1, 0, 0), 5),
+        ] {
             grid.set(p, 1);
             shapes[(p.x + 2 * p.y) as usize] = shape;
         }
         let reveal = Reveal::whole(&grid, Some(&shapes));
         let at = |p: IVec3| reveal.fresh(&grid, p).arrival;
-        assert!(at(IVec3::new(0, 3, 0)).max(at(IVec3::new(1, 3, 0))) < at(IVec3::new(0, 0, 0)).min(at(IVec3::new(1, 0, 0))));
+        assert!(
+            at(IVec3::new(0, 3, 0)).max(at(IVec3::new(1, 3, 0)))
+                < at(IVec3::new(0, 0, 0)).min(at(IVec3::new(1, 0, 0)))
+        );
     }
 
     #[test]
     fn a_revision_moves_only_what_differs() {
         let palette = palette();
         let mut old = VoxelGrid::new(UVec3::splat(4));
-        for p in [IVec3::new(0, 0, 0), IVec3::new(1, 0, 0), IVec3::new(2, 0, 0)] {
+        for p in [
+            IVec3::new(0, 0, 0),
+            IVec3::new(1, 0, 0),
+            IVec3::new(2, 0, 0),
+        ] {
             old.set(p, 1);
         }
         let mut new = old.clone();

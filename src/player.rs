@@ -7,8 +7,8 @@ use std::f32::consts::{PI, TAU};
 
 use bevy::{
     input::mouse::{AccumulatedMouseMotion, AccumulatedMouseScroll, MouseScrollUnit},
-    platform::collections::HashMap,
     math::Affine3A,
+    platform::collections::HashMap,
     prelude::*,
     window::{CursorOptions, PrimaryWindow},
 };
@@ -92,7 +92,17 @@ pub struct HeroBody {
 
 impl Default for HeroBody {
     fn default() -> Self {
-        Self { walk: WALK_SPEED, run: RUN_SPEED, jump_speed: JUMP_SPEED, fall: GRAVITY, speed: 1.0, jump: 1.0, gravity: 1.0, air_jumps: 0, launch: None }
+        Self {
+            walk: WALK_SPEED,
+            run: RUN_SPEED,
+            jump_speed: JUMP_SPEED,
+            fall: GRAVITY,
+            speed: 1.0,
+            jump: 1.0,
+            gravity: 1.0,
+            air_jumps: 0,
+            launch: None,
+        }
     }
 }
 
@@ -197,7 +207,10 @@ pub fn spawn_point(terrain: Terrain, origin: IVec2) -> Vec3 {
     for i in 0..4000 {
         let angle = i as f32 * 2.4;
         let r = (i as f32).sqrt() * 20.0;
-        (x, z) = (origin.x + (angle.cos() * r) as i32, origin.y + (angle.sin() * r) as i32);
+        (x, z) = (
+            origin.x + (angle.cos() * r) as i32,
+            origin.y + (angle.sin() * r) as i32,
+        );
         if terrain.height(x, z) <= terrain.sea_level() + 2 {
             continue;
         }
@@ -221,12 +234,20 @@ pub fn spawn_point(terrain: Terrain, origin: IVec2) -> Vec3 {
 /// water within sight.
 fn has_a_view(terrain: Terrain, x: i32, z: i32) -> bool {
     let here = terrain.height(x, z);
-    let around = |r: f32| (0..12).map(move |i| i as f32 * std::f32::consts::TAU / 12.0).map(move |a| (x + (a.cos() * r) as i32, z + (a.sin() * r) as i32));
+    let around = |r: f32| {
+        (0..12)
+            .map(move |i| i as f32 * std::f32::consts::TAU / 12.0)
+            .map(move |a| (x + (a.cos() * r) as i32, z + (a.sin() * r) as i32))
+    };
     // Voxels away, and how far the ground may rise by there.
     let open = [(8.0, 3), (16.0, 5), (40.0, 8), (72.0, 14)]
         .into_iter()
-        .all(|(r, rise)| around(r).all(|(x, z)| (here - 24..=here + rise).contains(&terrain.height(x, z))));
-    open && [70.0, 100.0, 130.0, 160.0].into_iter().any(|r| around(r).any(|(x, z)| terrain.height(x, z) < terrain.sea_level()))
+        .all(|(r, rise)| {
+            around(r).all(|(x, z)| (here - 24..=here + rise).contains(&terrain.height(x, z)))
+        });
+    open && [70.0, 100.0, 130.0, 160.0]
+        .into_iter()
+        .any(|r| around(r).any(|(x, z)| terrain.height(x, z) < terrain.sea_level()))
 }
 
 /// One animated limb; `rest` is its translation relative to its parent joint.
@@ -296,7 +317,12 @@ impl FollowCamera {
 
 impl Default for FollowCamera {
     fn default() -> Self {
-        let env = |k: &str, d: f32| std::env::var(k).ok().and_then(|v| v.parse().ok()).unwrap_or(d);
+        let env = |k: &str, d: f32| {
+            std::env::var(k)
+                .ok()
+                .and_then(|v| v.parse().ok())
+                .unwrap_or(d)
+        };
         let distance = env("GENVERSE_DIST", 4.5);
         Self {
             yaw: env("GENVERSE_YAW", 0.6),
@@ -319,8 +345,14 @@ fn spawn_player(mut commands: Commands, asset_server: Res<AssetServer>, world: R
     let terrain = world.terrain;
     let origin = std::env::var("GENVERSE_SPAWN")
         .ok()
-        .and_then(|v| v.split_once(',').and_then(|(x, z)| Some((x.trim().parse::<f32>().ok()?, z.trim().parse::<f32>().ok()?))))
-        .map_or(IVec2::ZERO, |(x, z)| (Vec2::new(x, z) / VOXEL_SIZE).as_ivec2());
+        .and_then(|v| {
+            v.split_once(',').and_then(|(x, z)| {
+                Some((x.trim().parse::<f32>().ok()?, z.trim().parse::<f32>().ok()?))
+            })
+        })
+        .map_or(IVec2::ZERO, |(x, z)| {
+            (Vec2::new(x, z) / VOXEL_SIZE).as_ivec2()
+        });
     let start = spawn_point(terrain, origin);
 
     commands
@@ -393,7 +425,10 @@ fn build_hero_parts(
                     .spawn((
                         Name::new(part.name.clone()),
                         VoxelModel::from_part(asset, part),
-                        Limb { name: part.name.clone(), rest },
+                        Limb {
+                            name: part.name.clone(),
+                            rest,
+                        },
                         Transform::from_translation(rest),
                         ChildOf(parent_entity),
                     ))
@@ -402,7 +437,10 @@ fn build_hero_parts(
                 false
             });
             if pending.len() == before {
-                warn!("hero parts have unknown or cyclic parents: {:?}", pending.iter().map(|p| &p.name).collect::<Vec<_>>());
+                warn!(
+                    "hero parts have unknown or cyclic parents: {:?}",
+                    pending.iter().map(|p| &p.name).collect::<Vec<_>>()
+                );
                 break;
             }
         }
@@ -411,7 +449,10 @@ fn build_hero_parts(
 
 /// The hero's collision box for feet at `feet`, as `(min, max)`.
 pub fn bounds(feet: Vec3) -> (Vec3, Vec3) {
-    (feet - Vec3::new(HALF_WIDTH, 0.0, HALF_WIDTH), feet + Vec3::new(HALF_WIDTH, HEIGHT, HALF_WIDTH))
+    (
+        feet - Vec3::new(HALF_WIDTH, 0.0, HALF_WIDTH),
+        feet + Vec3::new(HALF_WIDTH, HEIGHT, HALF_WIDTH),
+    )
 }
 
 /// Everything the hero can bump into: terrain plus nearby solid models.
@@ -435,7 +476,9 @@ impl Obstacles<'_> {
                 }
             }
         }
-        self.models.iter().any(|(model, transform)| overlaps_box(model, transform, lo, hi))
+        self.models
+            .iter()
+            .any(|(model, transform)| overlaps_box(model, transform, lo, hi))
     }
 }
 
@@ -452,7 +495,14 @@ fn index_solids(
     mut areas: ResMut<SolidAreas>,
     moved: Query<
         (Entity, &VoxelModel, &GlobalTransform),
-        (With<SolidModel>, Or<(Added<SolidModel>, Changed<GlobalTransform>, Changed<VoxelModel>)>),
+        (
+            With<SolidModel>,
+            Or<(
+                Added<SolidModel>,
+                Changed<GlobalTransform>,
+                Changed<VoxelModel>,
+            )>,
+        ),
     >,
     mut gone: RemovedComponents<SolidModel>,
 ) {
@@ -460,7 +510,9 @@ fn index_solids(
         areas.0.take(entity);
     }
     for (entity, model, transform) in &moved {
-        areas.0.put(entity, transform.translation().to_array(), reach(model));
+        areas
+            .0
+            .put(entity, transform.translation().to_array(), reach(model));
     }
 }
 
@@ -519,7 +571,10 @@ pub fn move_player(
                 }
             }
             player.velocity = Vec3::ZERO;
-            info!("hero stepped out of something solid, to {}", transform.translation);
+            info!(
+                "hero stepped out of something solid, to {}",
+                transform.translation
+            );
         }
         // The ground under the spawn point has loaded: it's in place.
         player.spawned = true;
@@ -551,11 +606,7 @@ pub fn move_player(
 
         let pressed = |action: &str| !blocked.0 && binds.pressed(action);
         let axis = |pos, neg| pressed(pos) as i32 as f32 - pressed(neg) as i32 as f32;
-        let input = Vec2::new(
-            axis("right", "left"),
-            axis("forward", "back"),
-        )
-        .clamp_length_max(1.0);
+        let input = Vec2::new(axis("right", "left"), axis("forward", "back")).clamp_length_max(1.0);
         // Camera-relative: forward is away from the camera.
         let forward = Vec3::new(-yaw.sin(), 0.0, -yaw.cos());
         let right = Vec3::new(-forward.z, 0.0, forward.x);
@@ -564,7 +615,10 @@ pub fn move_player(
 
         let target = wish * speed;
         let accel = if player.grounded { 14.0 } else { 4.0 };
-        let horizontal = player.velocity.xz().lerp(target.xz(), 1.0 - (-accel * dt).exp());
+        let horizontal = player
+            .velocity
+            .xz()
+            .lerp(target.xz(), 1.0 - (-accel * dt).exp());
         player.velocity.x = horizontal.x;
         player.velocity.z = horizontal.y;
         player.velocity.y -= body.fall * body.gravity * dt;
@@ -590,7 +644,11 @@ pub fn move_player(
             player.grounded = false;
         }
 
-        let heading = if scripted_move { player.velocity.with_y(0.0) } else { wish };
+        let heading = if scripted_move {
+            player.velocity.with_y(0.0)
+        } else {
+            wish
+        };
         if heading.length_squared() > 0.01 {
             let goal = f32::atan2(-heading.x, -heading.z);
             let diff = (goal - player.facing + PI).rem_euclid(TAU) - PI;
@@ -645,7 +703,9 @@ pub fn move_player(
         }
         // Walk down small ledges too, rather than falling (and flipping to the jump pose) for a
         // few frames: settle onto ground within a step below by bisecting for the contact.
-        if !player.grounded && was_grounded && player.velocity.y <= 0.0
+        if !player.grounded
+            && was_grounded
+            && player.velocity.y <= 0.0
             && obstacles.collides(pos - Vec3::Y * (STEP_HEIGHT + 0.02))
         {
             let (mut free, mut hit) = (0.0, STEP_HEIGHT + 0.02);
@@ -719,8 +779,13 @@ struct Solids<'a> {
 
 impl Solids<'_> {
     fn at(&self, p: Vec3) -> bool {
-        self.world.get((p / VOXEL_SIZE).floor().as_ivec3()).is_some_and(is_solid)
-            || self.models.iter().any(|(model, inverse)| solid_at(model, inverse, p))
+        self.world
+            .get((p / VOXEL_SIZE).floor().as_ivec3())
+            .is_some_and(is_solid)
+            || self
+                .models
+                .iter()
+                .any(|(model, inverse)| solid_at(model, inverse, p))
     }
 
     /// Along the ray from `origin`, within `max`: where it first meets something solid,
@@ -755,16 +820,31 @@ impl Solids<'_> {
 
     /// Whether a camera at `p` looking along `-dir` has its near plane clear.
     fn room_at(&self, p: Vec3, right: Vec3, up: Vec3) -> bool {
-        [(0.0, 0.0), (1.0, 1.0), (1.0, -1.0), (-1.0, 1.0), (-1.0, -1.0)]
-            .into_iter()
-            .all(|(x, y)| !self.at(p + (right * x + up * y) * PROBE))
+        [
+            (0.0, 0.0),
+            (1.0, 1.0),
+            (1.0, -1.0),
+            (-1.0, 1.0),
+            (-1.0, -1.0),
+        ]
+        .into_iter()
+        .all(|(x, y)| !self.at(p + (right * x + up * y) * PROBE))
     }
 }
 
 /// Points on the hero the camera wants to see, across and up from the eyes (meters):
 /// head, chest and legs, each at the middle and both sides.
-const SIGHT: [(f32, f32); 9] =
-    [(-0.25, 0.1), (0.0, 0.1), (0.25, 0.1), (-0.25, -0.5), (0.0, -0.5), (0.25, -0.5), (-0.25, -1.0), (0.0, -1.0), (0.25, -1.0)];
+const SIGHT: [(f32, f32); 9] = [
+    (-0.25, 0.1),
+    (0.0, 0.1),
+    (0.25, 0.1),
+    (-0.25, -0.5),
+    (0.0, -0.5),
+    (0.25, -0.5),
+    (-0.25, -1.0),
+    (0.0, -1.0),
+    (0.25, -1.0),
+];
 /// How many of the [`SIGHT`] points may be hidden before the camera moves in. The rest
 /// of the view is the dither's job: it fades whatever sits between camera and hero.
 const MAY_HIDE: usize = 4;
@@ -792,7 +872,11 @@ fn clearance(solids: &Solids, pivot: Vec3, dir: Dir3, max: f32) -> f32 {
     }
     thick.sort_by(f32::total_cmp);
     let covered = thick[MAY_HIDE].min(any.into_iter().fold(0.0, f32::max));
-    let mut reach = if covered < max { (covered - MARGIN).max(0.0) } else { max };
+    let mut reach = if covered < max {
+        (covered - MARGIN).max(0.0)
+    } else {
+        max
+    };
     // Never inside anything: step in to the nearest spot with room.
     while reach > 0.0 && !solids.room_at(pivot + *dir * reach, right, up) {
         reach = (reach - STEP).max(0.0);
@@ -809,7 +893,10 @@ pub fn follow_camera(
     world: Res<VoxelWorld>,
     scripted: Res<ScriptedHero>,
     showcase: Res<Showcase>,
-    (solids, areas): (Query<(&VoxelModel, &GlobalTransform), With<SolidModel>>, Res<SolidAreas>),
+    (solids, areas): (
+        Query<(&VoxelModel, &GlobalTransform), With<SolidModel>>,
+        Res<SolidAreas>,
+    ),
     mut cutout: ResMut<CameraCutout>,
     players: Query<(&Transform, &Player), Without<FollowCamera>>,
     mut heroes: Query<&mut Visibility, With<Hero>>,
@@ -825,7 +912,11 @@ pub fn follow_camera(
     for (mut cam, mut transform) in &mut cameras {
         // Turning follows the mouse directly, as in any third-person game.
         // While a drag selects ground, the button that selects doesn't also look around.
-        let dragging = if lock.0 { binds.pressed_without("look", "click") } else { binds.pressed("look") };
+        let dragging = if lock.0 {
+            binds.pressed_without("look", "click")
+        } else {
+            binds.pressed("look")
+        };
         if showcase.0 {
             if cam.before.is_none() {
                 cam.before = Some((cam.pitch, cam.distance));
@@ -854,12 +945,17 @@ pub fn follow_camera(
         // Once a press turns into a drag, hold the cursor in place (a click stays a click).
         #[cfg(not(target_arch = "wasm32"))]
         {
-            let grab = dragging && (cam.grabbed || (!over_ui.0 && motion.delta.length_squared() > 4.0));
+            let grab =
+                dragging && (cam.grabbed || (!over_ui.0 && motion.delta.length_squared() > 4.0));
             if grab != cam.grabbed
                 && let Ok(mut cursor) = cursors.single_mut()
             {
                 use bevy::window::CursorGrabMode;
-                cursor.grab_mode = if grab { CursorGrabMode::Locked } else { CursorGrabMode::None };
+                cursor.grab_mode = if grab {
+                    CursorGrabMode::Locked
+                } else {
+                    CursorGrabMode::None
+                };
                 cursor.visible = !grab;
                 cam.grabbed = grab;
             }
@@ -907,14 +1003,22 @@ pub fn follow_camera(
             let r = cam.zoom + THIN + 1.0;
             let models = areas
                 .0
-                .within([cam.target.x - r, cam.target.z - r], [cam.target.x + r, cam.target.z + r])
+                .within(
+                    [cam.target.x - r, cam.target.z - r],
+                    [cam.target.x + r, cam.target.z + r],
+                )
                 .into_iter()
                 .filter_map(|entity| solids.get(entity).ok())
                 .map(|(model, transform)| (model, transform.affine().inverse()))
                 .collect();
-            Solids { world: &world, models }
+            Solids {
+                world: &world,
+                models,
+            }
         });
-        let limit = around.as_ref().map_or(cam.zoom, |solids| clearance(solids, cam.target, dir, cam.zoom));
+        let limit = around.as_ref().map_or(cam.zoom, |solids| {
+            clearance(solids, cam.target, dir, cam.zoom)
+        });
         // The start screen's camera looks where it's heading: with a hill in the way, or
         // soon to be, it climbs until it sees over, and comes back down once past.
         if showcase.0
@@ -950,7 +1054,11 @@ pub fn follow_camera(
 
         // Up close the hero would fill the view from inside: hide them.
         if let Ok(mut visibility) = heroes.single_mut() {
-            visibility.set_if_neq(if reach > 0.6 { Visibility::Inherited } else { Visibility::Hidden });
+            visibility.set_if_neq(if reach > 0.6 {
+                Visibility::Inherited
+            } else {
+                Visibility::Hidden
+            });
         }
 
         let shake = if rig.shake > 0.0 {

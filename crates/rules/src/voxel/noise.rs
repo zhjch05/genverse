@@ -98,18 +98,28 @@ impl ValueGrid {
                 .collect();
             first[a] = points.first().map_or(0, |p| p.0);
             cells[a] = points.last().map_or(0, |p| p.0) - first[a] + 2;
-            points.into_iter().map(|(i, f)| ((i - first[a]) as usize, f)).collect()
+            points
+                .into_iter()
+                .map(|(i, f)| ((i - first[a]) as usize, f))
+                .collect()
         });
         let mut corners = Vec::with_capacity((cells[0] * cells[1] * cells[2]) as usize);
         for z in 0..cells[2] {
             for y in 0..cells[1] {
                 for x in 0..cells[0] {
-                    corners.push(hash01(IVec3::new(first[0] + x, first[1] + y, first[2] + z), seed));
+                    corners.push(hash01(
+                        IVec3::new(first[0] + x, first[1] + y, first[2] + z),
+                        seed,
+                    ));
                 }
             }
         }
         let stride = [cells[0] as usize, (cells[0] * cells[1]) as usize];
-        Self { axes, stride, corners }
+        Self {
+            axes,
+            stride,
+            corners,
+        }
     }
 
     /// The noise at the point `local` from the box's corner.

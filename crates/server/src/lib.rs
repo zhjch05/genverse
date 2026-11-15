@@ -39,13 +39,15 @@ use std::{
     time::{Duration, SystemTime, UNIX_EPOCH},
 };
 
-use genverse_net::{Presence, ToClient, ToServer, VERSION, hello_bytes, read_messages, write_message};
+use genverse_net::{
+    Presence, ToClient, ToServer, VERSION, hello_bytes, read_messages, write_message,
+};
 use genverse_rules::{
     game::{self, GameAction, GameLog},
     identity::verify,
     log::{
-        Action, Change, Provenance, RULES_VERSION, Replay, Snapshot, WORLD, WorldLog, WorldState, chunk_edits, chunk_of,
-        chunk_prints, replay_from, signing_bytes,
+        Action, Change, Provenance, RULES_VERSION, Replay, Snapshot, WORLD, WorldLog, WorldState,
+        chunk_edits, chunk_of, chunk_prints, replay_from, signing_bytes,
     },
     logic::{Clockwork, Package},
     store::{self, LogFile},
@@ -80,7 +82,10 @@ impl Running {
         self.stopping.store(true, Ordering::Relaxed);
         let _ = self.events.send(Event::Stop);
         // Wake the accept loop so it sees the flag and lets go of the port.
-        let _ = TcpStream::connect_timeout(&SocketAddr::from(([127, 0, 0, 1], self.addr.port())), Duration::from_secs(1));
+        let _ = TcpStream::connect_timeout(
+            &SocketAddr::from(([127, 0, 0, 1], self.addr.port())),
+            Duration::from_secs(1),
+        );
         for thread in self.threads.drain(..) {
             let _ = thread.join();
         }
@@ -94,9 +99,19 @@ pub const SNAPSHOT_EVERY: usize = 50;
 const CLOCK_SLACK: u64 = 600;
 
 enum Event {
-    Connected { conn: u64, out: Sender<ToClient>, nonce: String, stream: TcpStream },
-    Message { conn: u64, message: ToServer },
-    Left { conn: u64 },
+    Connected {
+        conn: u64,
+        out: Sender<ToClient>,
+        nonce: String,
+        stream: TcpStream,
+    },
+    Message {
+        conn: u64,
+        message: ToServer,
+    },
+    Left {
+        conn: u64,
+    },
     /// The server is closing.
     Stop,
 }
@@ -151,9 +166,23 @@ impl genverse_rules::logic::TimerHost for Place {
         self.log.changes.last().map_or(1, |c| c.id + 1)
     }
 
-    fn record(&mut self, package: &str, now: u64, effects: Vec<genverse_rules::logic::Effect>) -> Result<(), String> {
-        let action = Action::Timers { package: package.into(), until: now, effects };
-        let change = Change { id: self.next_change(), by: Provenance::new(WORLD, "World", None, None, now), action, sig: None };
+    fn record(
+        &mut self,
+        package: &str,
+        now: u64,
+        effects: Vec<genverse_rules::logic::Effect>,
+    ) -> Result<(), String> {
+        let action = Action::Timers {
+            package: package.into(),
+            until: now,
+            effects,
+        };
+        let change = Change {
+            id: self.next_change(),
+            by: Provenance::new(WORLD, "World", None, None, now),
+            action,
+            sig: None,
+        };
         self.state.apply(&change, true)?;
         self.log.changes.push(change.clone());
         self.saved();
@@ -194,7 +223,10 @@ fn open_game(config: &ServerConfig) -> io::Result<GameLog> {
     if let Some(game) = store::read_game(dir)? {
         return Ok(game);
     }
-    let name = dir.file_name().and_then(|n| game::clean_name(&n.to_string_lossy())).unwrap_or("game".into());
+    let name = dir
+        .file_name()
+        .and_then(|n| game::clean_name(&n.to_string_lossy()))
+        .unwrap_or("game".into());
     let mut game = GameLog::new(&name);
     let by = Provenance::new(WORLD, "World", None, None, now());
     let main = dir.join("worlds").join("main");
@@ -211,32 +243,66 @@ fn open_game(config: &ServerConfig) -> io::Result<GameLog> {
         (_, None) => (config.seed, config.flat, Vec::new()),
     };
     if !admins.is_empty() {
-        game.push(by.clone(), GameAction::SetAdmins { admins }).map_err(io::Error::other)?;
+        game.push(by.clone(), GameAction::SetAdmins { admins })
+            .map_err(io::Error::other)?;
     }
     // A new game's first world is made by whoever runs it; here, the server.
-    game.changes.push(game::GameChange { id: game.changes.len() as u64 + 1, by, action: GameAction::CreateWorld { name: "main".into(), seed, flat, recipe: Default::default() } });
+    game.changes.push(game::GameChange {
+        id: game.changes.len() as u64 + 1,
+        by,
+        action: GameAction::CreateWorld {
+            name: "main".into(),
+            seed,
+            flat,
+            recipe: Default::default(),
+        },
+    });
     store::write_game(dir, &game)?;
     Ok(game)
 }
 
 pub fn start(config: ServerConfig) -> io::Result<Running> {
     let game = open_game(&config)?;
-    println!("game {}: worlds {}", game.name, game.worlds().iter().map(|(n, _)| n.as_str()).collect::<Vec<_>>().join(", "));
+    println!(
+        "game {}: worlds {}",
+        game.name,
+        game.worlds()
+            .iter()
+            .map(|(n, _)| n.as_str())
+            .collect::<Vec<_>>()
+            .join(", ")
+    );
     let listener = TcpListener::bind(("0.0.0.0", config.port))?;
     let addr = listener.local_addr()?;
     let (events_tx, events) = mpsc::channel();
     let stopping = Arc::new(AtomicBool::new(false));
     let accept_events = events_tx.clone();
     let accept_stopping = stopping.clone();
-    let accepting = thread::Builder::new().name("accept".into()).spawn(move || accept(listener, accept_events, &accept_stopping))?;
+    let accepting = thread::Builder::new()
+        .name("accept".into())
+        .spawn(move || accept(listener, accept_events, &accept_stopping))?;
     let players = Arc::new(AtomicUsize::new(0));
-    let mut server = Server { dir: config.data_dir, game, places: HashMap::new(), conns: HashMap::new(), players: players.clone() };
+    let mut server = Server {
+        dir: config.data_dir,
+        game,
+        places: HashMap::new(),
+        conns: HashMap::new(),
+        players: players.clone(),
+    };
     // The first world is ready before anyone asks.
     if let Some(start) = server.game.start() {
         server.place(&start)?;
     }
-    let game = thread::Builder::new().name("game".into()).spawn(move || run(server, events))?;
-    Ok(Running { addr, players, stopping, events: events_tx, threads: vec![accepting, game] })
+    let game = thread::Builder::new()
+        .name("game".into())
+        .spawn(move || run(server, events))?;
+    Ok(Running {
+        addr,
+        players,
+        stopping,
+        events: events_tx,
+        threads: vec![accepting, game],
+    })
 }
 
 fn accept(listener: TcpListener, events: Sender<Event>, stopping: &AtomicBool) {
@@ -256,26 +322,39 @@ fn serve(conn: u64, stream: TcpStream, events: Sender<Event>) -> io::Result<()> 
     let _ = stream.set_nodelay(true);
     let mut writer = stream.try_clone()?;
     let (out, outgoing) = mpsc::channel::<ToClient>();
-    thread::Builder::new().name(format!("write-{conn}")).spawn(move || {
-        for message in outgoing {
-            if write_message(&mut writer, &message).is_err() {
-                break;
+    thread::Builder::new()
+        .name(format!("write-{conn}"))
+        .spawn(move || {
+            for message in outgoing {
+                if write_message(&mut writer, &message).is_err() {
+                    break;
+                }
             }
-        }
-    })?;
+        })?;
     let nonce = random_hex();
-    let challenge = ToClient::Challenge { version: VERSION, rules: RULES_VERSION, nonce: nonce.clone() };
+    let challenge = ToClient::Challenge {
+        version: VERSION,
+        rules: RULES_VERSION,
+        nonce: nonce.clone(),
+    };
     out.send(challenge).map_err(io::Error::other)?;
-    let _ = events.send(Event::Connected { conn, out, nonce, stream: stream.try_clone()? });
-    thread::Builder::new().name(format!("read-{conn}")).spawn(move || {
-        for message in read_messages::<ToServer>(stream) {
-            let Ok(message) = message else { break };
-            if events.send(Event::Message { conn, message }).is_err() {
-                return;
+    let _ = events.send(Event::Connected {
+        conn,
+        out,
+        nonce,
+        stream: stream.try_clone()?,
+    });
+    thread::Builder::new()
+        .name(format!("read-{conn}"))
+        .spawn(move || {
+            for message in read_messages::<ToServer>(stream) {
+                let Ok(message) = message else { break };
+                if events.send(Event::Message { conn, message }).is_err() {
+                    return;
+                }
             }
-        }
-        let _ = events.send(Event::Left { conn });
-    })?;
+            let _ = events.send(Event::Left { conn });
+        })?;
     Ok(())
 }
 
@@ -286,7 +365,9 @@ fn random_hex() -> String {
 }
 
 fn now() -> u64 {
-    SystemTime::now().duration_since(UNIX_EPOCH).map_or(0, |d| d.as_secs())
+    SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .map_or(0, |d| d.as_secs())
 }
 
 /// How often the server looks for timers to run.
@@ -303,8 +384,23 @@ fn run(mut server: Server, events: Receiver<Event>) {
             Err(RecvTimeoutError::Disconnected) => return,
         };
         match event {
-            Event::Connected { conn, out, nonce, stream } => {
-                server.conns.insert(conn, Conn { out, stream, nonce, player: None, world: None, presence: None });
+            Event::Connected {
+                conn,
+                out,
+                nonce,
+                stream,
+            } => {
+                server.conns.insert(
+                    conn,
+                    Conn {
+                        out,
+                        stream,
+                        nonce,
+                        player: None,
+                        world: None,
+                        presence: None,
+                    },
+                );
             }
             Event::Left { conn } => {
                 if let Some(c) = server.conns.remove(&conn)
@@ -332,7 +428,10 @@ impl Server {
     /// The world `name`, loaded from disk the first time it's asked for.
     fn place(&mut self, name: &str) -> io::Result<&mut Place> {
         if !self.places.contains_key(name) {
-            let ground = self.game.world(name).ok_or_else(|| io::Error::other(format!("there's no world \"{name}\"")))?;
+            let ground = self
+                .game
+                .world(name)
+                .ok_or_else(|| io::Error::other(format!("there's no world \"{name}\"")))?;
             let dir = self.dir.join("worlds").join(name);
             let (mut file, log) = LogFile::open(&dir)?;
             let mut log = log.unwrap_or(ground.log());
@@ -352,9 +451,25 @@ impl Server {
             for problem in &state.problems {
                 eprintln!("{name}: saved change no longer applies: {problem}");
             }
-            println!("world {name}: {} changes, {} builds", log.changes.len(), state.builds.len());
+            println!(
+                "world {name}: {} changes, {} builds",
+                log.changes.len(),
+                state.builds.len()
+            );
             let clock = Clockwork::new(state.logic.timers_until);
-            self.places.insert(name.to_string(), Place { file, log, state, snapshot, snapshot_path, clock, fresh: Vec::new(), players: Vec::new() });
+            self.places.insert(
+                name.to_string(),
+                Place {
+                    file,
+                    log,
+                    state,
+                    snapshot,
+                    snapshot_path,
+                    clock,
+                    fresh: Vec::new(),
+                    players: Vec::new(),
+                },
+            );
             // Nobody is in it yet, so the changes need sending to no one.
             let _ = self.sync_packages(name);
         }
@@ -364,16 +479,28 @@ impl Server {
     /// Brings a loaded world's packages in line with the game's: returns the changes
     /// it made there.
     fn sync_packages(&mut self, name: &str) -> Vec<Change> {
-        let Some(place) = self.places.get_mut(name) else { return Vec::new() };
+        let Some(place) = self.places.get_mut(name) else {
+            return Vec::new();
+        };
         let mut out = Vec::new();
         let mut adopted = false;
         for sync in self.game.sync(&place.state.logic.installed) {
             match sync {
                 game::Sync::Upgrade(package, scope) => {
                     let reference = package.reference();
-                    place.log.packages.insert(reference.hash.clone(), package.clone());
-                    place.state.logic.packages.insert(reference.hash.clone(), package);
-                    match place.record(Action::InstallPackage { package: reference, scope }) {
+                    place
+                        .log
+                        .packages
+                        .insert(reference.hash.clone(), package.clone());
+                    place
+                        .state
+                        .logic
+                        .packages
+                        .insert(reference.hash.clone(), package);
+                    match place.record(Action::InstallPackage {
+                        package: reference,
+                        scope,
+                    }) {
                         Ok(change) => out.push(change),
                         Err(why) => eprintln!("{name}: couldn't move to the game's package: {why}"),
                     }
@@ -384,10 +511,24 @@ impl Server {
                     }
                 }
                 game::Sync::Adopt(package) => {
-                    let found = place.state.logic.installed.get(&package).and_then(|i| place.state.logic.package(i)).cloned();
+                    let found = place
+                        .state
+                        .logic
+                        .installed
+                        .get(&package)
+                        .and_then(|i| place.state.logic.package(i))
+                        .cloned();
                     if let Some(found) = found {
                         let by = Provenance::new(WORLD, "World", None, None, now());
-                        adopted |= self.game.push(by, GameAction::AddPackage { package: Box::new(found) }).is_ok();
+                        adopted |= self
+                            .game
+                            .push(
+                                by,
+                                GameAction::AddPackage {
+                                    package: Box::new(found),
+                                },
+                            )
+                            .is_ok();
                     }
                 }
             }
@@ -408,9 +549,16 @@ impl Server {
                 .conns
                 .values()
                 .filter(|c| c.world.as_deref() == Some(name.as_str()))
-                .filter_map(|c| Some((c.player.as_ref()?.0.clone(), c.presence.as_ref()?.0.position)))
+                .filter_map(|c| {
+                    Some((
+                        c.player.as_ref()?.0.clone(),
+                        c.presence.as_ref()?.0.position,
+                    ))
+                })
                 .collect();
-            let Some(place) = self.places.get_mut(&name) else { continue };
+            let Some(place) = self.places.get_mut(&name) else {
+                continue;
+            };
             for change in place.run_timers(now, &players) {
                 self.broadcast(&name, change, Vec::new(), None, u64::MAX, 0);
             }
@@ -421,19 +569,38 @@ impl Server {
     /// welcome, and who's there.
     fn enter(&mut self, conn: u64, world: &str) -> Result<(), String> {
         self.place(world).map_err(|e| e.to_string())?;
-        let (left, me) = self.conns.get(&conn).map(|c| (c.world.clone(), c.player.clone())).unwrap_or_default();
+        let (left, me) = self
+            .conns
+            .get(&conn)
+            .map(|c| (c.world.clone(), c.player.clone()))
+            .unwrap_or_default();
         if let (Some(left), Some((player, _))) = (left.filter(|l| l != world), me) {
             let (items, stats) = self
                 .places
                 .get(&left)
-                .map(|p| (p.state.logic.state.carried(&player), p.state.logic.state.carried_stats(&player)))
+                .map(|p| {
+                    (
+                        p.state.logic.state.carried(&player),
+                        p.state.logic.state.carried_stats(&player),
+                    )
+                })
                 .unwrap_or_default();
             if !items.is_empty() || !stats.is_empty() {
-                let depart = Action::Depart { player: player.clone(), to: world.to_string(), items: items.clone(), stats: stats.clone() };
+                let depart = Action::Depart {
+                    player: player.clone(),
+                    to: world.to_string(),
+                    items: items.clone(),
+                    stats: stats.clone(),
+                };
                 if let Some(Ok(change)) = self.places.get_mut(&left).map(|p| p.record(depart)) {
                     self.broadcast(&left, change, Vec::new(), None, u64::MAX, 0);
                 }
-                let arrive = Action::Arrive { player, from: left.clone(), items, stats };
+                let arrive = Action::Arrive {
+                    player,
+                    from: left.clone(),
+                    items,
+                    stats,
+                };
                 if let Some(Ok(change)) = self.places.get_mut(world).map(|p| p.record(arrive)) {
                     self.broadcast(world, change, Vec::new(), None, u64::MAX, 0);
                 }
@@ -442,13 +609,26 @@ impl Server {
         let game = self.game.clone();
         let place = self.place(world).map_err(|e| e.to_string())?;
         let snapshot = place.snapshot.clone().filter(|s| s.fits(&place.log));
-        let welcome = ToClient::Welcome { game, world: world.to_string(), log: place.log.clone(), snapshot };
-        let Some(c) = self.conns.get_mut(&conn) else { return Ok(()) };
+        let welcome = ToClient::Welcome {
+            game,
+            world: world.to_string(),
+            log: place.log.clone(),
+            snapshot,
+        };
+        let Some(c) = self.conns.get_mut(&conn) else {
+            return Ok(());
+        };
         let left = c.world.replace(world.to_string());
         let (out, me) = (c.out.clone(), c.player.clone());
         let _ = out.send(welcome);
         if let (Some(left), Some((player, _))) = (left.filter(|l| l != world), &me) {
-            self.tell_world(&left, conn, ToClient::Gone { player: player.clone() });
+            self.tell_world(
+                &left,
+                conn,
+                ToClient::Gone {
+                    player: player.clone(),
+                },
+            );
         }
         // Who's here already, and that we came.
         for (other, c) in &self.conns {
@@ -456,34 +636,72 @@ impl Server {
                 && c.world.as_deref() == Some(world)
                 && let (Some((player, name)), Some(presence)) = (&c.player, &c.presence)
             {
-                let _ = out.send(ToClient::Presence { player: player.clone(), name: name.clone(), presence: presence.0.clone() });
+                let _ = out.send(ToClient::Presence {
+                    player: player.clone(),
+                    name: name.clone(),
+                    presence: presence.0.clone(),
+                });
             }
         }
-        if let (Some((player, name)), Some(presence)) = (me, self.conns.get(&conn).and_then(|c| c.presence.as_ref().map(|p| p.0.clone()))) {
-            self.tell_world(world, conn, ToClient::Presence { player, name, presence });
+        if let (Some((player, name)), Some(presence)) = (
+            me,
+            self.conns
+                .get(&conn)
+                .and_then(|c| c.presence.as_ref().map(|p| p.0.clone())),
+        ) {
+            self.tell_world(
+                world,
+                conn,
+                ToClient::Presence {
+                    player,
+                    name,
+                    presence,
+                },
+            );
         }
         Ok(())
     }
 
     fn handle(&mut self, conn: u64, message: ToServer) {
-        let Some(c) = self.conns.get(&conn) else { return };
-        let (out, nonce, player, world) =
-            (c.out.clone(), c.nonce.clone(), c.player.as_ref().map(|(id, _)| id.clone()), c.world.clone());
+        let Some(c) = self.conns.get(&conn) else {
+            return;
+        };
+        let (out, nonce, player, world) = (
+            c.out.clone(),
+            c.nonce.clone(),
+            c.player.as_ref().map(|(id, _)| id.clone()),
+            c.world.clone(),
+        );
         match message {
-            ToServer::Hello { version, rules, player, name, sig } => {
+            ToServer::Hello {
+                version,
+                rules,
+                player,
+                name,
+                sig,
+            } => {
                 if version != VERSION || rules != RULES_VERSION {
-                    let why = format!("this server speaks protocol {VERSION} with world rules {RULES_VERSION}");
+                    let why = format!(
+                        "this server speaks protocol {VERSION} with world rules {RULES_VERSION}"
+                    );
                     let _ = out.send(ToClient::Bye { why });
                     return;
                 }
                 if !verify(&player, &hello_bytes(&nonce, &player, &name), &sig) {
-                    let _ = out.send(ToClient::Bye { why: "that login isn't signed by its player".into() });
+                    let _ = out.send(ToClient::Bye {
+                        why: "that login isn't signed by its player".into(),
+                    });
                     return;
                 }
                 // A new game's first player runs it.
                 if self.game.admins().is_empty() {
                     let by = Provenance::new(&player, &name, None, None, now());
-                    let _ = self.game.push(by, GameAction::SetAdmins { admins: vec![player.clone()] });
+                    let _ = self.game.push(
+                        by,
+                        GameAction::SetAdmins {
+                            admins: vec![player.clone()],
+                        },
+                    );
                     self.admins_changed();
                     self.game_changed(None);
                 }
@@ -503,7 +721,9 @@ impl Server {
                     return;
                 }
                 if self.game.world(&to).is_none() {
-                    let _ = out.send(ToClient::Bye { why: format!("there's no world \"{to}\" in this game") });
+                    let _ = out.send(ToClient::Bye {
+                        why: format!("there's no world \"{to}\" in this game"),
+                    });
                     return;
                 }
                 if let Err(why) = self.enter(conn, &to) {
@@ -511,18 +731,45 @@ impl Server {
                 }
             }
             ToServer::Presence(presence) => {
-                let Some(c) = self.conns.get_mut(&conn) else { return };
-                let (Some((player, name)), Some(world)) = (c.player.clone(), c.world.clone()) else { return };
+                let Some(c) = self.conns.get_mut(&conn) else {
+                    return;
+                };
+                let (Some((player, name)), Some(world)) = (c.player.clone(), c.world.clone())
+                else {
+                    return;
+                };
                 c.presence = Some((presence.clone(), std::time::Instant::now()));
-                self.tell_world(&world, conn, ToClient::Presence { player, name, presence });
+                self.tell_world(
+                    &world,
+                    conn,
+                    ToClient::Presence {
+                        player,
+                        name,
+                        presence,
+                    },
+                );
             }
             ToServer::FetchChunks { chunks } => {
-                let Some(place) = world.and_then(|w| self.places.get(&w)) else { return };
-                let chunks: Vec<_> = chunks.into_iter().take(256).map(genverse_rules::IVec3::from_array).collect();
+                let Some(place) = world.and_then(|w| self.places.get(&w)) else {
+                    return;
+                };
+                let chunks: Vec<_> = chunks
+                    .into_iter()
+                    .take(256)
+                    .map(genverse_rules::IVec3::from_array)
+                    .collect();
                 let edits = chunk_edits(&place.state.edits, &chunks);
-                let _ = out.send(ToClient::Chunks { chunks: edits.into_iter().map(|(c, e)| (c.to_array(), e)).collect() });
+                let _ = out.send(ToClient::Chunks {
+                    chunks: edits.into_iter().map(|(c, e)| (c.to_array(), e)).collect(),
+                });
             }
-            ToServer::Propose { request, by, action, sig, package } => {
+            ToServer::Propose {
+                request,
+                by,
+                action,
+                sig,
+                package,
+            } => {
                 if let Err(why) = self.held(conn, &action) {
                     let _ = out.send(ToClient::Rejected { request, why });
                     return;
@@ -545,7 +792,12 @@ impl Server {
                     }
                 }
             }
-            ToServer::ProposeGame { request, by, action, sig } => match self.change_game(player, by, action, sig) {
+            ToServer::ProposeGame {
+                request,
+                by,
+                action,
+                sig,
+            } => match self.change_game(player, by, action, sig) {
                 Ok(()) => self.game_changed(Some((conn, request))),
                 Err(why) => {
                     let _ = out.send(ToClient::Rejected { request, why });
@@ -556,28 +808,48 @@ impl Server {
 
     /// Whether someone else in `conn`'s world is working where `action` would change it.
     fn held(&self, conn: u64, action: &Action) -> Result<(), String> {
-        let Some(c) = self.conns.get(&conn) else { return Ok(()) };
-        let (Some((me, _)), Some(world)) = (&c.player, &c.world) else { return Ok(()) };
-        let Some(place) = self.places.get(world) else { return Ok(()) };
+        let Some(c) = self.conns.get(&conn) else {
+            return Ok(());
+        };
+        let (Some((me, _)), Some(world)) = (&c.player, &c.world) else {
+            return Ok(());
+        };
+        let Some(place) = self.places.get(world) else {
+            return Ok(());
+        };
         let touches = place.state.touches(action);
         let holders = self.conns.values().filter_map(|o| {
             let (player, name) = o.player.as_ref()?;
             let (presence, at) = o.presence.as_ref()?;
-            let live = at.elapsed() < genverse_net::LOCK_TTL && o.world.as_ref() == Some(world) && player != me;
-            let name = if presence.name.trim().is_empty() { name.as_str() } else { presence.name.trim() };
+            let live = at.elapsed() < genverse_net::LOCK_TTL
+                && o.world.as_ref() == Some(world)
+                && player != me;
+            let name = if presence.name.trim().is_empty() {
+                name.as_str()
+            } else {
+                presence.name.trim()
+            };
             live.then_some((name, presence))
         });
         genverse_net::held(&touches, holders)
     }
 
     /// Checks a change to the game and makes it.
-    fn change_game(&mut self, player: Option<String>, by: Provenance, action: GameAction, sig: String) -> Result<(), String> {
+    fn change_game(
+        &mut self,
+        player: Option<String>,
+        by: Provenance,
+        action: GameAction,
+        sig: String,
+    ) -> Result<(), String> {
         let player = player.ok_or("say hello first")?;
         if by.player != player || !verify(&by.player, &game::signing_bytes(&by, &action), &sig) {
             return Err("the change isn't signed by you".into());
         }
         if let GameAction::Save { worlds, .. } = &action
-            && worlds.iter().any(|(w, last)| self.game.world(w).is_none() || *last > self.last_change(w))
+            && worlds
+                .iter()
+                .any(|(w, last)| self.game.world(w).is_none() || *last > self.last_change(w))
         {
             return Err("that save names changes the worlds don't have".into());
         }
@@ -585,13 +857,18 @@ impl Server {
         // Loading a game save: every world's load must be signed by the admin.
         let mut loads = Vec::new();
         if let GameAction::LoadSave { name, signed } = &action {
-            let worlds = self.game.save_named(name).ok_or(format!("there's no game save \"{name}\""))?;
+            let worlds = self
+                .game
+                .save_named(name)
+                .ok_or(format!("there's no game save \"{name}\""))?;
             for (world, to) in worlds {
                 if self.game.world(&world).is_none() {
                     continue;
                 }
                 let load = game::load_action(name, to);
-                let sig = signed.get(&world).ok_or(format!("loading {world} isn't signed"))?;
+                let sig = signed
+                    .get(&world)
+                    .ok_or(format!("loading {world} isn't signed"))?;
                 if !verify(&by.player, &signing_bytes(&by, &load), sig) {
                     return Err(format!("loading {world} isn't signed by you"));
                 }
@@ -601,7 +878,12 @@ impl Server {
         // A save names where every world is; the server knows that best.
         let action = match action {
             GameAction::Save { name, worlds } if worlds.is_empty() => {
-                let worlds = self.game.worlds().into_iter().map(|(w, _)| (w.clone(), self.last_change(&w))).collect();
+                let worlds = self
+                    .game
+                    .worlds()
+                    .into_iter()
+                    .map(|(w, _)| (w.clone(), self.last_change(&w)))
+                    .collect();
                 GameAction::Save { name, worlds }
             }
             other => other,
@@ -615,14 +897,22 @@ impl Server {
             GameAction::RemoveWorld { name } => {
                 // Whoever is in it goes to the first world.
                 let start = self.game.start().unwrap_or_default();
-                let inside: Vec<u64> = self.conns.iter().filter(|(_, c)| c.world.as_deref() == Some(name.as_str())).map(|(id, _)| *id).collect();
+                let inside: Vec<u64> = self
+                    .conns
+                    .iter()
+                    .filter(|(_, c)| c.world.as_deref() == Some(name.as_str()))
+                    .map(|(id, _)| *id)
+                    .collect();
                 for conn in inside {
                     let _ = self.enter(conn, &start);
                 }
                 self.places.remove(name);
                 let trash = self.dir.join("trash");
                 let _ = std::fs::create_dir_all(&trash);
-                let _ = std::fs::rename(self.dir.join("worlds").join(name), trash.join(format!("{name}-{}", now())));
+                let _ = std::fs::rename(
+                    self.dir.join("worlds").join(name),
+                    trash.join(format!("{name}-{}", now())),
+                );
             }
             GameAction::RenameWorld { from, to } => {
                 // Its folder, the loaded world and whoever is in it all take the new name;
@@ -644,7 +934,11 @@ impl Server {
                         Err(e) => eprintln!("couldn't open {to} after renaming it: {e}"),
                     }
                 }
-                for c in self.conns.values_mut().filter(|c| c.world.as_deref() == Some(from.as_str())) {
+                for c in self
+                    .conns
+                    .values_mut()
+                    .filter(|c| c.world.as_deref() == Some(from.as_str()))
+                {
                     c.world = Some(to.clone());
                 }
             }
@@ -672,14 +966,23 @@ impl Server {
                 for (world, to, load, sig) in loads {
                     // Loading may add changes of its own (package upgrades), so the
                     // last change is read after.
-                    let Ok(place) = self.place(&world) else { continue };
+                    let Ok(place) = self.place(&world) else {
+                        continue;
+                    };
                     let last = place.log.changes.last().map_or(0, |c| c.id);
                     if last <= to {
                         continue;
                     }
-                    let Action::Load { save, name, .. } = load else { continue };
+                    let Action::Load { save, name, .. } = load else {
+                        continue;
+                    };
                     let state = Some(Box::new(place.state_of(to)));
-                    let change = Change { id: last + 1, by: by_for_loads.clone(), action: Action::Load { save, name, state }, sig: Some(sig) };
+                    let change = Change {
+                        id: last + 1,
+                        by: by_for_loads.clone(),
+                        action: Action::Load { save, name, state },
+                        sig: Some(sig),
+                    };
                     if let Err(why) = place.state.apply(&change, true) {
                         eprintln!("{world}: couldn't load the save: {why}");
                         continue;
@@ -709,7 +1012,9 @@ impl Server {
     fn last_change(&self, world: &str) -> u64 {
         match self.places.get(world) {
             Some(place) => place.log.changes.last().map_or(0, |c| c.id),
-            None => store::summary(&self.dir.join("worlds").join(world)).map_or(0, |s| s.changes as u64),
+            None => {
+                store::summary(&self.dir.join("worlds").join(world)).map_or(0, |s| s.changes as u64)
+            }
         }
     }
 
@@ -721,7 +1026,10 @@ impl Server {
         for (conn, c) in &self.conns {
             if c.player.is_some() {
                 let request = from.filter(|(f, _)| f == conn).map(|(_, r)| r);
-                let _ = c.out.send(ToClient::Game { game: self.game.clone(), request });
+                let _ = c.out.send(ToClient::Game {
+                    game: self.game.clone(),
+                    request,
+                });
             }
         }
     }
@@ -735,12 +1043,25 @@ impl Server {
         }
     }
 
-    fn broadcast(&self, world: &str, change: Change, prints: Vec<([i32; 3], u64)>, package: Option<Package>, from: u64, request: u64) {
+    fn broadcast(
+        &self,
+        world: &str,
+        change: Change,
+        prints: Vec<([i32; 3], u64)>,
+        package: Option<Package>,
+        from: u64,
+        request: u64,
+    ) {
         for (conn, c) in &self.conns {
             if c.player.is_some() && c.world.as_deref() == Some(world) {
                 let request = (*conn == from).then_some(request);
                 let (change, prints, package) = (change.clone(), prints.clone(), package.clone());
-                let _ = c.out.send(ToClient::Committed { change, request, prints, package });
+                let _ = c.out.send(ToClient::Committed {
+                    change,
+                    request,
+                    prints,
+                    package,
+                });
             }
         }
     }
@@ -750,7 +1071,12 @@ impl Place {
     /// Appends a change the server makes itself (by the world).
     fn record(&mut self, action: Action) -> Result<Change, String> {
         let id = self.log.changes.last().map_or(1, |c| c.id + 1);
-        let change = Change { id, by: Provenance::new(WORLD, "World", None, None, now()), action, sig: None };
+        let change = Change {
+            id,
+            by: Provenance::new(WORLD, "World", None, None, now()),
+            action,
+            sig: None,
+        };
         self.state.apply(&change, true)?;
         self.log.changes.push(change.clone());
         self.saved();
@@ -804,17 +1130,29 @@ impl Place {
         // The request text stays on the player's machine; only its hash is shared.
         let by = genverse_rules::log::Provenance { prompt: None, ..by };
         let id = self.log.changes.last().map_or(1, |c| c.id + 1);
-        let mut change = Change { id, by, action, sig: Some(sig) };
+        let mut change = Change {
+            id,
+            by,
+            action,
+            sig: Some(sig),
+        };
         // A load brings the save's state, which the server keeps; whatever came with the
         // proposal doesn't count.
         if let Action::Load { save, name, .. } = &change.action {
             if !self.log.is_admin(&player) {
                 return Err("only admins load saves".into());
             }
-            if !matches!(self.log.change(*save).map(|c| &c.action), Some(Action::Save { .. })) {
+            if !matches!(
+                self.log.change(*save).map(|c| &c.action),
+                Some(Action::Save { .. })
+            ) {
                 return Err(format!("change {save} isn't a save"));
             }
-            change.action = Action::Load { save: *save, name: name.clone(), state: Some(Box::new(self.state_of(*save))) };
+            change.action = Action::Load {
+                save: *save,
+                name: name.clone(),
+                state: Some(Box::new(self.state_of(*save))),
+            };
         }
         // A package that comes along must be the one the change installs; it's kept
         // only if the change goes through.
@@ -831,7 +1169,10 @@ impl Place {
             (_, None) => None,
         };
         if let Some((hash, package)) = &new_package {
-            self.state.logic.packages.insert(hash.clone(), package.clone());
+            self.state
+                .logic
+                .packages
+                .insert(hash.clone(), package.clone());
         }
         let made = match self.state.apply(&change, true) {
             Ok(edits) => edits,

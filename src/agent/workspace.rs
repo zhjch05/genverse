@@ -57,26 +57,48 @@ struct Current {
 }
 
 pub fn current() -> Option<PathBuf> {
-    CURRENT.lock().ok().and_then(|c| c.as_ref().map(|c| c.dir.clone()))
+    CURRENT
+        .lock()
+        .ok()
+        .and_then(|c| c.as_ref().map(|c| c.dir.clone()))
 }
 
 /// Where a world's folder goes: the agent's own scratch space, by game and world, and
 /// by where this copy of the game keeps its saves (two copies never share a folder).
 fn folder(ledger: &Ledger) -> PathBuf {
     let (game, world) = crate::world::ledger::place();
-    let world = ledger.online.as_ref().and_then(|o| o.world.clone()).unwrap_or(world);
-    let home = std::env::current_dir().map(|d| d.to_string_lossy().to_string()).unwrap_or_default();
+    let world = ledger
+        .online
+        .as_ref()
+        .and_then(|o| o.world.clone())
+        .unwrap_or(world);
+    let home = std::env::current_dir()
+        .map(|d| d.to_string_lossy().to_string())
+        .unwrap_or_default();
     let home = format!("{:08x}", genverse_rules::log::fnv1a(home.as_bytes()) as u32);
-    std::env::temp_dir().join("genverse-agent").join(home).join(clean(&game)).join(clean(&world))
+    std::env::temp_dir()
+        .join("genverse-agent")
+        .join(home)
+        .join(clean(&game))
+        .join(clean(&world))
 }
 
 fn clean(name: &str) -> String {
-    name.chars().map(|c| if c.is_ascii_alphanumeric() || c == '-' || c == '_' { c } else { '_' }).collect()
+    name.chars()
+        .map(|c| {
+            if c.is_ascii_alphanumeric() || c == '-' || c == '_' {
+                c
+            } else {
+                '_'
+            }
+        })
+        .collect()
 }
 
 fn put(path: &Path, text: &str) -> Result<(), String> {
     if let Some(parent) = path.parent() {
-        std::fs::create_dir_all(parent).map_err(|e| format!("can't create {}: {e}", parent.display()))?;
+        std::fs::create_dir_all(parent)
+            .map_err(|e| format!("can't create {}: {e}", parent.display()))?;
     }
     std::fs::write(path, text).map_err(|e| format!("can't write {}: {e}", path.display()))
 }
@@ -98,7 +120,9 @@ pub fn write(ledger: &Ledger, here: Option<&str>, errors: &[String]) -> Result<P
     }
     put(&dir.join("README.md"), README)?;
     put(&dir.join("docs/game.md"), super::prompt::GAME_DOC)?;
-    let mut changes = String::from("# What changed in the scripting API\n\nA package records the API it was written for (`api`); WORLD.md says which are behind.\n");
+    let mut changes = String::from(
+        "# What changed in the scripting API\n\nA package records the API it was written for (`api`); WORLD.md says which are behind.\n",
+    );
     for (version, what) in genverse_rules::logic::package::API_CHANGES {
         let _ = write!(changes, "\n## {version}\n\n{what}\n");
     }
@@ -114,7 +138,11 @@ pub fn write(ledger: &Ledger, here: Option<&str>, errors: &[String]) -> Result<P
     view(&dir, ledger, here, errors)?;
     packages(&dir, ledger, &BTreeSet::new())?;
     if let Ok(mut current) = CURRENT.lock() {
-        *current = Some(Current { dir: dir.clone(), here: here.map(str::to_string), errors: errors.to_vec() });
+        *current = Some(Current {
+            dir: dir.clone(),
+            here: here.map(str::to_string),
+            errors: errors.to_vec(),
+        });
     }
     Ok(dir)
 }
@@ -122,14 +150,23 @@ pub fn write(ledger: &Ledger, here: Option<&str>, errors: &[String]) -> Result<P
 /// The package folders the agent has changed so far in this request (or left unreadable,
 /// mid-edit): [`refresh`] keeps them as they are.
 pub fn edited(ledger: &Ledger) -> BTreeSet<String> {
-    let Some(dir) = current() else { return BTreeSet::new() };
-    let Ok(entries) = std::fs::read_dir(dir.join("packages")) else { return BTreeSet::new() };
+    let Some(dir) = current() else {
+        return BTreeSet::new();
+    };
+    let Ok(entries) = std::fs::read_dir(dir.join("packages")) else {
+        return BTreeSet::new();
+    };
     entries
         .flatten()
         .filter(|entry| entry.path().is_dir())
         .filter_map(|entry| {
             let name = entry.file_name().to_string_lossy().to_string();
-            let base = ledger.logic.installed.get(&name).and_then(|i| ledger.logic.package(i)).map(GameSpec::from_package);
+            let base = ledger
+                .logic
+                .installed
+                .get(&name)
+                .and_then(|i| ledger.logic.package(i))
+                .map(GameSpec::from_package);
             (!matches!(diff(&entry.path(), &name, base.as_ref()), Ok(None))).then_some(name)
         })
         .collect()
@@ -140,19 +177,35 @@ pub fn edited(ledger: &Ledger) -> BTreeSet<String> {
 /// those stay as it left them; the others follow the world (a package turned off goes,
 /// one turned on appears).
 pub fn refresh(ledger: &Ledger, edited: &BTreeSet<String>) -> Result<(), String> {
-    let Some(current) = CURRENT.lock().ok().and_then(|c| c.clone()) else { return Ok(()) };
-    view(&current.dir, ledger, current.here.as_deref(), &current.errors)?;
+    let Some(current) = CURRENT.lock().ok().and_then(|c| c.clone()) else {
+        return Ok(());
+    };
+    view(
+        &current.dir,
+        ledger,
+        current.here.as_deref(),
+        &current.errors,
+    )?;
     packages(&current.dir, ledger, edited)
 }
 
 /// The files that show the world: everything but the packages and the docs.
 fn view(dir: &Path, ledger: &Ledger, here: Option<&str>, errors: &[String]) -> Result<(), String> {
     let records = semantic::records(&ledger.log, &ledger.builds, &ledger.logic);
-    put(&dir.join("WORLD.md"), &overview(ledger, here, errors, &records))?;
+    put(
+        &dir.join("WORLD.md"),
+        &overview(ledger, here, errors, &records),
+    )?;
     put(&dir.join("GAME.md"), &game(ledger))?;
-    put(&dir.join("SETTINGS.md"), &super::registry::describe(&ledger.rules))?;
+    put(
+        &dir.join("SETTINGS.md"),
+        &super::registry::describe(&ledger.rules),
+    )?;
     put(&dir.join("KEYS.md"), &super::ops::keys_page(ledger))?;
-    put(&dir.join("BLOCKS.md"), &ledger.rules.content.describe(ledger.log.terrain()))?;
+    put(
+        &dir.join("BLOCKS.md"),
+        &ledger.rules.content.describe(ledger.log.terrain()),
+    )?;
     let mut places = String::new();
     for r in &records {
         places.push_str(&serde_json::to_string(r).unwrap_or_default());
@@ -175,7 +228,10 @@ fn view(dir: &Path, ledger: &Ledger, here: Option<&str>, errors: &[String]) -> R
             "portal": ledger.portals.get(id).map(|p| p.label().to_string()),
         });
         put(&dir.join(format!("builds/{id}.json")), &pretty(&summary))?;
-        put(&dir.join(format!("builds/{id}.spec.json")), &pretty(&b.spec))?;
+        put(
+            &dir.join(format!("builds/{id}.spec.json")),
+            &pretty(&b.spec),
+        )?;
     }
     let mut pieces = String::new();
     for (id, e) in ledger.logic.state.entities() {
@@ -205,13 +261,16 @@ fn packages(dir: &Path, ledger: &Ledger, keep: &BTreeSet<String>) -> Result<(), 
     let root = dir.join("packages");
     if let Ok(entries) = std::fs::read_dir(&root) {
         for entry in entries.flatten() {
-            if entry.path().is_dir() && !keep.contains(entry.file_name().to_string_lossy().as_ref()) {
+            if entry.path().is_dir() && !keep.contains(entry.file_name().to_string_lossy().as_ref())
+            {
                 let _ = std::fs::remove_dir_all(entry.path());
             }
         }
     }
     for install in ledger.logic.installed.values() {
-        let Some(package) = ledger.logic.package(install) else { continue };
+        let Some(package) = ledger.logic.package(install) else {
+            continue;
+        };
         let spec = GameSpec::from_package(package);
         if keep.contains(&spec.name) {
             continue;
@@ -223,10 +282,16 @@ fn packages(dir: &Path, ledger: &Ledger, keep: &BTreeSet<String>) -> Result<(), 
             put(&root.join(&script.name), &script.source)?;
         }
         for model in &spec.models {
-            put(&root.join("models").join(format!("{}.json", model.name)), &pretty(&model.build))?;
+            put(
+                &root.join("models").join(format!("{}.json", model.name)),
+                &pretty(&model.build),
+            )?;
         }
         for shader in &spec.shaders {
-            put(&root.join("shaders").join(format!("{}.wgsl", shader.name)), &shader.source)?;
+            put(
+                &root.join("shaders").join(format!("{}.wgsl", shader.name)),
+                &shader.source,
+            )?;
         }
     }
     std::fs::create_dir_all(&root).map_err(|e| e.to_string())
@@ -241,38 +306,84 @@ fn game(ledger: &Ledger) -> String {
         None => Some(files::read_game(&local_game)),
     };
     let name = match &ledger.online {
-        Some(online) => online.game.as_ref().map_or(crate::world::ledger::shown_addr(&online.addr), |g| g.name.clone()),
+        Some(online) => online
+            .game
+            .as_ref()
+            .map_or(crate::world::ledger::shown_addr(&online.addr), |g| {
+                g.name.clone()
+            }),
         None => local_game,
     };
-    let world = ledger.online.as_ref().and_then(|o| o.world.clone()).unwrap_or(local_world);
+    let world = ledger
+        .online
+        .as_ref()
+        .and_then(|o| o.world.clone())
+        .unwrap_or(local_world);
     let mut out = format!("# The game \"{name}\"\n\n");
     let shared = match (&ledger.hosting, &ledger.online) {
-        (Some(server), _) => format!("The player hosts it from this computer (port {}): others can join every world in it.", server.addr.port()),
-        (None, Some(online)) => format!("It's hosted at {}: the player joined it, and others may be playing.", crate::world::ledger::shown_addr(&online.addr)),
-        (None, None) => "It's on the player's computer, not shared (host opens it to others).".into(),
+        (Some(server), _) => format!(
+            "The player hosts it from this computer (port {}): others can join every world in it.",
+            server.addr.port()
+        ),
+        (None, Some(online)) => format!(
+            "It's hosted at {}: the player joined it, and others may be playing.",
+            crate::world::ledger::shown_addr(&online.addr)
+        ),
+        (None, None) => {
+            "It's on the player's computer, not shared (host opens it to others).".into()
+        }
     };
     let role = if ledger.land.is_admin(&ledger.profile.id) {
         "an admin of this game: every tool is theirs to use"
     } else {
         "not an admin of this game: tools for admins are refused"
     };
-    let _ = writeln!(out, "{shared} The player is {}, {role}.\n", ledger.profile.name);
+    let _ = writeln!(
+        out,
+        "{shared} The player is {}, {role}.\n",
+        ledger.profile.name
+    );
 
     out.push_str("## Worlds\n\n");
-    let here = |n: &str| if n == world { " ← the player is here" } else { "" };
+    let here = |n: &str| {
+        if n == world {
+            " ← the player is here"
+        } else {
+            ""
+        }
+    };
     match &ledger.online {
         Some(_) => {
             for (n, ground) in log.as_ref().map(|g| g.worlds()).unwrap_or_default() {
-                let _ = writeln!(out, "- {n} ({}){}", if ground.flat { "flat" } else { "natural" }, here(&n));
+                let _ = writeln!(
+                    out,
+                    "- {n} ({}){}",
+                    if ground.flat { "flat" } else { "natural" },
+                    here(&n)
+                );
             }
         }
         None => {
             for w in files::list_worlds() {
-                let ground = match log.as_ref().and_then(|g| g.world(&w.name)).map(|g| g.recipe) {
-                    Some(recipe) if !recipe.is_default() => format!("{}: {}", if w.flat { "flat" } else { "a landscape" }, recipe.describe()),
+                let ground = match log
+                    .as_ref()
+                    .and_then(|g| g.world(&w.name))
+                    .map(|g| g.recipe)
+                {
+                    Some(recipe) if !recipe.is_default() => format!(
+                        "{}: {}",
+                        if w.flat { "flat" } else { "a landscape" },
+                        recipe.describe()
+                    ),
                     _ => if w.flat { "flat" } else { "natural" }.to_string(),
                 };
-                let _ = writeln!(out, "- {} ({ground}, {} changes){}", w.name, w.changes, here(&w.name));
+                let _ = writeln!(
+                    out,
+                    "- {} ({ground}, {} changes){}",
+                    w.name,
+                    w.changes,
+                    here(&w.name)
+                );
             }
         }
     }
@@ -287,7 +398,11 @@ fn game(ledger: &Ledger) -> String {
         .take(20)
         .map(|(c, n)| format!("- \"{n}\" (change {}, by {})", c.id, c.by.player_name))
         .collect();
-    out.push_str(&if saves.is_empty() { "None yet.\n".to_string() } else { saves.join("\n") + "\n" });
+    out.push_str(&if saves.is_empty() {
+        "None yet.\n".to_string()
+    } else {
+        saves.join("\n") + "\n"
+    });
 
     out.push_str("\n## Saves of the whole game, newest first\n\n");
     let mut seen = std::collections::HashSet::new();
@@ -299,7 +414,11 @@ fn game(ledger: &Ledger) -> String {
         .take(20)
         .map(|(_, n, worlds)| format!("- \"{n}\" ({} worlds)", worlds.len()))
         .collect();
-    out.push_str(&if saves.is_empty() { "None yet.\n".to_string() } else { saves.join("\n") + "\n" });
+    out.push_str(&if saves.is_empty() {
+        "None yet.\n".to_string()
+    } else {
+        saves.join("\n") + "\n"
+    });
 
     out.push_str("\n## The game's packages\n\nInstalled once for the game; each world turns on the ones it plays.\n\n");
     let catalog = log.as_ref().map(|g| g.packages()).unwrap_or_default();
@@ -307,8 +426,16 @@ fn game(ledger: &Ledger) -> String {
         out.push_str("None yet.\n");
     }
     for (n, package) in &catalog {
-        let on = if ledger.logic.installed.contains_key(n) { "on in this world" } else { "off in this world (turn_on)" };
-        let _ = writeln!(out, "- {n} (\"{}\", v{}): {on}", package.manifest.title, package.manifest.version);
+        let on = if ledger.logic.installed.contains_key(n) {
+            "on in this world"
+        } else {
+            "off in this world (turn_on)"
+        };
+        let _ = writeln!(
+            out,
+            "- {n} (\"{}\", v{}): {on}",
+            package.manifest.title, package.manifest.version
+        );
     }
 
     out.push_str("\n## Portals in this world\n\n");
@@ -333,7 +460,10 @@ fn overview(ledger: &Ledger, here: Option<&str>, errors: &[String], records: &[R
         match (terrain.flat, terrain.recipe.is_default()) {
             (true, true) => "flat and empty".to_string(),
             (false, true) => "the usual natural landscape".to_string(),
-            (true, false) => format!("flat, with its own cover and colors ({})", terrain.recipe.describe()),
+            (true, false) => format!(
+                "flat, with its own cover and colors ({})",
+                terrain.recipe.describe()
+            ),
             (false, false) => format!("a landscape of its own ({})", terrain.recipe.describe()),
         }
     );
@@ -354,7 +484,8 @@ fn overview(ledger: &Ledger, here: Option<&str>, errors: &[String], records: &[R
     if !places.is_empty() {
         out.push_str("Named places:\n");
         for p in places {
-            let at = p.at.map_or(String::new(), |a| format!(" at ({:.0}, {:.0})", a[0], a[2]));
+            let at =
+                p.at.map_or(String::new(), |a| format!(" at ({:.0}, {:.0})", a[0], a[2]));
             let _ = writeln!(out, "- {}{at}: {}", p.name, p.about);
         }
         out.push('\n');
@@ -364,8 +495,14 @@ fn overview(ledger: &Ledger, here: Option<&str>, errors: &[String], records: &[R
         out.push_str("None yet. A new package goes in packages/world/ (see docs/game.md).\n");
     }
     for (name, install) in &ledger.logic.installed {
-        let Some(package) = ledger.logic.package(install) else { continue };
-        let _ = writeln!(out, "Package \"{name}\" (\"{}\", v{}), in packages/{name}/:", package.manifest.title, package.manifest.version);
+        let Some(package) = ledger.logic.package(install) else {
+            continue;
+        };
+        let _ = writeln!(
+            out,
+            "Package \"{name}\" (\"{}\", v{}), in packages/{name}/:",
+            package.manifest.title, package.manifest.version
+        );
         if package.manifest.api < genverse_rules::logic::package::API {
             let _ = writeln!(
                 out,
@@ -375,37 +512,82 @@ fn overview(ledger: &Ledger, here: Option<&str>, errors: &[String], records: &[R
             );
         }
         for file in package.scripts.keys() {
-            let about = records.iter().find(|r| r.of == format!("feature:{name}/{file}")).map(|r| r.about.as_str()).unwrap_or_default();
-            let pieces = ledger.logic.state.entities().filter(|(_, e)| e.package == *name && e.components.get("feature").and_then(|f| f.as_str()) == Some(file.as_str())).count();
-            let _ = writeln!(out, "- {file}: {} ({pieces} pieces)", if about.is_empty() { "(no opening comment)" } else { about });
+            let about = records
+                .iter()
+                .find(|r| r.of == format!("feature:{name}/{file}"))
+                .map(|r| r.about.as_str())
+                .unwrap_or_default();
+            let pieces = ledger
+                .logic
+                .state
+                .entities()
+                .filter(|(_, e)| {
+                    e.package == *name
+                        && e.components.get("feature").and_then(|f| f.as_str())
+                            == Some(file.as_str())
+                })
+                .count();
+            let _ = writeln!(
+                out,
+                "- {file}: {} ({pieces} pieces)",
+                if about.is_empty() {
+                    "(no opening comment)"
+                } else {
+                    about
+                }
+            );
             // Calls to what the game no longer has: the feature is broken until they go.
             let source = &package.scripts[file];
             for (name, instead) in genverse_rules::logic::script::REMOVED {
                 if source.contains(&format!("{name}(")) {
-                    let _ = writeln!(out, "  ⚠ calls {name}(), which the game no longer has (use {instead}): this feature doesn't work until that's fixed");
+                    let _ = writeln!(
+                        out,
+                        "  ⚠ calls {name}(), which the game no longer has (use {instead}): this feature doesn't work until that's fixed"
+                    );
                 }
             }
         }
     }
     if !errors.is_empty() {
-        let _ = writeln!(out, "\nRecent errors from these scripts while players played:\n- {}", errors.join("\n- "));
+        let _ = writeln!(
+            out,
+            "\nRecent errors from these scripts while players played:\n- {}",
+            errors.join("\n- ")
+        );
     }
     if !ledger.load_problems.is_empty() {
         let _ = writeln!(
             out,
             "\nSaved changes that no longer applied when the world loaded (fix what they meant to do):\n- {}",
-            ledger.load_problems.iter().take(10).cloned().collect::<Vec<_>>().join("\n- ")
+            ledger
+                .load_problems
+                .iter()
+                .take(10)
+                .cloned()
+                .collect::<Vec<_>>()
+                .join("\n- ")
         );
     }
     let names: Vec<String> = match &ledger.online {
-        Some(online) => online.game.as_ref().map(|g| g.worlds().into_iter().map(|(n, _)| n).collect()).unwrap_or_default(),
-        None => crate::world::ledger::list_worlds().into_iter().map(|w| w.name).collect(),
+        Some(online) => online
+            .game
+            .as_ref()
+            .map(|g| g.worlds().into_iter().map(|(n, _)| n).collect())
+            .unwrap_or_default(),
+        None => crate::world::ledger::list_worlds()
+            .into_iter()
+            .map(|w| w.name)
+            .collect(),
     };
     let names: Vec<String> = names.into_iter().filter(|n| *n != world).collect();
     let _ = writeln!(
         out,
         "\n## Other worlds of this game\n\n{} (for portals, by name; another game of the player's is \"game/world\").",
-        if names.is_empty() { "None yet".into() } else { names.join(", ") }
+        if names.is_empty() {
+            "None yet".into()
+        } else {
+            names.join(", ")
+        }
     );
     out
 }
@@ -414,10 +596,32 @@ fn overview(ledger: &Ledger, here: Option<&str>, errors: &[String], records: &[R
 fn history(ledger: &Ledger) -> String {
     let mut out = String::from("# Recent changes\n\n");
     let changes = &ledger.log.changes;
-    for c in changes.iter().filter(|c| !matches!(c.action, genverse_rules::log::Action::Timers { .. })).rev().take(60).collect::<Vec<_>>().into_iter().rev() {
-        let request = c.by.prompt.as_deref().map(|p| format!(" — asked: \"{}\"", p.replace('\n', " "))).unwrap_or_default();
-        let agent = c.by.agent.as_deref().map(|a| format!(" via {a}")).unwrap_or_default();
-        let _ = writeln!(out, "- {} by {}{agent}: {}{request}", c.id, c.by.player_name, c.action.describe());
+    for c in changes
+        .iter()
+        .filter(|c| !matches!(c.action, genverse_rules::log::Action::Timers { .. }))
+        .rev()
+        .take(60)
+        .collect::<Vec<_>>()
+        .into_iter()
+        .rev()
+    {
+        let request =
+            c.by.prompt
+                .as_deref()
+                .map(|p| format!(" — asked: \"{}\"", p.replace('\n', " ")))
+                .unwrap_or_default();
+        let agent =
+            c.by.agent
+                .as_deref()
+                .map(|a| format!(" via {a}"))
+                .unwrap_or_default();
+        let _ = writeln!(
+            out,
+            "- {} by {}{agent}: {}{request}",
+            c.id,
+            c.by.player_name,
+            c.action.describe()
+        );
     }
     out
 }
@@ -427,14 +631,21 @@ fn history(ledger: &Ledger) -> String {
 /// Only one package may change in one request.
 pub fn changed_game(dir: &Path, ledger: &Ledger) -> Result<Option<GameSpec>, String> {
     let root = dir.join("packages");
-    let Ok(entries) = std::fs::read_dir(&root) else { return Ok(None) };
+    let Ok(entries) = std::fs::read_dir(&root) else {
+        return Ok(None);
+    };
     let mut changes = Vec::new();
     for entry in entries.flatten() {
         if !entry.path().is_dir() {
             continue;
         }
         let name = entry.file_name().to_string_lossy().to_string();
-        let base = ledger.logic.installed.get(&name).and_then(|i| ledger.logic.package(i)).map(GameSpec::from_package);
+        let base = ledger
+            .logic
+            .installed
+            .get(&name)
+            .and_then(|i| ledger.logic.package(i))
+            .map(GameSpec::from_package);
         if let Some(change) = diff(&entry.path(), &name, base.as_ref())? {
             changes.push(change);
         }
@@ -445,14 +656,19 @@ pub fn changed_game(dir: &Path, ledger: &Ledger) -> Result<Option<GameSpec>, Str
         _ => Err(format!(
             "you changed {} packages ({}); change one per request",
             changes.len(),
-            changes.iter().map(|c| c.name.as_str()).collect::<Vec<_>>().join(", ")
+            changes
+                .iter()
+                .map(|c| c.name.as_str())
+                .collect::<Vec<_>>()
+                .join(", ")
         )),
     }
 }
 
 fn diff(root: &Path, name: &str, base: Option<&GameSpec>) -> Result<Option<GameSpec>, String> {
     let manifest: Value = match std::fs::read_to_string(root.join("package.json")) {
-        Ok(text) => serde_json::from_str(&text).map_err(|e| format!("packages/{name}/package.json isn't JSON: {e}"))?,
+        Ok(text) => serde_json::from_str(&text)
+            .map_err(|e| format!("packages/{name}/package.json isn't JSON: {e}"))?,
         Err(_) => json!({}),
     };
     let title = manifest["title"].as_str().unwrap_or_default().to_string();
@@ -461,7 +677,10 @@ fn diff(root: &Path, name: &str, base: Option<&GameSpec>) -> Result<Option<GameS
     })?;
     let mut scripts = Vec::new();
     let mut models = Vec::new();
-    for entry in std::fs::read_dir(root).map_err(|e| e.to_string())?.flatten() {
+    for entry in std::fs::read_dir(root)
+        .map_err(|e| e.to_string())?
+        .flatten()
+    {
         let file = entry.file_name().to_string_lossy().to_string();
         if file.ends_with(".luau") || file.ends_with(".lua") {
             let source = std::fs::read_to_string(entry.path()).map_err(|e| e.to_string())?;
@@ -471,19 +690,31 @@ fn diff(root: &Path, name: &str, base: Option<&GameSpec>) -> Result<Option<GameS
     if let Ok(entries) = std::fs::read_dir(root.join("models")) {
         for entry in entries.flatten() {
             let file = entry.file_name().to_string_lossy().to_string();
-            let Some(model) = file.strip_suffix(".json") else { continue };
+            let Some(model) = file.strip_suffix(".json") else {
+                continue;
+            };
             let text = std::fs::read_to_string(entry.path()).map_err(|e| e.to_string())?;
-            let build: BuildSpec = serde_json::from_str(&text).map_err(|e| format!("packages/{name}/models/{file} isn't a model (the \"build\" format): {e}"))?;
-            models.push(ModelSpec { name: model.to_string(), build });
+            let build: BuildSpec = serde_json::from_str(&text).map_err(|e| {
+                format!("packages/{name}/models/{file} isn't a model (the \"build\" format): {e}")
+            })?;
+            models.push(ModelSpec {
+                name: model.to_string(),
+                build,
+            });
         }
     }
     let mut shaders = Vec::new();
     if let Ok(entries) = std::fs::read_dir(root.join("shaders")) {
         for entry in entries.flatten() {
             let file = entry.file_name().to_string_lossy().to_string();
-            let Some(shader) = file.strip_suffix(".wgsl") else { continue };
+            let Some(shader) = file.strip_suffix(".wgsl") else {
+                continue;
+            };
             let source = std::fs::read_to_string(entry.path()).map_err(|e| e.to_string())?;
-            shaders.push(ShaderSpec { name: shader.to_string(), source });
+            shaders.push(ShaderSpec {
+                name: shader.to_string(),
+                source,
+            });
         }
     }
     scripts.sort_by(|a, b| a.name.cmp(&b.name));
@@ -493,7 +724,16 @@ fn diff(root: &Path, name: &str, base: Option<&GameSpec>) -> Result<Option<GameS
         if scripts.is_empty() && models.is_empty() && shaders.is_empty() && defs.is_empty() {
             return Ok(None);
         }
-        return Ok(Some(GameSpec { name: name.into(), title, defs, scripts, models, shaders, remove: None, rename: None }));
+        return Ok(Some(GameSpec {
+            name: name.into(),
+            title,
+            defs,
+            scripts,
+            models,
+            shaders,
+            remove: None,
+            rename: None,
+        }));
     };
     let mut change = GameSpec {
         name: name.into(),
@@ -509,18 +749,59 @@ fn diff(root: &Path, name: &str, base: Option<&GameSpec>) -> Result<Option<GameS
     if !title.trim().is_empty() && title != base.title {
         change.title = title;
     }
-    change.defs = defs.iter().filter(|d| !base.defs.contains(d)).cloned().collect();
-    gone.extend(base.defs.iter().filter(|d| !defs.iter().any(|n| n.name == d.name)).map(|d| d.name.clone()));
-    change.scripts = scripts.iter().filter(|s| !base.scripts.contains(s)).cloned().collect();
-    gone.extend(base.scripts.iter().filter(|s| !scripts.iter().any(|n| n.name == s.name)).map(|s| s.name.clone()));
-    change.models = models.iter().filter(|m| !base.models.contains(m)).cloned().collect();
-    gone.extend(base.models.iter().filter(|m| !models.iter().any(|n| n.name == m.name)).map(|m| m.name.clone()));
-    change.shaders = shaders.iter().filter(|s| !base.shaders.contains(s)).cloned().collect();
-    gone.extend(base.shaders.iter().filter(|s| !shaders.iter().any(|n| n.name == s.name)).map(|s| s.name.clone()));
+    change.defs = defs
+        .iter()
+        .filter(|d| !base.defs.contains(d))
+        .cloned()
+        .collect();
+    gone.extend(
+        base.defs
+            .iter()
+            .filter(|d| !defs.iter().any(|n| n.name == d.name))
+            .map(|d| d.name.clone()),
+    );
+    change.scripts = scripts
+        .iter()
+        .filter(|s| !base.scripts.contains(s))
+        .cloned()
+        .collect();
+    gone.extend(
+        base.scripts
+            .iter()
+            .filter(|s| !scripts.iter().any(|n| n.name == s.name))
+            .map(|s| s.name.clone()),
+    );
+    change.models = models
+        .iter()
+        .filter(|m| !base.models.contains(m))
+        .cloned()
+        .collect();
+    gone.extend(
+        base.models
+            .iter()
+            .filter(|m| !models.iter().any(|n| n.name == m.name))
+            .map(|m| m.name.clone()),
+    );
+    change.shaders = shaders
+        .iter()
+        .filter(|s| !base.shaders.contains(s))
+        .cloned()
+        .collect();
+    gone.extend(
+        base.shaders
+            .iter()
+            .filter(|s| !shaders.iter().any(|n| n.name == s.name))
+            .map(|s| s.name.clone()),
+    );
     if !gone.is_empty() {
         change.remove = Some(gone);
     }
-    let unchanged = change.title.is_empty() && change.defs.is_empty() && change.scripts.is_empty() && change.models.is_empty() && change.shaders.is_empty() && change.remove.is_none();
+    let unchanged = change.title.is_empty()
+        && change.defs.is_empty()
+        && change.scripts.is_empty()
+        && change.models.is_empty()
+        && change.shaders.is_empty()
+        && change.remove.is_none();
     Ok((!unchanged).then_some(change))
 }
 
@@ -537,11 +818,14 @@ pub fn merge(files: Option<GameSpec>, answer: Option<GameSpec>) -> Option<GameSp
     if !answer.title.trim().is_empty() {
         out.title = answer.title;
     }
-    out.defs.retain(|d| !answer.defs.iter().any(|n| n.name == d.name));
+    out.defs
+        .retain(|d| !answer.defs.iter().any(|n| n.name == d.name));
     out.defs.extend(answer.defs);
-    out.scripts.retain(|s| !answer.scripts.iter().any(|n| n.name == s.name));
+    out.scripts
+        .retain(|s| !answer.scripts.iter().any(|n| n.name == s.name));
     out.scripts.extend(answer.scripts);
-    out.models.retain(|m| !answer.models.iter().any(|n| n.name == m.name));
+    out.models
+        .retain(|m| !answer.models.iter().any(|n| n.name == m.name));
     out.models.extend(answer.models);
     if let Some(remove) = answer.remove {
         out.remove.get_or_insert_with(Vec::new).extend(remove);

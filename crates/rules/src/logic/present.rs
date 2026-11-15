@@ -28,7 +28,17 @@ pub struct Fx {
 
 impl Default for Fx {
     fn default() -> Self {
-        Self { color: "#ffd88a".into(), to: None, count: 20, speed: 3.0, size: 0.12, life: 0.8, spread: 1.0, gravity: 4.0, glow: true }
+        Self {
+            color: "#ffd88a".into(),
+            to: None,
+            count: 20,
+            speed: 3.0,
+            size: 0.12,
+            life: 0.8,
+            spread: 1.0,
+            gravity: 4.0,
+            glow: true,
+        }
     }
 }
 
@@ -56,7 +66,16 @@ pub struct Sound {
 
 impl Default for Sound {
     fn default() -> Self {
-        Self { wave: "sine".into(), freq: 440.0, to: None, length: 0.25, volume: 0.5, attack: 0.005, decay: 0.6, notes: Vec::new() }
+        Self {
+            wave: "sine".into(),
+            freq: 440.0,
+            to: None,
+            length: 0.25,
+            volume: 0.5,
+            attack: 0.005,
+            decay: 0.6,
+            notes: Vec::new(),
+        }
     }
 }
 
@@ -155,7 +174,11 @@ impl Sound {
         let freqs: Vec<(f32, f32)> = if self.notes.is_empty() {
             vec![(self.freq, self.to.unwrap_or(self.freq))]
         } else {
-            self.notes.iter().map(|n| 440.0 * 2f32.powf((*n as f32 - 69.0) / 12.0)).map(|f| (f, f)).collect()
+            self.notes
+                .iter()
+                .map(|n| 440.0 * 2f32.powf((*n as f32 - 69.0) / 12.0))
+                .map(|f| (f, f))
+                .collect()
         };
         let per = (self.length * rate as f32) as usize;
         let mut out = Vec::with_capacity(per * freqs.len());
@@ -167,7 +190,13 @@ impl Sound {
                 let f = from + (to - from) * t;
                 phase = (phase + f / rate as f32).fract();
                 let wave = match self.wave.as_str() {
-                    "square" => if phase < 0.5 { 1.0 } else { -1.0 },
+                    "square" => {
+                        if phase < 0.5 {
+                            1.0
+                        } else {
+                            -1.0
+                        }
+                    }
                     "triangle" => 4.0 * (phase - 0.5).abs() - 1.0,
                     "saw" => 2.0 * phase - 1.0,
                     "noise" => {
@@ -179,7 +208,11 @@ impl Sound {
                     _ => (phase * std::f32::consts::TAU).sin(),
                 };
                 let seconds = i as f32 / rate as f32;
-                let rise = if self.attack > 0.0 { (seconds / self.attack).min(1.0) } else { 1.0 };
+                let rise = if self.attack > 0.0 {
+                    (seconds / self.attack).min(1.0)
+                } else {
+                    1.0
+                };
                 // Dies away exponentially with decay, and always ends quiet (no click).
                 let fall = (1.0 - t).powf(1.0 + self.decay * 4.0);
                 out.push((wave * rise * fall * self.volume * 0.8 * i16::MAX as f32) as i16);
@@ -219,7 +252,10 @@ impl Sky {
             && self.fog.is_none_or(|f| (0.0..=1.0).contains(&f))
             && self.fog_color.as_deref().is_none_or(is_color)
             && self.sun.is_none_or(|s| (0.0..=2.0).contains(&s))
-            && self.weather.as_deref().is_none_or(|w| w == "rain" || w == "snow");
+            && self
+                .weather
+                .as_deref()
+                .is_none_or(|w| w == "rain" || w == "snow");
         if ok {
             Ok(())
         } else {
@@ -234,14 +270,39 @@ mod tests {
 
     #[test]
     fn sounds_are_made_from_numbers() {
-        let bell = Sound { notes: vec![72, 76, 79], length: 0.2, ..Default::default() };
+        let bell = Sound {
+            notes: vec![72, 76, 79],
+            length: 0.2,
+            ..Default::default()
+        };
         assert!(bell.check().is_ok());
         let wav = bell.wav();
         assert_eq!(&wav[..4], b"RIFF");
         // Three notes of 0.2 s at 22 050 Hz, 2 bytes each, after a 44-byte header.
         assert_eq!(wav.len(), 44 + 3 * 4410 * 2);
-        assert!(Sound { wave: "kazoo".into(), ..Default::default() }.check().is_err());
-        assert!(Fx { count: 500, ..Default::default() }.check().is_err());
-        assert!(Sky { weather: Some("rain".into()), ..Default::default() }.check().is_ok());
+        assert!(
+            Sound {
+                wave: "kazoo".into(),
+                ..Default::default()
+            }
+            .check()
+            .is_err()
+        );
+        assert!(
+            Fx {
+                count: 500,
+                ..Default::default()
+            }
+            .check()
+            .is_err()
+        );
+        assert!(
+            Sky {
+                weather: Some("rain".into()),
+                ..Default::default()
+            }
+            .check()
+            .is_ok()
+        );
     }
 }

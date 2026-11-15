@@ -64,8 +64,19 @@ pub struct Ask {
 
 impl Ask {
     /// The player said yes: does it, and tells the agent how it went.
-    pub fn allow(self, chat: &mut Chat, ledger: &mut Ledger, world: &mut VoxelWorld, creations: &mut Creations, landscape: &mut Landscape, own: (&mut Bindings, &mut Graphics, &mut Panels), at: [f32; 3]) {
-        let result = act(self.op, self.args, chat, ledger, world, creations, landscape, own, at);
+    pub fn allow(
+        self,
+        chat: &mut Chat,
+        ledger: &mut Ledger,
+        world: &mut VoxelWorld,
+        creations: &mut Creations,
+        landscape: &mut Landscape,
+        own: (&mut Bindings, &mut Graphics, &mut Panels),
+        at: [f32; 3],
+    ) {
+        let result = act(
+            self.op, self.args, chat, ledger, world, creations, landscape, own, at,
+        );
         info!("agent tool {} (allowed): {result:?}", self.op.name);
         let _ = self.reply.send(result);
     }
@@ -126,10 +137,20 @@ pub fn act(
 ) -> ToolResult {
     if op.last {
         chat.after.ops.push((op.name, args));
-        return Ok(format!("\"{}\" happens as soon as you answer. Do the rest of the work first, and tell the player it's on its way.", op.name));
+        return Ok(format!(
+            "\"{}\" happens as soon as you answer. Do the rest of the work first, and tell the player it's on its way.",
+            op.name
+        ));
     }
-    let asked = chat.pending.as_ref().map(|p| (p.provider.label(), p.prompt.clone()));
-    let then = args["then"].as_str().map(str::trim).filter(|note| !note.is_empty()).map(str::to_string);
+    let asked = chat
+        .pending
+        .as_ref()
+        .map(|p| (p.provider.label(), p.prompt.clone()));
+    let then = args["then"]
+        .as_str()
+        .map(str::trim)
+        .filter(|note| !note.is_empty())
+        .map(str::to_string);
     let edited = super::workspace::edited(ledger);
     let mut held = Travel::default();
     let result = {
@@ -140,7 +161,9 @@ pub fn act(
             landscape,
             travel: &mut held,
             at,
-            agent: asked.as_ref().map(|(agent, prompt)| (*agent, prompt.as_str())),
+            agent: asked
+                .as_ref()
+                .map(|(agent, prompt)| (*agent, prompt.as_str())),
             binds,
             graphics,
             panels,
@@ -160,7 +183,11 @@ pub fn act(
             text.push_str(" You'll be started again there with your note, to do what's left.");
         }
     }
-    Ok(if text.is_empty() { "Done.".into() } else { text })
+    Ok(if text.is_empty() {
+        "Done.".into()
+    } else {
+        text
+    })
 }
 
 /// Where the next build goes, frozen while a request runs so tool answers stay consistent.
@@ -330,7 +357,12 @@ pub fn definitions(rules: &WorldRules) -> Value {
 
 fn search(args: &Value, ledger: &Ledger, hero: Option<Vec3>) -> Result<String, String> {
     let text = args["text"].as_str().unwrap_or_default();
-    let num = |key: &str| args[key].as_f64().filter(|v| v.is_finite()).map(|v| v as f32);
+    let num = |key: &str| {
+        args[key]
+            .as_f64()
+            .filter(|v| v.is_finite())
+            .map(|v| v as f32)
+    };
     let near = match (num("x"), num("z")) {
         (Some(x), Some(z)) => Some([x, z]),
         _ => hero.map(|h| [h.x, h.z]),
@@ -339,7 +371,10 @@ fn search(args: &Value, ledger: &Ledger, hero: Option<Vec3>) -> Result<String, S
     let records = genverse_rules::semantic::records(&ledger.log, &ledger.builds, &ledger.logic);
     let found = genverse_rules::semantic::search(&records, text, near, num("radius"), limit);
     if found.is_empty() {
-        return Ok(format!("Nothing found for \"{text}\" (of {} things in the world).", records.len()));
+        return Ok(format!(
+            "Nothing found for \"{text}\" (of {} things in the world).",
+            records.len()
+        ));
     }
     Ok(serde_json::to_string_pretty(&found).unwrap_or_default())
 }
@@ -347,12 +382,26 @@ fn search(args: &Value, ledger: &Ledger, hero: Option<Vec3>) -> Result<String, S
 fn query(args: &Value, ledger: &Ledger) -> Result<String, String> {
     let code = args["code"].as_str().ok_or("query needs \"code\"")?;
     let package = args["package"].as_str().unwrap_or("world");
-    let now = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map_or(0, |d| d.as_secs());
-    let ground = genverse_rules::log::TerrainGround { terrain: ledger.log.terrain(), edits: &ledger.edits };
-    let (value, changes) = ledger.logic.query(package, &ledger.profile.id, code, now, &ledger.rules.logic, Some(&ground))?;
+    let now = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map_or(0, |d| d.as_secs());
+    let ground = genverse_rules::log::TerrainGround {
+        terrain: ledger.log.terrain(),
+        edits: &ledger.edits,
+    };
+    let (value, changes) = ledger.logic.query(
+        package,
+        &ledger.profile.id,
+        code,
+        now,
+        &ledger.rules.logic,
+        Some(&ground),
+    )?;
     let mut out = serde_json::to_string_pretty(&value).unwrap_or_default();
     if changes > 0 {
-        out.push_str(&format!("\n(It would have made {changes} change(s); none were kept.)"));
+        out.push_str(&format!(
+            "\n(It would have made {changes} change(s); none were kept.)"
+        ));
     }
     Ok(out)
 }
@@ -371,7 +420,11 @@ pub struct Looks(Option<PendingLook>);
 
 /// Takes the picture: holds the camera where it was asked for a few frames, saves the
 /// screen, and answers once the file is there.
-pub fn take_looks(mut commands: Commands, mut looks: ResMut<Looks>, mut cameras: Query<&mut Transform, With<crate::player::FollowCamera>>) {
+pub fn take_looks(
+    mut commands: Commands,
+    mut looks: ResMut<Looks>,
+    mut cameras: Query<&mut Transform, With<crate::player::FollowCamera>>,
+) {
     let Some(look) = &mut looks.0 else { return };
     look.frames += 1;
     if let (Some((from, at)), Ok(mut camera)) = (look.view, cameras.single_mut()) {
@@ -380,14 +433,24 @@ pub fn take_looks(mut commands: Commands, mut looks: ResMut<Looks>, mut cameras:
     // Let the view settle (and the ground stream in) before the picture.
     if look.frames == 20 {
         use bevy::render::view::screenshot::{Screenshot, save_to_disk};
-        commands.spawn(Screenshot::primary_window()).observe(save_to_disk(look.path.clone()));
+        commands
+            .spawn(Screenshot::primary_window())
+            .observe(save_to_disk(look.path.clone()));
     }
     // Saving takes a few frames more; give the file time to be written in full.
     let saved = look.frames > 35 && std::fs::metadata(&look.path).is_ok_and(|m| m.len() > 0);
     if saved || look.frames > 600 {
         let look = looks.0.take().expect("checked above");
-        let name = look.path.file_name().map(|n| n.to_string_lossy().to_string()).unwrap_or_default();
-        let _ = look.reply.send(if saved { Ok(format!("Saved shots/{name}: Read it to see the picture.")) } else { Err("the picture didn't save".into()) });
+        let name = look
+            .path
+            .file_name()
+            .map(|n| n.to_string_lossy().to_string())
+            .unwrap_or_default();
+        let _ = look.reply.send(if saved {
+            Ok(format!("Saved shots/{name}: Read it to see the picture."))
+        } else {
+            Err("the picture didn't save".into())
+        });
     }
 }
 
@@ -411,11 +474,19 @@ impl genverse_rules::logic::Ground for Land<'_> {
 /// name) through some steps, on a copy of the world as it is now: its pieces, timers and
 /// players' things, its ground, the tester starting where the player stands. So a new
 /// version's migration runs on the real state before anyone else sees it.
-fn test_game(args: &Value, ledger: &Ledger, world: &VoxelWorld, hero: Option<Vec3>) -> Result<String, String> {
+fn test_game(
+    args: &Value,
+    ledger: &Ledger,
+    world: &VoxelWorld,
+    hero: Option<Vec3>,
+) -> Result<String, String> {
     // The package files as they are on disk, with a "game" given here on top.
     let given: Option<GameSpec> = match &args["game"] {
         Value::Null => None,
-        game => Some(serde_json::from_value(game.clone()).map_err(|e| format!("game doesn't match the schema: {e}"))?),
+        game => Some(
+            serde_json::from_value(game.clone())
+                .map_err(|e| format!("game doesn't match the schema: {e}"))?,
+        ),
     };
     let edited = match super::workspace::current() {
         Some(dir) => super::workspace::changed_game(&dir, ledger)?,
@@ -423,13 +494,26 @@ fn test_game(args: &Value, ledger: &Ledger, world: &VoxelWorld, hero: Option<Vec
     };
     let change = super::workspace::merge(edited, given)
         .ok_or("nothing to test: the package files are as the world runs them (edit them first), and no \"game\" was given")?;
-    let steps: Vec<String> = serde_json::from_value(args["steps"].clone()).map_err(|e| format!("steps must be strings: {e}"))?;
+    let steps: Vec<String> = serde_json::from_value(args["steps"].clone())
+        .map_err(|e| format!("steps must be strings: {e}"))?;
     let logic = &ledger.logic;
-    let base = logic.installed.get(&change.name).and_then(|i| logic.package(i)).map(GameSpec::from_package);
+    let base = logic
+        .installed
+        .get(&change.name)
+        .and_then(|i| logic.package(i))
+        .map(GameSpec::from_package);
     let spec = change.onto(base.as_ref());
-    let version = logic.installed.get(&spec.name).map_or(1, |i| i.package.version + 1);
-    let now = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map_or(0, |d| d.as_secs());
-    let land = Land { world, builds: &ledger.builds };
+    let version = logic
+        .installed
+        .get(&spec.name)
+        .map_or(1, |i| i.package.version + 1);
+    let now = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map_or(0, |d| d.as_secs());
+    let land = Land {
+        world,
+        builds: &ledger.builds,
+    };
     let copy = hero.map(|at| trial::Copy {
         logic: logic.clone(),
         rules: ledger.rules.logic,
@@ -438,9 +522,17 @@ fn test_game(args: &Value, ledger: &Ledger, world: &VoxelWorld, hero: Option<Vec
         next_change: ledger.log.changes.last().map_or(1, |c| c.id + 1),
         ground: &land,
     });
-    let report = trial::play_in(&spec.to_package(version), &steps[..steps.len().min(300)], copy);
+    let report = trial::play_in(
+        &spec.to_package(version),
+        &steps[..steps.len().min(300)],
+        copy,
+    );
     let report = match &base {
-        Some(_) => format!("Tested your change on top of the world's \"{}\" ({}).\n{report}", spec.name, change.change_summary(base.as_ref())),
+        Some(_) => format!(
+            "Tested your change on top of the world's \"{}\" ({}).\n{report}",
+            spec.name,
+            change.change_summary(base.as_ref())
+        ),
         None => report,
     };
     info!("test_game ({} steps):\n{report}", steps.len());
@@ -461,11 +553,22 @@ pub fn update_build_site(
     if chat.pending.is_some() {
         return;
     }
-    let target = creations.draft.as_ref().map(|d| d.entity).or(creations.selected);
+    let target = creations
+        .draft
+        .as_ref()
+        .map(|d| d.entity)
+        .or(creations.selected);
     if let Some(t) = target.and_then(|e| transforms.get(e).ok()) {
-        *site = BuildSite { origin: t.translation, yaw: t.rotation.to_euler(EulerRot::YXZ).0 };
+        *site = BuildSite {
+            origin: t.translation,
+            yaw: t.rotation.to_euler(EulerRot::YXZ).0,
+        };
     } else if let Ok(player) = players.single() {
-        let (origin, yaw) = anchor_in_front(player, &world, UVec3::splat(ledger.rules.build.max_size / 2));
+        let (origin, yaw) = anchor_in_front(
+            player,
+            &world,
+            UVec3::splat(ledger.rules.build.max_size / 2),
+        );
         *site = BuildSite { origin, yaw };
     }
 }
@@ -484,7 +587,10 @@ pub fn answer_tool_calls(
     mut looks: ResMut<Looks>,
 ) {
     // A question nobody answered, or whose request is over.
-    if chat.asking.as_ref().is_some_and(|ask| chat.pending.is_none() || ask.since.elapsed() > ASK_WAIT)
+    if chat
+        .asking
+        .as_ref()
+        .is_some_and(|ask| chat.pending.is_none() || ask.since.elapsed() > ASK_WAIT)
         && let Some(ask) = chat.asking.take()
     {
         ask.refuse("the player didn't answer");
@@ -500,7 +606,13 @@ pub fn answer_tool_calls(
     for ToolCall { name, args, reply } in calls {
         // A picture takes a few frames: it answers when it's saved.
         if name == "look" {
-            let point = |v: &Value| Some(Vec3::new(v["x"].as_f64()? as f32, v["y"].as_f64()? as f32, v["z"].as_f64()? as f32));
+            let point = |v: &Value| {
+                Some(Vec3::new(
+                    v["x"].as_f64()? as f32,
+                    v["y"].as_f64()? as f32,
+                    v["z"].as_f64()? as f32,
+                ))
+            };
             let Some(dir) = super::workspace::current() else {
                 let _ = reply.send(Err("there's no folder to save the picture in".into()));
                 continue;
@@ -512,8 +624,14 @@ pub fn answer_tool_calls(
             let n = std::fs::read_dir(dir.join("shots")).map_or(0, |d| d.count()) + 1;
             let path = dir.join("shots").join(format!("look-{n}.png"));
             let _ = std::fs::create_dir_all(dir.join("shots"));
-            let view = point(&args["from"]).map(|from| (from, point(&args["at"]).unwrap_or(from + Vec3::NEG_Z)));
-            looks.0 = Some(PendingLook { view, path, reply, frames: 0 });
+            let view = point(&args["from"])
+                .map(|from| (from, point(&args["at"]).unwrap_or(from + Vec3::NEG_Z)));
+            looks.0 = Some(PendingLook {
+                view,
+                path,
+                reply,
+                frames: 0,
+            });
             info!("agent tool look: taking a picture");
             continue;
         }
@@ -526,20 +644,50 @@ pub fn answer_tool_calls(
                     continue;
                 }
                 let line = ops::Args::new(args.clone()).line();
-                let what = if line.is_empty() { op.about.to_string() } else { format!("{}: {line}", op.about) };
+                let what = if line.is_empty() {
+                    op.about.to_string()
+                } else {
+                    format!("{}: {line}", op.about)
+                };
                 info!("agent tool {name}: asking the player ({what})");
-                chat.asking = Some(Ask { op, args, what, reply, since: std::time::Instant::now() });
+                chat.asking = Some(Ask {
+                    op,
+                    args,
+                    what,
+                    reply,
+                    since: std::time::Instant::now(),
+                });
                 chat.open = true;
                 continue;
             }
             let at = hero.map_or([0.0; 3], |h| h.to_array());
-            let result = act(op, args, &mut chat, &mut ledger, &mut world, &mut creations, &mut landscape, (&mut binds, &mut graphics, &mut panels), at);
+            let result = act(
+                op,
+                args,
+                &mut chat,
+                &mut ledger,
+                &mut world,
+                &mut creations,
+                &mut landscape,
+                (&mut binds, &mut graphics, &mut panels),
+                at,
+            );
             info!("agent tool {name}: {result:?}");
             let _ = reply.send(result);
             continue;
         }
-        let placed: Vec<_> = creations.placed.iter().filter_map(|(e, c)| transforms.get(*e).ok().map(|t| (*t, c))).collect();
-        let ctx = Ctx { site: *site, world: &world, creations: &creations, placed: &placed, limits: &ledger.rules.build };
+        let placed: Vec<_> = creations
+            .placed
+            .iter()
+            .filter_map(|(e, c)| transforms.get(*e).ok().map(|t| (*t, c)))
+            .collect();
+        let ctx = Ctx {
+            site: *site,
+            world: &world,
+            creations: &creations,
+            placed: &placed,
+            limits: &ledger.rules.build,
+        };
         let result = match name.as_str() {
             "get_build_site" => Ok(ctx.build_site(&args, players.single().ok())),
             "list_nearby_builds" => Ok(ctx.nearby(&args)),
@@ -551,13 +699,25 @@ pub fn answer_tool_calls(
             "query" => query(&args, &ledger),
             other => Err(format!("unknown tool {other}")),
         };
-        info!("agent tool {name}: {}", if result.is_ok() { "ok" } else { "error" });
+        info!(
+            "agent tool {name}: {}",
+            if result.is_ok() { "ok" } else { "error" }
+        );
         let _ = reply.send(result);
     }
 }
 
-fn sample_terrain(world: &VoxelWorld, landscape: &Landscape, args: &Value) -> Result<String, String> {
-    let num = |key: &str| args[key].as_f64().filter(|v| v.is_finite()).map(|v| v as f32);
+fn sample_terrain(
+    world: &VoxelWorld,
+    landscape: &Landscape,
+    args: &Value,
+) -> Result<String, String> {
+    let num = |key: &str| {
+        args[key]
+            .as_f64()
+            .filter(|v| v.is_finite())
+            .map(|v| v as f32)
+    };
     // Any rectangle of the world, as `change_land` takes it.
     if args["world"].as_bool() == Some(true) || landscape.target().is_none() {
         let (Some(x), Some(z), Some(w), Some(d)) = (num("x"), num("z"), num("w"), num("d")) else {
@@ -574,8 +734,11 @@ fn sample_terrain(world: &VoxelWorld, landscape: &Landscape, args: &Value) -> Re
     }
     let area = landscape.target().ok_or("no area is selected")?;
     let size = area.size_m();
-    let from = Vec2::new(num("x").unwrap_or(0.0), num("z").unwrap_or(0.0)).clamp(Vec2::ZERO, size - 0.25);
-    let span = Vec2::new(num("w").unwrap_or(size.x), num("d").unwrap_or(size.y)).max(Vec2::splat(0.25)).min(size - from);
+    let from =
+        Vec2::new(num("x").unwrap_or(0.0), num("z").unwrap_or(0.0)).clamp(Vec2::ZERO, size - 0.25);
+    let span = Vec2::new(num("w").unwrap_or(size.x), num("d").unwrap_or(size.y))
+        .max(Vec2::splat(0.25))
+        .min(size - from);
     Ok(sample(world, area, from, span, 24))
 }
 
@@ -611,7 +774,8 @@ impl Ctx<'_> {
     /// Top of the first ground voxel (terrain, water, trees) under a world point, as a
     /// build-frame height, with its surface code. Grass tufts and flowers don't count.
     fn ground(&self, world_xz: Vec3) -> (Option<f32>, char) {
-        let start = VoxelWorld::voxel_at(Vec3::new(world_xz.x, self.site.origin.y + 6.0, world_xz.z));
+        let start =
+            VoxelWorld::voxel_at(Vec3::new(world_xz.x, self.site.origin.y + 6.0, world_xz.z));
         for dy in 0..120 {
             let p = start - IVec3::Y * dy;
             match self.world.get(p) {
@@ -620,7 +784,10 @@ impl Ctx<'_> {
                 Some(id) if block::FLOWERS.contains(&id) => {}
                 Some(id) => {
                     let top = (p.y + 1) as f32 * terrain::VOXEL_SIZE;
-                    return (Some((top - self.site.origin.y) / VOXEL_SIZE), surface_code(id));
+                    return (
+                        Some((top - self.site.origin.y) / VOXEL_SIZE),
+                        surface_code(id),
+                    );
                 }
             }
         }
@@ -634,7 +801,12 @@ impl Ctx<'_> {
     }
 
     fn build_site(&self, args: &Value, player: Option<&Transform>) -> String {
-        let dim = |key: &str| args[key].as_u64().unwrap_or(32).clamp(2, self.limits.max_size as u64) as u32;
+        let dim = |key: &str| {
+            args[key]
+                .as_u64()
+                .unwrap_or(32)
+                .clamp(2, self.limits.max_size as u64) as u32
+        };
         let (width, depth) = (dim("width"), dim("depth"));
         let mut out = String::new();
         let _ = writeln!(
@@ -704,33 +876,57 @@ impl Ctx<'_> {
         );
         for (distance, t, c) in rows.into_iter().take(12) {
             let p = self.site.to_local(t.translation);
-            let turn = (t.rotation.to_euler(EulerRot::YXZ).0 - self.site.yaw).to_degrees().rem_euclid(360.0);
+            let turn = (t.rotation.to_euler(EulerRot::YXZ).0 - self.site.yaw)
+                .to_degrees()
+                .rem_euclid(360.0);
             let _ = writeln!(
                 out,
                 "- id {} \"{}\" size {}×{}×{} at x={:+.0} y={:+.0} z={:+.0} ({distance:.1} m away), turned {:.0}°, \
                  made for \"{}\"",
-                c.build, c.name, c.spec.size[0], c.spec.size[1], c.spec.size[2], p.x, p.y, p.z, turn, c.prompt
+                c.build,
+                c.name,
+                c.spec.size[0],
+                c.spec.size[1],
+                c.spec.size[2],
+                p.x,
+                p.y,
+                p.z,
+                turn,
+                c.prompt
             );
         }
         out
     }
 
     fn spec(&self, args: &Value) -> Result<String, String> {
-        let id = args["id"].as_str().map(str::to_string).or_else(|| args["id"].as_u64().map(|n| n.to_string()));
+        let id = args["id"]
+            .as_str()
+            .map(str::to_string)
+            .or_else(|| args["id"].as_u64().map(|n| n.to_string()));
         let id = id.ok_or("pass an id from list_nearby_builds, or \"draft\"")?;
         let spec = if id == "draft" {
-            self.creations.draft.as_ref().map(|d| &d.spec).ok_or("there is no draft")?
+            self.creations
+                .draft
+                .as_ref()
+                .map(|d| &d.spec)
+                .ok_or("there is no draft")?
         } else {
             let n: u64 = id.parse().map_err(|_| format!("unknown id {id:?}"))?;
-            self.creations.placed.iter().find(|(_, c)| c.build == n).map(|(_, c)| &c.spec).ok_or(format!("no build {n}"))?
+            self.creations
+                .placed
+                .iter()
+                .find(|(_, c)| c.build == n)
+                .map(|(_, c)| &c.spec)
+                .ok_or(format!("no build {n}"))?
         };
         serde_json::to_string(spec).map_err(|e| e.to_string())
     }
 
     fn check(&self, args: &Value) -> Result<String, String> {
-        let spec: BuildSpec =
-            serde_json::from_value(args["build"].clone()).map_err(|e| format!("build doesn't match the schema: {e}"))?;
-        let build = compile(&spec, self.limits).map_err(|errors| format!("Rejected:\n- {}", errors.join("\n- ")))?;
+        let spec: BuildSpec = serde_json::from_value(args["build"].clone())
+            .map_err(|e| format!("build doesn't match the schema: {e}"))?;
+        let build = compile(&spec, self.limits)
+            .map_err(|errors| format!("Rejected:\n- {}", errors.join("\n- ")))?;
         let s = build.stats;
         let grid = &build.model.grid;
         let (w, d) = (s.size.x as f32, s.size.z as f32);
@@ -738,7 +934,9 @@ impl Ctx<'_> {
         let (mut floating, mut max_gap, mut buried, mut wet, mut columns) = (0, 0.0_f32, 0, 0, 0);
         for z in 0..s.size.z as i32 {
             for x in 0..s.size.x as i32 {
-                let ys: Vec<i32> = (0..s.size.y as i32).filter(|&y| grid.get(IVec3::new(x, y, z)) != AIR).collect();
+                let ys: Vec<i32> = (0..s.size.y as i32)
+                    .filter(|&y| grid.get(IVec3::new(x, y, z)) != AIR)
+                    .collect();
                 let Some(&lowest) = ys.first() else {
                     continue;
                 };
@@ -762,8 +960,15 @@ impl Ctx<'_> {
 
         let mut out = format!(
             "Valid: {}×{}×{} voxels, {} solid, {} visible faces, {} glowing (limits {} / {} / {}).\n",
-            s.size.x, s.size.y, s.size.z, s.voxels, s.faces, s.glow,
-            self.limits.max_voxels, self.limits.max_faces, self.limits.max_glow_voxels
+            s.size.x,
+            s.size.y,
+            s.size.z,
+            s.voxels,
+            s.faces,
+            s.glow,
+            self.limits.max_voxels,
+            self.limits.max_faces,
+            self.limits.max_glow_voxels
         );
         let _ = writeln!(
             out,
@@ -776,7 +981,12 @@ impl Ctx<'_> {
         let r = reach(w, d);
         let lo = self.site.origin - Vec3::new(r, 0.0, r);
         let hi = self.site.origin + Vec3::new(r, s.size.y as f32 * VOXEL_SIZE, r);
-        let replaced = self.creations.draft.as_ref().and_then(|d| d.replaces.as_ref()).map(|r| r.build);
+        let replaced = self
+            .creations
+            .draft
+            .as_ref()
+            .and_then(|d| d.replaces.as_ref())
+            .map(|r| r.build);
         let overlaps: Vec<_> = self
             .placed
             .iter()
@@ -784,8 +994,12 @@ impl Ctx<'_> {
             .filter_map(|(t, c)| {
                 let r = reach(c.spec.size[0] as f32, c.spec.size[2] as f32);
                 let height = c.spec.size[1] as f32 * VOXEL_SIZE;
-                let (blo, bhi) = (t.translation - Vec3::new(r, 0.0, r), t.translation + Vec3::new(r, height, r));
-                (lo.cmplt(bhi).all() && blo.cmplt(hi).all()).then(|| format!("\"{}\" (id {})", c.name, c.build))
+                let (blo, bhi) = (
+                    t.translation - Vec3::new(r, 0.0, r),
+                    t.translation + Vec3::new(r, height, r),
+                );
+                (lo.cmplt(bhi).all() && blo.cmplt(hi).all())
+                    .then(|| format!("\"{}\" (id {})", c.name, c.build))
             })
             .collect();
         if overlaps.is_empty() {

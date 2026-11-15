@@ -9,7 +9,7 @@ use std::collections::{BTreeMap, HashMap};
 use bevy::prelude::*;
 use genverse_rules::logic::{
     EntityId,
-    frame::{FrameIn, Hero, Pose, PlayerVm},
+    frame::{FrameIn, Hero, PlayerVm, Pose},
 };
 
 use super::Chat;
@@ -64,51 +64,93 @@ pub fn run_player_scripts(
     let mut messages = Vec::new();
     let logic = &ledger.logic;
     // Load what's new; forget what's gone.
-    scripts.loaded.retain(|name, _| logic.installed.contains_key(name));
+    scripts
+        .loaded
+        .retain(|name, _| logic.installed.contains_key(name));
     for (name, install) in &logic.installed {
-        if scripts.loaded.get(name).is_some_and(|(hash, _)| *hash == install.package.hash) {
+        if scripts
+            .loaded
+            .get(name)
+            .is_some_and(|(hash, _)| *hash == install.package.hash)
+        {
             continue;
         }
         let vm = match logic.package(install).map(PlayerVm::new) {
             Some(Ok(vm)) => vm,
             Some(Err(why)) => {
                 warn!("{name}'s player scripts didn't load: {why}");
-                chat.script_errors.push(format!("{name} (player script): {why}"));
+                chat.script_errors
+                    .push(format!("{name} (player script): {why}"));
                 None
             }
             None => None,
         };
-        scripts.loaded.insert(name.clone(), (install.package.hash.clone(), vm));
+        scripts
+            .loaded
+            .insert(name.clone(), (install.package.hash.clone(), vm));
     }
-    let Ok((transform, hero)) = heroes.single() else { return };
+    let Ok((transform, hero)) = heroes.single() else {
+        return;
+    };
     // Every key and mouse button by name, and the player's own actions, whatever keys
     // they've put them on.
-    let (held, pressed, actions, acted): (Vec<&str>, Vec<&str>, Vec<&str>, Vec<&str>) = if blocked.0 {
+    let (held, pressed, actions, acted): (Vec<&str>, Vec<&str>, Vec<&str>, Vec<&str>) = if blocked.0
+    {
         Default::default()
     } else {
         (
-            INPUTS.iter().filter(|input| input.held(&keys, &buttons)).map(|input| input.name).collect(),
-            INPUTS.iter().filter(|input| input.just_pressed(&keys, &buttons)).map(|input| input.name).collect(),
-            ACTIONS.iter().filter(|action| binds.pressed(action.name)).map(|action| action.name).collect(),
-            ACTIONS.iter().filter(|action| binds.just_pressed(action.name)).map(|action| action.name).collect(),
+            INPUTS
+                .iter()
+                .filter(|input| input.held(&keys, &buttons))
+                .map(|input| input.name)
+                .collect(),
+            INPUTS
+                .iter()
+                .filter(|input| input.just_pressed(&keys, &buttons))
+                .map(|input| input.name)
+                .collect(),
+            ACTIONS
+                .iter()
+                .filter(|action| binds.pressed(action.name))
+                .map(|action| action.name)
+                .collect(),
+            ACTIONS
+                .iter()
+                .filter(|action| binds.just_pressed(action.name))
+                .map(|action| action.name)
+                .collect(),
         )
     };
-    let camera = cameras.single().map_or([0.0, 0.3], |c| [c.yaw(), c.pitch()]);
+    let camera = cameras
+        .single()
+        .map_or([0.0, 0.3], |c| [c.yaw(), c.pitch()]);
     // Where the usual controls would take the hero.
-    let axis = |a: &str, b: &str| actions.contains(&a) as i32 as f32 - actions.contains(&b) as i32 as f32;
+    let axis =
+        |a: &str, b: &str| actions.contains(&a) as i32 as f32 - actions.contains(&b) as i32 as f32;
     let input = Vec2::new(axis("right", "left"), axis("forward", "back")).clamp_length_max(1.0);
     let forward = Vec3::new(-camera[0].sin(), 0.0, -camera[0].cos());
     let right = Vec3::new(-forward.z, 0.0, forward.x);
-    let speed = if actions.contains(&"run") { body.run } else { body.walk } * body.speed;
+    let speed = if actions.contains(&"run") {
+        body.run
+    } else {
+        body.walk
+    } * body.speed;
     let walk = (right * input.x + forward * input.y) * speed;
     let pos = transform.translation;
-    let in_water = world.get(VoxelWorld::voxel_at(pos + Vec3::Y * 0.4)) == Some(crate::world::terrain::block::WATER);
+    let in_water = world.get(VoxelWorld::voxel_at(pos + Vec3::Y * 0.4))
+        == Some(crate::world::terrain::block::WATER);
     let b = logic.state.body(&ledger.profile.id);
     let frame = FrameIn {
         dt: time.delta_secs().min(1.0 / 20.0),
         now: super::game::now_exact(),
         me: &ledger.profile.id,
-        hero: Hero { pos: pos.to_array(), velocity: hero.velocity().to_array(), grounded: hero.grounded(), in_water, facing: hero.facing() },
+        hero: Hero {
+            pos: pos.to_array(),
+            velocity: hero.velocity().to_array(),
+            grounded: hero.grounded(),
+            in_water,
+            facing: hero.facing(),
+        },
         keys: &held,
         pressed: &pressed,
         actions: &actions,
@@ -124,16 +166,30 @@ pub fn run_player_scripts(
         let Some(running) = vm else { continue };
         // With the game's own actions, by the names it gave them.
         let own = |all: &[&'static str], is: &dyn Fn(&str) -> bool| -> Vec<String> {
-            let mine = binds.game().iter().filter(|a| a.package() == name && is(&a.name)).map(|a| a.short().to_string());
+            let mine = binds
+                .game()
+                .iter()
+                .filter(|a| a.package() == name && is(&a.name))
+                .map(|a| a.short().to_string());
             all.iter().map(|a| a.to_string()).chain(mine).collect()
         };
         let (acting, started) = if blocked.0 {
             (Vec::new(), Vec::new())
         } else {
-            (own(&actions, &|a| binds.pressed(a)), own(&acted, &|a| binds.just_pressed(a)))
+            (
+                own(&actions, &|a| binds.pressed(a)),
+                own(&acted, &|a| binds.just_pressed(a)),
+            )
         };
-        let (acting, started): (Vec<&str>, Vec<&str>) = (acting.iter().map(String::as_str).collect(), started.iter().map(String::as_str).collect());
-        let frame = FrameIn { actions: &acting, acted: &started, ..frame };
+        let (acting, started): (Vec<&str>, Vec<&str>) = (
+            acting.iter().map(String::as_str).collect(),
+            started.iter().map(String::as_str).collect(),
+        );
+        let frame = FrameIn {
+            actions: &acting,
+            acted: &started,
+            ..frame
+        };
         match running.frame(&frame, &logic.state) {
             Ok(out) => {
                 if let Some(v) = out.velocity {
@@ -141,7 +197,13 @@ pub fn run_player_scripts(
                 }
                 scripted.jump |= out.jump;
                 if let Some(c) = out.camera {
-                    scripted.camera = Some(CameraRig { distance: c.distance, pitch: c.pitch, yaw: c.yaw, height: c.height, shake: c.shake });
+                    scripted.camera = Some(CameraRig {
+                        distance: c.distance,
+                        pitch: c.pitch,
+                        yaw: c.yaw,
+                        height: c.height,
+                        shake: c.shake,
+                    });
                 }
                 poses.now.extend(out.poses);
                 shows.0.extend(out.shows);
@@ -152,15 +214,23 @@ pub fn run_player_scripts(
                     }
                     count.1 += 1;
                     if count.1 > SENDS_A_SECOND {
-                        warn!("{name}'s player script sends more than {SENDS_A_SECOND} messages a second; dropping \"{message}\"");
+                        warn!(
+                            "{name}'s player script sends more than {SENDS_A_SECOND} messages a second; dropping \"{message}\""
+                        );
                         continue;
                     }
-                    messages.push(genverse_rules::logic::Intent::Message { package: name.clone(), name: message, data, at: pos.to_array() });
+                    messages.push(genverse_rules::logic::Intent::Message {
+                        package: name.clone(),
+                        name: message,
+                        data,
+                        at: pos.to_array(),
+                    });
                 }
             }
             Err(why) => {
                 warn!("{name}'s player script stopped: {why}");
-                chat.script_errors.push(format!("{name} (player script, stopped): {why}"));
+                chat.script_errors
+                    .push(format!("{name} (player script, stopped): {why}"));
                 *vm = None;
             }
         }
@@ -179,12 +249,29 @@ pub fn run_player_scripts(
 
 /// Shows the posed pieces where they stand plus their pose, and puts back the ones no
 /// longer posed.
-pub fn pose_pieces(poses: Res<Poses>, ledger: Res<Ledger>, play: Res<super::game::Play>, mut transforms: Query<&mut Transform>) {
-    let ids = poses.now.keys().chain(poses.before.iter().filter(|id| !poses.now.contains_key(id)));
+pub fn pose_pieces(
+    poses: Res<Poses>,
+    ledger: Res<Ledger>,
+    play: Res<super::game::Play>,
+    mut transforms: Query<&mut Transform>,
+) {
+    let ids = poses
+        .now
+        .keys()
+        .chain(poses.before.iter().filter(|id| !poses.now.contains_key(id)));
     for id in ids {
-        let (Some(e), Some((entity, look))) = (ledger.logic.state.get(*id), play.pieces.get(id)) else { continue };
-        let Ok(mut transform) = transforms.get_mut(*entity) else { continue };
-        let turn = if let super::game::Look::Model { turn, .. } = look { *turn } else { 0 };
+        let (Some(e), Some((entity, look))) = (ledger.logic.state.get(*id), play.pieces.get(id))
+        else {
+            continue;
+        };
+        let Ok(mut transform) = transforms.get_mut(*entity) else {
+            continue;
+        };
+        let turn = if let super::game::Look::Model { turn, .. } = look {
+            *turn
+        } else {
+            0
+        };
         let mut at = super::game::placement(e, turn, look);
         if let Some(pose) = poses.now.get(id) {
             at.translation += Vec3::from_array(pose.offset);

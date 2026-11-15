@@ -16,7 +16,13 @@ use genverse_server::{ServerConfig, start};
 fn a_player_joins_by_invite() {
     let dir = std::env::temp_dir().join(format!("genverse-server-internet-{}", std::process::id()));
     let _ = std::fs::remove_dir_all(&dir);
-    let server = start(ServerConfig { data_dir: dir.clone(), port: 0, seed: 1337, flat: true }).unwrap();
+    let server = start(ServerConfig {
+        data_dir: dir.clone(),
+        port: 0,
+        seed: 1337,
+        flat: true,
+    })
+    .unwrap();
     let host_key = Keypair::from_seed([1; 32]);
     let door = Host::start(server.addr.port(), host_key.derive("internet host")).unwrap();
     let started = Instant::now();
@@ -28,7 +34,13 @@ fn a_player_joins_by_invite() {
     let tunnel = Tunnel::start(door.invite(), [2; 32]).unwrap();
     let key = Keypair::from_seed([3; 32]);
     let signer = key.clone();
-    let client = Client::connect(&tunnel.addr().to_string(), key.player_id(), "Ada".into(), move |m| signer.sign(m)).unwrap();
+    let client = Client::connect(
+        &tunnel.addr().to_string(),
+        key.player_id(),
+        "Ada".into(),
+        move |m| signer.sign(m),
+    )
+    .unwrap();
     match client.recv_timeout(Duration::from_secs(30)) {
         Ok(ClientEvent::Message(ToClient::Welcome { world, .. })) => assert_eq!(world, "main"),
         Ok(ClientEvent::Closed(why)) => panic!("closed: {why}; tunnel: {:?}", tunnel.error()),

@@ -22,20 +22,20 @@
 use bevy::prelude::*;
 use genverse_rules::{
     game::GameAction,
-    recipe::Recipe,
     log::{Action, PortalTo},
     logic::Scope,
+    recipe::Recipe,
     sculpt::{Area, TerrainSpec},
     settings::{Look, RateLimits},
 };
 use serde_json::Value;
 
 use super::{
-    panels::{self, Panels},
-    registry::{self, Changed, Scope as Whose, Stores},
     creations::{Creations, SavedCreation},
     landscape::{Landscape, PreviewError, describe_stats},
     online,
+    panels::{self, Panels},
+    registry::{self, Changed, Scope as Whose, Stores},
     spec::{BuildSpec, VOXEL_SIZE as BUILD_VOXEL, compile},
     worlds::{Travel, Trip, fresh_seed},
 };
@@ -71,7 +71,8 @@ pub struct Context<'a> {
 impl Context<'_> {
     /// Records a change as the player (through the agent, if it's the agent's doing).
     fn record(&mut self, action: Action) {
-        self.ledger.record(self.agent.map(|a| a.0), self.agent.map(|a| a.1), action);
+        self.ledger
+            .record(self.agent.map(|a| a.0), self.agent.map(|a| a.1), action);
     }
 }
 
@@ -107,15 +108,33 @@ pub struct Param {
 }
 
 const fn word(name: &'static str, about: &'static str) -> Param {
-    Param { name, kind: Kind::Word, about, optional: false, json: "string" }
+    Param {
+        name,
+        kind: Kind::Word,
+        about,
+        optional: false,
+        json: "string",
+    }
 }
 
 const fn rest(name: &'static str, about: &'static str) -> Param {
-    Param { name, kind: Kind::Rest, about, optional: false, json: "string" }
+    Param {
+        name,
+        kind: Kind::Rest,
+        about,
+        optional: false,
+        json: "string",
+    }
 }
 
 const fn named(name: &'static str, about: &'static str) -> Param {
-    Param { name, kind: Kind::Named, about, optional: true, json: "string" }
+    Param {
+        name,
+        kind: Kind::Named,
+        about,
+        optional: true,
+        json: "string",
+    }
 }
 
 impl Param {
@@ -159,7 +178,9 @@ impl Args {
         for (i, param) in params.iter().enumerate() {
             let value = match param.kind {
                 Kind::Word => words.get(i).map(|w| w.to_string()),
-                Kind::Rest => Some(words.get(i..).unwrap_or_default().join(" ")).filter(|r| !r.is_empty()),
+                Kind::Rest => {
+                    Some(words.get(i..).unwrap_or_default().join(" ")).filter(|r| !r.is_empty())
+                }
                 Kind::Named => None,
             };
             if let Some(value) = value {
@@ -203,10 +224,14 @@ impl Args {
     fn object<T: serde::de::DeserializeOwned>(&self, name: &str) -> Result<Option<T>, String> {
         let value = match self.0.get(name) {
             None | Some(Value::Null) => return Ok(None),
-            Some(Value::String(text)) => serde_json::from_str(text).map_err(|e| format!("\"{name}\" isn't JSON: {e}"))?,
+            Some(Value::String(text)) => {
+                serde_json::from_str(text).map_err(|e| format!("\"{name}\" isn't JSON: {e}"))?
+            }
             Some(value) => value.clone(),
         };
-        serde_json::from_value(value).map(Some).map_err(|e| format!("\"{name}\" doesn't match its format: {e}"))
+        serde_json::from_value(value)
+            .map(Some)
+            .map_err(|e| format!("\"{name}\" doesn't match its format: {e}"))
     }
 
     /// An argument as it was given, whatever it is.
@@ -216,7 +241,11 @@ impl Args {
 
     /// The arguments on one line, for asking the player about them.
     pub fn line(&self) -> String {
-        self.0.keys().filter_map(|name| self.text(name)).collect::<Vec<_>>().join(" ")
+        self.0
+            .keys()
+            .filter_map(|name| self.text(name))
+            .collect::<Vec<_>>()
+            .join(" ")
     }
 
     /// Flat ground unless it says natural.
@@ -248,8 +277,27 @@ pub struct Op {
     run: fn(&mut Context, &Args) -> Reply,
 }
 
-const fn op(name: &'static str, args: &'static str, about: &'static str, params: &'static [Param], run: fn(&mut Context, &Args) -> Reply) -> Op {
-    Op { name, args, about, admin: false, slash: true, settled: false, agent: true, ask: false, last: false, note: "", params, run }
+const fn op(
+    name: &'static str,
+    args: &'static str,
+    about: &'static str,
+    params: &'static [Param],
+    run: fn(&mut Context, &Args) -> Reply,
+) -> Op {
+    Op {
+        name,
+        args,
+        about,
+        admin: false,
+        slash: true,
+        settled: false,
+        agent: true,
+        ask: false,
+        last: false,
+        note: "",
+        params,
+        run,
+    }
 }
 
 impl Op {
@@ -585,9 +633,22 @@ pub fn tools() -> Vec<Value> {
                     about.push_str(text);
                 }
             }
-            let properties: serde_json::Map<String, Value> =
-                op.params.iter().map(|p| (p.name.to_string(), serde_json::json!({ "type": p.json, "description": p.about }))).collect();
-            let required: Vec<&str> = op.params.iter().filter(|p| !p.optional).map(|p| p.name).collect();
+            let properties: serde_json::Map<String, Value> = op
+                .params
+                .iter()
+                .map(|p| {
+                    (
+                        p.name.to_string(),
+                        serde_json::json!({ "type": p.json, "description": p.about }),
+                    )
+                })
+                .collect();
+            let required: Vec<&str> = op
+                .params
+                .iter()
+                .filter(|p| !p.optional)
+                .map(|p| p.name)
+                .collect();
             serde_json::json!({
                 "name": op.name,
                 "description": about,
@@ -599,7 +660,10 @@ pub fn tools() -> Vec<Value> {
 
 /// Does `name` with `args` (a JSON object), under the checks every way in shares.
 pub fn run(name: &str, args: Value, cx: &mut Context) -> Reply {
-    let op = OPS.iter().find(|op| op.name == name).ok_or_else(|| format!("There's no \"{name}\" to do."))?;
+    let op = OPS
+        .iter()
+        .find(|op| op.name == name)
+        .ok_or_else(|| format!("There's no \"{name}\" to do."))?;
     run_op(op, &Args::new(args), cx)
 }
 
@@ -617,7 +681,13 @@ pub fn help() -> String {
     let line = |admin: bool| {
         commands()
             .filter(|c| c.admin == admin)
-            .map(|c| if c.args.is_empty() { format!("/{}", c.name) } else { format!("/{} {}", c.name, c.args) })
+            .map(|c| {
+                if c.args.is_empty() {
+                    format!("/{}", c.name)
+                } else {
+                    format!("/{} {}", c.name, c.args)
+                }
+            })
             .collect::<Vec<_>>()
             .join(" · ")
     };
@@ -635,25 +705,43 @@ fn history(cx: &mut Context, args: &Args) -> Reply {
         .rev()
         .take(n.clamp(1, 50))
         .map(|c| {
-            let mark = if undone.contains(&c.id) { " (undone)" } else { "" };
-            format!("{}: {} by {}{mark}", c.id, c.action.describe(), ledger.describe(&c.by))
+            let mark = if undone.contains(&c.id) {
+                " (undone)"
+            } else {
+                ""
+            };
+            format!(
+                "{}: {} by {}{mark}",
+                c.id,
+                c.action.describe(),
+                ledger.describe(&c.by)
+            )
         })
         .collect();
-    Ok(if lines.is_empty() { "No changes yet.".into() } else { format!("Latest changes:\n{}", lines.join("\n")) })
+    Ok(if lines.is_empty() {
+        "No changes yet.".into()
+    } else {
+        format!("Latest changes:\n{}", lines.join("\n"))
+    })
 }
 
 /// Undoes change `id`: your own, or anyone's for admins. Undoing an undo redoes.
 fn undo(cx: &mut Context, args: &Args) -> Reply {
-    let id = args.int("id").ok_or("Usage: /undo <change id> (see /history)")?;
+    let id = args
+        .int("id")
+        .ok_or("Usage: /undo <change id> (see /history)")?;
     let Some(change) = cx.ledger.log.change(id) else {
         return Err(format!("There's no change {id}."));
     };
     let what = change.action.describe();
-    let upgrade = matches!(&change.action, Action::InstallPackage { package, .. } if package.version > 1);
+    let upgrade =
+        matches!(&change.action, Action::InstallPackage { package, .. } if package.version > 1);
     cx.ledger.undo(id)?;
     Ok(if upgrade {
         // The old version is back; what the new one did to the world stays.
-        format!("Undid change {id} ({what}). What it changed in the world stays: /load the save made before it to go fully back.")
+        format!(
+            "Undid change {id} ({what}). What it changed in the world stays: /load the save made before it to go fully back."
+        )
     } else {
         format!("Undid change {id} ({what}).")
     })
@@ -661,11 +749,23 @@ fn undo(cx: &mut Context, args: &Args) -> Reply {
 
 fn verify(cx: &mut Context, _: &Args) -> Reply {
     let changes = &cx.ledger.log.changes;
-    let bad: Vec<String> = changes.iter().filter(|c| !c.verified()).map(|c| c.id.to_string()).collect();
+    let bad: Vec<String> = changes
+        .iter()
+        .filter(|c| !c.verified())
+        .map(|c| c.id.to_string())
+        .collect();
     if bad.is_empty() {
-        Ok(format!("All {} changes are signed by the players they name.", changes.len()))
+        Ok(format!(
+            "All {} changes are signed by the players they name.",
+            changes.len()
+        ))
     } else {
-        Err(format!("{} of {} changes aren't signed by their authors: {}", bad.len(), changes.len(), bad.join(", ")))
+        Err(format!(
+            "{} of {} changes aren't signed by their authors: {}",
+            bad.len(),
+            changes.len(),
+            bad.join(", ")
+        ))
     }
 }
 
@@ -679,7 +779,9 @@ fn host(cx: &mut Context, _: &Args) -> Reply {
 }
 
 fn join(cx: &mut Context, args: &Args) -> Reply {
-    let addr = args.text("addr").ok_or("Usage: /join <host[:port] or invite>")?;
+    let addr = args
+        .text("addr")
+        .ok_or("Usage: /join <host[:port] or invite>")?;
     online::join(cx.ledger, &addr)
 }
 
@@ -697,8 +799,12 @@ fn save(cx: &mut Context, args: &Args) -> Reply {
     cx.record(Action::Save { name: name.clone() });
     cx.ledger.keep_saves(&cx.world.edit_list());
     Ok(match old {
-        Some(old) => format!("Saved \"{name}\" (it replaces the save of that name from change {old})."),
-        None => format!("Saved \"{name}\". An admin can /load it; anyone can /fork it into a world of their own."),
+        Some(old) => {
+            format!("Saved \"{name}\" (it replaces the save of that name from change {old}).")
+        }
+        None => format!(
+            "Saved \"{name}\". An admin can /load it; anyone can /fork it into a world of their own."
+        ),
     })
 }
 
@@ -712,13 +818,20 @@ fn saves(ledger: &Ledger) -> String {
         .take(20)
         .map(|(c, name)| format!("\"{name}\": change {}, {}", c.id, ledger.describe(&c.by)))
         .collect();
-    if lines.is_empty() { "No saves yet: /save <name>".into() } else { format!("Saves, newest first: {}", lines.join(" · ")) }
+    if lines.is_empty() {
+        "No saves yet: /save <name>".into()
+    } else {
+        format!("Saves, newest first: {}", lines.join(" · "))
+    }
 }
 
 /// Admins: loads a save (by `name`, or its change `id`), for everyone. The world is
 /// saved first, so loading that brings it back.
 fn load(cx: &mut Context, args: &Args) -> Reply {
-    let id = args.int("id").or_else(|| args.text("name").and_then(|name| cx.ledger.log.save_named(&name).map(|c| c.id)));
+    let id = args.int("id").or_else(|| {
+        args.text("name")
+            .and_then(|name| cx.ledger.log.save_named(&name).map(|c| c.id))
+    });
     let Some(id) = id else {
         return Err(format!("Usage: /load <name>. {}", saves(cx.ledger)));
     };
@@ -727,7 +840,9 @@ fn load(cx: &mut Context, args: &Args) -> Reply {
         _ => return Err(format!("Change {id} isn't a save.")),
     };
     let before = cx.ledger.load(id, &cx.world.edit_list())?;
-    Ok(format!("Loaded \"{name}\". The world as it was is saved as \"{before}\"."))
+    Ok(format!(
+        "Loaded \"{name}\". The world as it was is saved as \"{before}\"."
+    ))
 }
 
 /// Starts a new local world from a save: it starts as the world was then, without the
@@ -744,22 +859,51 @@ fn fork(cx: &mut Context, args: &Args) -> Reply {
         return Err("Forking makes a world on this computer; do it in your own game.".into());
     }
     let state = ledger.state_of_save(at);
-    let log = ledger.log.fork(at, &save, state, ledger.log.changes.last().map_or(0, |c| c.by.at));
-    let name = ledger.create_world(&world, genverse_rules::game::Ground { seed: log.seed, flat: log.flat, recipe: log.recipe }, Some(log))?;
-    Ok(format!("Started the world {name} from \"{save}\"; this one carries on as it is. /world {name} goes there."))
+    let log = ledger.log.fork(
+        at,
+        &save,
+        state,
+        ledger.log.changes.last().map_or(0, |c| c.by.at),
+    );
+    let name = ledger.create_world(
+        &world,
+        genverse_rules::game::Ground {
+            seed: log.seed,
+            flat: log.flat,
+            recipe: log.recipe,
+        },
+        Some(log),
+    )?;
+    Ok(format!(
+        "Started the world {name} from \"{save}\"; this one carries on as it is. /world {name} goes there."
+    ))
 }
 
 /// This game's worlds, for the chat.
 fn worlds(ledger: &Ledger) -> String {
     let here = super::worlds::current_title(ledger);
     let list: Vec<String> = match &ledger.online {
-        Some(online) => online.game.as_ref().map(|g| g.worlds().into_iter().map(|(n, _)| n).collect()).unwrap_or_default(),
+        Some(online) => online
+            .game
+            .as_ref()
+            .map(|g| g.worlds().into_iter().map(|(n, _)| n).collect())
+            .unwrap_or_default(),
         None => ledger::list_worlds()
             .into_iter()
-            .map(|w| format!("{} ({}, {} changes)", w.name, if w.flat { "flat" } else { "natural" }, w.changes))
+            .map(|w| {
+                format!(
+                    "{} ({}, {} changes)",
+                    w.name,
+                    if w.flat { "flat" } else { "natural" },
+                    w.changes
+                )
+            })
             .collect(),
     };
-    format!("You're in {here}. Worlds: {}. /world <name> goes; O opens the Game window.", list.join(" · "))
+    format!(
+        "You're in {here}. Worlds: {}. /world <name> goes; O opens the Game window.",
+        list.join(" · ")
+    )
 }
 
 /// Goes to another world of this game; with no name, lists them.
@@ -767,7 +911,14 @@ fn world(cx: &mut Context, args: &Args) -> Reply {
     let Some(name) = args.text("name").and_then(|n| clean_name(&n)) else {
         return Ok(worlds(cx.ledger));
     };
-    cx.travel.next = Some(if cx.ledger.is_online() { Trip::Remote { world: name } } else { Trip::Local { game: game_name(), world: name } });
+    cx.travel.next = Some(if cx.ledger.is_online() {
+        Trip::Remote { world: name }
+    } else {
+        Trip::Local {
+            game: game_name(),
+            world: name,
+        }
+    });
     Ok(String::new())
 }
 
@@ -776,9 +927,19 @@ fn games() -> String {
     let here = game_name();
     let list: Vec<String> = ledger::list_games()
         .iter()
-        .map(|g| format!("{}{} ({} worlds)", g.name, if g.name == here { " ← here" } else { "" }, g.worlds))
+        .map(|g| {
+            format!(
+                "{}{} ({} worlds)",
+                g.name,
+                if g.name == here { " ← here" } else { "" },
+                g.worlds
+            )
+        })
         .collect();
-    format!("Games: {}. /game <name> goes; /newgame <name> makes one.", list.join(" · "))
+    format!(
+        "Games: {}. /game <name> goes; /newgame <name> makes one.",
+        list.join(" · ")
+    )
 }
 
 /// Goes to another local game; with no name, lists them.
@@ -797,28 +958,44 @@ fn game(cx: &mut Context, args: &Args) -> Reply {
 
 /// Makes a new local game and goes there.
 fn new_game(cx: &mut Context, args: &Args) -> Reply {
-    let name = args.text("name").ok_or("Usage: /newgame <name> [flat|natural]")?;
+    let name = args
+        .text("name")
+        .ok_or("Usage: /newgame <name> [flat|natural]")?;
     let flat = args.flat();
-    let by = genverse_rules::log::Provenance::new(&cx.ledger.profile.id, &cx.ledger.profile.name, None, None, 0);
+    let by = genverse_rules::log::Provenance::new(
+        &cx.ledger.profile.id,
+        &cx.ledger.profile.name,
+        None,
+        None,
+        0,
+    );
     let game = ledger::create_game(&name, flat, fresh_seed(flat), &by)?;
-    cx.travel.next = Some(Trip::Local { game, world: "main".into() });
+    cx.travel.next = Some(Trip::Local {
+        game,
+        world: "main".into(),
+    });
     Ok(String::new())
 }
 
 /// Makes a world in this game (on a server, asks it to) and, locally, goes there.
 fn new_world(cx: &mut Context, args: &Args) -> Reply {
-    let name = args.text("name").ok_or("Usage: /newworld <name> [flat|natural|islands|desert|...]")?;
+    let name = args
+        .text("name")
+        .ok_or("Usage: /newworld <name> [flat|natural|islands|desert|...]")?;
     // The ground: flat and empty unless a landscape is asked for, by its name
     // (`ground`) or as a recipe of the agent's own (`terrain`).
     let kind = args.text("ground").map(|kind| kind.to_lowercase());
     let named = match kind.as_deref() {
         None | Some("flat") => None,
-        Some(kind) => Some(Recipe::named(kind).ok_or(format!("There's no ground called \"{kind}\": flat, {}.", Recipe::NAMES.join(", ")))?),
+        Some(kind) => Some(Recipe::named(kind).ok_or(format!(
+            "There's no ground called \"{kind}\": flat, {}.",
+            Recipe::NAMES.join(", ")
+        ))?),
     };
     let own = match args.raw("terrain") {
-        Some(Value::String(text)) if text.trim_start().starts_with('{') => {
-            Some(Recipe::read(&serde_json::from_str(text).map_err(|e| format!("\"terrain\" isn't JSON: {e}"))?)?)
-        }
+        Some(Value::String(text)) if text.trim_start().starts_with('{') => Some(Recipe::read(
+            &serde_json::from_str(text).map_err(|e| format!("\"terrain\" isn't JSON: {e}"))?,
+        )?),
         Some(given) => Some(Recipe::read(given)?),
         None => None,
     };
@@ -827,14 +1004,26 @@ fn new_world(cx: &mut Context, args: &Args) -> Reply {
     let seed = fresh_seed(flat);
     if cx.ledger.is_online() {
         let name = clean_name(&name).ok_or("A world's name is letters, digits, - and _.")?;
-        cx.ledger.propose_game(GameAction::CreateWorld { name: name.clone(), seed, flat, recipe })?;
+        cx.ledger.propose_game(GameAction::CreateWorld {
+            name: name.clone(),
+            seed,
+            flat,
+            recipe,
+        })?;
         return Ok(format!("Asking the server to make {name}…"));
     }
-    let name = cx.ledger.create_world(&name, genverse_rules::game::Ground { seed, flat, recipe }, None)?;
+    let name = cx.ledger.create_world(
+        &name,
+        genverse_rules::game::Ground { seed, flat, recipe },
+        None,
+    )?;
     if args.text("go").as_deref() == Some("no") {
         return Ok(format!("Made the world {name}."));
     }
-    cx.travel.next = Some(Trip::Local { game: game_name(), world: name });
+    cx.travel.next = Some(Trip::Local {
+        game: game_name(),
+        world: name,
+    });
     Ok(String::new())
 }
 
@@ -842,7 +1031,8 @@ fn new_world(cx: &mut Context, args: &Args) -> Reply {
 fn remove_world(cx: &mut Context, args: &Args) -> Reply {
     let name = args.text("name").ok_or("Usage: /removeworld <name>")?;
     if cx.ledger.is_online() {
-        cx.ledger.propose_game(GameAction::RemoveWorld { name: name.clone() })?;
+        cx.ledger
+            .propose_game(GameAction::RemoveWorld { name: name.clone() })?;
         return Ok(format!("Asking the server to remove {name}…"));
     }
     cx.ledger.remove_world(&name)?;
@@ -852,11 +1042,17 @@ fn remove_world(cx: &mut Context, args: &Args) -> Reply {
 /// Gives a world of this game a new name.
 fn rename_world(cx: &mut Context, args: &Args) -> Reply {
     let usage = "Usage: /renameworld <from> <to>";
-    let (from, to) = (args.text("from").ok_or(usage)?, args.text("to").ok_or(usage)?);
+    let (from, to) = (
+        args.text("from").ok_or(usage)?,
+        args.text("to").ok_or(usage)?,
+    );
     let from = clean_name(&from).unwrap_or(from);
     if cx.ledger.is_online() {
         let to = clean_name(&to).ok_or("A world's name is letters, digits, - and _.")?;
-        cx.ledger.propose_game(GameAction::RenameWorld { from: from.clone(), to: to.clone() })?;
+        cx.ledger.propose_game(GameAction::RenameWorld {
+            from: from.clone(),
+            to: to.clone(),
+        })?;
         return Ok(format!("Asking the server to rename {from} to {to}…"));
     }
     let to = cx.ledger.rename_world(&from, &to)?;
@@ -865,14 +1061,19 @@ fn rename_world(cx: &mut Context, args: &Args) -> Reply {
 
 /// Saves every world of the game at once.
 fn save_game(cx: &mut Context, args: &Args) -> Reply {
-    let name = args.text("name").ok_or("Usage: /savegame <name>: saves every world of the game at once")?;
+    let name = args
+        .text("name")
+        .ok_or("Usage: /savegame <name>: saves every world of the game at once")?;
     save_game_as(cx, &name)
 }
 
 fn save_game_as(cx: &mut Context, name: &str) -> Reply {
     if cx.ledger.is_online() {
         // The server fills in where each world is.
-        cx.ledger.propose_game(GameAction::Save { name: name.into(), worlds: Default::default() })?;
+        cx.ledger.propose_game(GameAction::Save {
+            name: name.into(),
+            worlds: Default::default(),
+        })?;
         return Ok("Saving the game…".into());
     }
     let saved = cx.ledger.save_game(name);
@@ -890,13 +1091,18 @@ fn load_game(cx: &mut Context, args: &Args) -> Reply {
     Ok(if cx.ledger.is_online() {
         format!("Asking the server to put {n} world(s) back to \"{name}\"…")
     } else {
-        format!("Loaded the game save \"{name}\": {n} world(s) went back. The game as it was is saved as \"{before}\".")
+        format!(
+            "Loaded the game save \"{name}\": {n} world(s) went back. The game as it was is saved as \"{before}\"."
+        )
     })
 }
 
 /// Makes a build (`build`, or the selected one) a portal to `to`; `off` unlinks it.
 fn portal(cx: &mut Context, args: &Args) -> Reply {
-    let Some(build) = args.int("build").or_else(|| cx.creations.selected().map(|b| b.build)) else {
+    let Some(build) = args
+        .int("build")
+        .or_else(|| cx.creations.selected().map(|b| b.build))
+    else {
         return Err("Select a build first (click it), then /portal <world or host:port>.".into());
     };
     let to = args.text("to").unwrap_or_default();
@@ -904,10 +1110,16 @@ fn portal(cx: &mut Context, args: &Args) -> Reply {
         cx.record(Action::SetPortal { build, to: None });
         return Ok("It's an ordinary build again.".into());
     }
-    let to = PortalTo::parse(&to).map_err(|why| format!("Usage: /portal <world or host:port> | off ({why})"))?;
+    let to = PortalTo::parse(&to)
+        .map_err(|why| format!("Usage: /portal <world or host:port> | off ({why})"))?;
     let label = to.label().to_string();
-    cx.record(Action::SetPortal { build, to: Some(to) });
-    Ok(format!("It's a portal to {label} now: walk up to it and press E."))
+    cx.record(Action::SetPortal {
+        build,
+        to: Some(to),
+    });
+    Ok(format!(
+        "It's a portal to {label} now: walk up to it and press E."
+    ))
 }
 
 fn rate(cx: &mut Context, args: &Args) -> Reply {
@@ -915,8 +1127,14 @@ fn rate(cx: &mut Context, args: &Args) -> Reply {
     let rates = match (args.text("per_minute").as_deref(), args.text("voxels")) {
         (Some("off"), None) => RateLimits::default(),
         (Some(n), voxels) => match (n.parse().ok(), voxels.map(|v| v.parse().ok())) {
-            (Some(n), None) => RateLimits { changes_per_minute: Some(n), voxels_per_ten_minutes: None },
-            (Some(n), Some(Some(v))) => RateLimits { changes_per_minute: Some(n), voxels_per_ten_minutes: Some(v) },
+            (Some(n), None) => RateLimits {
+                changes_per_minute: Some(n),
+                voxels_per_ten_minutes: None,
+            },
+            (Some(n), Some(Some(v))) => RateLimits {
+                changes_per_minute: Some(n),
+                voxels_per_ten_minutes: Some(v),
+            },
             _ => return Err(USAGE.into()),
         },
         (None, _) => return Err(USAGE.into()),
@@ -955,7 +1173,11 @@ fn rate_line(rates: &RateLimits) -> String {
 }
 
 fn bevel_line(bevel: f32) -> String {
-    if bevel > 0.0 { format!("Voxel edges are rounded ({bevel})") } else { "Voxels have sharp edges".into() }
+    if bevel > 0.0 {
+        format!("Voxel edges are rounded ({bevel})")
+    } else {
+        "Voxels have sharp edges".into()
+    }
 }
 
 /// Pauses the world's games, or resumes them: the `world.logic.paused` rule.
@@ -968,10 +1190,19 @@ fn pause(cx: &mut Context, args: &Args) -> Reply {
         None => !paused,
         Some("on" | "yes" | "true" | "pause") => true,
         Some("off" | "no" | "false" | "resume") => false,
-        Some(other) => return Err(format!("/pause on pauses, /pause off resumes; \"{other}\" is neither.")),
+        Some(other) => {
+            return Err(format!(
+                "/pause on pauses, /pause off resumes; \"{other}\" is neither."
+            ));
+        }
     };
     if want == paused {
-        return Ok(if paused { "The world is already paused." } else { "The world isn't paused." }.into());
+        return Ok(if paused {
+            "The world is already paused."
+        } else {
+            "The world isn't paused."
+        }
+        .into());
     }
     let mut rules = cx.ledger.rules.clone();
     rules.logic.paused = want;
@@ -1003,9 +1234,15 @@ fn rules(cx: &mut Context, _: &Args) -> Reply {
 }
 
 /// The game's packages by name: the server's when online, this game's otherwise.
-pub fn catalog(ledger: &Ledger) -> std::collections::BTreeMap<String, std::sync::Arc<genverse_rules::logic::Package>> {
+pub fn catalog(
+    ledger: &Ledger,
+) -> std::collections::BTreeMap<String, std::sync::Arc<genverse_rules::logic::Package>> {
     match &ledger.online {
-        Some(online) => online.game.as_ref().map(|g| g.packages()).unwrap_or_default(),
+        Some(online) => online
+            .game
+            .as_ref()
+            .map(|g| g.packages())
+            .unwrap_or_default(),
         None => ledger::read_game(&game_name()).packages(),
     }
 }
@@ -1013,22 +1250,46 @@ pub fn catalog(ledger: &Ledger) -> std::collections::BTreeMap<String, std::sync:
 fn packages(cx: &mut Context, _: &Args) -> Reply {
     let ledger = &*cx.ledger;
     let logic = &ledger.logic;
-    let off: Vec<String> = catalog(ledger).keys().filter(|n| !logic.installed.contains_key(*n)).cloned().collect();
-    let off = if off.is_empty() { String::new() } else { format!("\nIn the game but off here: {} (turn them on from the Game window's Rules)", off.join(", ")) };
+    let off: Vec<String> = catalog(ledger)
+        .keys()
+        .filter(|n| !logic.installed.contains_key(*n))
+        .cloned()
+        .collect();
+    let off = if off.is_empty() {
+        String::new()
+    } else {
+        format!(
+            "\nIn the game but off here: {} (turn them on from the Game window's Rules)",
+            off.join(", ")
+        )
+    };
     if logic.installed.is_empty() {
-        return Ok(format!("No game rules on in this world. Admins can ask the agent for a game.{off}"));
+        return Ok(format!(
+            "No game rules on in this world. Admins can ask the agent for a game.{off}"
+        ));
     }
     let lines: Vec<String> = logic
         .installed
         .values()
         .map(|i| {
-            let title = logic.package(i).map_or(i.package.name.clone(), |p| p.manifest.title.clone());
+            let title = logic
+                .package(i)
+                .map_or(i.package.name.clone(), |p| p.manifest.title.clone());
             let place = match &i.scope {
                 Scope::World => "the whole world".to_string(),
                 Scope::Parcels { parcels } => format!("{} parcel(s)", parcels.len()),
             };
-            let who = if i.by == ledger.profile.id { "you".to_string() } else { format!("{}…", &i.by[..8.min(i.by.len())]) };
-            format!("{} \"{title}\" v{} for {place}, by {who}, {} piece(s)", i.package.name, i.package.version, logic.state.count(&i.package.name))
+            let who = if i.by == ledger.profile.id {
+                "you".to_string()
+            } else {
+                format!("{}…", &i.by[..8.min(i.by.len())])
+            };
+            format!(
+                "{} \"{title}\" v{} for {place}, by {who}, {} piece(s)",
+                i.package.name,
+                i.package.version,
+                logic.state.count(&i.package.name)
+            )
         })
         .collect();
     Ok(lines.join("\n") + &off)
@@ -1036,17 +1297,30 @@ fn packages(cx: &mut Context, _: &Args) -> Reply {
 
 /// Turns a package off in this world.
 fn uninstall(cx: &mut Context, args: &Args) -> Reply {
-    let name = args.text("name").ok_or("Usage: /uninstall <name> (see /packages)")?;
+    let name = args
+        .text("name")
+        .ok_or("Usage: /uninstall <name> (see /packages)")?;
     cx.record(Action::UninstallPackage { name: name.clone() });
-    Ok(format!("{name} is off in this world; its pieces stay, asleep, in case it comes back."))
+    Ok(format!(
+        "{name} is off in this world; its pieces stay, asleep, in case it comes back."
+    ))
 }
 
 /// Turns one of the game's packages on in this world.
 fn turn_on(cx: &mut Context, args: &Args) -> Reply {
-    let name = args.text("name").ok_or("Which package? /packages lists the game's.")?;
-    let package = catalog(cx.ledger).remove(&name).ok_or_else(|| format!("The game has no package \"{name}\"."))?;
+    let name = args
+        .text("name")
+        .ok_or("Which package? /packages lists the game's.")?;
+    let package = catalog(cx.ledger)
+        .remove(&name)
+        .ok_or_else(|| format!("The game has no package \"{name}\"."))?;
     let title = package.manifest.title.clone();
-    match cx.ledger.install((*package).clone(), Scope::World, cx.agent.map(|a| a.0), cx.agent.map(|a| a.1)) {
+    match cx.ledger.install(
+        (*package).clone(),
+        Scope::World,
+        cx.agent.map(|a| a.0),
+        cx.agent.map(|a| a.1),
+    ) {
         Ok(_) => Ok(format!("{title} is on in this world.")),
         Err(why) => Err(format!("⚠ Couldn't turn {title} on: {why}.")),
     }
@@ -1054,27 +1328,42 @@ fn turn_on(cx: &mut Context, args: &Args) -> Reply {
 
 /// Takes a package out of the game: every world stops running it.
 fn remove_package(cx: &mut Context, args: &Args) -> Reply {
-    let name = args.text("name").ok_or("Which package? /packages lists the game's.")?;
-    cx.ledger.set_game_package(GameAction::RemovePackage { name: name.clone() })?;
-    Ok(format!("Took {name} out of the game; worlds stop running it."))
+    let name = args
+        .text("name")
+        .ok_or("Which package? /packages lists the game's.")?;
+    cx.ledger
+        .set_game_package(GameAction::RemovePackage { name: name.clone() })?;
+    Ok(format!(
+        "Took {name} out of the game; worlds stop running it."
+    ))
 }
 
 /// Opens (or closes) a panel. For the agent, the panels it wrote in its folder are
 /// taken in first, so it hears at once if one isn't a panel.
 fn panel(cx: &mut Context, args: &Args) -> Reply {
-    let id = args.text("id").ok_or_else(|| format!("Usage: /panel <id> [close]. {}", cx.panels.list()))?.to_lowercase();
+    let id = args
+        .text("id")
+        .ok_or_else(|| format!("Usage: /panel <id> [close]. {}", cx.panels.list()))?
+        .to_lowercase();
     let mut notes = Vec::new();
     if cx.agent.is_some()
         && let Some(folder) = super::workspace::current()
     {
         let (done, wrong) = panels::take_from(&folder);
-        if let Some(why) = wrong.iter().find(|w| w.starts_with(&format!("panels/{id}.json"))) {
+        if let Some(why) = wrong
+            .iter()
+            .find(|w| w.starts_with(&format!("panels/{id}.json")))
+        {
             return Err(why.clone());
         }
         notes = done.into_iter().chain(wrong).collect();
     }
     cx.panels.reload();
-    let said = if args.text("close").is_some() { cx.panels.close(&id)? } else { cx.panels.open(&id)? };
+    let said = if args.text("close").is_some() {
+        cx.panels.close(&id)?
+    } else {
+        cx.panels.open(&id)?
+    };
     notes.insert(0, said);
     Ok(notes.join(" "))
 }
@@ -1082,36 +1371,68 @@ fn panel(cx: &mut Context, args: &Args) -> Reply {
 /// Changes one setting: a world's as a change to its rules (admins), the player's own in
 /// place.
 fn set(cx: &mut Context, args: &Args) -> Reply {
-    let name = args.text("name").ok_or("Usage: /set <setting> <value>, like /set hero.run_speed 10. /settings lists them.")?;
+    let name = args.text("name").ok_or(
+        "Usage: /set <setting> <value>, like /set hero.run_speed 10. /settings lists them.",
+    )?;
     let setting = registry::find(&name)?;
-    let stores = Stores { rules: &cx.ledger.rules, graphics: cx.graphics };
+    let stores = Stores {
+        rules: &cx.ledger.rules,
+        graphics: cx.graphics,
+    };
     let before = registry::value(setting, &stores);
     let Some(given) = args.raw("value") else {
-        return Err(format!("{} is {} ({}; {}). /set {} <value> changes it.", setting.name, registry::show(setting, &before), setting.title, registry::range(setting), setting.name));
+        return Err(format!(
+            "{} is {} ({}; {}). /set {} <value> changes it.",
+            setting.name,
+            registry::show(setting, &before),
+            setting.title,
+            registry::range(setting),
+            setting.name
+        ));
     };
     if setting.scope() == Whose::World && !cx.ledger.land.is_admin(&cx.ledger.profile.id) {
-        return Err(format!("{} is this world's: only its admins change it.", setting.name));
+        return Err(format!(
+            "{} is this world's: only its admins change it.",
+            setting.name
+        ));
     }
     let value = registry::parse(setting, given)?;
     if value == before {
-        return Ok(format!("{} is already {}.", setting.name, registry::show(setting, &value)));
+        return Ok(format!(
+            "{} is already {}.",
+            setting.name,
+            registry::show(setting, &value)
+        ));
     }
-    let said = format!("{} is now {} (it was {}).", setting.name, registry::show(setting, &value), registry::show(setting, &before));
+    let said = format!(
+        "{} is now {} (it was {}).",
+        setting.name,
+        registry::show(setting, &value),
+        registry::show(setting, &before)
+    );
     match registry::with(setting, &stores, value)? {
         Changed::Rules(rules) => {
             cx.record(Action::SetRules { rules: *rules });
-            Ok(format!("{said} That's for everyone in this world; undo takes it back."))
+            Ok(format!(
+                "{said} That's for everyone in this world; undo takes it back."
+            ))
         }
         Changed::Graphics(graphics) => {
             *cx.graphics = graphics;
-            super::prefs::set("graphics", serde_json::to_value(graphics).unwrap_or_default());
+            super::prefs::set(
+                "graphics",
+                serde_json::to_value(graphics).unwrap_or_default(),
+            );
             Ok(said)
         }
     }
 }
 
 /// Changes the world's blocks, as a change to its rules.
-fn change_blocks(cx: &mut Context, change: impl FnOnce(&mut genverse_rules::content::Content) -> Reply) -> Reply {
+fn change_blocks(
+    cx: &mut Context,
+    change: impl FnOnce(&mut genverse_rules::content::Content) -> Reply,
+) -> Reply {
     if !cx.ledger.land.is_admin(&cx.ledger.profile.id) {
         return Err("A world's blocks are for everyone in it: only its admins change them.".into());
     }
@@ -1130,13 +1451,23 @@ fn block(cx: &mut Context, args: &Args) -> Reply {
     const USAGE: &str = "Usage: /block <name> <#rrggbb> [material], like /block lava #ff5a00 glow. /blocks lists them.";
     let name = args.text("name").ok_or(USAGE)?.to_lowercase();
     let content = &cx.ledger.rules.content;
-    let before = content.own().find(|(_, b)| b.name == name).map(|(_, b)| b.clone());
+    let before = content
+        .own()
+        .find(|(_, b)| b.name == name)
+        .map(|(_, b)| b.clone());
     let number = |field: &str| match args.raw(field) {
         Some(Value::Number(n)) => Ok(n.as_f64()),
-        Some(Value::String(s)) if !s.trim().is_empty() => s.trim().parse::<f64>().map(Some).map_err(|_| format!("{field} is a number.")),
+        Some(Value::String(s)) if !s.trim().is_empty() => s
+            .trim()
+            .parse::<f64>()
+            .map(Some)
+            .map_err(|_| format!("{field} is a number.")),
         _ => Ok(None),
     };
-    let Some(hex) = args.text("color").or(before.as_ref().map(|b| b.hex.clone())) else {
+    let Some(hex) = args
+        .text("color")
+        .or(before.as_ref().map(|b| b.hex.clone()))
+    else {
         return Err(match content.colors.get(&name) {
             Some(hex) => format!("{name} is {hex} here. /block {name} <#rrggbb> recolors it."),
             None => USAGE.into(),
@@ -1145,7 +1476,11 @@ fn block(cx: &mut Context, args: &Args) -> Reply {
     let was = before.as_ref();
     let def = BlockDef {
         hex,
-        material: args.text("material").map(|m| m.to_lowercase()).or(was.map(|b| b.material.clone())).unwrap_or("matte".into()),
+        material: args
+            .text("material")
+            .map(|m| m.to_lowercase())
+            .or(was.map(|b| b.material.clone()))
+            .unwrap_or("matte".into()),
         tune: Tune {
             roughness: number("roughness")?.or(was.and_then(|b| b.tune.roughness)),
             metallic: number("metallic")?.or(was.and_then(|b| b.tune.metallic)),
@@ -1160,7 +1495,12 @@ fn block(cx: &mut Context, args: &Args) -> Reply {
 }
 
 fn remove_block(cx: &mut Context, args: &Args) -> Reply {
-    let name = args.text("name").ok_or_else(|| format!("Usage: /removeblock <name>. {}", cx.ledger.rules.content.list()))?;
+    let name = args.text("name").ok_or_else(|| {
+        format!(
+            "Usage: /removeblock <name>. {}",
+            cx.ledger.rules.content.list()
+        )
+    })?;
     change_blocks(cx, |content| content.remove(&name))
 }
 
@@ -1175,9 +1515,13 @@ pub fn load_bindings(mut binds: ResMut<Bindings>) {
 }
 
 fn restore_bindings(binds: &mut Bindings) {
-    let kept: std::collections::BTreeMap<String, Vec<String>> =
-        super::prefs::get("bindings").and_then(|v| serde_json::from_value(v).ok()).unwrap_or_default();
-    binds.restore(kept.iter().map(|(action, inputs)| (action.as_str(), inputs.iter().map(String::as_str).collect())));
+    let kept: std::collections::BTreeMap<String, Vec<String>> = super::prefs::get("bindings")
+        .and_then(|v| serde_json::from_value(v).ok())
+        .unwrap_or_default();
+    binds
+        .restore(kept.iter().map(|(action, inputs)| {
+            (action.as_str(), inputs.iter().map(String::as_str).collect())
+        }));
 }
 
 /// Every action and its keys as they're kept now, with this world's games' own: the
@@ -1196,7 +1540,9 @@ pub fn keys_page(ledger: &Ledger) -> String {
 
 fn bind(cx: &mut Context, args: &Args) -> Reply {
     let (Some(action), Some(key)) = (args.text("action"), args.text("key")) else {
-        return Err("Usage: /bind <action> <key>, like /bind jump j. /bindings lists the actions.".into());
+        return Err(
+            "Usage: /bind <action> <key>, like /bind jump j. /bindings lists the actions.".into(),
+        );
     };
     let said = cx.binds.bind(&action, &key)?;
     keep_bindings(cx.binds);
@@ -1204,7 +1550,9 @@ fn bind(cx: &mut Context, args: &Args) -> Reply {
 }
 
 fn unbind(cx: &mut Context, args: &Args) -> Reply {
-    let action = args.text("action").ok_or("Usage: /unbind <action> [key]. /bindings lists the actions.")?;
+    let action = args
+        .text("action")
+        .ok_or("Usage: /unbind <action> [key]. /bindings lists the actions.")?;
     let said = cx.binds.unbind(&action, args.text("key").as_deref())?;
     keep_bindings(cx.binds);
     Ok(said)
@@ -1220,7 +1568,10 @@ fn reset_keys(cx: &mut Context, args: &Args) -> Reply {
 /// all, or the world's own terrain where it isn't loaded. `None` over water.
 fn ground(cx: &Context, x: f32, z: f32) -> Option<f32> {
     use genverse_rules::logic::Ground;
-    let (column_x, column_z) = ((x / LAND_VOXEL).floor() as i32, (z / LAND_VOXEL).floor() as i32);
+    let (column_x, column_z) = (
+        (x / LAND_VOXEL).floor() as i32,
+        (z / LAND_VOXEL).floor() as i32,
+    );
     let top = match cx.world.heights([column_x, column_z], 1, [1, 1]) {
         Some(heights) => heights.first().copied().flatten()?,
         None => {
@@ -1241,12 +1592,22 @@ fn ground(cx: &Context, x: f32, z: f32) -> Option<f32> {
 fn spot(cx: &Context, args: &Args, was: Option<(Vec3, f32)>) -> Result<(Vec3, f32), String> {
     let snap = |v: f32| (v / BUILD_VOXEL).round() * BUILD_VOXEL;
     let moved = args.num("x").is_some() || args.num("z").is_some();
-    let x = args.num("x").map(snap).or(was.map(|w| w.0.x)).ok_or("Give x and z: where it goes, in world meters.")?;
-    let z = args.num("z").map(snap).or(was.map(|w| w.0.z)).ok_or("Give x and z: where it goes, in world meters.")?;
+    let x = args
+        .num("x")
+        .map(snap)
+        .or(was.map(|w| w.0.x))
+        .ok_or("Give x and z: where it goes, in world meters.")?;
+    let z = args
+        .num("z")
+        .map(snap)
+        .or(was.map(|w| w.0.z))
+        .ok_or("Give x and z: where it goes, in world meters.")?;
     let y = match (args.num("y"), was) {
         (Some(y), _) => snap(y),
         (None, Some(was)) if !moved => was.0.y,
-        (None, _) => ground(cx, x, z).ok_or(format!("There's no ground at x={x}, z={z} (water): give y too, or pick another spot."))?,
+        (None, _) => ground(cx, x, z).ok_or(format!(
+            "There's no ground at x={x}, z={z} (water): give y too, or pick another spot."
+        ))?,
     };
     let yaw = match (args.num("turn"), was) {
         (Some(turn), _) => turn.round().rem_euclid(4.0) * std::f32::consts::FRAC_PI_2,
@@ -1256,7 +1617,11 @@ fn spot(cx: &Context, args: &Args, was: Option<(Vec3, f32)>) -> Result<(Vec3, f3
             let to_player = Vec2::new(cx.at[0] - x, cx.at[2] - z);
             (0..4)
                 .map(|k| k as f32 * std::f32::consts::FRAC_PI_2)
-                .max_by(|a, b| Vec2::new(-a.sin(), -a.cos()).dot(to_player).total_cmp(&Vec2::new(-b.sin(), -b.cos()).dot(to_player)))
+                .max_by(|a, b| {
+                    Vec2::new(-a.sin(), -a.cos())
+                        .dot(to_player)
+                        .total_cmp(&Vec2::new(-b.sin(), -b.cos()).dot(to_player))
+                })
                 .unwrap_or(0.0)
         }
     };
@@ -1267,7 +1632,10 @@ fn spot(cx: &Context, args: &Args, was: Option<(Vec3, f32)>) -> Result<(Vec3, f3
 fn clear_of_player(cx: &Context, position: Vec3, yaw: f32, size: &[i64]) -> Result<(), String> {
     let half = Vec3::new(size[0] as f32, size[1] as f32, size[2] as f32) * BUILD_VOXEL / 2.0;
     let local = Quat::from_rotation_y(-yaw) * (Vec3::from_array(cx.at) - position);
-    let inside = local.x.abs() < half.x + 0.3 && local.z.abs() < half.z + 0.3 && local.y > -1.4 && local.y < half.y * 2.0;
+    let inside = local.x.abs() < half.x + 0.3
+        && local.z.abs() < half.z + 0.3
+        && local.y > -1.4
+        && local.y < half.y * 2.0;
     if inside {
         return Err(format!(
             "That's on top of the player (they stand at x={:.1}, z={:.1}): put it at least {:.1} m from them.",
@@ -1281,53 +1649,112 @@ fn clear_of_player(cx: &Context, position: Vec3, yaw: f32, size: &[i64]) -> Resu
 
 /// Places an object where the agent says, without a draft.
 fn place_build(cx: &mut Context, args: &Args) -> Reply {
-    let spec: BuildSpec = args.object("build")?.ok_or("place_build needs \"build\": the object, in the \"build\" format.")?;
-    let built = compile(&spec, &cx.ledger.rules.build).map_err(|errors| format!("The build breaks the rules:\n- {}", errors.join("\n- ")))?;
+    let spec: BuildSpec = args
+        .object("build")?
+        .ok_or("place_build needs \"build\": the object, in the \"build\" format.")?;
+    let built = compile(&spec, &cx.ledger.rules.build)
+        .map_err(|errors| format!("The build breaks the rules:\n- {}", errors.join("\n- ")))?;
     let (position, yaw) = spot(cx, args, None)?;
     clear_of_player(cx, position, yaw, &spec.size)?;
     let portal = match args.text("portal") {
-        Some(to) => Some(PortalTo::parse(&to).map_err(|why| format!("The portal can't lead there: {why}."))?),
+        Some(to) => Some(
+            PortalTo::parse(&to).map_err(|why| format!("The portal can't lead there: {why}."))?,
+        ),
         None => None,
     };
     let (agent, prompt) = cx.agent.unwrap_or_default();
     let name = spec.name.clone();
-    let saved = SavedCreation { build: 0, name: name.clone(), prompt: prompt.into(), provider: agent.into(), position: position.into(), yaw, spec };
-    let build = cx.creations.place(cx.ledger, saved, built.stats, cx.agent)?;
-    let mut said = format!("Placed \"{name}\" as build {build} at x={:.2}, y={:.2}, z={:.2}.", position.x, position.y, position.z);
+    let saved = SavedCreation {
+        build: 0,
+        name: name.clone(),
+        prompt: prompt.into(),
+        provider: agent.into(),
+        position: position.into(),
+        yaw,
+        spec,
+    };
+    let build = cx
+        .creations
+        .place(cx.ledger, saved, built.stats, cx.agent)?;
+    let mut said = format!(
+        "Placed \"{name}\" as build {build} at x={:.2}, y={:.2}, z={:.2}.",
+        position.x, position.y, position.z
+    );
     if let Some(to) = portal {
-        said.push_str(&format!(" It's a portal to {}: players walk up to it and press E.", to.label()));
-        cx.record(Action::SetPortal { build, to: Some(to) });
+        said.push_str(&format!(
+            " It's a portal to {}: players walk up to it and press E.",
+            to.label()
+        ));
+        cx.record(Action::SetPortal {
+            build,
+            to: Some(to),
+        });
     }
     Ok(said)
 }
 
 /// Moves, turns or redesigns a placed build, by id.
 fn change_build(cx: &mut Context, args: &Args) -> Reply {
-    let id = args.int("id").ok_or("Which build? Give its id (builds/ in your folder lists them).")?;
-    let before = cx.ledger.builds.get(&id).cloned().ok_or(format!("There's no build {id} (builds/ in your folder lists them)."))?;
+    let id = args
+        .int("id")
+        .ok_or("Which build? Give its id (builds/ in your folder lists them).")?;
+    let before = cx.ledger.builds.get(&id).cloned().ok_or(format!(
+        "There's no build {id} (builds/ in your folder lists them)."
+    ))?;
     let design: Option<BuildSpec> = args.object("build")?;
-    let moves = ["x", "z", "y", "turn"].iter().any(|key| args.num(key).is_some());
+    let moves = ["x", "z", "y", "turn"]
+        .iter()
+        .any(|key| args.num(key).is_some());
     if design.is_none() && !moves {
         return Err("Nothing to change: give a new \"build\", or x, z, y or turn.".into());
     }
     // A build that only moves keeps the look it was accepted with.
     let (spec, limits) = match &design {
         Some(spec) => (spec.clone(), cx.ledger.rules.build),
-        None => (before.spec.clone(), genverse_rules::build::BuildLimits::ACCEPTED),
+        None => (
+            before.spec.clone(),
+            genverse_rules::build::BuildLimits::ACCEPTED,
+        ),
     };
-    let built = compile(&spec, &limits).map_err(|errors| format!("The build breaks the rules:\n- {}", errors.join("\n- ")))?;
+    let built = compile(&spec, &limits)
+        .map_err(|errors| format!("The build breaks the rules:\n- {}", errors.join("\n- ")))?;
     let (position, yaw) = spot(cx, args, Some((before.position.into(), before.yaw)))?;
     clear_of_player(cx, position, yaw, &spec.size)?;
     let (agent, prompt) = cx.agent.unwrap_or_default();
-    let (prompt, provider) = if design.is_some() { (prompt.to_string(), agent.to_string()) } else { (before.prompt.clone(), before.provider.clone()) };
+    let (prompt, provider) = if design.is_some() {
+        (prompt.to_string(), agent.to_string())
+    } else {
+        (before.prompt.clone(), before.provider.clone())
+    };
     let name = spec.name.clone();
-    let saved = SavedCreation { build: id, name: name.clone(), prompt, provider, position: position.into(), yaw, spec };
-    cx.creations.change(cx.ledger, saved, built.stats, cx.agent)?;
-    Ok(format!("Build {id} \"{name}\" now stands at x={:.2}, y={:.2}, z={:.2}{}.", position.x, position.y, position.z, if design.is_some() { ", with its new design" } else { "" }))
+    let saved = SavedCreation {
+        build: id,
+        name: name.clone(),
+        prompt,
+        provider,
+        position: position.into(),
+        yaw,
+        spec,
+    };
+    cx.creations
+        .change(cx.ledger, saved, built.stats, cx.agent)?;
+    Ok(format!(
+        "Build {id} \"{name}\" now stands at x={:.2}, y={:.2}, z={:.2}{}.",
+        position.x,
+        position.y,
+        position.z,
+        if design.is_some() {
+            ", with its new design"
+        } else {
+            ""
+        }
+    ))
 }
 
 fn remove_build(cx: &mut Context, args: &Args) -> Reply {
-    let id = args.int("id").ok_or("Which build? Give its id (builds/ in your folder lists them).")?;
+    let id = args
+        .int("id")
+        .ok_or("Which build? Give its id (builds/ in your folder lists them).")?;
     let name = cx.creations.delete(cx.ledger, id, cx.agent)?;
     Ok(format!("Removed \"{name}\" (build {id})."))
 }
@@ -1336,21 +1763,37 @@ fn remove_build(cx: &mut Context, args: &Args) -> Reply {
 pub fn area_of(x: f32, z: f32, w: f32, d: f32) -> Area {
     let column = |m: f32| (m / LAND_VOXEL).floor() as i32;
     let far = |from: f32, size: f32| ((from + size.max(LAND_VOXEL)) / LAND_VOXEL).ceil() as i32 - 1;
-    Area::from_corners(IVec2::new(column(x), column(z)), IVec2::new(far(x, w), far(z, d)))
+    Area::from_corners(
+        IVec2::new(column(x), column(z)),
+        IVec2::new(far(x, w), far(z, d)),
+    )
 }
 
 /// Reshapes an area the agent chooses, at once.
 fn change_land(cx: &mut Context, args: &Args) -> Reply {
-    let spec: TerrainSpec = args.object("terrain")?.ok_or("change_land needs \"terrain\": the changes, in the \"terrain\" format.")?;
-    let (Some(x), Some(z), Some(w), Some(d)) = (args.num("x"), args.num("z"), args.num("w"), args.num("d")) else {
+    let spec: TerrainSpec = args
+        .object("terrain")?
+        .ok_or("change_land needs \"terrain\": the changes, in the \"terrain\" format.")?;
+    let (Some(x), Some(z), Some(w), Some(d)) =
+        (args.num("x"), args.num("z"), args.num("w"), args.num("d"))
+    else {
         return Err("Give the area: x and z (its north-west corner) and w and d (its size), in world meters.".into());
     };
     let area = area_of(x, z, w, d);
     let (agent, prompt) = cx.agent.unwrap_or_default();
-    match cx.landscape.change(cx.world, cx.ledger, spec, area, prompt.into(), agent.into()) {
-        Ok((name, stats)) => Ok(format!("Reshaped the land (\"{name}\"): {}.", describe_stats(area, &stats))),
+    match cx
+        .landscape
+        .change(cx.world, cx.ledger, spec, area, prompt.into(), agent.into())
+    {
+        Ok((name, stats)) => Ok(format!(
+            "Reshaped the land (\"{name}\"): {}.",
+            describe_stats(area, &stats)
+        )),
         Err(PreviewError::Refused(why)) => Err(format!("Can't change this land: {why}.")),
-        Err(PreviewError::Invalid(errors)) => Err(format!("The land change breaks the rules:\n- {}", errors.join("\n- "))),
+        Err(PreviewError::Invalid(errors)) => Err(format!(
+            "The land change breaks the rules:\n- {}",
+            errors.join("\n- ")
+        )),
     }
 }
 
@@ -1429,19 +1872,55 @@ mod tests {
         let mut seen = std::collections::HashSet::new();
         for op in OPS {
             assert!(seen.insert(op.name), "two ops are called {}", op.name);
-            assert!(!op.about.is_empty(), "{} says nothing about itself", op.name);
-            assert_eq!(op.args.is_empty(), op.params.is_empty(), "{}: its usage and params disagree", op.name);
+            assert!(
+                !op.about.is_empty(),
+                "{} says nothing about itself",
+                op.name
+            );
+            assert_eq!(
+                op.args.is_empty(),
+                op.params.is_empty(),
+                "{}: its usage and params disagree",
+                op.name
+            );
             if op.slash {
-                assert!(op.name.chars().all(|c| c.is_ascii_lowercase()), "/{} can't be typed as one word", op.name);
-                assert!(op.params.iter().all(|p| p.kind == Kind::Named || p.json == "string"), "/{} takes something that can't be typed", op.name);
+                assert!(
+                    op.name.chars().all(|c| c.is_ascii_lowercase()),
+                    "/{} can't be typed as one word",
+                    op.name
+                );
+                assert!(
+                    op.params
+                        .iter()
+                        .all(|p| p.kind == Kind::Named || p.json == "string"),
+                    "/{} takes something that can't be typed",
+                    op.name
+                );
             }
             // Nothing typed may follow an argument that takes the rest of the line.
             let typed: Vec<&Param> = op.params.iter().filter(|p| p.kind != Kind::Named).collect();
-            let rests = typed.iter().rev().skip(1).filter(|p| p.kind == Kind::Rest).count();
-            assert_eq!(rests, 0, "{}: an argument after one that takes the rest", op.name);
-            assert!(op.params.iter().all(|p| !p.about.is_empty()), "{}: an argument the agent isn't told about", op.name);
+            let rests = typed
+                .iter()
+                .rev()
+                .skip(1)
+                .filter(|p| p.kind == Kind::Rest)
+                .count();
+            assert_eq!(
+                rests, 0,
+                "{}: an argument after one that takes the rest",
+                op.name
+            );
+            assert!(
+                op.params.iter().all(|p| !p.about.is_empty()),
+                "{}: an argument the agent isn't told about",
+                op.name
+            );
             // Asking and waiting are for the agent's tools.
-            assert!(op.agent || !(op.ask || op.last), "{} isn't a tool, so nothing asks or waits", op.name);
+            assert!(
+                op.agent || !(op.ask || op.last),
+                "{} isn't a tool, so nothing asks or waits",
+                op.name
+            );
         }
     }
 
@@ -1449,7 +1928,9 @@ mod tests {
     fn every_kind_of_change_names_an_op_that_exists() {
         for cover in ACTION_COVER.iter().chain(GAME_COVER) {
             match cover {
-                Cover::Op(name) => assert!(OPS.iter().any(|op| op.name == *name), "no op called {name}"),
+                Cover::Op(name) => {
+                    assert!(OPS.iter().any(|op| op.name == *name), "no op called {name}")
+                }
                 Cover::Later(why) | Cover::Never(why) => assert!(!why.is_empty()),
             }
         }
@@ -1459,7 +1940,10 @@ mod tests {
     fn chat_words_become_arguments() {
         let fork = command("fork").expect("fork is a command");
         let args = Args::from_words(fork.params, &["before", "copy"]);
-        assert_eq!((args.text("save").as_deref(), args.text("world").as_deref()), (Some("before"), Some("copy")));
+        assert_eq!(
+            (args.text("save").as_deref(), args.text("world").as_deref()),
+            (Some("before"), Some("copy"))
+        );
 
         let save = command("save").expect("save is a command");
         let args = Args::from_words(save.params, &["before", "the", "party"]);
@@ -1468,7 +1952,10 @@ mod tests {
 
         // The agent's and the window's arguments are JSON; numbers read either way.
         let args = Args::new(json!({"id": 42, "n": "7", "ground": "natural"}));
-        assert_eq!((args.int("id"), args.int("n"), args.flat()), (Some(42), Some(7), false));
+        assert_eq!(
+            (args.int("id"), args.int("n"), args.flat()),
+            (Some(42), Some(7), false)
+        );
         assert_eq!(args.text("id").as_deref(), Some("42"));
         assert!(Args::new(json!({})).flat());
     }
@@ -1477,54 +1964,118 @@ mod tests {
     fn ops_become_tools_for_the_agent() {
         let tools = tools();
         let named = |name: &str| tools.iter().find(|t| t["name"] == name);
-        assert!(named("play").is_none() && named("help").is_none(), "the chat's own ops aren't tools");
+        assert!(
+            named("play").is_none() && named("help").is_none(),
+            "the chat's own ops aren't tools"
+        );
         let portal = named("portal").expect("portal is a tool");
         assert_eq!(portal["inputSchema"]["required"], json!(["to"]));
-        assert!(portal["inputSchema"]["properties"]["build"]["description"].as_str().is_some_and(|d| !d.is_empty()));
+        assert!(
+            portal["inputSchema"]["properties"]["build"]["description"]
+                .as_str()
+                .is_some_and(|d| !d.is_empty())
+        );
         let remove = named("removeworld").expect("removeworld is a tool");
         let about = remove["description"].as_str().unwrap_or_default();
-        assert!(about.contains("asked first") && about.contains("admin"), "{about}");
-        assert!(named("host").expect("host is a tool")["description"].as_str().unwrap_or_default().contains("when you finish"));
+        assert!(
+            about.contains("asked first") && about.contains("admin"),
+            "{about}"
+        );
+        assert!(
+            named("host").expect("host is a tool")["description"]
+                .as_str()
+                .unwrap_or_default()
+                .contains("when you finish")
+        );
         // A name only the agent gives is never read from chat words.
         let op = command("portal").expect("portal is a command");
         let args = Args::from_words(op.params, &["dungeon", "7"]);
-        assert_eq!((args.text("to").as_deref(), args.int("build")), (Some("dungeon 7"), None));
+        assert_eq!(
+            (args.text("to").as_deref(), args.int("build")),
+            (Some("dungeon 7"), None)
+        );
     }
 
     #[test]
     fn objects_and_numbers_come_as_json_or_text() {
-        let args = Args::new(json!({ "x": 12.5, "z": "-3", "terrain": "{\"name\": \"Pond\", \"ops\": []}", "turn": 5 }));
-        assert_eq!((args.num("x"), args.num("z"), args.num("y")), (Some(12.5), Some(-3.0), None));
-        let terrain: TerrainSpec = args.object("terrain").expect("it parses").expect("it's there");
+        let args = Args::new(
+            json!({ "x": 12.5, "z": "-3", "terrain": "{\"name\": \"Pond\", \"ops\": []}", "turn": 5 }),
+        );
+        assert_eq!(
+            (args.num("x"), args.num("z"), args.num("y")),
+            (Some(12.5), Some(-3.0), None)
+        );
+        let terrain: TerrainSpec = args
+            .object("terrain")
+            .expect("it parses")
+            .expect("it's there");
         assert_eq!(terrain.name, "Pond");
-        assert!(args.object::<TerrainSpec>("missing").expect("missing is fine").is_none());
-        assert!(Args::new(json!({ "terrain": "{" })).object::<TerrainSpec>("terrain").is_err());
+        assert!(
+            args.object::<TerrainSpec>("missing")
+                .expect("missing is fine")
+                .is_none()
+        );
+        assert!(
+            Args::new(json!({ "terrain": "{" }))
+                .object::<TerrainSpec>("terrain")
+                .is_err()
+        );
         // A rectangle of meters covers the columns it touches: 2 m at 25 cm is 8 columns.
         let area = area_of(1.0, -2.0, 2.0, 2.0);
         assert_eq!((area.min, area.size), ([4, -8], [8, 8]));
         let place = tool("place_build").expect("place_build is a tool");
         assert!(!place.slash, "builds can't be typed");
-        let schema = tools().into_iter().find(|t| t["name"] == "place_build").expect("it's listed");
-        assert_eq!(schema["inputSchema"]["properties"]["build"]["type"], "object");
-        assert_eq!(schema["inputSchema"]["required"], json!(["build", "x", "z"]));
+        let schema = tools()
+            .into_iter()
+            .find(|t| t["name"] == "place_build")
+            .expect("it's listed");
+        assert_eq!(
+            schema["inputSchema"]["properties"]["build"]["type"],
+            "object"
+        );
+        assert_eq!(
+            schema["inputSchema"]["required"],
+            json!(["build", "x", "z"])
+        );
     }
 
     #[test]
     fn trips_within_the_game_can_carry_a_note() {
         let tools = tools();
         for name in ["world", "newworld"] {
-            let tool = tools.iter().find(|t| t["name"] == name).expect("it's a tool");
-            assert!(tool["inputSchema"]["properties"]["then"]["description"].as_str().is_some_and(|d| d.contains("started again")), "{name}");
-            assert!(!tool["inputSchema"]["required"].as_array().expect("a list").iter().any(|r| r == "then"), "{name}: the note is optional");
+            let tool = tools
+                .iter()
+                .find(|t| t["name"] == name)
+                .expect("it's a tool");
+            assert!(
+                tool["inputSchema"]["properties"]["then"]["description"]
+                    .as_str()
+                    .is_some_and(|d| d.contains("started again")),
+                "{name}"
+            );
+            assert!(
+                !tool["inputSchema"]["required"]
+                    .as_array()
+                    .expect("a list")
+                    .iter()
+                    .any(|r| r == "then"),
+                "{name}: the note is optional"
+            );
         }
         // The note is the agent's: a chat line never fills it.
         let op = command("world").expect("world is a command");
-        assert_eq!(Args::from_words(op.params, &["dungeon", "build", "a", "gate"]).text("then"), None);
+        assert_eq!(
+            Args::from_words(op.params, &["dungeon", "build", "a", "gate"]).text("then"),
+            None
+        );
     }
 
     #[test]
     fn revert_is_still_undo() {
         assert_eq!(command("revert").map(|op| op.name), Some("undo"));
-        assert!(command("turn_on").is_none(), "the window's ops aren't chat commands");
+        assert!(
+            command("turn_on").is_none(),
+            "the window's ops aren't chat commands"
+        );
     }
 }

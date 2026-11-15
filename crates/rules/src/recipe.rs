@@ -53,7 +53,16 @@ pub struct Colors {
 }
 
 impl Colors {
-    const NONE: Self = Self { grass: None, leaves: None, bark: None, water: None, sand: None, dirt: None, stone: None, snow: None };
+    const NONE: Self = Self {
+        grass: None,
+        leaves: None,
+        bark: None,
+        water: None,
+        sand: None,
+        dirt: None,
+        stone: None,
+        snow: None,
+    };
 
     fn is_default(&self) -> bool {
         *self == Self::NONE
@@ -145,12 +154,66 @@ impl Recipe {
         let hex = |text: &str| hex::parse(text);
         Some(match name.trim().to_lowercase().as_str() {
             "natural" => n,
-            "islands" => Self { scale: 60, land: -45, hills: 80, mountains: 40, ..n },
-            "mountains" => Self { land: 45, hills: 130, mountains: 190, ranges: 60, roughness: 140, snow: 25, ..n },
-            "plains" => Self { land: 70, hills: 30, mountains: 0, ranges: -100, roughness: 40, trees: 40, plants: 250, ..n },
-            "forest" => Self { land: 50, hills: 70, mountains: 40, trees: 320, plants: 160, ..n },
-            "desert" => Self { land: 85, hills: 70, mountains: 70, roughness: 50, trees: 0, plants: 0, snow: -100, ground: Cover::Sand, ..n },
-            "tundra" => Self { land: 40, hills: 60, mountains: 80, trees: 25, plants: 0, snow: 100, ground: Cover::Snow, colors: Colors { leaves: hex("#3f6b4a"), water: hex("#6aa0c0"), ..Colors::NONE }, ..n },
+            "islands" => Self {
+                scale: 60,
+                land: -45,
+                hills: 80,
+                mountains: 40,
+                ..n
+            },
+            "mountains" => Self {
+                land: 45,
+                hills: 130,
+                mountains: 190,
+                ranges: 60,
+                roughness: 140,
+                snow: 25,
+                ..n
+            },
+            "plains" => Self {
+                land: 70,
+                hills: 30,
+                mountains: 0,
+                ranges: -100,
+                roughness: 40,
+                trees: 40,
+                plants: 250,
+                ..n
+            },
+            "forest" => Self {
+                land: 50,
+                hills: 70,
+                mountains: 40,
+                trees: 320,
+                plants: 160,
+                ..n
+            },
+            "desert" => Self {
+                land: 85,
+                hills: 70,
+                mountains: 70,
+                roughness: 50,
+                trees: 0,
+                plants: 0,
+                snow: -100,
+                ground: Cover::Sand,
+                ..n
+            },
+            "tundra" => Self {
+                land: 40,
+                hills: 60,
+                mountains: 80,
+                trees: 25,
+                plants: 0,
+                snow: 100,
+                ground: Cover::Snow,
+                colors: Colors {
+                    leaves: hex("#3f6b4a"),
+                    water: hex("#6aa0c0"),
+                    ..Colors::NONE
+                },
+                ..n
+            },
             "badlands" => Self {
                 land: 30,
                 hills: 120,
@@ -162,7 +225,12 @@ impl Recipe {
                 snow: -100,
                 ground: Cover::Dirt,
                 water: false,
-                colors: Colors { dirt: hex("#b5653a"), stone: hex("#c08a5a"), sand: hex("#d9a066"), ..Colors::NONE },
+                colors: Colors {
+                    dirt: hex("#b5653a"),
+                    stone: hex("#c08a5a"),
+                    sand: hex("#d9a066"),
+                    ..Colors::NONE
+                },
                 ..n
             },
             "alien" => Self {
@@ -171,7 +239,14 @@ impl Recipe {
                 mountains: 120,
                 trees: 180,
                 plants: 300,
-                colors: Colors { grass: hex("#8a5fc4"), leaves: hex("#e26fb0"), bark: hex("#3b3350"), water: hex("#3fd0a0"), sand: hex("#cfc2e8"), ..Colors::NONE },
+                colors: Colors {
+                    grass: hex("#8a5fc4"),
+                    leaves: hex("#e26fb0"),
+                    bark: hex("#3b3350"),
+                    water: hex("#3fd0a0"),
+                    sand: hex("#cfc2e8"),
+                    ..Colors::NONE
+                },
                 ..n
             },
             _ => return None,
@@ -179,15 +254,32 @@ impl Recipe {
     }
 
     /// The names [`Self::named`] knows.
-    pub const NAMES: [&'static str; 9] = ["natural", "islands", "mountains", "plains", "forest", "desert", "tundra", "badlands", "alien"];
+    pub const NAMES: [&'static str; 9] = [
+        "natural",
+        "islands",
+        "mountains",
+        "plains",
+        "forest",
+        "desert",
+        "tundra",
+        "badlands",
+        "alien",
+    ];
 
     /// Reads a recipe as the agent gives it: a named one (`"desert"`), or an object of
     /// the fields that differ from the usual, optionally starting from a named one
     /// (`{"like": "islands", "trees": 300, "colors": {"water": "#3fd0a0"}}`).
     pub fn read(given: &serde_json::Value) -> Result<Self, String> {
-        let unknown = |name: &str| format!("there's no landscape called \"{name}\" ({})", Self::NAMES.join(", "));
+        let unknown = |name: &str| {
+            format!(
+                "there's no landscape called \"{name}\" ({})",
+                Self::NAMES.join(", ")
+            )
+        };
         let fields = match given {
-            serde_json::Value::String(name) => return Self::named(name).ok_or_else(|| unknown(name)),
+            serde_json::Value::String(name) => {
+                return Self::named(name).ok_or_else(|| unknown(name));
+            }
             serde_json::Value::Object(fields) => fields,
             _ => return Err("a landscape is a name or an object of its fields".into()),
         };
@@ -196,7 +288,11 @@ impl Recipe {
             None => Self::NATURAL,
         };
         // The given fields over the start's, colors by color.
-        let mut all = serde_json::to_value(Self { colors: Colors::NONE, ..start }).map_err(|e| e.to_string())?;
+        let mut all = serde_json::to_value(Self {
+            colors: Colors::NONE,
+            ..start
+        })
+        .map_err(|e| e.to_string())?;
         let mut colors = serde_json::to_value(start.colors).map_err(|e| e.to_string())?;
         for (key, value) in fields {
             match (key.as_str(), value) {
@@ -210,7 +306,8 @@ impl Recipe {
             }
         }
         all["colors"] = colors;
-        let recipe: Self = serde_json::from_value(all).map_err(|e| format!("that isn't a landscape: {e}"))?;
+        let recipe: Self =
+            serde_json::from_value(all).map_err(|e| format!("that isn't a landscape: {e}"))?;
         Ok(recipe.bounded())
     }
 
@@ -219,14 +316,22 @@ impl Recipe {
         if self.is_default() {
             return "the usual landscape".into();
         }
-        if let Some(name) = Self::NAMES.iter().find(|name| Self::named(name) == Some(*self)) {
+        if let Some(name) = Self::NAMES
+            .iter()
+            .find(|name| Self::named(name) == Some(*self))
+        {
             return name.to_string();
         }
         serde_json::to_value(self)
             .ok()
             .and_then(|all| {
                 let usual = serde_json::to_value(Self::NATURAL).ok()?;
-                let differs: Vec<String> = all.as_object()?.iter().filter(|(k, v)| usual.get(k.as_str()) != Some(v)).map(|(k, v)| format!("{k} {v}")).collect();
+                let differs: Vec<String> = all
+                    .as_object()?
+                    .iter()
+                    .filter(|(k, v)| usual.get(k.as_str()) != Some(v))
+                    .map(|(k, v)| format!("{k} {v}"))
+                    .collect();
                 Some(differs.join(", "))
             })
             .unwrap_or_default()
@@ -235,7 +340,9 @@ impl Recipe {
     /// The terrain's palette with this recipe's colors.
     pub fn recolor(&self, palette: &mut Palette) {
         let c = &self.colors;
-        let colors = [c.grass, c.leaves, c.bark, c.water, c.sand, c.dirt, c.stone, c.snow];
+        let colors = [
+            c.grass, c.leaves, c.bark, c.water, c.sand, c.dirt, c.stone, c.snow,
+        ];
         for ((family, ..), color) in FAMILIES.iter().zip(colors) {
             if let Some(color) = color {
                 tint(palette, family, color);
@@ -307,7 +414,9 @@ mod hex {
     pub fn deserialize<'de, D: Deserializer<'de>>(from: D) -> Result<Option<[u8; 3]>, D::Error> {
         match Option::<String>::deserialize(from)? {
             None => Ok(None),
-            Some(text) => parse(&text).map(Some).ok_or_else(|| serde::de::Error::custom(format!("\"{text}\" isn't a color like #7fb04f"))),
+            Some(text) => parse(&text).map(Some).ok_or_else(|| {
+                serde::de::Error::custom(format!("\"{text}\" isn't a color like #7fb04f"))
+            }),
         }
     }
 }
@@ -315,8 +424,16 @@ mod hex {
 /// The ground's own blocks, by family: its name, the block that's its middle shade, and
 /// every block of it. In the order of [`Colors`].
 pub const FAMILIES: [(&str, &str, &[&str]); 8] = [
-    ("grass", "grass", &["grass_light", "grass", "grass_dark", "tuft"]),
-    ("leaves", "leaves", &["leaves_light", "leaves", "leaves_dark"]),
+    (
+        "grass",
+        "grass",
+        &["grass_light", "grass", "grass_dark", "tuft"],
+    ),
+    (
+        "leaves",
+        "leaves",
+        &["leaves_light", "leaves", "leaves_dark"],
+    ),
     ("bark", "bark", &["bark", "bark_dark"]),
     ("water", "water", &["water"]),
     ("sand", "sand", &["sand", "sand_dark"]),
@@ -328,13 +445,37 @@ pub const FAMILIES: [(&str, &str, &[&str]); 8] = [
 /// Gives a family of the ground's blocks a color: it replaces the middle shade, and the
 /// lighter and darker shades keep their distance from it.
 pub fn tint(palette: &mut Palette, family: &str, [r, g, b]: [u8; 3]) {
-    let Some((_, middle, names)) = FAMILIES.iter().find(|(name, ..)| *name == family) else { return };
-    let Some(from) = palette.entries.iter().find(|e| e.name == *middle).map(|e| e.color) else { return };
+    let Some((_, middle, names)) = FAMILIES.iter().find(|(name, ..)| *name == family) else {
+        return;
+    };
+    let Some(from) = palette
+        .entries
+        .iter()
+        .find(|e| e.name == *middle)
+        .map(|e| e.color)
+    else {
+        return;
+    };
     let to: LinearRgba = Srgba::rgb_u8(r, g, b).into();
-    let shade = |was: f32, from: f32, to: f32| if from > 0.0 { (was / from * to).clamp(0.0, 1.0) } else { to };
-    for entry in palette.entries.iter_mut().filter(|e| names.contains(&e.name.as_str())) {
+    let shade = |was: f32, from: f32, to: f32| {
+        if from > 0.0 {
+            (was / from * to).clamp(0.0, 1.0)
+        } else {
+            to
+        }
+    };
+    for entry in palette
+        .entries
+        .iter_mut()
+        .filter(|e| names.contains(&e.name.as_str()))
+    {
         let was = entry.color;
-        entry.color = LinearRgba::new(shade(was.red, from.red, to.red), shade(was.green, from.green, to.green), shade(was.blue, from.blue, to.blue), was.alpha);
+        entry.color = LinearRgba::new(
+            shade(was.red, from.red, to.red),
+            shade(was.green, from.green, to.green),
+            shade(was.blue, from.blue, to.blue),
+            was.alpha,
+        );
     }
 }
 
@@ -346,7 +487,10 @@ mod tests {
     #[test]
     fn the_usual_recipe_leaves_nothing_in_a_log() {
         // A world made before recipes reads as the usual one, and writes nothing new.
-        assert_eq!(serde_json::from_value::<Recipe>(json!({})).unwrap(), Recipe::NATURAL);
+        assert_eq!(
+            serde_json::from_value::<Recipe>(json!({})).unwrap(),
+            Recipe::NATURAL
+        );
         assert!(Recipe::default().is_default());
         let desert = Recipe::named("desert").unwrap();
         let back: Recipe = serde_json::from_str(&serde_json::to_string(&desert).unwrap()).unwrap();
@@ -360,18 +504,44 @@ mod tests {
             let recipe = Recipe::named(name).unwrap_or_else(|| panic!("{name} is named"));
             assert_eq!(recipe, recipe.bounded(), "{name} is inside the bounds");
             assert_eq!(Recipe::read(&json!(name)), Ok(recipe));
-            assert_eq!(recipe.describe(), if name == "natural" { "the usual landscape" } else { name });
+            assert_eq!(
+                recipe.describe(),
+                if name == "natural" {
+                    "the usual landscape"
+                } else {
+                    name
+                }
+            );
         }
-        let mine = Recipe::read(&json!({"like": "islands", "trees": 300, "colors": {"water": "#3fd0a0"}})).unwrap();
-        assert_eq!((mine.land, mine.trees, mine.colors.water), (-45, 300, Some([0x3f, 0xd0, 0xa0])));
+        let mine =
+            Recipe::read(&json!({"like": "islands", "trees": 300, "colors": {"water": "#3fd0a0"}}))
+                .unwrap();
+        assert_eq!(
+            (mine.land, mine.trees, mine.colors.water),
+            (-45, 300, Some([0x3f, 0xd0, 0xa0]))
+        );
         // A color given over a named one's keeps the others.
-        let alien = Recipe::read(&json!({"like": "alien", "colors": {"grass": "#ff0000"}})).unwrap();
-        assert_eq!((alien.colors.grass, alien.colors.leaves), (Some([255, 0, 0]), Recipe::named("alien").unwrap().colors.leaves));
+        let alien =
+            Recipe::read(&json!({"like": "alien", "colors": {"grass": "#ff0000"}})).unwrap();
+        assert_eq!(
+            (alien.colors.grass, alien.colors.leaves),
+            (
+                Some([255, 0, 0]),
+                Recipe::named("alien").unwrap().colors.leaves
+            )
+        );
         // Out of range is brought in; what isn't a recipe says so.
-        assert_eq!(Recipe::read(&json!({"scale": 9000, "hills": 9000})).map(|r| (r.scale, r.hills)), Ok((400, 300)));
+        assert_eq!(
+            Recipe::read(&json!({"scale": 9000, "hills": 9000})).map(|r| (r.scale, r.hills)),
+            Ok((400, 300))
+        );
         assert!(Recipe::read(&json!({"heigth": 3})).is_err());
         assert!(Recipe::read(&json!({"colors": {"grass": "green"}})).is_err());
-        assert!(Recipe::read(&json!("moon")).unwrap_err().contains("islands"));
+        assert!(
+            Recipe::read(&json!("moon"))
+                .unwrap_err()
+                .contains("islands")
+        );
         assert!(mine.describe().contains("trees 300"));
     }
 
@@ -379,17 +549,33 @@ mod tests {
     fn colors_move_every_shade_of_their_blocks() {
         let usual = crate::terrain::palette();
         let mut tinted = crate::terrain::palette();
-        Recipe::read(&json!({"colors": {"grass": "#8a5fc4"}})).unwrap().recolor(&mut tinted);
-        let color = |p: &Palette, name: &str| p.entries.iter().find(|e| e.name == name).map(|e| e.color).unwrap();
+        Recipe::read(&json!({"colors": {"grass": "#8a5fc4"}}))
+            .unwrap()
+            .recolor(&mut tinted);
+        let color = |p: &Palette, name: &str| {
+            p.entries
+                .iter()
+                .find(|e| e.name == name)
+                .map(|e| e.color)
+                .unwrap()
+        };
         let purple: LinearRgba = Srgba::rgb_u8(0x8a, 0x5f, 0xc4).into();
         assert_eq!(color(&tinted, "grass"), purple);
         // The light shade is still lighter, and what wasn't named stays.
-        assert!(color(&tinted, "grass_light").blue > purple.blue && color(&tinted, "grass_dark").blue < purple.blue);
+        assert!(
+            color(&tinted, "grass_light").blue > purple.blue
+                && color(&tinted, "grass_dark").blue < purple.blue
+        );
         assert_ne!(color(&tinted, "tuft"), color(&usual, "tuft"));
         assert_eq!(color(&tinted, "leaves"), color(&usual, "leaves"));
         // No colors: the palette is untouched.
         let mut same = crate::terrain::palette();
         Recipe::NATURAL.recolor(&mut same);
-        assert!(same.entries.iter().zip(&usual.entries).all(|(a, b)| a.color == b.color));
+        assert!(
+            same.entries
+                .iter()
+                .zip(&usual.entries)
+                .all(|(a, b)| a.color == b.color)
+        );
     }
 }

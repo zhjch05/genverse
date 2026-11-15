@@ -14,7 +14,9 @@ use bevy::{
     mesh::MeshVertexBufferLayoutRef,
     pbr::{MaterialPipeline, MaterialPipelineKey},
     prelude::*,
-    render::render_resource::{AsBindGroup, RenderPipelineDescriptor, ShaderType, SpecializedMeshPipelineError},
+    render::render_resource::{
+        AsBindGroup, RenderPipelineDescriptor, ShaderType, SpecializedMeshPipelineError,
+    },
     shader::ShaderRef,
 };
 use genverse_rules::logic::{
@@ -123,7 +125,10 @@ pub struct Decals {
 /// The source a piece's decal draws with, if it has one: the package's own shader, or the
 /// default ring.
 fn decal_of(logic: &Logic, e: &genverse_rules::logic::Entity) -> Option<(DecalLook, String)> {
-    let package = logic.installed.get(&e.package).and_then(|i| logic.package(i))?;
+    let package = logic
+        .installed
+        .get(&e.package)
+        .and_then(|i| logic.package(i))?;
     let value = e.components.get("decal")?;
     let names: Vec<String> = package.shaders.keys().cloned().collect();
     let look = DecalLook::read(value, &names)?;
@@ -151,10 +156,15 @@ pub fn sync_decals(
     let now = super::game::now_exact();
     if *seen != Some(ledger.version) {
         *seen = Some(ledger.version);
-        let square = decals.square.get_or_insert_with(|| meshes.add(Plane3d::new(Vec3::Y, Vec2::splat(0.5)))).clone();
+        let square = decals
+            .square
+            .get_or_insert_with(|| meshes.add(Plane3d::new(Vec3::Y, Vec2::splat(0.5))))
+            .clone();
         let mut keep = HashMap::new();
         for (id, e) in logic.state.entities() {
-            let Some((look, source)) = decal_of(logic, e) else { continue };
+            let Some((look, source)) = decal_of(logic, e) else {
+                continue;
+            };
             if let Some((old, old_source, entity)) = decals.drawn.remove(&id) {
                 if old == look && old_source == source {
                     keep.insert(id, (look, source, entity));
@@ -167,10 +177,15 @@ pub fn sync_decals(
                 .entry(source.clone())
                 .or_insert_with(|| {
                     let n = shaders.len();
-                    shaders.add(Shader::from_wesl(fragment_source(&source), format!("genverse://decal/{n}.wesl")))
+                    shaders.add(Shader::from_wesl(
+                        fragment_source(&source),
+                        format!("genverse://decal/{n}.wesl"),
+                    ))
                 })
                 .clone();
-            let color = Srgba::hex(look.color.trim_start_matches('#')).unwrap_or(Srgba::WHITE).with_alpha(look.alpha);
+            let color = Srgba::hex(look.color.trim_start_matches('#'))
+                .unwrap_or(Srgba::WHITE)
+                .with_alpha(look.alpha);
             let material = materials.add(DecalMaterial {
                 uniform: DecalUniform {
                     color: LinearRgba::from(color).to_vec4(),
@@ -184,7 +199,8 @@ pub fn sync_decals(
                     Name::new("Decal"),
                     Mesh3d(square.clone()),
                     MeshMaterial3d(material),
-                    Transform::from_translation(Vec3::from_array(e.position) + Vec3::Y * LIFT).with_scale(Vec3::splat(look.size)),
+                    Transform::from_translation(Vec3::from_array(e.position) + Vec3::Y * LIFT)
+                        .with_scale(Vec3::splat(look.size)),
                     NotShadowCaster,
                     NotShadowReceiver,
                 ))
@@ -196,11 +212,15 @@ pub fn sync_decals(
         }
         decals.drawn = keep;
         // Shaders no decal draws with any more go, so an edited shader's old versions don't pile up.
-        let used: std::collections::HashSet<&String> = decals.drawn.values().map(|(_, source, _)| source).collect();
+        let used: std::collections::HashSet<&String> =
+            decals.drawn.values().map(|(_, source, _)| source).collect();
         decals.shaders.retain(|source, _| used.contains(source));
     }
     for (id, (_, _, entity)) in &decals.drawn {
-        let (Some(e), Ok(mut transform)) = (logic.state.get(*id), transforms.get_mut(*entity)) else { continue };
+        let (Some(e), Ok(mut transform)) = (logic.state.get(*id), transforms.get_mut(*entity))
+        else {
+            continue;
+        };
         let at = walking_at(e, now).map_or(e.position, |(at, _)| at);
         transform.translation = Vec3::from_array(at) + Vec3::Y * LIFT;
     }
@@ -227,10 +247,18 @@ mod tests {
     #[test]
     fn the_documented_example_compiles() {
         let doc = super::super::prompt::GAME_DOC;
-        let start = doc.find("    // A golden ring").expect("the reference has the example");
+        let start = doc
+            .find("    // A golden ring")
+            .expect("the reference has the example");
         let lines: Vec<&str> = doc[start..].lines().collect();
-        let end = lines.iter().position(|l| *l == "    }").expect("the example ends");
-        let example: String = lines[..=end].iter().map(|l| format!("{}\n", l.strip_prefix("    ").unwrap_or(l))).collect();
+        let end = lines
+            .iter()
+            .position(|l| *l == "    }")
+            .expect("the example ends");
+        let example: String = lines[..=end]
+            .iter()
+            .map(|l| format!("{}\n", l.strip_prefix("    ").unwrap_or(l)))
+            .collect();
         genverse_rules::logic::shader::check_decal("example", &example).unwrap();
     }
 }

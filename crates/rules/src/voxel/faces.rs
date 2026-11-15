@@ -17,7 +17,14 @@ pub fn face_visible(palette: &Palette, id: VoxelId, neighbor: VoxelId) -> bool {
     palette.is_opaque(id) || neighbor != id
 }
 
-const NORMALS: [IVec3; 6] = [IVec3::X, IVec3::NEG_X, IVec3::Y, IVec3::NEG_Y, IVec3::Z, IVec3::NEG_Z];
+const NORMALS: [IVec3; 6] = [
+    IVec3::X,
+    IVec3::NEG_X,
+    IVec3::Y,
+    IVec3::NEG_Y,
+    IVec3::Z,
+    IVec3::NEG_Z,
+];
 
 /// Visible faces in a grid, with everything outside it counting as air: the real
 /// rendering cost of a model.
@@ -30,7 +37,10 @@ pub fn count_visible(grid: &VoxelGrid, palette: &Palette) -> usize {
                 let p = IVec3::new(x, y, z);
                 let id = grid.get(p);
                 if id != AIR {
-                    faces += NORMALS.iter().filter(|n| face_visible(palette, id, grid.get(p + **n))).count();
+                    faces += NORMALS
+                        .iter()
+                        .filter(|n| face_visible(palette, id, grid.get(p + **n)))
+                        .count();
                 }
             }
         }

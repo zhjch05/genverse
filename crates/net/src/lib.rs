@@ -27,6 +27,7 @@ use std::{
     time::Duration,
 };
 
+use genverse_rules::bevy_math::Vec2;
 use genverse_rules::{
     game::{GameAction, GameLog},
     land::footprint,
@@ -34,7 +35,6 @@ use genverse_rules::{
     logic::Package,
     sculpt::Area,
 };
-use genverse_rules::bevy_math::Vec2;
 use serde::{Deserialize, Serialize};
 
 /// Bumped when the protocol changes incompatibly.
@@ -47,7 +47,13 @@ pub enum ToServer {
     /// The answer to [`ToClient::Challenge`]: who this is, proven by signing the nonce.
     /// `rules` is the client's [`RULES_VERSION`]: both sides must turn changes into the
     /// same voxels.
-    Hello { version: u32, rules: u32, player: String, name: String, sig: String },
+    Hello {
+        version: u32,
+        rules: u32,
+        player: String,
+        name: String,
+        sig: String,
+    },
     /// A change the player wants made. `request` is the client's own number for it,
     /// echoed in the answer; `sig` is the player's signature of `by` and `action`.
     /// Installing a package the server doesn't have yet brings the package along (the
@@ -63,7 +69,12 @@ pub enum ToServer {
     /// Goes to another world of the game; the server answers with its welcome.
     Enter { world: String },
     /// A change to the game itself (a new world, a game save), signed like a change.
-    ProposeGame { request: u64, by: Provenance, action: GameAction, sig: String },
+    ProposeGame {
+        request: u64,
+        by: Provenance,
+        action: GameAction,
+        sig: String,
+    },
     /// Where the player is and what they're doing, for others to see. Not kept.
     Presence(Presence),
     /// The edits in these chunks, because ours disagree with the server's fingerprints.
@@ -114,7 +125,9 @@ impl Presence {
     pub fn locks(&self) -> Vec<Area> {
         let working = self.previewing || self.status.is_some();
         let area = self.area.filter(|_| working).map(|a| a.grown(LOCK_MARGIN));
-        let draft = self.draft.map(|([x, _, z], yaw, [w, _, d])| footprint(Vec2::new(x, z), yaw, Vec2::new(w, d)).grown(1));
+        let draft = self.draft.map(|([x, _, z], yaw, [w, _, d])| {
+            footprint(Vec2::new(x, z), yaw, Vec2::new(w, d)).grown(1)
+        });
         area.into_iter().chain(draft).collect()
     }
 
@@ -134,7 +147,10 @@ impl Presence {
 
 /// Whose live lock, if anyone's, stands in the way of a change touching `touches`.
 /// `holders` are the other players here, with their names and presence.
-pub fn held<'a>(touches: &Touches, holders: impl IntoIterator<Item = (&'a str, &'a Presence)>) -> Result<(), String> {
+pub fn held<'a>(
+    touches: &Touches,
+    holders: impl IntoIterator<Item = (&'a str, &'a Presence)>,
+) -> Result<(), String> {
     for (name, presence) in holders {
         let locks = presence.locks();
         let blocked = match touches {
@@ -143,7 +159,10 @@ pub fn held<'a>(touches: &Touches, holders: impl IntoIterator<Item = (&'a str, &
             Touches::Areas(areas) => areas.iter().any(|a| locks.iter().any(|l| l.overlaps(*a))),
         };
         if blocked {
-            return Err(format!("{name} is {}: it's free again once they keep it, put it back or clear it", presence.working()));
+            return Err(format!(
+                "{name} is {}: it's free again once they keep it, put it back or clear it",
+                presence.working()
+            ));
         }
     }
     Ok(())
@@ -153,10 +172,19 @@ pub fn held<'a>(touches: &Touches, holders: impl IntoIterator<Item = (&'a str, &
 #[serde(tag = "type", rename_all = "snake_case")]
 pub enum ToClient {
     /// Sent on connect; the client signs `nonce` to prove who it is.
-    Challenge { version: u32, rules: u32, nonce: String },
+    Challenge {
+        version: u32,
+        rules: u32,
+        nonce: String,
+    },
     /// The world the player is in so far (named `world` in `game`), with a snapshot to
     /// replay from when there is one. Sent on joining and on entering another world.
-    Welcome { game: GameLog, world: String, log: WorldLog, snapshot: Option<Snapshot> },
+    Welcome {
+        game: GameLog,
+        world: String,
+        log: WorldLog,
+        snapshot: Option<Snapshot>,
+    },
     /// The game changed (a world made or removed, a save): for everyone in it.
     Game { game: GameLog, request: Option<u64> },
     /// A change the server accepted, for everyone. `request` is set only for the player
@@ -171,13 +199,19 @@ pub enum ToClient {
         package: Option<Package>,
     },
     /// The edits in the chunks a player asked for, as `[x, y, z, block]`.
-    Chunks { chunks: Vec<([i32; 3], Vec<[i32; 4]>)> },
+    Chunks {
+        chunks: Vec<([i32; 3], Vec<[i32; 4]>)>,
+    },
     /// Why the server refused a player's proposal.
     Rejected { request: u64, why: String },
     /// The server is closing this connection.
     Bye { why: String },
     /// Another player's presence (sent when it changes, and to newcomers).
-    Presence { player: String, name: String, presence: Presence },
+    Presence {
+        player: String,
+        name: String,
+        presence: Presence,
+    },
     /// A player left.
     Gone { player: String },
 }
@@ -196,7 +230,9 @@ pub fn write_message(stream: &mut impl Write, message: &impl Serialize) -> std::
 }
 
 /// Reads messages line by line until the stream ends or a line doesn't parse.
-pub fn read_messages<T: for<'de> Deserialize<'de>>(stream: TcpStream) -> impl Iterator<Item = Result<T, String>> {
+pub fn read_messages<T: for<'de> Deserialize<'de>>(
+    stream: TcpStream,
+) -> impl Iterator<Item = Result<T, String>> {
     BufReader::new(stream).lines().map(|line| {
         let line = line.map_err(|e| e.to_string())?;
         serde_json::from_str(&line).map_err(|e| format!("bad message: {e}"))
@@ -297,7 +333,11 @@ impl Client {
                 }
             })
             .map_err(|e| e.to_string())?;
-        Ok(Self { events: Mutex::new(events), outgoing, socket })
+        Ok(Self {
+            events: Mutex::new(events),
+            outgoing,
+            socket,
+        })
     }
 
     pub fn send(&self, message: ToServer) {
@@ -306,12 +346,18 @@ impl Client {
 
     /// Everything that arrived since the last poll.
     pub fn poll(&self) -> Vec<ClientEvent> {
-        self.events.lock().map(|rx| rx.try_iter().collect()).unwrap_or_default()
+        self.events
+            .lock()
+            .map(|rx| rx.try_iter().collect())
+            .unwrap_or_default()
     }
 
     /// Waits up to `timeout` for the next event.
     pub fn recv_timeout(&self, timeout: Duration) -> Result<ClientEvent, RecvTimeoutError> {
-        self.events.lock().map_err(|_| RecvTimeoutError::Disconnected)?.recv_timeout(timeout)
+        self.events
+            .lock()
+            .map_err(|_| RecvTimeoutError::Disconnected)?
+            .recv_timeout(timeout)
     }
 }
 
@@ -323,21 +369,67 @@ mod tests {
 
     #[test]
     fn work_holds_the_land_under_it() {
-        let selecting = Presence { area: Some(Area { min: [100, 100], size: [40, 40] }), previewing: true, status: Some("Claude Code is designing…".into()), ..Default::default() };
-        let drafting = Presence { draft: Some(([50.0, 10.0, 50.0], 0.0, [4.0, 3.0, 4.0])), ..Default::default() };
+        let selecting = Presence {
+            area: Some(Area {
+                min: [100, 100],
+                size: [40, 40],
+            }),
+            previewing: true,
+            status: Some("Claude Code is designing…".into()),
+            ..Default::default()
+        };
+        let drafting = Presence {
+            draft: Some(([50.0, 10.0, 50.0], 0.0, [4.0, 3.0, 4.0])),
+            ..Default::default()
+        };
         let idle = Presence::default();
         assert!(idle.locks().is_empty());
         // Selecting land holds nothing until work starts on it.
-        let looking = Presence { area: selecting.area, ..Default::default() };
+        let looking = Presence {
+            area: selecting.area,
+            ..Default::default()
+        };
         assert!(looking.locks().is_empty());
-        assert_eq!(Presence { status: Some("…".into()), ..looking }.locks().len(), 1);
-        let near = Touches::Areas(vec![Area { min: [145, 100], size: [4, 4] }]);
-        let far = Touches::Areas(vec![Area { min: [400, 400], size: [4, 4] }]);
+        assert_eq!(
+            Presence {
+                status: Some("…".into()),
+                ..looking
+            }
+            .locks()
+            .len(),
+            1
+        );
+        let near = Touches::Areas(vec![Area {
+            min: [145, 100],
+            size: [4, 4],
+        }]);
+        let far = Touches::Areas(vec![Area {
+            min: [400, 400],
+            size: [4, 4],
+        }]);
         let why = held(&near, [("Ada", &selecting)]).unwrap_err();
-        assert!(why.starts_with("Ada is previewing a land change there (claude code is designing)"), "{why}");
-        assert_eq!(held(&far, [("Ada", &selecting), ("Bo", &drafting), ("Cy", &idle)]), Ok(()));
+        assert!(
+            why.starts_with("Ada is previewing a land change there (claude code is designing)"),
+            "{why}"
+        );
+        assert_eq!(
+            held(
+                &far,
+                [("Ada", &selecting), ("Bo", &drafting), ("Cy", &idle)]
+            ),
+            Ok(())
+        );
         // A draft holds the ground under it: 50 m is column 200.
-        assert!(held(&Touches::Areas(vec![Area { min: [200, 200], size: [1, 1] }]), [("Bo", &drafting)]).is_err());
+        assert!(
+            held(
+                &Touches::Areas(vec![Area {
+                    min: [200, 200],
+                    size: [1, 1]
+                }]),
+                [("Bo", &drafting)]
+            )
+            .is_err()
+        );
         assert!(held(&Touches::Everywhere, [("Bo", &drafting)]).is_err());
         assert_eq!(held(&Touches::Everywhere, [("Cy", &idle)]), Ok(()));
         assert_eq!(held(&Touches::Nothing, [("Ada", &selecting)]), Ok(()));
@@ -349,7 +441,11 @@ mod tests {
         let addr = listener.local_addr().unwrap().to_string();
         thread::spawn(move || {
             let (mut stream, _) = listener.accept().unwrap();
-            let challenge = ToClient::Challenge { version: VERSION, rules: RULES_VERSION + 1, nonce: "n".into() };
+            let challenge = ToClient::Challenge {
+                version: VERSION,
+                rules: RULES_VERSION + 1,
+                nonce: "n".into(),
+            };
             write_message(&mut stream, &challenge).unwrap();
             std::thread::sleep(Duration::from_millis(500));
         });

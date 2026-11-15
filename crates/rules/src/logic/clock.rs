@@ -17,7 +17,11 @@ pub struct ClockRules {
 
 impl Default for ClockRules {
     fn default() -> Self {
-        Self { epoch: 0, day_seconds: 1200, days_per_season: 28 }
+        Self {
+            epoch: 0,
+            day_seconds: 1200,
+            days_per_season: 28,
+        }
     }
 }
 
@@ -64,7 +68,11 @@ mod tests {
 
     #[test]
     fn dates() {
-        let clock = ClockRules { epoch: 1000, day_seconds: 100, days_per_season: 2 };
+        let clock = ClockRules {
+            epoch: 1000,
+            day_seconds: 100,
+            days_per_season: 2,
+        };
         let t = clock.at(1000 + 100 * 9 + 25);
         assert_eq!((t.day, t.year, t.season, t.day_of_season), (9, 1, 0, 1));
         assert_eq!(t.time_of_day, 0.25);

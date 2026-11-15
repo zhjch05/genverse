@@ -23,12 +23,12 @@ pub mod reveal;
 use std::sync::Arc;
 
 use bevy::{
+    asset::{RenderAssetUsages, uuid_handle},
     light::NotShadowCaster,
     mesh::{MeshTag, MeshVertexBufferLayoutRef},
     pbr::{ExtendedMaterial, MaterialExtension, MaterialExtensionKey, MaterialExtensionPipeline},
     platform::collections::{HashMap, HashSet},
     prelude::*,
-    asset::{RenderAssetUsages, uuid_handle},
     render::{
         render_resource::{AsBindGroup, RenderPipelineDescriptor, SpecializedMeshPipelineError},
         storage::ShaderBuffer,
@@ -38,8 +38,10 @@ use bevy::{
 };
 
 pub use asset::VoxelModelAsset;
+pub use genverse_rules::voxel::{
+    AIR, ModelData, ModelLight, ModelPart, Palette, Surface, VoxelGrid, VoxelId, noise,
+};
 pub use reveal::{Reveal, Revealing, Reveals};
-pub use genverse_rules::voxel::{AIR, ModelData, ModelLight, ModelPart, Palette, Surface, VoxelGrid, VoxelId, noise};
 
 /// Voxels are drawn with the standard PBR material plus [`Bevel`].
 pub type VoxelMaterial = ExtendedMaterial<StandardMaterial, Bevel>;
@@ -66,7 +68,11 @@ pub struct Bevel {
 
 impl Default for Bevel {
     fn default() -> Self {
-        Self { settings: Vec4::ZERO, cutout: CUTOUT_BUFFER, reveal: reveal::REVEAL_BUFFER }
+        Self {
+            settings: Vec4::ZERO,
+            cutout: CUTOUT_BUFFER,
+            reveal: reveal::REVEAL_BUFFER,
+        }
     }
 }
 
@@ -91,7 +97,12 @@ pub struct CameraCutout {
 impl CameraCutout {
     /// As `voxel_cutout.wesl` reads it: camera xyz and strength, then hero xyz and radius.
     fn buffer(&self) -> ShaderBuffer {
-        let data = [self.camera.extend(self.strength), self.hero.extend(self.radius)].map(|v| v.to_array()).concat();
+        let data = [
+            self.camera.extend(self.strength),
+            self.hero.extend(self.radius),
+        ]
+        .map(|v| v.to_array())
+        .concat();
         ShaderBuffer::new(data, RenderAssetUsages::RENDER_WORLD)
     }
 }
@@ -133,19 +144,33 @@ impl MaterialExtension for Bevel {
         layout: &MeshVertexBufferLayoutRef,
         _key: MaterialExtensionKey<Self>,
     ) -> Result<(), SpecializedMeshPipelineError> {
-        descriptor.vertex.buffers = vec![layout.0.get_layout(&[mesher::ATTRIBUTE_VOXEL.at_shader_location(0)])?];
+        descriptor.vertex.buffers = vec![
+            layout
+                .0
+                .get_layout(&[mesher::ATTRIBUTE_VOXEL.at_shader_location(0)])?,
+        ];
         // Bevy picks these from the mesh's attributes, which it can't see inside the
         // packed words; they switch on the vertex outputs the shaders read. The same
         // ones a full layout gets: the prepass wants normals only when it writes them.
         let has = |name: &'static str| descriptor.vertex.shader_defs.contains(&name.into());
-        let mut defs: Vec<ShaderDefVal> =
-            ["VERTEX_UVS", "VERTEX_UVS_A", "VERTEX_UVS_B", "VERTEX_COLORS"].map(Into::into).into();
+        let mut defs: Vec<ShaderDefVal> = [
+            "VERTEX_UVS",
+            "VERTEX_UVS_A",
+            "VERTEX_UVS_B",
+            "VERTEX_COLORS",
+        ]
+        .map(Into::into)
+        .into();
         if !has("PREPASS_PIPELINE") || has("NORMAL_PREPASS_OR_DEFERRED_PREPASS") {
             defs.extend(["VERTEX_NORMALS", "VERTEX_TANGENTS"].map(Into::into));
         }
         // The cutout is for what the camera sees: the main pass and the camera's
         // prepasses (which always write normals or motion), never a shadow map.
-        if !has("PREPASS_PIPELINE") || has("NORMAL_PREPASS") || has("MOTION_VECTOR_PREPASS") || has("DEFERRED_PREPASS") {
+        if !has("PREPASS_PIPELINE")
+            || has("NORMAL_PREPASS")
+            || has("MOTION_VECTOR_PREPASS")
+            || has("DEFERRED_PREPASS")
+        {
             defs.push("CAMERA_CUTOUT".into());
         }
         descriptor.vertex.shader_defs.extend(defs.iter().cloned());
@@ -170,10 +195,17 @@ impl SurfaceMaterial for Surface {
             metallic: self.metallic,
             reflectance: self.reflectance,
             emissive: self.emissive,
-            alpha_mode: if self.is_transparent() { AlphaMode::Blend } else { AlphaMode::Opaque },
+            alpha_mode: if self.is_transparent() {
+                AlphaMode::Blend
+            } else {
+                AlphaMode::Opaque
+            },
             ..default()
         };
-        ExtendedMaterial { base, extension: Bevel::default() }
+        ExtendedMaterial {
+            base,
+            extension: Bevel::default(),
+        }
     }
 }
 
@@ -186,10 +218,23 @@ impl Plugin for VoxelPlugin {
             .init_asset_loader::<asset::VoxelModelLoader>()
             .init_resource::<SharedMaterials>()
             .init_resource::<CameraCutout>()
-            .add_systems(Update, (sync_from_asset, put_to_sleep, start_rebuilds, finish_rebuilds, end_reveals).chain())
+            .add_systems(
+                Update,
+                (
+                    sync_from_asset,
+                    put_to_sleep,
+                    start_rebuilds,
+                    finish_rebuilds,
+                    end_reveals,
+                )
+                    .chain(),
+            )
             .add_systems(PostUpdate, (apply_cutout, reveal::tick));
         reveal::setup(app);
-        app.world_mut().resource_mut::<Assets<ShaderBuffer>>().insert(&CUTOUT_BUFFER, CameraCutout::default().buffer()).ok();
+        app.world_mut()
+            .resource_mut::<Assets<ShaderBuffer>>()
+            .insert(&CUTOUT_BUFFER, CameraCutout::default().buffer())
+            .ok();
     }
 }
 
@@ -303,10 +348,25 @@ pub struct Dormant;
 struct SharedMaterials(HashMap<[u32; 9], Handle<VoxelMaterial>>);
 
 impl SharedMaterials {
-    fn get(&mut self, materials: &mut Assets<VoxelMaterial>, surface: &Surface, bias: f32) -> Handle<VoxelMaterial> {
+    fn get(
+        &mut self,
+        materials: &mut Assets<VoxelMaterial>,
+        surface: &Surface,
+        bias: f32,
+    ) -> Handle<VoxelMaterial> {
         let e = surface.emissive;
-        let key = [surface.roughness, surface.metallic, surface.reflectance, e.red, e.green, e.blue, e.alpha, surface.alpha, bias]
-            .map(f32::to_bits);
+        let key = [
+            surface.roughness,
+            surface.metallic,
+            surface.reflectance,
+            e.red,
+            e.green,
+            e.blue,
+            e.alpha,
+            surface.alpha,
+            bias,
+        ]
+        .map(f32::to_bits);
         self.0
             .entry(key)
             .or_insert_with(|| {
@@ -346,13 +406,21 @@ fn sync_from_asset(
 }
 
 /// Drops the meshes and lights of models that just went dormant.
-fn put_to_sleep(mut commands: Commands, mut models: Query<(Entity, Option<&mut VoxelModelParts>), Added<Dormant>>) {
+fn put_to_sleep(
+    mut commands: Commands,
+    mut models: Query<(Entity, Option<&mut VoxelModelParts>), Added<Dormant>>,
+) {
     for (entity, parts) in &mut models {
-        for e in parts.map(|mut p| std::mem::take(&mut p.0)).unwrap_or_default() {
+        for e in parts
+            .map(|mut p| std::mem::take(&mut p.0))
+            .unwrap_or_default()
+        {
             commands.entity(e).try_despawn();
         }
         // Out of view, there's nobody to reveal it to.
-        commands.entity(entity).remove::<(Meshing, Reveal, Revealing)>();
+        commands
+            .entity(entity)
+            .remove::<(Meshing, Reveal, Revealing)>();
     }
 }
 
@@ -376,20 +444,37 @@ fn start_rebuilds(
         if reveal.is_some() {
             commands.entity(entity).remove::<Reveal>();
         }
-        let reveal = reveal.filter(|r| reveals.enabled && !coarse && r.arrival.len() == grid.cells().len()).cloned();
+        let reveal = reveal
+            .filter(|r| reveals.enabled && !coarse && r.arrival.len() == grid.cells().len())
+            .cloned();
         let task = AsyncComputeTaskPool::get().spawn(async move {
             let Some(reveal) = reveal else {
                 let grid = if coarse { downsample(&grid) } else { grid };
-                return Meshed { chunks: mesher::mesh_grid(&grid, &palette), reveal: None };
+                return Meshed {
+                    chunks: mesher::mesh_grid(&grid, &palette),
+                    reveal: None,
+                };
             };
-            let chunks = mesher::mesh_grid_fresh(&grid, Some(&|p| reveal.fresh(&grid, p)), &palette);
+            let chunks =
+                mesher::mesh_grid_fresh(&grid, Some(&|p| reveal.fresh(&grid, p)), &palette);
             let ghost = reveal.ghost.as_ref().map(|(ghost, palette)| {
                 // The ghost's voxels leave in the same order; one that's replaced goes at once.
-                let going = |p: IVec3| mesher::Fresh { arrival: reveal.fresh(&grid, p).arrival, swap: grid.get(p) != AIR };
-                (mesher::mesh_grid_fresh(ghost, Some(&going), palette), palette.clone())
+                let going = |p: IVec3| mesher::Fresh {
+                    arrival: reveal.fresh(&grid, p).arrival,
+                    swap: grid.get(p) != AIR,
+                };
+                (
+                    mesher::mesh_grid_fresh(ghost, Some(&going), palette),
+                    palette.clone(),
+                )
             });
-            let (ghosts, ghost_palette) = ghost.map_or((Vec::new(), None), |(meshes, palette)| (meshes, Some(palette)));
-            Meshed { chunks, reveal: Some((ghosts, ghost_palette, reveal.seconds)) }
+            let (ghosts, ghost_palette) = ghost.map_or((Vec::new(), None), |(meshes, palette)| {
+                (meshes, Some(palette))
+            });
+            Meshed {
+                chunks,
+                reveal: Some((ghosts, ghost_palette, reveal.seconds)),
+            }
         });
         commands.entity(entity).try_insert(Meshing { task, coarse });
     }
@@ -435,7 +520,14 @@ fn finish_rebuilds(
     mut materials: ResMut<Assets<VoxelMaterial>>,
     mut shared: ResMut<SharedMaterials>,
     mut reveals: ResMut<Reveals>,
-    mut models: Query<(Entity, &VoxelModel, &mut Meshing, Option<&mut VoxelModelParts>, Option<&DepthBias>, Option<&Revealing>)>,
+    mut models: Query<(
+        Entity,
+        &VoxelModel,
+        &mut Meshing,
+        Option<&mut VoxelModelParts>,
+        Option<&DepthBias>,
+        Option<&Revealing>,
+    )>,
 ) {
     for (entity, model, mut meshing, parts, bias, revealing) in &mut models {
         let Some(meshed) = check_ready(&mut meshing.task) else {
@@ -443,7 +535,10 @@ fn finish_rebuilds(
         };
         let coarse = meshing.coarse;
         commands.entity(entity).remove::<Meshing>();
-        for e in parts.map(|mut p| std::mem::take(&mut p.0)).unwrap_or_default() {
+        for e in parts
+            .map(|mut p| std::mem::take(&mut p.0))
+            .unwrap_or_default()
+        {
             commands.entity(e).try_despawn();
         }
         // These meshes replace the ones a reveal was showing.
@@ -453,21 +548,31 @@ fn finish_rebuilds(
         }
         let Meshed { chunks, reveal } = meshed;
         // Without a free slot the meshes go untagged, and so show whole.
-        let reveal = reveal.and_then(|(ghosts, palette, seconds)| Some((ghosts, palette, reveals.open(seconds, true, Some(entity))?)));
+        let reveal = reveal.and_then(|(ghosts, palette, seconds)| {
+            Some((ghosts, palette, reveals.open(seconds, true, Some(entity))?))
+        });
         let slot = reveal.as_ref().map(|r| r.2);
 
         let bias = bias.map_or(0.0, |b| b.0);
         let offset = -model.pivot * model.voxel_size;
-        let voxel = if coarse { model.voxel_size * 2.0 } else { model.voxel_size };
+        let voxel = if coarse {
+            model.voxel_size * 2.0
+        } else {
+            model.voxel_size
+        };
         let mut spawned = Vec::with_capacity(chunks.len() + model.lights.len());
-        let mut spawn = |commands: &mut Commands, chunk: mesher::ChunkMesh, palette: &Palette, tag: Option<MeshTag>| {
+        let mut spawn = |commands: &mut Commands,
+                         chunk: mesher::ChunkMesh,
+                         palette: &Palette,
+                         tag: Option<MeshTag>| {
             let surface = &palette.surfaces[chunk.surface];
             let mut e = commands.spawn((
                 Name::new(format!("Voxel chunk {} ({})", chunk.origin, surface.name)),
                 VoxelChunk,
                 Mesh3d(meshes.add(chunk.mesh)),
                 MeshMaterial3d(shared.get(&mut materials, surface, bias)),
-                Transform::from_translation(offset + chunk.origin.as_vec3() * voxel).with_scale(Vec3::splat(voxel)),
+                Transform::from_translation(offset + chunk.origin.as_vec3() * voxel)
+                    .with_scale(Vec3::splat(voxel)),
                 ChildOf(entity),
             ));
             if surface.is_transparent() {
@@ -479,12 +584,26 @@ fn finish_rebuilds(
             e.id()
         };
         for chunk in chunks {
-            spawned.push(spawn(&mut commands, chunk, &model.palette, slot.map(|s| Reveals::tag(s, false))));
+            spawned.push(spawn(
+                &mut commands,
+                chunk,
+                &model.palette,
+                slot.map(|s| Reveals::tag(s, false)),
+            ));
         }
         if let Some((ghosts, palette, slot)) = reveal {
             let palette = palette.unwrap_or_else(|| model.palette.clone());
-            let ghosts: Vec<Entity> =
-                ghosts.into_iter().map(|chunk| spawn(&mut commands, chunk, &palette, Some(Reveals::tag(slot, true)))).collect();
+            let ghosts: Vec<Entity> = ghosts
+                .into_iter()
+                .map(|chunk| {
+                    spawn(
+                        &mut commands,
+                        chunk,
+                        &palette,
+                        Some(Reveals::tag(slot, true)),
+                    )
+                })
+                .collect();
             spawned.extend(&ghosts);
             commands.entity(entity).insert(Revealing { slot, ghosts });
         }
@@ -550,7 +669,10 @@ mod tests {
             .init_resource::<Assets<VoxelMaterial>>()
             .init_resource::<SharedMaterials>()
             .init_resource::<Reveals>()
-            .add_systems(Update, (put_to_sleep, start_rebuilds, finish_rebuilds, end_reveals).chain());
+            .add_systems(
+                Update,
+                (put_to_sleep, start_rebuilds, finish_rebuilds, end_reveals).chain(),
+            );
         app
     }
 
@@ -558,7 +680,13 @@ mod tests {
         let mut grid = VoxelGrid::new(UVec3::splat(4));
         grid.set(IVec3::ONE, 1);
         let palette = crate::world::terrain::palette();
-        VoxelModel { grid, palette: Arc::new(palette), voxel_size: 0.25, pivot: Vec3::ZERO, lights: Vec::new() }
+        VoxelModel {
+            grid,
+            palette: Arc::new(palette),
+            voxel_size: 0.25,
+            pivot: Vec3::ZERO,
+            lights: Vec::new(),
+        }
     }
 
     /// Runs frames until the background meshing is done.
@@ -574,7 +702,9 @@ mod tests {
     }
 
     fn parts(app: &App, entity: Entity) -> usize {
-        app.world().get::<VoxelModelParts>(entity).map_or(0, |p| p.0.len())
+        app.world()
+            .get::<VoxelModelParts>(entity)
+            .map_or(0, |p| p.0.len())
     }
 
     #[test]
@@ -607,7 +737,12 @@ mod tests {
                 }
             }
         }
-        big.lights.push(ModelLight { position: Vec3::ONE, color: Color::WHITE, intensity: 1.0, range: 1.0 });
+        big.lights.push(ModelLight {
+            position: Vec3::ONE,
+            color: Color::WHITE,
+            intensity: 1.0,
+            range: 1.0,
+        });
         let entity = app.world_mut().spawn(big).id();
         settle(&mut app, entity);
         let faces = |app: &App| {
@@ -638,18 +773,26 @@ mod tests {
         let mut new = model();
         new.grid.set(IVec3::ONE, AIR);
         new.grid.set(IVec3::new(2, 1, 1), 1);
-        let reveal = Reveal::between((&old.grid, &old.palette), (&new.grid, &new.palette), None).unwrap();
+        let reveal =
+            Reveal::between((&old.grid, &old.palette), (&new.grid, &new.palette), None).unwrap();
         let entity = app.world_mut().spawn((new, reveal)).id();
         settle(&mut app, entity);
         let tags = |app: &App| -> Vec<u32> {
             let parts = &app.world().get::<VoxelModelParts>(entity).unwrap().0;
-            parts.iter().filter_map(|e| app.world().get::<MeshTag>(*e)).map(|t| t.value).collect()
+            parts
+                .iter()
+                .filter_map(|e| app.world().get::<MeshTag>(*e))
+                .map(|t| t.value)
+                .collect()
         };
         // The model's one chunk, and the ghost of the voxel taken away.
         let mut tagged = tags(&app);
         tagged.sort();
         assert_eq!(tagged, [1, 1 | 1 << 31]);
-        assert!(app.world().get::<Revealing>(entity).is_some() && app.world().get::<Reveal>(entity).is_none());
+        assert!(
+            app.world().get::<Revealing>(entity).is_some()
+                && app.world().get::<Reveal>(entity).is_none()
+        );
 
         app.world_mut().resource_mut::<Reveals>().skip(10.0);
         app.update();
@@ -657,7 +800,12 @@ mod tests {
         settle(&mut app, entity);
         assert_eq!((parts(&app, entity), tags(&app).len()), (1, 0));
         // The slot is free again.
-        assert_eq!(app.world_mut().resource_mut::<Reveals>().open(1.0, true, None), Some(0));
+        assert_eq!(
+            app.world_mut()
+                .resource_mut::<Reveals>()
+                .open(1.0, true, None),
+            Some(0)
+        );
     }
 
     /// With the player's setting off, a reveal is dropped and the model just appears.
@@ -669,7 +817,10 @@ mod tests {
         let reveal = Reveal::whole(&model.grid, None);
         let entity = app.world_mut().spawn((model, reveal)).id();
         settle(&mut app, entity);
-        assert!(app.world().get::<Revealing>(entity).is_none() && app.world().get::<Reveal>(entity).is_none());
+        assert!(
+            app.world().get::<Revealing>(entity).is_none()
+                && app.world().get::<Reveal>(entity).is_none()
+        );
         let part = app.world().get::<VoxelModelParts>(entity).unwrap().0[0];
         assert!(app.world().get::<MeshTag>(part).is_none());
     }

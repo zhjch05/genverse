@@ -61,14 +61,20 @@ fn genverse_check(@location(0) uv: vec2<f32>) -> @location(0) vec4<f32> {
 
 /// Whether `name` can name a shader: 1-32 lowercase letters, digits and `_`.
 pub fn valid_name(name: &str) -> bool {
-    (1..=32).contains(&name.len()) && name.chars().all(|c| c.is_ascii_lowercase() || c.is_ascii_digit() || c == '_')
+    (1..=32).contains(&name.len())
+        && name
+            .chars()
+            .all(|c| c.is_ascii_lowercase() || c.is_ascii_digit() || c == '_')
 }
 
 /// Everything wrong with a decal shader's source, phrased for the agent that wrote it
 /// (`file` is where it lives, for the compiler's messages).
 pub fn check_decal(file: &str, source: &str) -> Result<(), String> {
     if source.len() > MAX_SHADER_BYTES {
-        return Err(format!("{file} is {} bytes; the most is {MAX_SHADER_BYTES}", source.len()));
+        return Err(format!(
+            "{file} is {} bytes; the most is {MAX_SHADER_BYTES}",
+            source.len()
+        ));
     }
     let signature = "a decal shader defines fn decal(d: Decal) -> vec4<f32>";
     if !source.contains("fn decal") {
@@ -93,20 +99,34 @@ pub fn check_decal(file: &str, source: &str) -> Result<(), String> {
         ));
     }
     if !module.overrides.is_empty() {
-        return Err(format!("{file}: shaders may not declare `override`s; use `const`"));
+        return Err(format!(
+            "{file}: shaders may not declare `override`s; use `const`"
+        ));
     }
     if module.entry_points.len() != 1 {
-        return Err(format!("{file}: shaders have no entry points (@vertex, @fragment, @compute) of their own; the engine calls fn decal"));
+        return Err(format!(
+            "{file}: shaders have no entry points (@vertex, @fragment, @compute) of their own; the engine calls fn decal"
+        ));
     }
-    let loops = module.functions.iter().map(|(_, f)| &f.body).chain(module.entry_points.iter().map(|e| &e.function.body)).any(has_loop);
+    let loops = module
+        .functions
+        .iter()
+        .map(|(_, f)| &f.body)
+        .chain(module.entry_points.iter().map(|e| &e.function.body))
+        .any(has_loop);
     if loops {
         return Err(format!(
             "{file}: shaders may not loop (for, while, loop): they run on every player's GPU, and a long loop stalls their game. Unroll it: write the few steps out"
         ));
     }
-    let mut validator = naga::valid::Validator::new(naga::valid::ValidationFlags::all(), naga::valid::Capabilities::empty());
+    let mut validator = naga::valid::Validator::new(
+        naga::valid::ValidationFlags::all(),
+        naga::valid::Capabilities::empty(),
+    );
     if let Err(e) = validator.validate(&module) {
-        if e.spans().all(|(span, _)| past_own(Some(span.location(&full).line_number))) {
+        if e.spans()
+            .all(|(span, _)| past_own(Some(span.location(&full).line_number)))
+        {
             return Err(format!("{file}: {signature}: {}", e.as_inner()));
         }
         return Err(e.emit_to_string_with_path(&full, file));
@@ -117,8 +137,14 @@ pub fn check_decal(file: &str, source: &str) -> Result<(), String> {
 /// Whether whole WGSL compiles, as the compiler words it if not.
 pub fn compile(source: &str) -> Result<(), String> {
     let module = naga::front::wgsl::parse_str(source).map_err(|e| e.emit_to_string(source))?;
-    let mut validator = naga::valid::Validator::new(naga::valid::ValidationFlags::all(), naga::valid::Capabilities::empty());
-    validator.validate(&module).map(|_| ()).map_err(|e| e.emit_to_string(source))
+    let mut validator = naga::valid::Validator::new(
+        naga::valid::ValidationFlags::all(),
+        naga::valid::Capabilities::empty(),
+    );
+    validator
+        .validate(&module)
+        .map(|_| ())
+        .map_err(|e| e.emit_to_string(source))
 }
 
 fn has_loop(block: &naga::Block) -> bool {
@@ -151,7 +177,10 @@ impl DecalLook {
     /// The component's value, if it's well formed and names one of `shaders`.
     pub fn read(value: &Value, shaders: &[String]) -> Option<Self> {
         let obj = value.as_object()?;
-        if !obj.keys().all(|k| ["shader", "size", "color", "alpha", "params"].contains(&k.as_str())) {
+        if !obj
+            .keys()
+            .all(|k| ["shader", "size", "color", "alpha", "params"].contains(&k.as_str()))
+        {
             return None;
         }
         let shader = match &value["shader"] {
@@ -182,7 +211,13 @@ impl DecalLook {
             }
             _ => return None,
         }
-        Some(Self { shader, size, color, alpha, params })
+        Some(Self {
+            shader,
+            size,
+            color,
+            alpha,
+            params,
+        })
     }
 }
 
@@ -198,27 +233,51 @@ mod tests {
 
     #[test]
     fn mistakes_come_back_at_their_line() {
-        let err = check_decal("shaders/halo.wgsl", "// halo\nfn decal(d: Decal) -> vec4<f32> {\n    return vec4(d.nope);\n}\n").unwrap_err();
+        let err = check_decal(
+            "shaders/halo.wgsl",
+            "// halo\nfn decal(d: Decal) -> vec4<f32> {\n    return vec4(d.nope);\n}\n",
+        )
+        .unwrap_err();
         assert!(err.contains("shaders/halo.wgsl:3"), "{err}");
-        let err = check_decal("shaders/halo.wgsl", "fn decal(d: Decal) -> f32 { return 1.0; }").unwrap_err();
+        let err = check_decal(
+            "shaders/halo.wgsl",
+            "fn decal(d: Decal) -> f32 { return 1.0; }",
+        )
+        .unwrap_err();
         assert!(err.contains("fn decal(d: Decal) -> vec4<f32>"), "{err}");
-        assert!(check_decal("x", "fn halo() -> f32 { return 1.0; }").unwrap_err().contains("fn decal"));
+        assert!(
+            check_decal("x", "fn halo() -> f32 { return 1.0; }")
+                .unwrap_err()
+                .contains("fn decal")
+        );
     }
 
     #[test]
     fn no_loops_bindings_or_entry_points() {
         let looped = "fn decal(d: Decal) -> vec4<f32> { var a = 0.0; for (var i = 0; i < 4; i++) { a += 0.1; } return vec4(a); }";
-        assert!(check_decal("x", looped).unwrap_err().contains("may not loop"));
+        assert!(
+            check_decal("x", looped)
+                .unwrap_err()
+                .contains("may not loop")
+        );
         let bound = "@group(0) @binding(0) var<uniform> u: vec4<f32>;\nfn decal(d: Decal) -> vec4<f32> { return u; }";
         assert!(check_decal("x", bound).unwrap_err().contains("bindings"));
         let entry = "fn decal(d: Decal) -> vec4<f32> { return d.color; }\n@fragment fn f() -> @location(0) vec4<f32> { return vec4(1.0); }";
-        assert!(check_decal("x", entry).unwrap_err().contains("entry points"));
+        assert!(
+            check_decal("x", entry)
+                .unwrap_err()
+                .contains("entry points")
+        );
     }
 
     #[test]
     fn reads_the_component() {
         let shaders = vec!["halo".to_string()];
-        let d = DecalLook::read(&json!({"shader": "halo", "size": 3, "color": "#ffcc00", "params": [1, 2]}), &shaders).unwrap();
+        let d = DecalLook::read(
+            &json!({"shader": "halo", "size": 3, "color": "#ffcc00", "params": [1, 2]}),
+            &shaders,
+        )
+        .unwrap();
         assert_eq!((d.size, d.params), (3.0, [1.0, 2.0, 0.0, 0.0]));
         assert_eq!(DecalLook::read(&json!({}), &shaders).unwrap().shader, None);
         assert!(DecalLook::read(&json!({"shader": "ring"}), &shaders).is_none());

@@ -29,7 +29,9 @@ use crate::{
     build::BuildSpec,
     identity::{Keypair, verify},
     land::{Land, area_parcels, build_parcels},
-    logic::{Effect, GameState, Install, Intent, Logic, Package, PackageRef, Runtime, Scope, WorldChange},
+    logic::{
+        Effect, GameState, Install, Intent, Logic, Package, PackageRef, Runtime, Scope, WorldChange,
+    },
     rate::Rates,
     sculpt::{self, Area, Columns, TerrainSpec},
     settings::WorldRules,
@@ -62,10 +64,17 @@ impl PortalTo {
             return Ok(PortalTo::Server { addr: text.into() });
         }
         let name = |part: &str| {
-            crate::game::clean_name(part).filter(|n| n.eq_ignore_ascii_case(part.trim())).ok_or(format!("\"{part}\" isn't a name (letters, digits, - and _)"))
+            crate::game::clean_name(part)
+                .filter(|n| n.eq_ignore_ascii_case(part.trim()))
+                .ok_or(format!(
+                    "\"{part}\" isn't a name (letters, digits, - and _)"
+                ))
         };
         match text.split_once('/') {
-            Some((game, world)) => Ok(PortalTo::Game { game: name(game)?, world: name(world)? }),
+            Some((game, world)) => Ok(PortalTo::Game {
+                game: name(game)?,
+                world: name(world)?,
+            }),
             None => Ok(PortalTo::World { name: name(text)? }),
         }
     }
@@ -103,7 +112,13 @@ pub struct Provenance {
 }
 
 impl Provenance {
-    pub fn new(player: &str, player_name: &str, agent: Option<&str>, prompt: Option<&str>, at: u64) -> Self {
+    pub fn new(
+        player: &str,
+        player_name: &str,
+        agent: Option<&str>,
+        prompt: Option<&str>,
+        at: u64,
+    ) -> Self {
         Self {
             player: player.into(),
             player_name: player_name.into(),
@@ -147,10 +162,19 @@ impl std::ops::Deref for Builds {
 
 impl Builds {
     pub fn insert(&mut self, id: u64, build: BuildState) -> Option<BuildState> {
-        let reach = crate::logic::solid::Solid { spec: &build.spec, model: 0, position: build.position, yaw: build.yaw }.reach();
+        let reach = crate::logic::solid::Solid {
+            spec: &build.spec,
+            model: 0,
+            position: build.position,
+            yaw: build.yaw,
+        }
+        .reach();
         self.areas.put(id, build.position, reach);
         if self.all.get(&id).is_none_or(|old| old.spec != build.spec) {
-            self.models.insert(id, fnv1a(&serde_json::to_vec(&build.spec).unwrap_or_default()));
+            self.models.insert(
+                id,
+                fnv1a(&serde_json::to_vec(&build.spec).unwrap_or_default()),
+            );
         }
         self.all.insert(id, build)
     }
@@ -167,7 +191,10 @@ impl Builds {
 
     /// Builds that may reach into the ground from `lo` to `hi` (x, z).
     pub fn within(&self, lo: [f32; 2], hi: [f32; 2]) -> impl Iterator<Item = (u64, &BuildState)> {
-        self.areas.within(lo, hi).into_iter().filter_map(|id| Some((id, self.all.get(&id)?)))
+        self.areas
+            .within(lo, hi)
+            .into_iter()
+            .filter_map(|id| Some((id, self.all.get(&id)?)))
     }
 
     /// Build `id`'s model key.
@@ -177,7 +204,8 @@ impl Builds {
 }
 
 /// Why a game action is refused while an admin has the world paused.
-pub const PAUSED: &str = "The world is paused: games stand still until an admin resumes them (/pause).";
+pub const PAUSED: &str =
+    "The world is paused: games stand still until an admin resumes them (/pause).";
 
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 #[serde(tag = "kind", rename_all = "snake_case")]
@@ -185,7 +213,9 @@ pub enum Action {
     PlaceBuild(BuildState),
     /// Moved, turned, or revised: the build's whole new state.
     UpdateBuild(BuildState),
-    RemoveBuild { build: u64 },
+    RemoveBuild {
+        build: u64,
+    },
     Terrain {
         name: String,
         area: Area,
@@ -195,30 +225,54 @@ pub enum Action {
         changed: usize,
     },
     /// Retired: claimed free parcels for the author. Old logs have it; it changes nothing.
-    ClaimParcels { parcels: Vec<[i32; 2]> },
+    ClaimParcels {
+        parcels: Vec<[i32; 2]>,
+    },
     /// Retired, like [`Action::ClaimParcels`].
-    ReleaseParcels { parcels: Vec<[i32; 2]> },
+    ReleaseParcels {
+        parcels: Vec<[i32; 2]>,
+    },
     /// Puts back what an earlier change of the same player replaced (admins may undo
     /// anyone's), if nothing has changed there since ([`crate::undo`]). Undoing an undo
     /// redoes.
-    Undo { change: u64 },
+    Undo {
+        change: u64,
+    },
     /// From logs made before undo moved forward; [`WorldLog::migrate`] takes it out.
-    Revert { change: u64 },
+    Revert {
+        change: u64,
+    },
     /// From logs made before undo moved forward; [`WorldLog::migrate`] takes it out.
-    Rollback { changes: Vec<u64>, note: String },
+    Rollback {
+        changes: Vec<u64>,
+        note: String,
+    },
     /// An admin changing the world's rules from here on.
-    SetRules { rules: WorldRules },
+    SetRules {
+        rules: WorldRules,
+    },
     /// Voxel edits made before the log existed (hand edits), as `[x, y, z, block]`.
-    LegacyVoxels { edits: Vec<[i32; 4]> },
+    LegacyVoxels {
+        edits: Vec<[i32; 4]>,
+    },
     /// Installs a game package from [`WorldLog::packages`], or replaces the installed
     /// version (an upgrade, or going back to an older one).
-    InstallPackage { package: PackageRef, scope: Scope },
-    UninstallPackage { name: String },
+    InstallPackage {
+        package: PackageRef,
+        scope: Scope,
+    },
+    UninstallPackage {
+        name: String,
+    },
     /// A player doing something the installed packages respond to.
-    Intent { intent: Intent },
+    Intent {
+        intent: Intent,
+    },
     /// A bookmark: the world as it is now, to load later ([`Action::Load`]) or to start
     /// a new world from. Whoever keeps the world keeps its state as of here.
-    Save { name: String },
+    Save {
+        name: String,
+    },
     /// An admin loading the save `save` (its change; `name`): the world becomes `state`,
     /// the world as of the save. The author signs it without the state, which whoever
     /// keeps the world fills in from the save.
@@ -229,7 +283,9 @@ pub enum Action {
         state: Option<Box<WorldState>>,
     },
     /// From logs made before undo moved forward; [`WorldLog::migrate`] takes it out.
-    Restore { to: u64 },
+    Restore {
+        to: u64,
+    },
     /// A player leaving for another world of the game, with what they carry and their
     /// stats: they go with them ([`Action::Arrive`] there).
     Depart {
@@ -249,11 +305,16 @@ pub enum Action {
     },
     /// Makes a placed build a portal to another world (`None` unlinks it). Whoever may
     /// change the build may do this; the link stays when the build moves or changes.
-    SetPortal { build: u64, to: Option<PortalTo> },
+    SetPortal {
+        build: u64,
+        to: Option<PortalTo>,
+    },
     /// What something in the world means, for agents to find and understand it later
     /// ([`crate::semantic`]): a build, a land change, a package or one of its files, or a
     /// place with nothing built (an area someone named). Changes nothing else.
-    Describe { meaning: crate::semantic::Meaning },
+    Describe {
+        meaning: crate::semantic::Meaning,
+    },
     /// A package's timers going off, up to `until` (Unix seconds): what they did, so
     /// replay applies it without running them again. Made by the world (a server) or,
     /// offline, by an admin's game.
@@ -269,7 +330,10 @@ impl Action {
     /// Whether it's an undo from before undo moved forward (they changed which changes
     /// count): [`WorldLog::migrate`] takes them out.
     pub fn is_legacy(&self) -> bool {
-        matches!(self, Action::Revert { .. } | Action::Rollback { .. } | Action::Restore { .. })
+        matches!(
+            self,
+            Action::Revert { .. } | Action::Rollback { .. } | Action::Restore { .. }
+        )
     }
 
     /// A few words for history lists: "placed \"Stone well\"".
@@ -283,35 +347,81 @@ impl Action {
             Action::ReleaseParcels { parcels } => format!("released {} parcel(s)", parcels.len()),
             Action::Undo { change } => format!("undid change {change}"),
             Action::Revert { change } => format!("undid change {change}"),
-            Action::Rollback { changes, note } => format!("rolled back {} change(s): {note}", changes.len()),
+            Action::Rollback { changes, note } => {
+                format!("rolled back {} change(s): {note}", changes.len())
+            }
             Action::SetRules { .. } => "changed the world's rules".into(),
             Action::LegacyVoxels { edits } => format!("old hand edits ({} voxels)", edits.len()),
-            Action::InstallPackage { package, scope: Scope::World } => {
+            Action::InstallPackage {
+                package,
+                scope: Scope::World,
+            } => {
                 format!("installed {} v{} everywhere", package.name, package.version)
             }
             Action::InstallPackage { package, scope } => {
-                format!("installed {} v{} on {} parcel(s)", package.name, package.version, scope.parcels().len())
+                format!(
+                    "installed {} v{} on {} parcel(s)",
+                    package.name,
+                    package.version,
+                    scope.parcels().len()
+                )
             }
             Action::UninstallPackage { name } => format!("uninstalled {name}"),
-            Action::Intent { intent: Intent::Interact { .. } } => "interacted".into(),
-            Action::Intent { intent: Intent::UseItem { item, .. } } => format!("used {item}"),
-            Action::Intent { intent: Intent::Place { item, .. } } => format!("placed {item}"),
-            Action::Intent { intent: Intent::Key { key, .. } } => format!("pressed {key}"),
-            Action::Intent { intent: Intent::Choose { choice: Some(choice) } } => format!("chose {choice}"),
-            Action::Intent { intent: Intent::Choose { choice: None } } => "closed a panel".into(),
-            Action::Intent { intent: Intent::Hit { .. } } => "attacked".into(),
-            Action::Intent { intent: Intent::Message { name, .. } } => format!("sent \"{name}\""),
-            Action::Intent { intent: Intent::Chat { text, .. } } => format!("said \"{text}\""),
-            Action::Timers { package, effects, .. } => format!("{package}'s timers ({} change(s))", effects.len()),
+            Action::Intent {
+                intent: Intent::Interact { .. },
+            } => "interacted".into(),
+            Action::Intent {
+                intent: Intent::UseItem { item, .. },
+            } => format!("used {item}"),
+            Action::Intent {
+                intent: Intent::Place { item, .. },
+            } => format!("placed {item}"),
+            Action::Intent {
+                intent: Intent::Key { key, .. },
+            } => format!("pressed {key}"),
+            Action::Intent {
+                intent: Intent::Choose {
+                    choice: Some(choice),
+                },
+            } => format!("chose {choice}"),
+            Action::Intent {
+                intent: Intent::Choose { choice: None },
+            } => "closed a panel".into(),
+            Action::Intent {
+                intent: Intent::Hit { .. },
+            } => "attacked".into(),
+            Action::Intent {
+                intent: Intent::Message { name, .. },
+            } => format!("sent \"{name}\""),
+            Action::Intent {
+                intent: Intent::Chat { text, .. },
+            } => format!("said \"{text}\""),
+            Action::Timers {
+                package, effects, ..
+            } => format!("{package}'s timers ({} change(s))", effects.len()),
             Action::Save { name } => format!("saved \"{name}\""),
-            Action::Describe { meaning } if meaning.about.trim().is_empty() && meaning.name.trim().is_empty() => format!("forgot what {} means", meaning.of),
+            Action::Describe { meaning }
+                if meaning.about.trim().is_empty() && meaning.name.trim().is_empty() =>
+            {
+                format!("forgot what {} means", meaning.of)
+            }
             Action::Describe { meaning } => format!("described \"{}\"", meaning.name),
-            Action::Depart { to, items, .. } => format!("left for {to} carrying {} kind(s) of item", items.len()),
-            Action::Arrive { from, items, .. } => format!("arrived from {from} carrying {} kind(s) of item", items.len()),
+            Action::Depart { to, items, .. } => {
+                format!("left for {to} carrying {} kind(s) of item", items.len())
+            }
+            Action::Arrive { from, items, .. } => format!(
+                "arrived from {from} carrying {} kind(s) of item",
+                items.len()
+            ),
             Action::Load { name, .. } => format!("loaded \"{name}\""),
             Action::Restore { to } => format!("restored the world to change {to}"),
-            Action::SetPortal { build, to: Some(to) } => format!("made build {build} a portal to {}", to.label()),
-            Action::SetPortal { build, to: None } => format!("unlinked the portal on build {build}"),
+            Action::SetPortal {
+                build,
+                to: Some(to),
+            } => format!("made build {build} a portal to {}", to.label()),
+            Action::SetPortal { build, to: None } => {
+                format!("unlinked the portal on build {build}")
+            }
         }
     }
 }
@@ -330,10 +440,21 @@ pub struct Change {
 /// (which stays on their machine), the id (which the server assigns), or the state a
 /// load brings (which the host fills in).
 pub fn signing_bytes(by: &Provenance, action: &Action) -> Vec<u8> {
-    let by = Provenance { prompt: None, ..by.clone() };
+    let by = Provenance {
+        prompt: None,
+        ..by.clone()
+    };
     match action {
-        Action::Load { save, name, state: Some(_) } => {
-            let action = Action::Load { save: *save, name: name.clone(), state: None };
+        Action::Load {
+            save,
+            name,
+            state: Some(_),
+        } => {
+            let action = Action::Load {
+                save: *save,
+                name: name.clone(),
+                state: None,
+            };
             serde_json::to_vec(&(by, action)).unwrap_or_default()
         }
         _ => serde_json::to_vec(&(by, action)).unwrap_or_default(),
@@ -343,7 +464,9 @@ pub fn signing_bytes(by: &Provenance, action: &Action) -> Vec<u8> {
 impl Change {
     /// Whether the change carries a valid signature by its author.
     pub fn verified(&self) -> bool {
-        self.sig.as_deref().is_some_and(|sig| verify(&self.by.player, &signing_bytes(&self.by, &self.action), sig))
+        self.sig
+            .as_deref()
+            .is_some_and(|sig| verify(&self.by.player, &signing_bytes(&self.by, &self.action), sig))
     }
 }
 
@@ -392,20 +515,32 @@ impl WorldLog {
 
     /// The ground this world is made of.
     pub fn terrain(&self) -> Terrain {
-        Terrain { seed: self.seed, flat: self.flat, version: self.terrain_version, recipe: self.recipe }
+        Terrain {
+            seed: self.seed,
+            flat: self.flat,
+            version: self.terrain_version,
+            recipe: self.recipe,
+        }
     }
 
     /// Keeps `package` so changes can install it. Returns its hash.
     pub fn add_package(&mut self, package: Package) -> String {
         let hash = package.hash();
-        self.packages.entry(hash.clone()).or_insert_with(|| Arc::new(package));
+        self.packages
+            .entry(hash.clone())
+            .or_insert_with(|| Arc::new(package));
         hash
     }
 
     /// Appends a change and returns its id.
     pub fn push(&mut self, by: Provenance, action: Action) -> u64 {
         let id = self.changes.last().map_or(1, |c| c.id + 1);
-        self.changes.push(Change { id, by, action, sig: None });
+        self.changes.push(Change {
+            id,
+            by,
+            action,
+            sig: None,
+        });
         id
     }
 
@@ -442,7 +577,10 @@ impl WorldLog {
 
     /// Change `id`.
     pub fn change(&self, id: u64) -> Option<&Change> {
-        self.changes.binary_search_by_key(&id, |c| c.id).ok().map(|i| &self.changes[i])
+        self.changes
+            .binary_search_by_key(&id, |c| c.id)
+            .ok()
+            .map(|i| &self.changes[i])
     }
 
     /// Takes old undos out of a log from before undo moved forward ([`Action::Revert`],
@@ -452,7 +590,9 @@ impl WorldLog {
         if !self.changes.iter().any(|c| c.action.is_legacy()) {
             return false;
         }
-        let may_revert = |player: &str, id: u64| self.is_admin(player) || self.change(id).is_some_and(|c| c.by.player == player);
+        let may_revert = |player: &str, id: u64| {
+            self.is_admin(player) || self.change(id).is_some_and(|c| c.by.player == player)
+        };
         // Newest first, so undoing an undo brought its changes back.
         let mut undone = HashSet::new();
         for (i, c) in self.changes.iter().enumerate().rev() {
@@ -463,14 +603,23 @@ impl WorldLog {
                 Action::Revert { change } if may_revert(&c.by.player, *change) => {
                     undone.insert(*change);
                 }
-                Action::Rollback { changes, .. } if self.is_admin(&c.by.player) => undone.extend(changes),
+                Action::Rollback { changes, .. } if self.is_admin(&c.by.player) => {
+                    undone.extend(changes)
+                }
                 Action::Restore { to } if self.is_admin(&c.by.player) => {
-                    undone.extend(self.changes[..i].iter().rev().take_while(|c| c.id > *to).map(|c| c.id));
+                    undone.extend(
+                        self.changes[..i]
+                            .iter()
+                            .rev()
+                            .take_while(|c| c.id > *to)
+                            .map(|c| c.id),
+                    );
                 }
                 _ => {}
             }
         }
-        self.changes.retain(|c| !undone.contains(&c.id) && !c.action.is_legacy());
+        self.changes
+            .retain(|c| !undone.contains(&c.id) && !c.action.is_legacy());
         true
     }
 
@@ -484,12 +633,23 @@ impl WorldLog {
 
     /// The newest save named `name`.
     pub fn save_named(&self, name: &str) -> Option<&Change> {
-        self.saves().rev().find(|(_, n)| n.eq_ignore_ascii_case(name)).map(|(c, _)| c)
+        self.saves()
+            .rev()
+            .find(|(_, n)| n.eq_ignore_ascii_case(name))
+            .map(|(c, _)| c)
     }
 
     /// The log up to change `upto`.
     pub fn upto(&self, upto: u64) -> Self {
-        Self { changes: self.changes.iter().take_while(|c| c.id <= upto).cloned().collect(), ..self.clone() }
+        Self {
+            changes: self
+                .changes
+                .iter()
+                .take_while(|c| c.id <= upto)
+                .cloned()
+                .collect(),
+            ..self.clone()
+        }
     }
 
     /// A new world that starts as this one was at its save `save` (named `name`), whose
@@ -497,8 +657,20 @@ impl WorldLog {
     /// that loads it (by the world, so it needs no admin).
     pub fn fork(&self, save: u64, name: &str, state: WorldState, at: u64) -> Self {
         let by = Provenance::new(WORLD, WORLD, None, None, at);
-        let load = Action::Load { save, name: name.into(), state: Some(Box::new(state)) };
-        Self { changes: vec![Change { id: 1, by, action: load, sig: None }], ..self.clone() }
+        let load = Action::Load {
+            save,
+            name: name.into(),
+            state: Some(Box::new(state)),
+        };
+        Self {
+            changes: vec![Change {
+                id: 1,
+                by,
+                action: load,
+                sig: None,
+            }],
+            ..self.clone()
+        }
     }
 
     /// A stable fingerprint of the whole log, for checking a cache is current.
@@ -509,7 +681,9 @@ impl WorldLog {
 
 /// 64-bit FNV-1a: tiny, and stable across Rust versions (unlike `DefaultHasher`).
 pub fn fnv1a(bytes: &[u8]) -> u64 {
-    bytes.iter().fold(0xcbf2_9ce4_8422_2325, |h, b| (h ^ *b as u64).wrapping_mul(0x0000_0100_0000_01b3))
+    bytes.iter().fold(0xcbf2_9ce4_8422_2325, |h, b| {
+        (h ^ *b as u64).wrapping_mul(0x0000_0100_0000_01b3)
+    })
 }
 
 /// The world a log describes, as of some change.
@@ -550,7 +724,11 @@ pub struct Replay {
 
 /// The columns under a build.
 pub fn area_of(build: &BuildState) -> Area {
-    crate::land::build_area(Vec3::from_array(build.position), build.yaw, &build.spec.size)
+    crate::land::build_area(
+        Vec3::from_array(build.position),
+        build.yaw,
+        &build.spec.size,
+    )
 }
 
 /// Where a change would change the world, to hold it off where someone is working.
@@ -568,8 +746,12 @@ impl Replay {
     pub fn touches(&self, action: &Action) -> Touches {
         let build = |id: &u64| self.builds.get(id).map(area_of);
         let areas: Vec<Area> = match action {
-            Action::PlaceBuild(b) | Action::UpdateBuild(b) => std::iter::once(area_of(b)).chain(build(&b.build)).collect(),
-            Action::RemoveBuild { build: id } | Action::SetPortal { build: id, .. } => build(id).into_iter().collect(),
+            Action::PlaceBuild(b) | Action::UpdateBuild(b) => {
+                std::iter::once(area_of(b)).chain(build(&b.build)).collect()
+            }
+            Action::RemoveBuild { build: id } | Action::SetPortal { build: id, .. } => {
+                build(id).into_iter().collect()
+            }
             Action::Terrain { area, .. } => vec![*area],
             Action::Undo { change } => self
                 .undoable
@@ -579,27 +761,48 @@ impl Replay {
                         .ops
                         .iter()
                         .flat_map(|op| match op {
-                            crate::undo::Op::Build { from, to, .. } => [from, to].into_iter().flatten().map(|p| area_of(&p.build)).collect(),
+                            crate::undo::Op::Build { from, to, .. } => [from, to]
+                                .into_iter()
+                                .flatten()
+                                .map(|p| area_of(&p.build))
+                                .collect(),
                             crate::undo::Op::Land { area, .. } => vec![*area],
                             _ => Vec::new(),
                         })
                         .collect()
                 })
                 .unwrap_or_default(),
-            Action::Load { .. } | Action::Restore { .. } | Action::Rollback { .. } => return Touches::Everywhere,
+            Action::Load { .. } | Action::Restore { .. } | Action::Rollback { .. } => {
+                return Touches::Everywhere;
+            }
             _ => return Touches::Nothing,
         };
-        if areas.is_empty() { Touches::Nothing } else { Touches::Areas(areas) }
+        if areas.is_empty() {
+            Touches::Nothing
+        } else {
+            Touches::Areas(areas)
+        }
     }
 }
 
 pub fn parcels_of(build: &BuildState) -> Vec<IVec2> {
-    build_parcels(Vec3::from_array(build.position), build.yaw, &build.spec.size)
+    build_parcels(
+        Vec3::from_array(build.position),
+        build.yaw,
+        &build.spec.size,
+    )
 }
 
 /// What a terrain change costs: its changed voxels, charged to its author.
 pub fn terrain_footprint(player: &str, changed: usize) -> Footprint {
-    Footprint { owner: player.into(), parcels: Vec::new(), usage: Usage { terrain: changed, ..Default::default() } }
+    Footprint {
+        owner: player.into(),
+        parcels: Vec::new(),
+        usage: Usage {
+            terrain: changed,
+            ..Default::default()
+        },
+    }
 }
 
 /// Rebuilds everything: builds, land, budgets, and voxel edits.
@@ -687,12 +890,19 @@ impl Snapshot {
 
     /// `state`, the world as of the log's change `upto`.
     pub fn at(log: &WorldLog, upto: u64, state: WorldState) -> Self {
-        Self { upto, at: log.change(upto).map_or(0, print_of), state }
+        Self {
+            upto,
+            at: log.change(upto).map_or(0, print_of),
+            state,
+        }
     }
 
     /// Whether it's a snapshot of this log.
     pub fn fits(&self, log: &WorldLog) -> bool {
-        self.upto == 0 || log.change(self.upto).is_some_and(|c| print_of(c) == self.at)
+        self.upto == 0
+            || log
+                .change(self.upto)
+                .is_some_and(|c| print_of(c) == self.at)
     }
 }
 
@@ -706,7 +916,10 @@ pub fn replay_from(log: &WorldLog, snapshot: Option<&Snapshot>) -> Replay {
     out.load_state(&snapshot.state, true);
     for change in log.changes.iter().filter(|c| c.id > snapshot.upto) {
         if let Err(why) = out.apply(change, true) {
-            out.problems.push(format!("change {} by {}: {why}", change.id, change.by.player_name));
+            out.problems.push(format!(
+                "change {} by {}: {why}",
+                change.id, change.by.player_name
+            ));
         }
     }
     out
@@ -725,7 +938,10 @@ pub fn chunk_of(p: IVec3) -> IVec3 {
 }
 
 /// The edits inside each of `chunks`, as `[x, y, z, block]`, sorted.
-pub fn chunk_edits(edits: &HashMap<IVec3, VoxelId>, chunks: &[IVec3]) -> HashMap<IVec3, Vec<[i32; 4]>> {
+pub fn chunk_edits(
+    edits: &HashMap<IVec3, VoxelId>,
+    chunks: &[IVec3],
+) -> HashMap<IVec3, Vec<[i32; 4]>> {
     let mut out: HashMap<IVec3, Vec<[i32; 4]>> = chunks.iter().map(|c| (*c, Vec::new())).collect();
     for (p, id) in edits {
         if let Some(list) = out.get_mut(&chunk_of(*p)) {
@@ -744,7 +960,11 @@ pub fn chunk_prints(edits: &HashMap<IVec3, VoxelId>, chunks: &[IVec3]) -> Vec<([
     let mut prints: Vec<([i32; 3], u64)> = chunk_edits(edits, chunks)
         .into_iter()
         .map(|(c, list)| {
-            let bytes: Vec<u8> = list.iter().flatten().flat_map(|v| v.to_le_bytes()).collect();
+            let bytes: Vec<u8> = list
+                .iter()
+                .flatten()
+                .flat_map(|v| v.to_le_bytes())
+                .collect();
             (c.to_array(), fnv1a(&bytes))
         })
         .collect();
@@ -757,7 +977,10 @@ fn walk(log: &WorldLog, voxels: bool, runtime: Option<Arc<dyn Runtime>>) -> Repl
     out.logic.runtime = runtime;
     for change in &log.changes {
         if let Err(why) = out.apply(change, voxels) {
-            out.problems.push(format!("change {} by {}: {why}", change.id, change.by.player_name));
+            out.problems.push(format!(
+                "change {} by {}: {why}",
+                change.id, change.by.player_name
+            ));
         }
     }
     out
@@ -767,7 +990,12 @@ impl Replay {
     /// Applies what a game did to the world's voxels, as `installer` (whose land and
     /// budget it uses): all of it, or none of it if any part isn't allowed. Returns the
     /// voxel edits, if `voxels`.
-    fn apply_world(&mut self, installer: &str, world: &[WorldChange], voxels: bool) -> Result<Vec<(IVec3, VoxelId)>, String> {
+    fn apply_world(
+        &mut self,
+        installer: &str,
+        world: &[WorldChange],
+        voxels: bool,
+    ) -> Result<Vec<(IVec3, VoxelId)>, String> {
         if world.is_empty() {
             return Ok(Vec::new());
         }
@@ -780,7 +1008,14 @@ impl Replay {
         for change in world {
             match change {
                 WorldChange::Portal { id, to } => linked.push((*id, to.clone())),
-                WorldChange::Build { id, package, model, spec, position, yaw } => {
+                WorldChange::Build {
+                    id,
+                    package,
+                    model,
+                    spec,
+                    position,
+                    yaw,
+                } => {
                     let build = BuildState {
                         build: *id,
                         name: model.clone(),
@@ -790,25 +1025,54 @@ impl Replay {
                         position: *position,
                         yaw: *yaw,
                     };
-                    self.land.authorize(installer, &parcels_of(&build)).map_err(|e| format!("{package}: {e}"))?;
-                    let footprint = Footprint { owner: installer.into(), parcels: parcels_of(&build), usage: build_usage(spec) };
-                    budgets.check(&footprint, None, &self.rules.budgets).map_err(|e| format!("{package}: {e}"))?;
+                    self.land
+                        .authorize(installer, &parcels_of(&build))
+                        .map_err(|e| format!("{package}: {e}"))?;
+                    let footprint = Footprint {
+                        owner: installer.into(),
+                        parcels: parcels_of(&build),
+                        usage: build_usage(spec),
+                    };
+                    budgets
+                        .check(&footprint, None, &self.rules.budgets)
+                        .map_err(|e| format!("{package}: {e}"))?;
                     budgets.add(&footprint);
                     placed.push((build, footprint));
                 }
                 WorldChange::Unbuild { id } => removed.push(*id),
-                WorldChange::Terrain { package, area, spec } => {
-                    self.land.authorize(installer, &area_parcels(*area)).map_err(|e| format!("{package}: {e}"))?;
+                WorldChange::Terrain {
+                    package,
+                    area,
+                    spec,
+                } => {
+                    self.land
+                        .authorize(installer, &area_parcels(*area))
+                        .map_err(|e| format!("{package}: {e}"))?;
                     // What it costs is its area, so the cost is the same with or without voxels.
-                    let cost = terrain_footprint(installer, (area.size[0] * area.size[1]).max(0) as usize);
-                    budgets.check(&cost, None, &self.rules.budgets).map_err(|e| format!("{package}: {e}"))?;
+                    let cost =
+                        terrain_footprint(installer, (area.size[0] * area.size[1]).max(0) as usize);
+                    budgets
+                        .check(&cost, None, &self.rules.budgets)
+                        .map_err(|e| format!("{package}: {e}"))?;
                     budgets.add(&cost);
                     if voxels {
                         let terrain = self.terrain();
                         let columns = ground_columns(terrain, *area, &self.edits);
-                        let edit = sculpt::compile(spec, *area, terrain, columns, &self.rules.terrain, &self.rules.content)
-                            .map_err(|errors| format!("{package}'s land change: {}", errors.join("; ")))?;
-                        let edits = self.land.authorize_terrain(installer, *area, edit.edits).expect("authorized above");
+                        let edit = sculpt::compile(
+                            spec,
+                            *area,
+                            terrain,
+                            columns,
+                            &self.rules.terrain,
+                            &self.rules.content,
+                        )
+                        .map_err(|errors| {
+                            format!("{package}'s land change: {}", errors.join("; "))
+                        })?;
+                        let edits = self
+                            .land
+                            .authorize_terrain(installer, *area, edit.edits)
+                            .expect("authorized above");
                         made.extend(edits);
                     }
                 }
@@ -839,20 +1103,38 @@ impl Replay {
 
     /// The whole world as it is now (with its voxels, if it was replayed with them).
     pub fn state(&self) -> WorldState {
-        let mut edits: Vec<[i32; 4]> = self.edits.iter().map(|(p, id)| [p.x, p.y, p.z, *id as i32]).collect();
+        let mut edits: Vec<[i32; 4]> = self
+            .edits
+            .iter()
+            .map(|(p, id)| [p.x, p.y, p.z, *id as i32])
+            .collect();
         edits.sort_unstable();
-        let mut terrain: Vec<(String, usize)> = self.budgets.players.iter().filter(|(_, u)| u.terrain > 0).map(|(p, u)| (p.clone(), u.terrain)).collect();
+        let mut terrain: Vec<(String, usize)> = self
+            .budgets
+            .players
+            .iter()
+            .filter(|(_, u)| u.terrain > 0)
+            .map(|(p, u)| (p.clone(), u.terrain))
+            .collect();
         terrain.sort();
         WorldState {
             rules: self.rules.clone(),
-            builds: self.builds.keys().filter_map(|id| self.placed(*id)).collect(),
+            builds: self
+                .builds
+                .keys()
+                .filter_map(|id| self.placed(*id))
+                .collect(),
             parcels: Vec::new(),
             terrain,
             installed: self.logic.installed.values().cloned().collect(),
             game: self.logic.state.clone(),
             timers_until: self.logic.timers_until,
             edits,
-            undoable: self.undoable.iter().map(|(id, r)| (*id, r.clone())).collect(),
+            undoable: self
+                .undoable
+                .iter()
+                .map(|(id, r)| (*id, r.clone()))
+                .collect(),
         }
     }
 
@@ -867,7 +1149,11 @@ impl Replay {
         self.budgets = Budgets::default();
         for placed in &state.builds {
             let id = placed.build.build;
-            let footprint = Footprint { owner: placed.owner.clone(), parcels: parcels_of(&placed.build), usage: build_usage(&placed.build.spec) };
+            let footprint = Footprint {
+                owner: placed.owner.clone(),
+                parcels: parcels_of(&placed.build),
+                usage: build_usage(&placed.build.spec),
+            };
             self.budgets.add(&footprint);
             self.footprints.insert(id, footprint);
             self.builds.insert(id, placed.build.clone());
@@ -878,30 +1164,64 @@ impl Replay {
         for (player, voxels) in &state.terrain {
             self.budgets.add(&terrain_footprint(player, *voxels));
         }
-        self.logic.installed = state.installed.iter().map(|i| (i.package.name.clone(), i.clone())).collect();
+        self.logic.installed = state
+            .installed
+            .iter()
+            .map(|i| (i.package.name.clone(), i.clone()))
+            .collect();
         self.logic.state = state.game.clone();
         self.logic.timers_until = state.timers_until;
-        self.edits = if voxels { state.edits.iter().map(|[x, y, z, id]| (IVec3::new(*x, *y, *z), *id as VoxelId)).collect() } else { HashMap::new() };
+        self.edits = if voxels {
+            state
+                .edits
+                .iter()
+                .map(|[x, y, z, id]| (IVec3::new(*x, *y, *z), *id as VoxelId))
+                .collect()
+        } else {
+            HashMap::new()
+        };
         self.undoable = state.undoable.iter().cloned().collect();
     }
 
     /// The ground the world is made of.
     pub fn terrain(&self) -> Terrain {
-        Terrain { seed: self.seed, flat: self.flat, version: self.terrain_version, recipe: self.recipe }
+        Terrain {
+            seed: self.seed,
+            flat: self.flat,
+            version: self.terrain_version,
+            recipe: self.recipe,
+        }
     }
 
     /// The world before any change: the log's seed, admins and starting rules.
     pub fn new(log: &WorldLog) -> Self {
         let rules = log.rules.clone();
         let land = Land::new(log.admins.clone(), rules.spawn.clone());
-        let logic = Logic { packages: log.packages.clone(), ..Default::default() };
-        Self { seed: log.seed, flat: log.flat, terrain_version: log.terrain_version, recipe: log.recipe, admins: log.admins.clone(), land, rules, logic, ..Default::default() }
+        let logic = Logic {
+            packages: log.packages.clone(),
+            ..Default::default()
+        };
+        Self {
+            seed: log.seed,
+            flat: log.flat,
+            terrain_version: log.terrain_version,
+            recipe: log.recipe,
+            admins: log.admins.clone(),
+            land,
+            rules,
+            logic,
+            ..Default::default()
+        }
     }
 
     /// Applies one change on top of the current state, or says why the rules refuse it
     /// (leaving the state as it was). Returns the voxel edits it made, if `voxels` (an
     /// undo returns the voxels it sets back either way: it knows them).
-    pub fn apply(&mut self, change: &Change, voxels: bool) -> Result<Vec<(IVec3, VoxelId)>, String> {
+    pub fn apply(
+        &mut self,
+        change: &Change,
+        voxels: bool,
+    ) -> Result<Vec<(IVec3, VoxelId)>, String> {
         self.last_world = None;
         self.last_cells.clear();
         self.reloaded = false;
@@ -927,12 +1247,17 @@ impl Replay {
             _ => None,
         };
         if let Some(cost) = cost.filter(|_| !admin) {
-            self.rates.check(&self.rules.rates, &by.player, by.at, cost)?;
+            self.rates
+                .check(&self.rules.rates, &by.player, by.at, cost)?;
         }
         // A game that is the world keeps players playing, not building.
         let builds = matches!(
             change.action,
-            Action::PlaceBuild(_) | Action::UpdateBuild(_) | Action::RemoveBuild { .. } | Action::Terrain { .. } | Action::ClaimParcels { .. }
+            Action::PlaceBuild(_)
+                | Action::UpdateBuild(_)
+                | Action::RemoveBuild { .. }
+                | Action::Terrain { .. }
+                | Action::ClaimParcels { .. }
         );
         if builds && !admin && !self.logic.building_allowed() {
             return Err("this world is a game right now: only admins build here".into());
@@ -946,7 +1271,12 @@ impl Replay {
                 let before = self.placed(b.build);
                 // Moving a build needs rights where it was and where it goes.
                 let mut touched = parcels_of(b);
-                touched.extend(self.builds.get(&b.build).map(parcels_of).unwrap_or_default());
+                touched.extend(
+                    self.builds
+                        .get(&b.build)
+                        .map(parcels_of)
+                        .unwrap_or_default(),
+                );
                 let old = self.footprints.get(&b.build);
                 let new = Footprint {
                     owner: old.map_or(by.player.clone(), |o| o.owner.clone()),
@@ -961,14 +1291,22 @@ impl Replay {
                 self.budgets.add(&new);
                 self.footprints.insert(b.build, new);
                 self.builds.insert(b.build, b.clone());
-                let op = Op::Build { id: b.build, from: before.map(Box::new), to: self.placed(b.build).map(Box::new) };
+                let op = Op::Build {
+                    id: b.build,
+                    from: before.map(Box::new),
+                    to: self.placed(b.build).map(Box::new),
+                };
                 self.remember(change.id, &by.player, false, vec![op]);
             }
             Action::RemoveBuild { build } => {
                 let touched = self.builds.get(build).map(parcels_of).unwrap_or_default();
                 self.land.authorize(&by.player, &touched)?;
                 if let Some(before) = self.placed(*build) {
-                    let op = Op::Build { id: *build, from: Some(Box::new(before)), to: None };
+                    let op = Op::Build {
+                        id: *build,
+                        from: Some(Box::new(before)),
+                        to: None,
+                    };
                     self.remember(change.id, &by.player, false, vec![op]);
                 }
                 self.builds.remove(build);
@@ -978,7 +1316,12 @@ impl Replay {
                     self.budgets.remove(&old);
                 }
             }
-            Action::Terrain { name, area, spec, changed } => {
+            Action::Terrain {
+                name,
+                area,
+                spec,
+                changed,
+            } => {
                 let cost = terrain_footprint(&by.player, *changed);
                 self.land.authorize(&by.player, &area_parcels(*area))?;
                 self.budgets.check(&cost, None, &self.rules.budgets)?;
@@ -987,30 +1330,59 @@ impl Replay {
                     let terrain = self.terrain();
                     let columns = ground_columns(terrain, *area, &self.edits);
                     let ground = columns.clone();
-                    let edit = sculpt::compile(spec, *area, terrain, columns, &self.rules.terrain, &self.rules.content)
-                        .map_err(|errors| format!("\"{name}\" {}", errors.join("; ")))?;
-                    let edits = self.land.authorize_terrain(&by.player, *area, edit.edits).expect("authorized above");
+                    let edit = sculpt::compile(
+                        spec,
+                        *area,
+                        terrain,
+                        columns,
+                        &self.rules.terrain,
+                        &self.rules.content,
+                    )
+                    .map_err(|errors| format!("\"{name}\" {}", errors.join("; ")))?;
+                    let edits = self
+                        .land
+                        .authorize_terrain(&by.player, *area, edit.edits)
+                        .expect("authorized above");
                     cells = edits
                         .iter()
-                        .map(|(p, id)| Cell { p: p.to_array(), from: (self.edits.get(p).copied(), ground.original(*p).unwrap_or(*id)), to: (Some(*id), *id) })
+                        .map(|(p, id)| Cell {
+                            p: p.to_array(),
+                            from: (
+                                self.edits.get(p).copied(),
+                                ground.original(*p).unwrap_or(*id),
+                            ),
+                            to: (Some(*id), *id),
+                        })
                         .collect();
                     self.edits.extend(edits.iter().copied());
                     made = edits;
                 }
                 self.budgets.add(&cost);
-                let op = Op::Land { owner: by.player.clone(), area: *area, cost: *changed, charge: true, cells };
+                let op = Op::Land {
+                    owner: by.player.clone(),
+                    area: *area,
+                    cost: *changed,
+                    charge: true,
+                    cells,
+                };
                 self.remember(change.id, &by.player, false, vec![op]);
             }
             // Claims are retired: old logs still have them, and they change nothing.
             Action::ClaimParcels { .. } | Action::ReleaseParcels { .. } => {}
             Action::LegacyVoxels { edits } => {
                 if voxels {
-                    made = edits.iter().map(|[x, y, z, id]| (IVec3::new(*x, *y, *z), *id as VoxelId)).collect();
+                    made = edits
+                        .iter()
+                        .map(|[x, y, z, id]| (IVec3::new(*x, *y, *z), *id as VoxelId))
+                        .collect();
                     self.edits.extend(made.iter().copied());
                 }
             }
             Action::SetRules { rules } if admin => {
-                let op = Op::Rules { from: Box::new(self.rules.clone()), to: Box::new(rules.clone()) };
+                let op = Op::Rules {
+                    from: Box::new(self.rules.clone()),
+                    to: Box::new(rules.clone()),
+                };
                 self.land.spawn = rules.spawn.clone();
                 self.rules = rules.clone();
                 self.remember(change.id, &by.player, false, vec![op]);
@@ -1019,7 +1391,8 @@ impl Replay {
             Action::InstallPackage { package, scope } => {
                 self.land.authorize(&by.player, &scope.parcels())?;
                 let from = self.logic.installed.get(&package.name).cloned();
-                self.logic.install(&by.player, admin, &self.rules.logic, package, scope)?;
+                self.logic
+                    .install(&by.player, admin, &self.rules.logic, package, scope)?;
                 // New to the world, or a new version: the game sets it up (`on_start`,
                 // with `ev.upgrade` for a new version, which keeps what's there).
                 let upgrade = from.as_ref().filter(|f| f.package != *package).map(|old| {
@@ -1033,20 +1406,34 @@ impl Replay {
                 if from.is_none() || upgrade.is_some() {
                     let start = self
                         .logic
-                        .prepare_start(change.id, &by.player, by.at, self.seed, &self.rules.logic, &package.name, upgrade.as_ref(), self)
+                        .prepare_start(
+                            change.id,
+                            &by.player,
+                            by.at,
+                            self.seed,
+                            &self.rules.logic,
+                            &package.name,
+                            upgrade.as_ref(),
+                            self,
+                        )
                         .and_then(|prepared| {
-                            let world = self.apply_world(&prepared.installer, &prepared.world, voxels)?;
+                            let world =
+                                self.apply_world(&prepared.installer, &prepared.world, voxels)?;
                             Ok((prepared, world))
                         });
                     match start {
                         Ok((prepared, world)) => {
                             made = world;
-                            self.last_world = Some((prepared.installer.clone(), prepared.world.clone()));
+                            self.last_world =
+                                Some((prepared.installer.clone(), prepared.world.clone()));
                             self.logic.commit(prepared);
                         }
                         Err(why) => {
                             match &from {
-                                Some(old) => self.logic.installed.insert(package.name.clone(), old.clone()),
+                                Some(old) => self
+                                    .logic
+                                    .installed
+                                    .insert(package.name.clone(), old.clone()),
                                 None => self.logic.installed.remove(&package.name),
                             };
                             return Err(format!("{}'s on_start: {why}", package.name));
@@ -1054,28 +1441,65 @@ impl Replay {
                     }
                 }
                 let to = self.logic.installed.get(&package.name).cloned();
-                self.remember(change.id, &by.player, false, vec![Op::Install { name: package.name.clone(), from, to }]);
+                self.remember(
+                    change.id,
+                    &by.player,
+                    false,
+                    vec![Op::Install {
+                        name: package.name.clone(),
+                        from,
+                        to,
+                    }],
+                );
             }
-            Action::UninstallPackage { name } => self.logic.uninstall(&by.player, admin, &self.rules.logic, name)?,
+            Action::UninstallPackage { name } => {
+                self.logic
+                    .uninstall(&by.player, admin, &self.rules.logic, name)?
+            }
             Action::Intent { .. } if self.rules.logic.paused => return Err(PAUSED.into()),
             Action::Intent { intent } => {
-                let prepared = self.logic.prepare(change.id, &by.player, by.at, self.seed, &self.rules.logic, intent, self)?;
+                let prepared = self.logic.prepare(
+                    change.id,
+                    &by.player,
+                    by.at,
+                    self.seed,
+                    &self.rules.logic,
+                    intent,
+                    self,
+                )?;
                 made = self.apply_world(&prepared.installer, &prepared.world, voxels)?;
                 self.last_world = Some((prepared.installer.clone(), prepared.world.clone()));
                 self.logic.commit(prepared);
             }
             Action::Timers { .. } if !admin => return Err("only the world runs timers".into()),
-            Action::Depart { .. } | Action::Arrive { .. } if !admin => return Err("only the world moves players between worlds".into()),
+            Action::Depart { .. } | Action::Arrive { .. } if !admin => {
+                return Err("only the world moves players between worlds".into());
+            }
             Action::Depart { player, items, .. } => {
                 self.logic.state.carry_out(player, items)?;
                 self.logic.state.carry_stats(player, None);
             }
-            Action::Arrive { player, items, stats, .. } => {
+            Action::Arrive {
+                player,
+                items,
+                stats,
+                ..
+            } => {
                 self.logic.state.carry_in(player, items);
                 self.logic.state.carry_stats(player, Some(stats));
             }
-            Action::Timers { package, until, effects } => {
-                let prepared = self.logic.prepare_timers(change.id, package, *until, effects, &self.rules.logic)?;
+            Action::Timers {
+                package,
+                until,
+                effects,
+            } => {
+                let prepared = self.logic.prepare_timers(
+                    change.id,
+                    package,
+                    *until,
+                    effects,
+                    &self.rules.logic,
+                )?;
                 made = self.apply_world(&prepared.installer, &prepared.world, voxels)?;
                 self.last_world = Some((prepared.installer.clone(), prepared.world.clone()));
                 self.logic.commit(prepared);
@@ -1097,7 +1521,10 @@ impl Replay {
                 }
             }
             Action::SetPortal { build, to } => {
-                let placed = self.builds.get(build).ok_or(format!("there's no build {build}"))?;
+                let placed = self
+                    .builds
+                    .get(build)
+                    .ok_or(format!("there's no build {build}"))?;
                 self.land.authorize(&by.player, &parcels_of(placed))?;
                 let before = self.placed(*build);
                 match to {
@@ -1109,13 +1536,23 @@ impl Replay {
                         self.portals.remove(build);
                     }
                 }
-                let op = Op::Build { id: *build, from: before.map(Box::new), to: self.placed(*build).map(Box::new) };
+                let op = Op::Build {
+                    id: *build,
+                    from: before.map(Box::new),
+                    to: self.placed(*build).map(Box::new),
+                };
                 self.remember(change.id, &by.player, false, vec![op]);
             }
-            Action::Undo { change: target } => made = self.undo(change.id, *target, by, admin, voxels)?,
+            Action::Undo { change: target } => {
+                made = self.undo(change.id, *target, by, admin, voxels)?
+            }
             Action::Load { .. } if !admin => return Err("only admins load saves".into()),
-            Action::Load { state: None, name, .. } => return Err(format!("the save \"{name}\" didn't come with the load")),
-            Action::Load { state: Some(state), .. } => {
+            Action::Load {
+                state: None, name, ..
+            } => return Err(format!("the save \"{name}\" didn't come with the load")),
+            Action::Load {
+                state: Some(state), ..
+            } => {
                 self.load_state(state, voxels);
                 self.reloaded = true;
             }
@@ -1135,7 +1572,11 @@ impl Replay {
 /// top (a replay without voxels knows only the seed's).
 impl crate::logic::Ground for Replay {
     fn heights(&self, min: [i32; 2], step: i32, count: [i32; 2]) -> Option<Vec<Option<i32>>> {
-        TerrainGround { terrain: self.terrain(), edits: &self.edits }.heights(min, step, count)
+        TerrainGround {
+            terrain: self.terrain(),
+            edits: &self.edits,
+        }
+        .heights(min, step, count)
     }
 
     fn solids(&self, lo: [f32; 2], hi: [f32; 2]) -> Vec<crate::logic::solid::Solid<'_>> {
@@ -1160,7 +1601,13 @@ impl crate::logic::Ground for TerrainGround<'_> {
         let mut edited: HashMap<(i32, i32), Vec<(i32, VoxelId)>> = HashMap::new();
         for (p, id) in self.edits {
             let (dx, dz) = (p.x - min[0], p.z - min[1]);
-            if p.x >= min[0] && p.z >= min[1] && p.x < max[0] && p.z < max[1] && dx % step == 0 && dz % step == 0 {
+            if p.x >= min[0]
+                && p.z >= min[1]
+                && p.x < max[0]
+                && p.z < max[1]
+                && dx % step == 0
+                && dz % step == 0
+            {
                 edited.entry((p.x, p.z)).or_default().push((p.y, *id));
             }
         }
@@ -1196,7 +1643,6 @@ impl crate::logic::Ground for TerrainGround<'_> {
         }
         Some(out)
     }
-
 }
 
 /// The columns a terrain change in `area` reads, generated from the seed with `edits`
@@ -1204,7 +1650,10 @@ impl crate::logic::Ground for TerrainGround<'_> {
 pub fn ground_columns(terrain: Terrain, area: Area, edits: &HashMap<IVec3, VoxelId>) -> Columns {
     let (min, size) = Columns::bounds(area);
     let origin = IVec3::new(min.x, 0, min.y);
-    let mut grid = terrain.generate(origin, UVec3::new(size.x as u32, WORLD_HEIGHT as u32, size.y as u32));
+    let mut grid = terrain.generate(
+        origin,
+        UVec3::new(size.x as u32, WORLD_HEIGHT as u32, size.y as u32),
+    );
     let max = min + size;
     for (p, id) in edits {
         let c = IVec2::new(p.x, p.z);
@@ -1236,7 +1685,13 @@ mod tests {
     fn pond(x: i32) -> Action {
         let op = TerrainOp {
             kind: "water".into(),
-            area: Some(OpArea { shape: "ellipse".into(), x: 1.0, z: 1.0, w: 4.0, d: 4.0 }),
+            area: Some(OpArea {
+                shape: "ellipse".into(),
+                x: 1.0,
+                z: 1.0,
+                w: 4.0,
+                d: 4.0,
+            }),
             points: None,
             amount_m: None,
             level_m: None,
@@ -1249,8 +1704,15 @@ mod tests {
         };
         Action::Terrain {
             name: "Pond".into(),
-            area: Area { min: [x, 0], size: [24, 24] },
-            spec: TerrainSpec { name: "Pond".into(), ops: vec![op], about: None },
+            area: Area {
+                min: [x, 0],
+                size: [24, 24],
+            },
+            spec: TerrainSpec {
+                name: "Pond".into(),
+                ops: vec![op],
+                about: None,
+            },
             changed: 0,
         }
     }
@@ -1278,14 +1740,51 @@ mod tests {
         log.admins = vec!["admin".into()];
         let items = vec![("farm:seed".to_string(), 3)];
         // Bo can't make things up by arriving with them.
-        log.push(by("bo"), Action::Arrive { player: "bo".into(), from: "x".into(), items: items.clone(), stats: Vec::new() });
+        log.push(
+            by("bo"),
+            Action::Arrive {
+                player: "bo".into(),
+                from: "x".into(),
+                items: items.clone(),
+                stats: Vec::new(),
+            },
+        );
         assert_eq!(replay_land(&log).logic.state.items("bo", "farm:seed"), 0);
-        log.push(by(WORLD), Action::Arrive { player: "bo".into(), from: "x".into(), items: items.clone(), stats: Vec::new() });
+        log.push(
+            by(WORLD),
+            Action::Arrive {
+                player: "bo".into(),
+                from: "x".into(),
+                items: items.clone(),
+                stats: Vec::new(),
+            },
+        );
         assert_eq!(replay_land(&log).logic.state.items("bo", "farm:seed"), 3);
         // Leaving takes exactly what was carried, and can't take more.
-        log.push(by(WORLD), Action::Depart { player: "bo".into(), to: "y".into(), items: vec![("farm:seed".into(), 5)], stats: Vec::new() });
-        assert!(replay_land(&log).problems.iter().any(|p| p.contains("doesn't carry")));
-        log.push(by(WORLD), Action::Depart { player: "bo".into(), to: "y".into(), items, stats: Vec::new() });
+        log.push(
+            by(WORLD),
+            Action::Depart {
+                player: "bo".into(),
+                to: "y".into(),
+                items: vec![("farm:seed".into(), 5)],
+                stats: Vec::new(),
+            },
+        );
+        assert!(
+            replay_land(&log)
+                .problems
+                .iter()
+                .any(|p| p.contains("doesn't carry"))
+        );
+        log.push(
+            by(WORLD),
+            Action::Depart {
+                player: "bo".into(),
+                to: "y".into(),
+                items,
+                stats: Vec::new(),
+            },
+        );
         assert_eq!(replay_land(&log).logic.state.inventory("bo").count(), 0);
     }
 
@@ -1305,21 +1804,61 @@ mod tests {
         log.push(by("ada"), away(lamp(1)));
         let to = |name: &str| Some(PortalTo::parse(name).unwrap());
         // Anyone who can edit makes any build a portal, and the latest says where to.
-        log.push(by("bo"), Action::SetPortal { build: 1, to: to("bos-world") });
-        assert_eq!(portals(&log)[&1], PortalTo::World { name: "bos-world".into() });
-        log.push(by("ada"), Action::SetPortal { build: 1, to: to("Sokoban") });
-        assert_eq!(portals(&log)[&1], PortalTo::World { name: "sokoban".into() });
-        assert_eq!(PortalTo::parse("host.example:7780"), Ok(PortalTo::Server { addr: "host.example:7780".into() }));
+        log.push(
+            by("bo"),
+            Action::SetPortal {
+                build: 1,
+                to: to("bos-world"),
+            },
+        );
+        assert_eq!(
+            portals(&log)[&1],
+            PortalTo::World {
+                name: "bos-world".into()
+            }
+        );
+        log.push(
+            by("ada"),
+            Action::SetPortal {
+                build: 1,
+                to: to("Sokoban"),
+            },
+        );
+        assert_eq!(
+            portals(&log)[&1],
+            PortalTo::World {
+                name: "sokoban".into()
+            }
+        );
+        assert_eq!(
+            PortalTo::parse("host.example:7780"),
+            Ok(PortalTo::Server {
+                addr: "host.example:7780".into()
+            })
+        );
         assert!(PortalTo::parse("no spaces").is_err());
         // Moving the build keeps the link; removing it drops the link.
-        let Action::PlaceBuild(mut moved) = away(lamp(1)) else { unreachable!() };
+        let Action::PlaceBuild(mut moved) = away(lamp(1)) else {
+            unreachable!()
+        };
         moved.position[0] += 2.0;
         log.push(by("ada"), Action::UpdateBuild(moved));
         assert_eq!(portals(&log).len(), 1);
         log.push(by("ada"), Action::RemoveBuild { build: 1 });
         assert!(portals(&log).is_empty());
-        log.push(by("ada"), Action::SetPortal { build: 1, to: to("sokoban") });
-        assert!(replay_land(&log).problems.iter().any(|p| p.contains("no build 1")));
+        log.push(
+            by("ada"),
+            Action::SetPortal {
+                build: 1,
+                to: to("sokoban"),
+            },
+        );
+        assert!(
+            replay_land(&log)
+                .problems
+                .iter()
+                .any(|p| p.contains("no build 1"))
+        );
     }
 
     #[test]
@@ -1328,21 +1867,38 @@ mod tests {
         log.admins = vec!["admin".into()];
         let builds = |log: &WorldLog| replay_land(log).builds.keys().copied().collect::<Vec<_>>();
         log.push(by("admin"), lamp(1));
-        let first = log.push(by("ada"), Action::Save { name: "first".into() });
+        let first = log.push(
+            by("ada"),
+            Action::Save {
+                name: "first".into(),
+            },
+        );
         let at_first = state_at(&log, first, None);
         log.push(by("admin"), lamp(3));
-        let second = log.push(by("ada"), Action::Save { name: "second".into() });
+        let second = log.push(
+            by("ada"),
+            Action::Save {
+                name: "second".into(),
+            },
+        );
         let at_second = state_at(&log, second, None);
         log.push(by("admin"), lamp(4));
         assert_eq!(builds(&log), vec![1, 3, 4]);
-        let load = |save: u64, name: &str, state: &WorldState| Action::Load { save, name: name.into(), state: Some(Box::new(state.clone())) };
+        let load = |save: u64, name: &str, state: &WorldState| Action::Load {
+            save,
+            name: name.into(),
+            state: Some(Box::new(state.clone())),
+        };
         // Players save, but only admins load.
         log.push(by("ada"), load(first, "first", &at_first));
         assert_eq!(builds(&log), vec![1, 3, 4]);
         log.push(by("admin"), load(first, "first", &at_first));
         assert_eq!(builds(&log), vec![1]);
         // Saves made after the loaded one are still there to load, and the history stays.
-        assert_eq!(log.saves().map(|(_, n)| n).collect::<Vec<_>>(), vec!["first", "second"]);
+        assert_eq!(
+            log.saves().map(|(_, n)| n).collect::<Vec<_>>(),
+            vec!["first", "second"]
+        );
         assert_eq!(log.save_named("SECOND").map(|c| c.id), Some(second));
         log.push(by("admin"), load(second, "second", &at_second));
         assert_eq!(builds(&log), vec![1, 3]);
@@ -1351,8 +1907,21 @@ mod tests {
         log.push(by("admin"), Action::Undo { change: five });
         assert_eq!(builds(&log), vec![1, 3]);
         // A load without the state (only its signer's part) doesn't apply.
-        log.push(by("admin"), Action::Load { save: first, name: "first".into(), state: None });
-        assert!(replay_land(&log).problems.last().unwrap().contains("didn't come"));
+        log.push(
+            by("admin"),
+            Action::Load {
+                save: first,
+                name: "first".into(),
+                state: None,
+            },
+        );
+        assert!(
+            replay_land(&log)
+                .problems
+                .last()
+                .unwrap()
+                .contains("didn't come")
+        );
         // A fork starts from the save, with none of the history.
         let fork = log.fork(first, "first", at_first, 0);
         assert_eq!(fork.changes.len(), 1);
@@ -1369,7 +1938,13 @@ mod tests {
         log.push(by("admin"), Action::Revert { change: two });
         let save = log.push(by("admin"), Action::Save { name: "s".into() });
         log.push(by("admin"), lamp(4));
-        log.push(by("bo"), Action::Rollback { changes: vec![1], note: "not an admin".into() });
+        log.push(
+            by("bo"),
+            Action::Rollback {
+                changes: vec![1],
+                note: "not an admin".into(),
+            },
+        );
         log.push(by("admin"), Action::Restore { to: save });
         assert!(log.migrate());
         assert!(!log.migrate());
@@ -1388,8 +1963,13 @@ mod tests {
         log.push(by("a"), lamp(1));
         log.push(by("b"), pond(410));
         let first = replay(&log);
-        assert!(!first.edits.is_empty() && first.problems.is_empty(), "{:?}", first.problems);
-        let reloaded: WorldLog = serde_json::from_str(&serde_json::to_string(&log).unwrap()).unwrap();
+        assert!(
+            !first.edits.is_empty() && first.problems.is_empty(),
+            "{:?}",
+            first.problems
+        );
+        let reloaded: WorldLog =
+            serde_json::from_str(&serde_json::to_string(&log).unwrap()).unwrap();
         assert_eq!(reloaded.hash(), log.hash());
         let second = replay(&reloaded);
         assert_eq!(first.edits, second.edits);
@@ -1400,9 +1980,16 @@ mod tests {
     fn signed_changes_verify_and_tampering_shows() {
         let key = Keypair::from_seed([3; 32]);
         let mut log = WorldLog::new(1337);
-        let me = Provenance::new(&key.player_id(), "Ada", Some("Claude Code"), Some("a lamp"), 5);
+        let me = Provenance::new(
+            &key.player_id(),
+            "Ada",
+            Some("Claude Code"),
+            Some("a lamp"),
+            5,
+        );
         log.push_signed(me, lamp(1), &key);
-        let reloaded: WorldLog = serde_json::from_str(&serde_json::to_string(&log).unwrap()).unwrap();
+        let reloaded: WorldLog =
+            serde_json::from_str(&serde_json::to_string(&log).unwrap()).unwrap();
         assert!(reloaded.changes[0].verified());
         // The request text isn't signed (it stays local), but everything else is.
         let mut tampered = reloaded.clone();
@@ -1436,7 +2023,8 @@ mod tests {
         other.changes[1].by.player_name = "someone else".into();
         assert!(!snap.fits(&other));
         // It survives JSON, games' builds, land and all.
-        let reloaded: Snapshot = serde_json::from_str(&serde_json::to_string(&snap).unwrap()).unwrap();
+        let reloaded: Snapshot =
+            serde_json::from_str(&serde_json::to_string(&snap).unwrap()).unwrap();
         assert_eq!(reloaded, snap);
     }
 
@@ -1452,7 +2040,13 @@ mod tests {
         assert_eq!(log.undone(), HashSet::from([placed]));
         // Undoing it again does nothing: it's undone already.
         log.push(by("a"), Action::Undo { change: placed });
-        assert!(replay(&log).problems.last().unwrap().contains("can't be undone"));
+        assert!(
+            replay(&log)
+                .problems
+                .last()
+                .unwrap()
+                .contains("can't be undone")
+        );
         // Undoing the undo redoes it.
         log.push(by("a"), Action::Undo { change: undo });
         assert_eq!(ids(&replay(&log)), vec![1, 2]);
@@ -1460,11 +2054,19 @@ mod tests {
 
         // A change something has changed since can't be undone; the later one can first.
         let three = log.push(by("a"), lamp_at(3, 100.0));
-        let Action::PlaceBuild(mut moved) = lamp_at(3, 104.0) else { unreachable!() };
+        let Action::PlaceBuild(mut moved) = lamp_at(3, 104.0) else {
+            unreachable!()
+        };
         moved.name = "Moved lamp".into();
         let moved = log.push(by("a"), Action::UpdateBuild(moved));
         log.push(by("a"), Action::Undo { change: three });
-        assert!(replay(&log).problems.last().unwrap().contains("changed since"));
+        assert!(
+            replay(&log)
+                .problems
+                .last()
+                .unwrap()
+                .contains("changed since")
+        );
         log.push(by("a"), Action::Undo { change: moved });
         assert_eq!(replay(&log).builds[&3].name, "Lamp");
         log.push(by("a"), Action::Undo { change: three });
@@ -1482,7 +2084,11 @@ mod tests {
         let undo = log.push(by("a"), Action::Undo { change: pond });
         let back = replay(&log);
         assert_eq!(back.budgets.player("a").terrain, 0);
-        let differ = back.edits.iter().filter(|(p, id)| before.edits.get(p) != Some(id)).count();
+        let differ = back
+            .edits
+            .iter()
+            .filter(|(p, id)| before.edits.get(p) != Some(id))
+            .count();
         assert_eq!(differ, 0);
         log.push(by("a"), Action::Undo { change: undo });
         assert_eq!(replay(&log).edits, dug.edits);
@@ -1511,7 +2117,12 @@ mod tests {
             b.position = [100.0, 10.0, 100.0];
         }
         log.push(by("b"), away.clone());
-        log.push(by("b"), Action::ClaimParcels { parcels: vec![[12, 12]] });
+        log.push(
+            by("b"),
+            Action::ClaimParcels {
+                parcels: vec![[12, 12]],
+            },
+        );
         let mut c = away.clone();
         if let Action::PlaceBuild(b) = &mut c {
             b.build = 3;
@@ -1522,8 +2133,19 @@ mod tests {
         assert!(land.problems.is_empty(), "{:?}", land.problems);
         assert_eq!(land.builds.keys().copied().collect::<Vec<_>>(), vec![1, 3]);
         // Only admins change rules.
-        log.push(by("d"), Action::SetRules { rules: WorldRules::default() });
-        assert!(replay_land(&log).problems.last().unwrap().contains("only admins"));
+        log.push(
+            by("d"),
+            Action::SetRules {
+                rules: WorldRules::default(),
+            },
+        );
+        assert!(
+            replay_land(&log)
+                .problems
+                .last()
+                .unwrap()
+                .contains("only admins")
+        );
     }
 
     fn at(player: &str, t: u64) -> Provenance {
@@ -1561,21 +2183,38 @@ mod tests {
         }
         let state = replay_land(&log);
         // The third change in a minute is refused; a minute later it's fine again.
-        assert_eq!(state.builds.keys().copied().collect::<Vec<_>>(), vec![1, 2, 4]);
-        assert!(state.problems[0].contains("2 changes a minute"), "{:?}", state.problems);
+        assert_eq!(
+            state.builds.keys().copied().collect::<Vec<_>>(),
+            vec![1, 2, 4]
+        );
+        assert!(
+            state.problems[0].contains("2 changes a minute"),
+            "{:?}",
+            state.problems
+        );
     }
 
     #[test]
     fn generated_columns_match_however_the_region_is_cut() {
         // Chunks generate in pieces; replay generates whole areas. They must agree.
         let terrain = Terrain::new(1337, false);
-        let a = terrain.generate(IVec3::new(390, 0, -12), UVec3::new(48, WORLD_HEIGHT as u32, 48));
-        let b = terrain.generate(IVec3::new(400, 0, 0), UVec3::new(32, WORLD_HEIGHT as u32, 32));
+        let a = terrain.generate(
+            IVec3::new(390, 0, -12),
+            UVec3::new(48, WORLD_HEIGHT as u32, 48),
+        );
+        let b = terrain.generate(
+            IVec3::new(400, 0, 0),
+            UVec3::new(32, WORLD_HEIGHT as u32, 32),
+        );
         for z in 0..32 {
             for y in 0..WORLD_HEIGHT {
                 for x in 0..32 {
                     let p = IVec3::new(400 + x, y, z);
-                    assert_eq!(a.get(p - IVec3::new(390, 0, -12)), b.get(p - IVec3::new(400, 0, 0)), "at {p}");
+                    assert_eq!(
+                        a.get(p - IVec3::new(390, 0, -12)),
+                        b.get(p - IVec3::new(400, 0, 0)),
+                        "at {p}"
+                    );
                 }
             }
         }
@@ -1586,17 +2225,31 @@ mod tests {
     struct Farmer;
 
     impl Runtime for Farmer {
-        fn handle(&self, package: &Package, event: &Event, world: &mut Batch, grants: &Grants) -> Result<(), String> {
+        fn handle(
+            &self,
+            package: &Package,
+            event: &Event,
+            world: &mut Batch,
+            grants: &Grants,
+        ) -> Result<(), String> {
             assert_eq!(package.manifest.name, "farm");
-            let Trigger::Intent(intent) = event.trigger else { return Ok(()) };
+            let Trigger::Intent(intent) = event.trigger else {
+                return Ok(());
+            };
             let effect = match intent {
                 Intent::Place { item, position } if item == "farm:seed" => Effect::Spawn {
                     position: *position,
-                    components: [("farm:crop".to_string(), serde_json::json!({ "planted": event.time.day }))].into(),
+                    components: [(
+                        "farm:crop".to_string(),
+                        serde_json::json!({ "planted": event.time.day }),
+                    )]
+                    .into(),
                 },
-                Intent::Interact { entity } if world.get(*entity).is_some() => {
-                    Effect::Set { entity: *entity, component: "farm:watered".into(), value: true.into() }
-                }
+                Intent::Interact { entity } if world.get(*entity).is_some() => Effect::Set {
+                    entity: *entity,
+                    component: "farm:watered".into(),
+                    value: true.into(),
+                },
                 _ => return Ok(()),
             };
             world.apply(grants, &effect).map(|_| ())
@@ -1605,11 +2258,20 @@ mod tests {
 
     fn install(log: &mut WorldLog, scope: Scope) -> Action {
         let hash = log.add_package(farm(1));
-        Action::InstallPackage { package: PackageRef { name: "farm".into(), version: 1, hash }, scope }
+        Action::InstallPackage {
+            package: PackageRef {
+                name: "farm".into(),
+                version: 1,
+                hash,
+            },
+            scope,
+        }
     }
 
     fn here() -> Scope {
-        Scope::Parcels { parcels: vec![[20, 20]] }
+        Scope::Parcels {
+            parcels: vec![[20, 20]],
+        }
     }
 
     /// Inside parcel (20, 20): 8 m per parcel.
@@ -1622,12 +2284,33 @@ mod tests {
         log.rules.logic.clock.day_seconds = 100;
         let install = install(&mut log, here());
         log.push(at("a", 0), install);
-        let seed = Action::Intent { intent: Intent::Place { item: "farm:seed".into(), position: PLOT } };
+        let seed = Action::Intent {
+            intent: Intent::Place {
+                item: "farm:seed".into(),
+                position: PLOT,
+            },
+        };
         let planted = log.push(at("a", 250), seed.clone());
-        let crop = EntityId { change: planted, n: 0 };
-        log.push(at("b", 300), Action::Intent { intent: Intent::Interact { entity: crop } });
+        let crop = EntityId {
+            change: planted,
+            n: 0,
+        };
+        log.push(
+            at("b", 300),
+            Action::Intent {
+                intent: Intent::Interact { entity: crop },
+            },
+        );
         // Outside where it's installed, no package answers the seed.
-        log.push(at("a", 310), Action::Intent { intent: Intent::Place { item: "farm:seed".into(), position: [0.0; 3] } });
+        log.push(
+            at("a", 310),
+            Action::Intent {
+                intent: Intent::Place {
+                    item: "farm:seed".into(),
+                    position: [0.0; 3],
+                },
+            },
+        );
 
         let state = replay_with(&log, Arc::new(Farmer));
         assert!(state.problems.is_empty(), "{:?}", state.problems);
@@ -1637,7 +2320,8 @@ mod tests {
         assert_eq!(state.logic.state.len(), 1);
 
         // The log survives JSON, packages and all, and replays the same.
-        let reloaded: WorldLog = serde_json::from_str(&serde_json::to_string(&log).unwrap()).unwrap();
+        let reloaded: WorldLog =
+            serde_json::from_str(&serde_json::to_string(&log).unwrap()).unwrap();
         assert_eq!(reloaded.hash(), log.hash());
         let again = replay_with(&reloaded, Arc::new(Farmer));
         assert_eq!(again.logic.state.get(crop), Some(e));
@@ -1651,7 +2335,9 @@ mod tests {
         assert!(undone.logic.installed.is_empty(), "{:?}", undone.problems);
         log.push(at("a", 410), Action::Undo { change: undo });
         let redone = replay_with(&log, Arc::new(Farmer));
-        assert!(redone.logic.installed.contains_key("farm") && redone.logic.state.get(crop).is_some());
+        assert!(
+            redone.logic.installed.contains_key("farm") && redone.logic.state.get(crop).is_some()
+        );
     }
 
     #[test]
@@ -1674,7 +2360,10 @@ mod tests {
         log.push(at("b", 1), mine.clone());
         let state = replay(&log);
         assert_eq!(state.problems.len(), 2, "{:?}", state.problems);
-        assert!(state.problems[0].contains("only an admin") && state.problems[1].contains("someone else"));
+        assert!(
+            state.problems[0].contains("only an admin")
+                && state.problems[1].contains("someone else")
+        );
         assert_eq!(state.logic.installed["farm"].scope, Scope::World);
 
         // Installing on some parcels leaves them as they were; only its installer
@@ -1684,9 +2373,18 @@ mod tests {
         log.rules.land = crate::settings::LandMode::Parcels;
         log.add_package(farm(1));
         log.push(at("a", 0), mine.clone());
-        log.push(at("b", 1), Action::UninstallPackage { name: "farm".into() });
+        log.push(
+            at("b", 1),
+            Action::UninstallPackage {
+                name: "farm".into(),
+            },
+        );
         let state = replay(&log);
-        assert!(state.problems[0].contains("someone else"), "{:?}", state.problems);
+        assert!(
+            state.problems[0].contains("someone else"),
+            "{:?}",
+            state.problems
+        );
 
         // A locked world refuses everyone, admins included, until the rules change.
         let mut log = WorldLog::new(1337);
@@ -1709,14 +2407,29 @@ mod tests {
     fn packages_must_be_uploaded_and_match() {
         let mut log = WorldLog::new(1337);
         log.admins = vec!["a".into()];
-        let Action::InstallPackage { mut package, scope } = install(&mut log, here()) else { unreachable!() };
+        let Action::InstallPackage { mut package, scope } = install(&mut log, here()) else {
+            unreachable!()
+        };
         package.version = 2;
-        log.push(at("a", 0), Action::InstallPackage { package: package.clone(), scope: scope.clone() });
+        log.push(
+            at("a", 0),
+            Action::InstallPackage {
+                package: package.clone(),
+                scope: scope.clone(),
+            },
+        );
         package.hash = "00".into();
         log.push(at("a", 0), Action::InstallPackage { package, scope });
         let problems = replay(&log).problems;
-        assert!(problems[0].contains("doesn't match") && problems[1].contains("wasn't uploaded"), "{problems:?}");
+        assert!(
+            problems[0].contains("doesn't match") && problems[1].contains("wasn't uploaded"),
+            "{problems:?}"
+        );
         // A log with no packages serializes as it did before packages existed.
-        assert!(!serde_json::to_string(&WorldLog::new(1)).unwrap().contains("packages"));
+        assert!(
+            !serde_json::to_string(&WorldLog::new(1))
+                .unwrap()
+                .contains("packages")
+        );
     }
 }

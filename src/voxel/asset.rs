@@ -34,7 +34,9 @@ impl AssetLoader for VoxelModelLoader {
         let def: ModelDef = ron::Options::default()
             .with_default_extension(ron::extensions::Extensions::IMPLICIT_SOME)
             .from_bytes(&bytes)?;
-        Ok(VoxelModelAsset(build(def).map_err(|e| BevyError::from(std::io::Error::other(e)))?))
+        Ok(VoxelModelAsset(
+            build(def).map_err(|e| BevyError::from(std::io::Error::other(e)))?,
+        ))
     }
 
     fn extensions(&self) -> &[&str] {

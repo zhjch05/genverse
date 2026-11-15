@@ -18,9 +18,10 @@ use bevy_egui::{EguiContexts, egui};
 use egui_phosphor::regular as icon;
 
 use super::{
-    Chat, prefs, presence,
+    Chat,
     loading::Loading,
     menu::GameMenu,
+    prefs, presence,
     runner::Provider,
     theme::{self, Tone},
 };
@@ -54,7 +55,11 @@ impl Welcome {
     pub fn show(&mut self, ledger: &Ledger) {
         self.open = true;
         self.step = 0;
-        self.name = if ledger.profile.name == "Player" { String::new() } else { ledger.profile.name.clone() };
+        self.name = if ledger.profile.name == "Player" {
+            String::new()
+        } else {
+            ledger.profile.name.clone()
+        };
         self.check();
     }
 
@@ -92,9 +97,18 @@ fn install_page(provider: Provider) -> &'static str {
 
 /// Finds the CLI and asks its version, giving up on one that doesn't answer.
 fn look_for(provider: Provider) -> Found {
-    let Some(path) = crate::platform::find_program(command(provider)) else { return Found::Missing };
-    let child = crate::platform::command(&path).arg("--version").stdin(Stdio::null()).stdout(Stdio::piped()).stderr(Stdio::null()).spawn();
-    let Ok(mut child) = child else { return Found::Installed(path, String::new()) };
+    let Some(path) = crate::platform::find_program(command(provider)) else {
+        return Found::Missing;
+    };
+    let child = crate::platform::command(&path)
+        .arg("--version")
+        .stdin(Stdio::null())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::null())
+        .spawn();
+    let Ok(mut child) = child else {
+        return Found::Installed(path, String::new());
+    };
     let deadline = Instant::now() + Duration::from_secs(5);
     while matches!(child.try_wait(), Ok(None)) && Instant::now() < deadline {
         std::thread::sleep(Duration::from_millis(25));
@@ -104,7 +118,17 @@ fn look_for(provider: Provider) -> Found {
         let _ = child.wait();
         return Found::Installed(path, String::new());
     }
-    let version = child.wait_with_output().map(|o| String::from_utf8_lossy(&o.stdout).lines().next().unwrap_or("").trim().to_string()).unwrap_or_default();
+    let version = child
+        .wait_with_output()
+        .map(|o| {
+            String::from_utf8_lossy(&o.stdout)
+                .lines()
+                .next()
+                .unwrap_or("")
+                .trim()
+                .to_string()
+        })
+        .unwrap_or_default();
     Found::Installed(path, version)
 }
 
@@ -116,7 +140,11 @@ pub fn open_if_asked(mut welcome: ResMut<Welcome>, ledger: Res<Ledger>, mut done
     *done = true;
     if std::env::var_os("GENVERSE_WELCOME").is_some() {
         welcome.show(&ledger);
-        welcome.step = std::env::var("GENVERSE_WELCOME_STEP").ok().and_then(|s| s.parse().ok()).unwrap_or(0).min(STEPS.len() - 1);
+        welcome.step = std::env::var("GENVERSE_WELCOME_STEP")
+            .ok()
+            .and_then(|s| s.parse().ok())
+            .unwrap_or(0)
+            .min(STEPS.len() - 1);
     }
 }
 
@@ -141,7 +169,12 @@ pub fn welcome_window(
     let screen = ctx.viewport_rect();
     let found = welcome.found();
     // The agent picked must be installed; otherwise the first one that is.
-    let installed = |provider: Provider| Provider::ALL.iter().position(|p| *p == provider).is_some_and(|i| matches!(found.get(i), Some(Found::Installed(..))));
+    let installed = |provider: Provider| {
+        Provider::ALL
+            .iter()
+            .position(|p| *p == provider)
+            .is_some_and(|i| matches!(found.get(i), Some(Found::Installed(..))))
+    };
     if !installed(chat.provider)
         && let Some(first) = Provider::ALL.into_iter().find(|p| installed(*p))
     {
@@ -307,11 +340,19 @@ fn steps(ui: &mut egui::Ui, current: usize) {
     ui.horizontal(|ui| {
         ui.spacing_mut().item_spacing.x = 6.0;
         for (i, name) in STEPS.iter().enumerate() {
-            let (rect, _) = ui.allocate_exact_size(egui::vec2(if i == current { 22.0 } else { 8.0 }, 8.0), egui::Sense::hover());
+            let (rect, _) = ui.allocate_exact_size(
+                egui::vec2(if i == current { 22.0 } else { 8.0 }, 8.0),
+                egui::Sense::hover(),
+            );
             let color = if i <= current { p.primary } else { p.line };
-            ui.painter().rect_filled(rect.translate(egui::vec2(0.0, 2.0)), 4, color);
+            ui.painter()
+                .rect_filled(rect.translate(egui::vec2(0.0, 2.0)), 4, color);
             if i == current {
-                ui.label(egui::RichText::new(format!("{} of {} · {name}", i + 1, STEPS.len())).size(11.0).color(p.muted));
+                ui.label(
+                    egui::RichText::new(format!("{} of {} · {name}", i + 1, STEPS.len()))
+                        .size(11.0)
+                        .color(p.muted),
+                );
             }
         }
     });
@@ -320,30 +361,48 @@ fn steps(ui: &mut egui::Ui, current: usize) {
 /// One agent: whether it's installed, picking it, or where to get it.
 fn agent_row(ui: &mut egui::Ui, provider: Provider, found: Found, picked: &mut Provider) {
     let p = theme::palette(ui.ctx());
-    ui.horizontal(|ui| {
-        match &found {
-            Found::Looking => {
-                ui.spinner();
-                ui.label(egui::RichText::new(provider.label()).color(p.text));
-                ui.label(egui::RichText::new("looking…").size(12.0).color(p.muted));
-            }
-            Found::Missing => {
-                ui.label(egui::RichText::new(icon::X_CIRCLE).size(16.0).color(p.faint));
-                ui.label(egui::RichText::new(provider.label()).color(p.muted));
-                ui.label(egui::RichText::new("not installed").size(12.0).color(p.muted));
-                ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                    ui.hyperlink_to(format!("Install {}", icon::ARROW_SQUARE_OUT), install_page(provider));
-                });
-            }
-            Found::Installed(path, version) => {
-                ui.radio_value(picked, provider, "");
-                ui.label(egui::RichText::new(provider.label()).color(p.strong));
-                let shown = if version.is_empty() { "installed".to_string() } else { version.clone() };
-                ui.label(egui::RichText::new(shown).size(12.0).color(p.muted)).on_hover_text(path.display().to_string());
-                ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                    ui.label(egui::RichText::new(icon::CHECK_CIRCLE).size(16.0).color(p.online));
-                });
-            }
+    ui.horizontal(|ui| match &found {
+        Found::Looking => {
+            ui.spinner();
+            ui.label(egui::RichText::new(provider.label()).color(p.text));
+            ui.label(egui::RichText::new("looking…").size(12.0).color(p.muted));
+        }
+        Found::Missing => {
+            ui.label(
+                egui::RichText::new(icon::X_CIRCLE)
+                    .size(16.0)
+                    .color(p.faint),
+            );
+            ui.label(egui::RichText::new(provider.label()).color(p.muted));
+            ui.label(
+                egui::RichText::new("not installed")
+                    .size(12.0)
+                    .color(p.muted),
+            );
+            ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                ui.hyperlink_to(
+                    format!("Install {}", icon::ARROW_SQUARE_OUT),
+                    install_page(provider),
+                );
+            });
+        }
+        Found::Installed(path, version) => {
+            ui.radio_value(picked, provider, "");
+            ui.label(egui::RichText::new(provider.label()).color(p.strong));
+            let shown = if version.is_empty() {
+                "installed".to_string()
+            } else {
+                version.clone()
+            };
+            ui.label(egui::RichText::new(shown).size(12.0).color(p.muted))
+                .on_hover_text(path.display().to_string());
+            ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                ui.label(
+                    egui::RichText::new(icon::CHECK_CIRCLE)
+                        .size(16.0)
+                        .color(p.online),
+                );
+            });
         }
     });
 }

@@ -56,7 +56,11 @@ pub fn is_invite(text: &str) -> bool {
 }
 
 /// Bridges an iroh stream to a TCP one until either side ends.
-async fn pipe(tcp: &mut TcpStream, send: iroh::endpoint::SendStream, recv: iroh::endpoint::RecvStream) {
+async fn pipe(
+    tcp: &mut TcpStream,
+    send: iroh::endpoint::SendStream,
+    recv: iroh::endpoint::RecvStream,
+) {
     let _ = tcp.set_nodelay(true);
     let mut quic = join(recv, send);
     let _ = copy_bidirectional(tcp, &mut quic).await;
@@ -85,13 +89,23 @@ impl OsFirst {
     fn lookup<T: Send + 'static>(&self, host: String, pick: fn(IpAddr) -> Option<T>) -> Lookup<T> {
         let iroh = self.0.clone();
         Box::pin(async move {
-            let mut found: Vec<T> = os_lookup(&host).await.into_iter().filter_map(pick).collect();
+            let mut found: Vec<T> = os_lookup(&host)
+                .await
+                .into_iter()
+                .filter_map(pick)
+                .collect();
             if found.is_empty() {
                 let v4 = std::any::TypeId::of::<T>() == std::any::TypeId::of::<Ipv4Addr>();
                 found = if v4 {
-                    iroh.lookup_ipv4(&host, DNS_TIMEOUT).await?.filter_map(pick).collect()
+                    iroh.lookup_ipv4(&host, DNS_TIMEOUT)
+                        .await?
+                        .filter_map(pick)
+                        .collect()
                 } else {
-                    iroh.lookup_ipv6(&host, DNS_TIMEOUT).await?.filter_map(pick).collect()
+                    iroh.lookup_ipv6(&host, DNS_TIMEOUT)
+                        .await?
+                        .filter_map(pick)
+                        .collect()
                 };
             }
             Ok(Box::new(found.into_iter()) as BoxIter<T>)
@@ -134,7 +148,9 @@ impl Resolver for OsFirst {
 
 /// An endpoint with `secret` as its key, on n0's public relays and address lookup.
 fn endpoint(secret: [u8; 32]) -> Builder {
-    Endpoint::builder(presets::N0).secret_key(SecretKey::from_bytes(&secret)).dns_resolver(DnsResolver::custom(OsFirst(DnsResolver::new())))
+    Endpoint::builder(presets::N0)
+        .secret_key(SecretKey::from_bytes(&secret))
+        .dns_resolver(DnsResolver::custom(OsFirst(DnsResolver::new())))
 }
 
 fn runtime() -> Result<Runtime, String> {
@@ -149,12 +165,14 @@ fn runtime() -> Result<Runtime, String> {
 /// Closes the endpoint politely (so peers hear it) and stops the runtime, off the
 /// caller's thread.
 fn shut(runtime: Runtime, endpoint: Endpoint) {
-    let _ = thread::Builder::new().name("internet-close".into()).spawn(move || {
-        runtime.block_on(async {
-            let _ = tokio::time::timeout(Duration::from_secs(2), endpoint.close()).await;
+    let _ = thread::Builder::new()
+        .name("internet-close".into())
+        .spawn(move || {
+            runtime.block_on(async {
+                let _ = tokio::time::timeout(Duration::from_secs(2), endpoint.close()).await;
+            });
+            runtime.shutdown_timeout(Duration::from_secs(1));
         });
-        runtime.shutdown_timeout(Duration::from_secs(1));
-    });
 }
 
 /// A hosting game's door to the internet: players who dial its invite are piped to
@@ -184,8 +202,12 @@ impl Host {
         runtime.spawn(async move {
             while let Some(incoming) = accepting.accept().await {
                 tokio::spawn(async move {
-                    let Ok(connection) = incoming.await else { return };
-                    let Ok((send, mut recv)) = connection.accept_bi().await else { return };
+                    let Ok(connection) = incoming.await else {
+                        return;
+                    };
+                    let Ok((send, mut recv)) = connection.accept_bi().await else {
+                        return;
+                    };
                     let mut open = [0u8];
                     if recv.read_exact(&mut open).await.is_err() || open[0] != OPEN {
                         connection.close(1u32.into(), b"not genverse");
@@ -200,7 +222,12 @@ impl Host {
                 });
             }
         });
-        Ok(Self { invite: invite(endpoint.id()), online, endpoint, runtime: Some(runtime) })
+        Ok(Self {
+            invite: invite(endpoint.id()),
+            online,
+            endpoint,
+            runtime: Some(runtime),
+        })
     }
 
     /// What others join with.
@@ -243,7 +270,9 @@ impl Tunnel {
                 .bind()
                 .await
                 .map_err(|e| format!("couldn't reach the internet: {e}"))?;
-            let listener = TcpListener::bind((Ipv4Addr::LOCALHOST, 0)).await.map_err(|e| e.to_string())?;
+            let listener = TcpListener::bind((Ipv4Addr::LOCALHOST, 0))
+                .await
+                .map_err(|e| e.to_string())?;
             Ok::<_, String>((endpoint, listener))
         })?;
         let addr = listener.local_addr().map_err(|e| e.to_string())?;
@@ -253,7 +282,8 @@ impl Tunnel {
             while let Ok((mut tcp, _)) = listener.accept().await {
                 let (endpoint, failed) = (dialing.clone(), failed.clone());
                 tokio::spawn(async move {
-                    let fail = |why: String| *failed.lock().unwrap_or_else(|e| e.into_inner()) = Some(why);
+                    let fail =
+                        |why: String| *failed.lock().unwrap_or_else(|e| e.into_inner()) = Some(why);
                     let connection = match endpoint.connect(host, ALPN).await {
                         Ok(connection) => connection,
                         Err(e) => return fail(format!("couldn't reach the host: {e}")),
@@ -271,7 +301,12 @@ impl Tunnel {
                 });
             }
         });
-        Ok(Self { addr, error, endpoint, runtime: Some(runtime) })
+        Ok(Self {
+            addr,
+            error,
+            endpoint,
+            runtime: Some(runtime),
+        })
     }
 
     /// Where the client connects.
@@ -317,7 +352,10 @@ mod tests {
     #[test]
     #[ignore = "needs the internet"]
     fn a_tunnel_reaches_the_host() {
-        let _ = tracing_subscriber::fmt().with_env_filter(tracing_subscriber::EnvFilter::from_default_env()).with_test_writer().try_init();
+        let _ = tracing_subscriber::fmt()
+            .with_env_filter(tracing_subscriber::EnvFilter::from_default_env())
+            .with_test_writer()
+            .try_init();
         // An echo "server" behind the host's door, line by line.
         let server = StdListener::bind("127.0.0.1:0").unwrap();
         let port = server.local_addr().unwrap().port();
@@ -347,10 +385,14 @@ mod tests {
         // Twice: the tunnel keeps listening, as a reconnect needs.
         for round in 0..2 {
             let stream = std::net::TcpStream::connect(tunnel.addr()).unwrap();
-            stream.set_read_timeout(Some(Duration::from_secs(30))).unwrap();
+            stream
+                .set_read_timeout(Some(Duration::from_secs(30)))
+                .unwrap();
             let mut reader = BufReader::new(stream.try_clone().unwrap());
             let mut line = String::new();
-            reader.read_line(&mut line).unwrap_or_else(|e| panic!("round {round}: {e}; {:?}", tunnel.error()));
+            reader
+                .read_line(&mut line)
+                .unwrap_or_else(|e| panic!("round {round}: {e}; {:?}", tunnel.error()));
             assert_eq!(line, "hello\n", "{:?}", tunnel.error());
             writeln!(&stream, "ping {round}").unwrap();
             line.clear();

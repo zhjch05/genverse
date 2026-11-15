@@ -41,13 +41,19 @@ fn data_home() -> Option<PathBuf> {
 }
 
 fn platform_data_dir() -> Option<PathBuf> {
-    let var = |name: &str| std::env::var_os(name).filter(|v| !v.is_empty()).map(PathBuf::from);
+    let var = |name: &str| {
+        std::env::var_os(name)
+            .filter(|v| !v.is_empty())
+            .map(PathBuf::from)
+    };
     if cfg!(windows) {
         var("APPDATA").map(|d| d.join("Genverse"))
     } else if cfg!(target_os = "macos") {
         var("HOME").map(|h| h.join("Library/Application Support/Genverse"))
     } else {
-        var("XDG_DATA_HOME").or_else(|| var("HOME").map(|h| h.join(".local/share"))).map(|d| d.join("genverse"))
+        var("XDG_DATA_HOME")
+            .or_else(|| var("HOME").map(|h| h.join(".local/share")))
+            .map(|d| d.join("genverse"))
     }
 }
 
@@ -56,7 +62,9 @@ fn platform_data_dir() -> Option<PathBuf> {
 #[cfg(unix)]
 fn add_login_shell_path() {
     use std::{process::Command, time::Duration};
-    let mut dirs: Vec<PathBuf> = std::env::var_os("PATH").map(|p| std::env::split_paths(&p).collect()).unwrap_or_default();
+    let mut dirs: Vec<PathBuf> = std::env::var_os("PATH")
+        .map(|p| std::env::split_paths(&p).collect())
+        .unwrap_or_default();
     let mut add = |dir: PathBuf| {
         if !dir.as_os_str().is_empty() && !dirs.contains(&dir) {
             dirs.push(dir);
@@ -90,7 +98,13 @@ fn add_login_shell_path() {
         }
     }
     if let Some(home) = std::env::var_os("HOME").map(PathBuf::from) {
-        for dir in [".local/bin", ".claude/local", ".npm-global/bin", ".volta/bin", ".bun/bin"] {
+        for dir in [
+            ".local/bin",
+            ".claude/local",
+            ".npm-global/bin",
+            ".volta/bin",
+            ".bun/bin",
+        ] {
             add(home.join(dir));
         }
     }
@@ -110,14 +124,21 @@ pub fn find_program(name: &str) -> Option<PathBuf> {
         // A native `.exe` first: npm's `.cmd` shims run through cmd.exe, which mangles
         // long arguments.
         let pathext = std::env::var("PATHEXT").unwrap_or_else(|_| ".COM;.EXE;.BAT;.CMD".into());
-        let mut exts: Vec<String> = pathext.split(';').filter(|e| !e.is_empty()).map(str::to_ascii_lowercase).collect();
+        let mut exts: Vec<String> = pathext
+            .split(';')
+            .filter(|e| !e.is_empty())
+            .map(str::to_ascii_lowercase)
+            .collect();
         exts.sort_by_key(|e| e != ".exe");
         exts
     } else {
         vec![String::new()]
     };
     std::env::split_paths(&path).find_map(|dir| {
-        extensions.iter().map(|ext| dir.join(format!("{name}{ext}"))).find(|candidate| is_program(candidate))
+        extensions
+            .iter()
+            .map(|ext| dir.join(format!("{name}{ext}")))
+            .find(|candidate| is_program(candidate))
     })
 }
 
@@ -125,7 +146,9 @@ pub fn find_program(name: &str) -> Option<PathBuf> {
 /// Rust refuses to give a batch file arguments that cmd.exe can't quote safely (any
 /// newline or quote: every prompt), so the shim's script is run with `node` instead.
 pub fn command(program: &Path) -> std::process::Command {
-    let is_batch = program.extension().is_some_and(|e| e.eq_ignore_ascii_case("cmd") || e.eq_ignore_ascii_case("bat"));
+    let is_batch = program
+        .extension()
+        .is_some_and(|e| e.eq_ignore_ascii_case("cmd") || e.eq_ignore_ascii_case("bat"));
     if is_batch
         && let Some(dir) = program.parent()
         && let Ok(text) = std::fs::read_to_string(program)
@@ -133,7 +156,11 @@ pub fn command(program: &Path) -> std::process::Command {
         && script.is_file()
     {
         let bundled = dir.join("node.exe");
-        let node = if bundled.is_file() { Some(bundled) } else { find_program("node") };
+        let node = if bundled.is_file() {
+            Some(bundled)
+        } else {
+            find_program("node")
+        };
         if let Some(node) = node {
             let mut cmd = std::process::Command::new(node);
             cmd.arg(script);
@@ -150,7 +177,10 @@ fn shim_script(text: &str, dir: &Path) -> Option<PathBuf> {
     // isn't node itself.
     let relative = ["\"%dp0%\\", "\"%~dp0\\"]
         .iter()
-        .flat_map(|start| text.match_indices(start).map(move |(at, _)| at + start.len()))
+        .flat_map(|start| {
+            text.match_indices(start)
+                .map(move |(at, _)| at + start.len())
+        })
         .filter_map(|from| text[from..].find('"').map(|to| &text[from..from + to]))
         .filter(|path| !path.eq_ignore_ascii_case("node.exe"))
         .max_by_key(|path| text.find(path))?;
@@ -163,7 +193,8 @@ fn is_program(path: &Path) -> bool {
     #[cfg(unix)]
     {
         use std::os::unix::fs::PermissionsExt;
-        path.metadata().is_ok_and(|m| m.is_file() && m.permissions().mode() & 0o111 != 0)
+        path.metadata()
+            .is_ok_and(|m| m.is_file() && m.permissions().mode() & 0o111 != 0)
     }
     #[cfg(not(unix))]
     {
@@ -186,10 +217,32 @@ mod tests {
     fn reads_the_script_out_of_an_npm_shim() {
         let dir = Path::new("npm");
         let now = "endLocal & goto #_undefined_# 2>NUL || title %COMSPEC% & \"%_prog%\"  \"%dp0%\\node_modules\\@openai\\codex\\bin\\codex.js\" %*";
-        let old = "  \"%~dp0\\node.exe\"  \"%~dp0\\node_modules\\@anthropic-ai\\claude-code\\cli.js\" %*";
-        let expect = |parts: &[&str]| parts.iter().fold(dir.to_path_buf(), |path, part| path.join(part));
-        assert_eq!(shim_script(&format!("@ECHO off\n{now}\n"), dir), Some(expect(&["node_modules", "@openai", "codex", "bin", "codex.js"])));
-        assert_eq!(shim_script(old, dir), Some(expect(&["node_modules", "@anthropic-ai", "claude-code", "cli.js"])));
+        let old =
+            "  \"%~dp0\\node.exe\"  \"%~dp0\\node_modules\\@anthropic-ai\\claude-code\\cli.js\" %*";
+        let expect = |parts: &[&str]| {
+            parts
+                .iter()
+                .fold(dir.to_path_buf(), |path, part| path.join(part))
+        };
+        assert_eq!(
+            shim_script(&format!("@ECHO off\n{now}\n"), dir),
+            Some(expect(&[
+                "node_modules",
+                "@openai",
+                "codex",
+                "bin",
+                "codex.js"
+            ]))
+        );
+        assert_eq!(
+            shim_script(old, dir),
+            Some(expect(&[
+                "node_modules",
+                "@anthropic-ai",
+                "claude-code",
+                "cli.js"
+            ]))
+        );
         assert_eq!(shim_script("@ECHO off\ncodex.exe %*", dir), None);
     }
 }

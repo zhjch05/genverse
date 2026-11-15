@@ -87,17 +87,39 @@ pub enum Effect {
         components: BTreeMap<String, Value>,
     },
     /// Removes one of the package's own entities.
-    Despawn { entity: EntityId },
+    Despawn {
+        entity: EntityId,
+    },
     /// Moves one of the package's own entities.
-    Move { entity: EntityId, position: [f32; 3] },
-    Set { entity: EntityId, component: String, value: Value },
-    Remove { entity: EntityId, component: String },
+    Move {
+        entity: EntityId,
+        position: [f32; 3],
+    },
+    Set {
+        entity: EntityId,
+        component: String,
+        value: Value,
+    },
+    Remove {
+        entity: EntityId,
+        component: String,
+    },
     /// Gives a player items.
-    Give { player: String, item: String, count: u32 },
+    Give {
+        player: String,
+        item: String,
+        count: u32,
+    },
     /// Takes items from the player acting, failing if they don't have them.
-    Take { item: String, count: u32 },
+    Take {
+        item: String,
+        count: u32,
+    },
     /// Tells a player something ("Solved in 14 moves!"). Changes nothing.
-    Notify { player: String, text: String },
+    Notify {
+        player: String,
+        text: String,
+    },
     /// Wakes the package's `on_timer` at `due` (Unix seconds), and again every `every`
     /// seconds after if given. A timer of the same name is replaced. With `near`, it
     /// sleeps while no player is near that entity (see [`Timer::near`]).
@@ -115,7 +137,9 @@ pub enum Effect {
         feature: Option<String>,
     },
     /// Stops one of the package's timers, if it has it.
-    Cancel { name: String },
+    Cancel {
+        name: String,
+    },
     /// Sets one of a player's stats, kept between 0 and its maximum (`max` sets that; none
     /// keeps the one it has).
     SetStat {
@@ -126,43 +150,95 @@ pub enum Effect {
         max: Option<f64>,
     },
     /// Pins a widget to a player's screen (`"*"`: everyone's), or takes it off (`None`).
-    Hud { player: String, id: String, widget: Option<Ui> },
+    Hud {
+        player: String,
+        id: String,
+        widget: Option<Ui>,
+    },
     /// Opens a panel for a player (dialogue, a menu, a shop), or closes theirs (`None`).
-    Show { player: String, panel: Option<PanelSpec> },
+    Show {
+        player: String,
+        panel: Option<PanelSpec>,
+    },
     /// Places one of the package's voxel models as a build: solid, like any build.
-    Build { model: String, position: [f32; 3], #[serde(default)] turn: u8 },
+    Build {
+        model: String,
+        position: [f32; 3],
+        #[serde(default)]
+        turn: u8,
+    },
     /// Removes a build the package placed.
-    Unbuild { build: u64 },
+    Unbuild {
+        build: u64,
+    },
     /// Reshapes land with the world's terrain operations.
-    Terrain { area: Area, spec: TerrainSpec },
+    Terrain {
+        area: Area,
+        spec: TerrainSpec,
+    },
     /// Puts a player's hero at `position` (a respawn, a trapdoor, a portal of the game's).
     /// For `"*"`, it's where players appear when they come into the world.
-    Teleport { player: String, position: [f32; 3] },
+    Teleport {
+        player: String,
+        position: [f32; 3],
+    },
     /// Sends a player to another world of the game (a dungeon's door, the way home):
     /// they leave this one with what they carry, as through a portal.
-    Travel { player: String, to: String },
+    Travel {
+        player: String,
+        to: String,
+    },
     /// Makes a build the package placed a portal (to a world, `game/world` or
     /// `host:port`), or an ordinary build again (`None`).
-    Portal { build: u64, to: Option<String> },
+    Portal {
+        build: u64,
+        to: Option<String>,
+    },
     /// Changes how a player's hero moves (`None`: back to normal).
-    Body { player: String, body: Option<Body> },
+    Body {
+        player: String,
+        body: Option<Body>,
+    },
     /// Throws a player's hero: sets how fast it's going, meters a second.
-    Launch { player: String, velocity: [f32; 3] },
+    Launch {
+        player: String,
+        velocity: [f32; 3],
+    },
     /// Shows or plays something once at `pos`, for everyone or one player.
-    Play { pos: [f32; 3], to: Option<String>, what: Shown },
+    Play {
+        pos: [f32; 3],
+        to: Option<String>,
+        what: Shown,
+    },
     /// How the sky looks (`None`: the world's own again).
-    Sky { sky: Option<Sky> },
+    Sky {
+        sky: Option<Sky>,
+    },
     /// What a player's hero looks like (`None`: their own again).
-    Appearance { player: String, appearance: Option<Appearance> },
+    Appearance {
+        player: String,
+        appearance: Option<Appearance>,
+    },
     /// Tells the other packages something happened (their `on_signal`, at their next tick).
-    Emit { name: String, data: Value },
+    Emit {
+        name: String,
+        data: Value,
+    },
     /// The package has heard the signals up to this change.
-    Heard { upto: u64 },
+    Heard {
+        upto: u64,
+    },
     /// Keeps a value for the package under `key` (`None` forgets it).
-    Store { key: String, value: Option<Value> },
+    Store {
+        key: String,
+        value: Option<Value>,
+    },
     /// Sets the game's time of day (0-1) as of `at` (Unix seconds); `None` goes back to the
     /// world's own clock.
-    Clock { to: Option<f32>, at: u64 },
+    Clock {
+        to: Option<f32>,
+        at: u64,
+    },
 }
 
 /// Something one package told the others.
@@ -216,14 +292,23 @@ fn one() -> f32 {
 
 impl Default for Body {
     fn default() -> Self {
-        Self { speed: 1.0, jump: 1.0, gravity: 1.0, air_jumps: 0 }
+        Self {
+            speed: 1.0,
+            jump: 1.0,
+            gravity: 1.0,
+            air_jumps: 0,
+        }
     }
 }
 
 impl Body {
     fn check(&self) -> Result<(), String> {
         let within = |v: f32, lo: f32, hi: f32| v.is_finite() && (lo..=hi).contains(&v);
-        if within(self.speed, 0.0, 4.0) && within(self.jump, 0.0, 4.0) && within(self.gravity, 0.1, 2.0) && self.air_jumps <= 3 {
+        if within(self.speed, 0.0, 4.0)
+            && within(self.jump, 0.0, 4.0)
+            && within(self.gravity, 0.1, 2.0)
+            && self.air_jumps <= 3
+        {
             Ok(())
         } else {
             Err("body(player, {speed = 0-4, jump = 0-4, gravity = 0.1-2, air_jumps = 0-3}): multiples of the usual".into())
@@ -291,7 +376,11 @@ impl Timer {
             Some(every) => {
                 let every = every.max(MIN_WAIT);
                 let last = self.due + (now - self.due) / every * every;
-                let first = if self.due > since { self.due } else { self.due + ((since - self.due) / every + 1) * every };
+                let first = if self.due > since {
+                    self.due
+                } else {
+                    self.due + ((since - self.due) / every + 1) * every
+                };
                 (first <= last).then(|| (last, (last - first) / every + 1))
             }
         }
@@ -314,38 +403,64 @@ impl Timer {
 /// Engine components the game no longer has, and what games use instead.
 pub const REMOVED_COMPONENTS: [(&str, &str); 3] = [
     ("wander", "walk() from on_arrive"),
-    ("spawner", "an every() timer that spawns while find() says there are too few"),
+    (
+        "spawner",
+        "an every() timer that spawns while find() says there are too few",
+    ),
     ("zone", "region(id, {w, d, keys = true})"),
 ];
 
-pub const RESERVED: [&str; 9] = ["look", "decal", "label", "pawn", "walk", "chase", "region", "world", "feature"];
+pub const RESERVED: [&str; 9] = [
+    "look", "decal", "label", "pawn", "walk", "chase", "region", "world", "feature",
+];
 
 /// Checks an engine component's value, phrased for the agent that wrote it.
 fn check_reserved(name: &str, value: &Value, grants: &Grants) -> Result<(), String> {
     let sizes = |key: &str, n: usize, max: f64| {
         let list = value[key].as_array().filter(|a| a.len() == n);
-        list.is_some_and(|a| a.iter().all(|v| v.as_f64().is_some_and(|v| v > 0.0 && v <= max)))
+        list.is_some_and(|a| {
+            a.iter()
+                .all(|v| v.as_f64().is_some_and(|v| v > 0.0 && v <= max))
+        })
     };
     let ok = match name {
         "look" => {
-            let model = value["model"].as_str().is_some_and(|m| grants.models.iter().any(|g| g == m));
+            let model = value["model"]
+                .as_str()
+                .is_some_and(|m| grants.models.iter().any(|g| g == m));
             let turn = value["turn"].is_null() || value["turn"].as_u64().is_some_and(|t| t < 4);
             let solid = value["solid"].is_null() || value["solid"].is_boolean();
-            let scale = value["scale"].is_null() || value["scale"].as_f64().is_some_and(|s| (0.1..=8.0).contains(&s));
-            let tint = value["tint"].is_null() || value["tint"].as_str().is_some_and(super::present::is_color);
-            let flags = ["glow", "hidden"].iter().all(|k| value[*k].is_null() || value[*k].is_boolean());
+            let scale = value["scale"].is_null()
+                || value["scale"]
+                    .as_f64()
+                    .is_some_and(|s| (0.1..=8.0).contains(&s));
+            let tint = value["tint"].is_null()
+                || value["tint"].as_str().is_some_and(super::present::is_color);
+            let flags = ["glow", "hidden"]
+                .iter()
+                .all(|k| value[*k].is_null() || value[*k].is_boolean());
             model && turn && solid && scale && tint && flags
         }
         "decal" => super::shader::DecalLook::read(value, &grants.shaders).is_some(),
         "label" => value.as_str().is_some_and(|l| l.chars().count() <= 60),
-        "pawn" => value.as_str().is_some_and(|p| !p.is_empty() && p.len() <= 128),
+        "pawn" => value
+            .as_str()
+            .is_some_and(|p| !p.is_empty() && p.len() <= 128),
         "feature" => value.as_str().is_some_and(|s| s.len() <= 64),
         "walk" | "chase" => return super::walk::check(name, value),
         "region" => {
-            (value["radius"].as_f64().is_some_and(|r| r > 0.0 && r <= 64.0) || sizes("size", 2, 128.0))
+            (value["radius"]
+                .as_f64()
+                .is_some_and(|r| r > 0.0 && r <= 64.0)
+                || sizes("size", 2, 128.0))
                 && (value["keys"].is_null() || value["keys"].is_boolean())
         }
-        "world" => value.as_object().is_some_and(|o| o.keys().all(|k| k == "building")) && !value["building"].is_null(),
+        "world" => {
+            value
+                .as_object()
+                .is_some_and(|o| o.keys().all(|k| k == "building"))
+                && !value["building"].is_null()
+        }
         _ => true,
     };
     if ok {
@@ -395,14 +510,19 @@ impl Grants {
         let Some((ns, _)) = split_name(name) else {
             // Engine components the game had once (recorded in old changes).
             if let Some((_, instead)) = REMOVED_COMPONENTS.iter().find(|(old, _)| *old == name) {
-                return Err(format!("the engine no longer has \"{name}\"; games use {instead}"));
+                return Err(format!(
+                    "the engine no longer has \"{name}\"; games use {instead}"
+                ));
             }
             return Err(format!("\"{name}\" must be named \"<package>:<name>\""));
         };
         if ns == self.package || self.write.iter().any(|w| w == ns) {
             Ok(())
         } else {
-            Err(format!("{} may not change \"{name}\", which belongs to {ns}", self.package))
+            Err(format!(
+                "{} may not change \"{name}\", which belongs to {ns}",
+                self.package
+            ))
         }
     }
 
@@ -513,7 +633,11 @@ impl From<GameState> for SavedState {
         Self {
             entities: state.entities.into_iter().collect(),
             items: state.items,
-            timers: state.timers.into_iter().map(|((p, n), t)| (p, n, t)).collect(),
+            timers: state
+                .timers
+                .into_iter()
+                .map(|((p, n), t)| (p, n, t))
+                .collect(),
             stats: state.stats,
             hud: state.hud,
             panels: state.panels,
@@ -549,7 +673,11 @@ impl From<SavedState> for GameState {
             areas,
             counts,
             items: saved.items,
-            timers: saved.timers.into_iter().map(|(p, n, t)| ((p, n), t)).collect(),
+            timers: saved
+                .timers
+                .into_iter()
+                .map(|(p, n, t)| ((p, n), t))
+                .collect(),
             stats: saved.stats,
             hud: saved.hud,
             panels: saved.panels,
@@ -582,7 +710,10 @@ impl GameState {
     /// Entities standing on the ground from `lo` to `hi` (x, z), and maybe a few more
     /// near it.
     pub fn within(&self, lo: [f32; 2], hi: [f32; 2]) -> impl Iterator<Item = (EntityId, &Entity)> {
-        self.areas.within(lo, hi).into_iter().filter_map(|id| Some((id, self.entities.get(&id)?)))
+        self.areas
+            .within(lo, hi)
+            .into_iter()
+            .filter_map(|id| Some((id, self.entities.get(&id)?)))
     }
 
     pub fn len(&self) -> usize {
@@ -599,12 +730,20 @@ impl GameState {
 
     /// How many of `item` `player` carries.
     pub fn items(&self, player: &str, item: &str) -> u32 {
-        self.items.get(player).and_then(|i| i.get(item)).copied().unwrap_or(0)
+        self.items
+            .get(player)
+            .and_then(|i| i.get(item))
+            .copied()
+            .unwrap_or(0)
     }
 
     /// Everything `player` carries.
     pub fn inventory(&self, player: &str) -> impl Iterator<Item = (&str, u32)> {
-        self.items.get(player).into_iter().flatten().map(|(item, n)| (item.as_str(), *n))
+        self.items
+            .get(player)
+            .into_iter()
+            .flatten()
+            .map(|(item, n)| (item.as_str(), *n))
     }
 
     /// One of `player`'s stats.
@@ -614,12 +753,19 @@ impl GameState {
 
     /// All of `player`'s stats.
     pub fn stats(&self, player: &str) -> impl Iterator<Item = (&str, Stat)> {
-        self.stats.get(player).into_iter().flatten().map(|(n, s)| (n.as_str(), *s))
+        self.stats
+            .get(player)
+            .into_iter()
+            .flatten()
+            .map(|(n, s)| (n.as_str(), *s))
     }
 
     /// The widgets on `player`'s screen: everyone's, then their own.
     pub fn hud(&self, player: &str) -> impl Iterator<Item = (&str, &Ui)> {
-        ["*", player].into_iter().flat_map(|p| self.hud.get(p).into_iter().flatten()).map(|(id, w)| (id.as_str(), w))
+        ["*", player]
+            .into_iter()
+            .flat_map(|p| self.hud.get(p).into_iter().flatten())
+            .map(|(id, w)| (id.as_str(), w))
     }
 
     /// The panel `player` has open.
@@ -662,7 +808,8 @@ impl GameState {
     /// Notes what `player` is called: replay does, from each change's author.
     pub fn set_name(&mut self, player: &str, name: &str) {
         if self.names.get(player).is_none_or(|n| n != name) && !name.trim().is_empty() {
-            self.names.insert(player.to_string(), name.chars().take(40).collect());
+            self.names
+                .insert(player.to_string(), name.chars().take(40).collect());
         }
     }
 
@@ -694,7 +841,9 @@ impl GameState {
     /// Signals from other packages that `package` hasn't heard yet.
     pub fn unheard(&self, package: &str) -> impl Iterator<Item = &Signal> {
         let since = self.heard.get(package).copied().unwrap_or(0);
-        self.signals.iter().filter(move |s| s.change > since && s.from != package)
+        self.signals
+            .iter()
+            .filter(move |s| s.change > since && s.from != package)
     }
 
     /// What `package` keeps under `key`.
@@ -714,7 +863,9 @@ impl GameState {
 
     /// Everything `player` carries, to take to another world.
     pub fn carried(&self, player: &str) -> Vec<(String, u32)> {
-        self.inventory(player).map(|(item, n)| (item.to_string(), n)).collect()
+        self.inventory(player)
+            .map(|(item, n)| (item.to_string(), n))
+            .collect()
     }
 
     /// Takes `items` from `player`, who's leaving for another world with them.
@@ -741,7 +892,9 @@ impl GameState {
 
     /// `player`'s stats, which go with them to another world.
     pub fn carried_stats(&self, player: &str) -> Vec<(String, Stat)> {
-        self.stats(player).map(|(n, s)| (n.to_string(), s)).collect()
+        self.stats(player)
+            .map(|(n, s)| (n.to_string(), s))
+            .collect()
     }
 
     /// Moves stats with a player: away (`None`) or in.
@@ -777,12 +930,17 @@ impl GameState {
 
     /// Every waiting timer: package, name, timer.
     pub fn timers(&self) -> impl Iterator<Item = (&str, &str, &Timer)> {
-        self.timers.iter().map(|((p, n), t)| (p.as_str(), n.as_str(), t))
+        self.timers
+            .iter()
+            .map(|((p, n), t)| (p.as_str(), n.as_str(), t))
     }
 
     /// `package`'s waiting timers.
     pub fn timers_of<'a>(&'a self, package: &'a str) -> impl Iterator<Item = (&'a str, &'a Timer)> {
-        self.timers.range((package.to_string(), String::new())..).take_while(move |((p, _), _)| p == package).map(|((_, n), t)| (n.as_str(), t))
+        self.timers
+            .range((package.to_string(), String::new())..)
+            .take_while(move |((p, _), _)| p == package)
+            .map(|((_, n), t)| (n.as_str(), t))
     }
 
     /// Starts a set of effects for change `change` by `actor`, at most `max_effects`,
@@ -1034,21 +1192,29 @@ impl Batch<'_> {
 
     pub fn items(&self, player: &str, item: &str) -> u32 {
         let key = (player.to_string(), item.to_string());
-        self.items.get(&key).copied().unwrap_or_else(|| self.base.items(player, item))
+        self.items
+            .get(&key)
+            .copied()
+            .unwrap_or_else(|| self.base.items(player, item))
     }
 
     /// Every entity as staged, in id order.
     /// Entities within `radius` meters of `at` (along the ground and up), as staged and
     /// where they are at `now` (walking ones along their way), nearest first.
     pub fn near(&self, at: [f32; 3], radius: f32, now: u64) -> Vec<(EntityId, f32)> {
-        let (lo, hi) = ([at[0] - radius, at[2] - radius], [at[0] + radius, at[2] + radius]);
-        let mut ids: std::collections::BTreeSet<EntityId> = self.base.within(lo, hi).map(|(id, _)| id).collect();
+        let (lo, hi) = (
+            [at[0] - radius, at[2] - radius],
+            [at[0] + radius, at[2] + radius],
+        );
+        let mut ids: std::collections::BTreeSet<EntityId> =
+            self.base.within(lo, hi).map(|(id, _)| id).collect();
         ids.extend(self.touched.keys());
         let mut found: Vec<(EntityId, f32)> = ids
             .into_iter()
             .filter_map(|id| {
                 let p = super::walk::position_at(self.get(id)?, now as f64);
-                let d = ((p[0] - at[0]).powi(2) + (p[1] - at[1]).powi(2) + (p[2] - at[2]).powi(2)).sqrt();
+                let d = ((p[0] - at[0]).powi(2) + (p[1] - at[1]).powi(2) + (p[2] - at[2]).powi(2))
+                    .sqrt();
                 (d <= radius).then_some((id, d))
             })
             .collect();
@@ -1057,8 +1223,16 @@ impl Batch<'_> {
     }
 
     pub fn ids(&self) -> Vec<EntityId> {
-        let base = self.base.entities.keys().filter(|id| !self.touched.contains_key(id));
-        let staged = self.touched.iter().filter(|(_, e)| e.is_some()).map(|(id, _)| id);
+        let base = self
+            .base
+            .entities
+            .keys()
+            .filter(|id| !self.touched.contains_key(id));
+        let staged = self
+            .touched
+            .iter()
+            .filter(|(_, e)| e.is_some())
+            .map(|(id, _)| id);
         let mut ids: Vec<EntityId> = base.chain(staged).copied().collect();
         ids.sort_unstable();
         ids
@@ -1145,7 +1319,10 @@ impl Batch<'_> {
 
     /// One of a player's stats, as staged.
     pub fn stat(&self, player: &str, stat: &str) -> Option<Stat> {
-        self.stats.get(&(player.to_string(), stat.to_string())).copied().or_else(|| self.base.stat(player, stat))
+        self.stats
+            .get(&(player.to_string(), stat.to_string()))
+            .copied()
+            .or_else(|| self.base.stat(player, stat))
     }
 
     /// The panel a player has open, as staged.
@@ -1187,26 +1364,47 @@ impl Batch<'_> {
 
     fn stage(&mut self, grants: &Grants, effect: &Effect) -> Result<Option<EntityId>, String> {
         if self.applied >= self.max_effects {
-            return Err(format!("one action may cause at most {} changes here", self.max_effects));
+            return Err(format!(
+                "one action may cause at most {} changes here",
+                self.max_effects
+            ));
         }
         self.applied += 1;
-        let entity = |batch: &Self, id: EntityId| batch.get(id).cloned().ok_or(format!("entity {}.{} doesn't exist", id.change, id.n));
+        let entity = |batch: &Self, id: EntityId| {
+            batch
+                .get(id)
+                .cloned()
+                .ok_or(format!("entity {}.{} doesn't exist", id.change, id.n))
+        };
         match effect {
-            Effect::Spawn { position, components } => {
+            Effect::Spawn {
+                position,
+                components,
+            } => {
                 if !grants.spawn {
                     return Err(format!("{} may not spawn entities", grants.package));
                 }
                 grants.inside(*position)?;
-                let count = self.base.count(&grants.package) as i64 + *self.counts.get(&grants.package).unwrap_or(&0) as i64;
+                let count = self.base.count(&grants.package) as i64
+                    + *self.counts.get(&grants.package).unwrap_or(&0) as i64;
                 if count + 1 > grants.max_entities as i64 {
-                    return Err(format!("{} already has {count} entities; this world allows {}", grants.package, grants.max_entities));
+                    return Err(format!(
+                        "{} already has {count} entities; this world allows {}",
+                        grants.package, grants.max_entities
+                    ));
                 }
                 // A region or the world's rules aren't seen; a pawn is the hero; a decal is drawn.
-                let unseen = ["pawn", "region", "world", "decal"].iter().any(|c| components.contains_key(*c));
+                let unseen = ["pawn", "region", "world", "decal"]
+                    .iter()
+                    .any(|c| components.contains_key(*c));
                 if grants.drawn && !components.contains_key("look") && !unseen {
                     return Err(format!(
                         "every piece needs a look: {{model = ...}}, one of the package's models ({})",
-                        if grants.models.is_empty() { "it has none yet; add some".to_string() } else { grants.models.join(", ") }
+                        if grants.models.is_empty() {
+                            "it has none yet; add some".to_string()
+                        } else {
+                            grants.models.join(", ")
+                        }
                     ));
                 }
                 for (name, value) in components {
@@ -1217,10 +1415,17 @@ impl Batch<'_> {
                     }
                     check_value(name, value)?;
                 }
-                let id = EntityId { change: self.change, n: self.spawned };
+                let id = EntityId {
+                    change: self.change,
+                    n: self.spawned,
+                };
                 self.spawned += 1;
                 *self.counts.entry(grants.package.clone()).or_default() += 1;
-                let e = Entity { package: grants.package.clone(), position: snap(*position), components: components.clone() };
+                let e = Entity {
+                    package: grants.package.clone(),
+                    position: snap(*position),
+                    components: components.clone(),
+                };
                 self.touched.insert(id, Some(e));
                 Ok(Some(id))
             }
@@ -1231,7 +1436,10 @@ impl Batch<'_> {
                 self.touched.insert(*id, None);
                 Ok(None)
             }
-            Effect::Move { entity: id, position } => {
+            Effect::Move {
+                entity: id,
+                position,
+            } => {
                 let mut e = entity(self, *id)?;
                 own(grants, &e)?;
                 grants.inside(e.position)?;
@@ -1240,7 +1448,11 @@ impl Batch<'_> {
                 self.touched.insert(*id, Some(e));
                 Ok(None)
             }
-            Effect::Set { entity: id, component, value } => {
+            Effect::Set {
+                entity: id,
+                component,
+                value,
+            } => {
                 let mut e = entity(self, *id)?;
                 if RESERVED.contains(&component.as_str()) {
                     own(grants, &e)?;
@@ -1254,12 +1466,23 @@ impl Batch<'_> {
                 self.touched.insert(*id, Some(e));
                 Ok(None)
             }
-            Effect::Remove { entity: id, component } => {
+            Effect::Remove {
+                entity: id,
+                component,
+            } => {
                 let mut e = entity(self, *id)?;
                 if RESERVED.contains(&component.as_str()) {
                     own(grants, &e)?;
-                    if component == "look" && grants.drawn && !["pawn", "decal"].iter().any(|c| e.components.contains_key(*c)) {
-                        return Err("every piece needs a look; set another one instead of removing it".into());
+                    if component == "look"
+                        && grants.drawn
+                        && !["pawn", "decal"]
+                            .iter()
+                            .any(|c| e.components.contains_key(*c))
+                    {
+                        return Err(
+                            "every piece needs a look; set another one instead of removing it"
+                                .into(),
+                        );
                     }
                 } else {
                     grants.writable(component)?;
@@ -1269,11 +1492,17 @@ impl Batch<'_> {
                 self.touched.insert(*id, Some(e));
                 Ok(None)
             }
-            Effect::Give { player, item, count } => {
+            Effect::Give {
+                player,
+                item,
+                count,
+            } => {
                 grants.writable(item)?;
                 let n = self.items(player, item).saturating_add(*count);
                 if n > MAX_ITEMS {
-                    return Err(format!("nobody can carry more than {MAX_ITEMS} of \"{item}\""));
+                    return Err(format!(
+                        "nobody can carry more than {MAX_ITEMS} of \"{item}\""
+                    ));
                 }
                 self.items.insert((player.clone(), item.clone()), n);
                 Ok(None)
@@ -1281,15 +1510,25 @@ impl Batch<'_> {
             Effect::Take { item, count } => {
                 grants.writable(item)?;
                 let have = self.items(self.actor, item);
-                let n = have.checked_sub(*count).ok_or(format!("you need {count} \"{item}\" and have {have}"))?;
+                let n = have
+                    .checked_sub(*count)
+                    .ok_or(format!("you need {count} \"{item}\" and have {have}"))?;
                 self.items.insert((self.actor.to_string(), item.clone()), n);
                 Ok(None)
             }
             Effect::Notify { player, text } => {
-                self.notes.push((player.clone(), text.chars().take(200).collect()));
+                self.notes
+                    .push((player.clone(), text.chars().take(200).collect()));
                 Ok(None)
             }
-            Effect::Schedule { name, due, every, data, near, feature } => {
+            Effect::Schedule {
+                name,
+                due,
+                every,
+                data,
+                near,
+                feature,
+            } => {
                 if name.is_empty() || name.chars().count() > 64 {
                     return Err("a timer's name is 1 to 64 characters".into());
                 }
@@ -1298,27 +1537,53 @@ impl Batch<'_> {
                 }
                 check_value(name, data)?;
                 let key = (grants.package.clone(), name.clone());
-                if self.timer(&grants.package, name).is_none() && self.waiting(&grants.package) >= MAX_TIMERS {
-                    return Err(format!("{} already has {MAX_TIMERS} timers waiting", grants.package));
+                if self.timer(&grants.package, name).is_none()
+                    && self.waiting(&grants.package) >= MAX_TIMERS
+                {
+                    return Err(format!(
+                        "{} already has {MAX_TIMERS} timers waiting",
+                        grants.package
+                    ));
                 }
                 if let Some(id) = near {
                     entity(self, *id)?;
                 }
-                self.timers.insert(key, Some(Timer { due: *due, every: *every, data: data.clone(), near: *near, feature: feature.clone() }));
+                self.timers.insert(
+                    key,
+                    Some(Timer {
+                        due: *due,
+                        every: *every,
+                        data: data.clone(),
+                        near: *near,
+                        feature: feature.clone(),
+                    }),
+                );
                 Ok(None)
             }
             Effect::Cancel { name } => {
-                self.timers.insert((grants.package.clone(), name.clone()), None);
+                self.timers
+                    .insert((grants.package.clone(), name.clone()), None);
                 Ok(None)
             }
-            Effect::SetStat { player, stat, value, max } => {
+            Effect::SetStat {
+                player,
+                stat,
+                value,
+                max,
+            } => {
                 grants.writable(stat)?;
                 let max = max.or_else(|| self.stat(player, stat).and_then(|s| s.max));
-                if !value.is_finite() || max.is_some_and(|m| !m.is_finite() || m <= 0.0) || value.abs() > 1e12 {
-                    return Err(format!("\"{stat}\" needs a finite value (and a maximum above 0)"));
+                if !value.is_finite()
+                    || max.is_some_and(|m| !m.is_finite() || m <= 0.0)
+                    || value.abs() > 1e12
+                {
+                    return Err(format!(
+                        "\"{stat}\" needs a finite value (and a maximum above 0)"
+                    ));
                 }
                 let value = value.max(0.0).min(max.unwrap_or(f64::MAX));
-                self.stats.insert((player.clone(), stat.clone()), Stat { value, max });
+                self.stats
+                    .insert((player.clone(), stat.clone()), Stat { value, max });
                 Ok(None)
             }
             Effect::Hud { player, id, widget } => {
@@ -1349,10 +1614,16 @@ impl Batch<'_> {
                         for name in spec.body.names() {
                             grants.readable(name)?;
                         }
-                        Some(Panel { package: grants.package.clone(), spec: spec.clone() })
+                        Some(Panel {
+                            package: grants.package.clone(),
+                            spec: spec.clone(),
+                        })
                     }
                     None => {
-                        if self.panel(player).is_some_and(|p| p.package != grants.package) {
+                        if self
+                            .panel(player)
+                            .is_some_and(|p| p.package != grants.package)
+                        {
                             return Err("that panel is another package's".into());
                         }
                         None
@@ -1361,12 +1632,22 @@ impl Batch<'_> {
                 self.panels.insert(player.clone(), panel);
                 Ok(None)
             }
-            Effect::Build { model, position, turn } => {
+            Effect::Build {
+                model,
+                position,
+                turn,
+            } => {
                 if !grants.build {
-                    return Err(format!("{} may not place builds (it needs the build permission)", grants.package));
+                    return Err(format!(
+                        "{} may not place builds (it needs the build permission)",
+                        grants.package
+                    ));
                 }
                 if !grants.models.iter().any(|m| m == model) || *turn > 3 {
-                    return Err(format!("build places one of the package's models ({}), turned 0-3", grants.models.join(", ")));
+                    return Err(format!(
+                        "build places one of the package's models ({}), turned 0-3",
+                        grants.models.join(", ")
+                    ));
                 }
                 if !position.iter().all(|v| v.is_finite()) {
                     return Err("that isn't a place".into());
@@ -1380,7 +1661,10 @@ impl Batch<'_> {
             }
             Effect::Unbuild { build } => {
                 if self.build_owner(*build) != Some(grants.package.as_str()) {
-                    return Err(format!("{} may only remove builds it placed", grants.package));
+                    return Err(format!(
+                        "{} may only remove builds it placed",
+                        grants.package
+                    ));
                 }
                 self.builds.insert(*build, None);
                 Ok(None)
@@ -1390,23 +1674,44 @@ impl Batch<'_> {
                     return Err("teleport takes a player (or \"*\") and a place".into());
                 }
                 grants.inside(*position)?;
-                self.teleports.insert(player.clone(), Teleport { position: *position, change: self.change });
+                self.teleports.insert(
+                    player.clone(),
+                    Teleport {
+                        position: *position,
+                        change: self.change,
+                    },
+                );
                 Ok(None)
             }
             Effect::Travel { player, to } => {
-                let world = crate::game::clean_name(to).filter(|name| name.eq_ignore_ascii_case(to.trim()));
+                let world =
+                    crate::game::clean_name(to).filter(|name| name.eq_ignore_ascii_case(to.trim()));
                 let (Some(world), false) = (world, player.is_empty() || player == "*") else {
-                    return Err("travel takes one player and the name of a world of this game".into());
+                    return Err(
+                        "travel takes one player and the name of a world of this game".into(),
+                    );
                 };
-                self.travels.insert(player.clone(), Travel { to: world, change: self.change });
+                self.travels.insert(
+                    player.clone(),
+                    Travel {
+                        to: world,
+                        change: self.change,
+                    },
+                );
                 Ok(None)
             }
             Effect::Portal { build, to } => {
                 if !grants.build {
-                    return Err(format!("{} may not make portals (it needs the build permission)", grants.package));
+                    return Err(format!(
+                        "{} may not make portals (it needs the build permission)",
+                        grants.package
+                    ));
                 }
                 if self.build_owner(*build) != Some(grants.package.as_str()) {
-                    return Err(format!("{} may only link builds it placed (build() gives their ids)", grants.package));
+                    return Err(format!(
+                        "{} may only link builds it placed (build() gives their ids)",
+                        grants.package
+                    ));
                 }
                 if let Some(to) = to {
                     crate::log::PortalTo::parse(to)?;
@@ -1418,14 +1723,27 @@ impl Batch<'_> {
                     return Err("body takes one player".into());
                 }
                 body.as_ref().map_or(Ok(()), Body::check)?;
-                self.bodies.insert(player.clone(), body.filter(|b| *b != Body::default()));
+                self.bodies
+                    .insert(player.clone(), body.filter(|b| *b != Body::default()));
                 Ok(None)
             }
             Effect::Launch { player, velocity } => {
-                if player.is_empty() || player == "*" || !velocity.iter().all(|v| v.is_finite() && v.abs() <= 40.0) {
-                    return Err("launch(player, {x, y, z}): how fast to throw them, up to 40 m/s each way".into());
+                if player.is_empty()
+                    || player == "*"
+                    || !velocity.iter().all(|v| v.is_finite() && v.abs() <= 40.0)
+                {
+                    return Err(
+                        "launch(player, {x, y, z}): how fast to throw them, up to 40 m/s each way"
+                            .into(),
+                    );
                 }
-                self.launches.insert(player.clone(), Launch { velocity: *velocity, change: self.change });
+                self.launches.insert(
+                    player.clone(),
+                    Launch {
+                        velocity: *velocity,
+                        change: self.change,
+                    },
+                );
                 Ok(None)
             }
             Effect::Play { pos, to, what } => {
@@ -1439,18 +1757,30 @@ impl Batch<'_> {
                 if self.shows.len() >= 16 {
                     return Err("at most 16 effects and sounds in one action".into());
                 }
-                self.shows.push(Show { change: self.change, pos: *pos, to: to.clone(), what: what.clone() });
+                self.shows.push(Show {
+                    change: self.change,
+                    pos: *pos,
+                    to: to.clone(),
+                    what: what.clone(),
+                });
                 Ok(None)
             }
             Effect::Emit { name, data } => {
                 let size = serde_json::to_vec(data).map_or(usize::MAX, |b| b.len());
                 if name.is_empty() || name.len() > 64 || size > MAX_COMPONENT_BYTES {
-                    return Err(format!("emit(name, data): a name up to 64 characters, data up to {MAX_COMPONENT_BYTES} bytes"));
+                    return Err(format!(
+                        "emit(name, data): a name up to 64 characters, data up to {MAX_COMPONENT_BYTES} bytes"
+                    ));
                 }
                 if self.signals.len() >= 16 {
                     return Err("at most 16 signals in one action".into());
                 }
-                self.signals.push(Signal { change: self.change, from: grants.package.clone(), name: name.clone(), data: data.clone() });
+                self.signals.push(Signal {
+                    change: self.change,
+                    from: grants.package.clone(),
+                    name: name.clone(),
+                    data: data.clone(),
+                });
                 Ok(None)
             }
             Effect::Clock { to, at } => {
@@ -1465,11 +1795,16 @@ impl Batch<'_> {
                 Ok(None)
             }
             Effect::Store { key, value } => {
-                let size = value.as_ref().map_or(0, |v| serde_json::to_vec(v).map_or(usize::MAX, |b| b.len()));
+                let size = value
+                    .as_ref()
+                    .map_or(0, |v| serde_json::to_vec(v).map_or(usize::MAX, |b| b.len()));
                 if key.is_empty() || key.len() > 64 || size > MAX_COMPONENT_BYTES {
-                    return Err(format!("remember(key, value): a key up to 64 characters, a value up to {MAX_COMPONENT_BYTES} bytes"));
+                    return Err(format!(
+                        "remember(key, value): a key up to 64 characters, a value up to {MAX_COMPONENT_BYTES} bytes"
+                    ));
                 }
-                self.stores.insert((grants.package.clone(), key.clone()), value.clone());
+                self.stores
+                    .insert((grants.package.clone(), key.clone()), value.clone());
                 Ok(None)
             }
             Effect::Sky { sky } => {
@@ -1481,23 +1816,43 @@ impl Batch<'_> {
                 if let Some(a) = appearance
                     && (!grants.models.contains(&a.model) || !(0.1..=4.0).contains(&a.scale))
                 {
-                    return Err(format!("appearance(player, {{model = one of {}'s models, scale = 0.1-4}})", grants.package));
+                    return Err(format!(
+                        "appearance(player, {{model = one of {}'s models, scale = 0.1-4}})",
+                        grants.package
+                    ));
                 }
-                let appearance = appearance.clone().map(|a| Appearance { package: grants.package.clone(), ..a });
+                let appearance = appearance.clone().map(|a| Appearance {
+                    package: grants.package.clone(),
+                    ..a
+                });
                 self.appearances.insert(player.clone(), appearance);
                 Ok(None)
             }
             Effect::Terrain { area, .. } => {
                 if !grants.build {
-                    return Err(format!("{} may not reshape land (it needs the build permission)", grants.package));
+                    return Err(format!(
+                        "{} may not reshape land (it needs the build permission)",
+                        grants.package
+                    ));
                 }
-                let corner = |x: i32, z: i32| [x as f32 * crate::terrain::VOXEL_SIZE, 0.0, z as f32 * crate::terrain::VOXEL_SIZE];
+                let corner = |x: i32, z: i32| {
+                    [
+                        x as f32 * crate::terrain::VOXEL_SIZE,
+                        0.0,
+                        z as f32 * crate::terrain::VOXEL_SIZE,
+                    ]
+                };
                 let [x, z] = area.min;
                 let [w, d] = area.size;
                 if w <= 0 || d <= 0 {
                     return Err("an area has a size".into());
                 }
-                for p in [corner(x, z), corner(x + w - 1, z), corner(x, z + d - 1), corner(x + w - 1, z + d - 1)] {
+                for p in [
+                    corner(x, z),
+                    corner(x + w - 1, z),
+                    corner(x, z + d - 1),
+                    corner(x + w - 1, z + d - 1),
+                ] {
                     grants.inside(p)?;
                 }
                 Ok(None)
@@ -1507,8 +1862,20 @@ impl Batch<'_> {
 
     /// How many timers `package` has waiting, as staged.
     fn waiting(&self, package: &str) -> usize {
-        let base = self.base.timers_of(package).filter(|(n, _)| !self.timers.contains_key(&(package.to_string(), n.to_string()))).count();
-        base + self.timers.iter().filter(|((p, _), t)| p == package && t.is_some()).count()
+        let base = self
+            .base
+            .timers_of(package)
+            .filter(|(n, _)| {
+                !self
+                    .timers
+                    .contains_key(&(package.to_string(), n.to_string()))
+            })
+            .count();
+        base + self
+            .timers
+            .iter()
+            .filter(|((p, _), t)| p == package && t.is_some())
+            .count()
     }
 
     pub fn finish(self) -> Done {
@@ -1518,7 +1885,15 @@ impl Batch<'_> {
         let world = self
             .effects
             .iter()
-            .filter(|e| matches!(e, Effect::Build { .. } | Effect::Unbuild { .. } | Effect::Terrain { .. } | Effect::Portal { .. }))
+            .filter(|e| {
+                matches!(
+                    e,
+                    Effect::Build { .. }
+                        | Effect::Unbuild { .. }
+                        | Effect::Terrain { .. }
+                        | Effect::Portal { .. }
+                )
+            })
             .map(|e| {
                 let id = matches!(e, Effect::Build { .. }).then(|| {
                     built += 1;
@@ -1557,14 +1932,19 @@ fn own(grants: &Grants, e: &Entity) -> Result<(), String> {
     if e.package == grants.package {
         Ok(())
     } else {
-        Err(format!("{} may only move, remove or restyle its own entities, not {}'s", grants.package, e.package))
+        Err(format!(
+            "{} may only move, remove or restyle its own entities, not {}'s",
+            grants.package, e.package
+        ))
     }
 }
 
 fn check_value(name: &str, value: &Value) -> Result<(), String> {
     let size = serde_json::to_vec(value).map_or(usize::MAX, |b| b.len());
     if size > MAX_COMPONENT_BYTES {
-        return Err(format!("\"{name}\" is {size} bytes; a component may be at most {MAX_COMPONENT_BYTES}"));
+        return Err(format!(
+            "\"{name}\" is {size} bytes; a component may be at most {MAX_COMPONENT_BYTES}"
+        ));
     }
     Ok(())
 }
@@ -1576,11 +1956,24 @@ mod tests {
     use super::*;
 
     fn grants(package: &str, scope: Scope) -> Grants {
-        Grants { package: package.into(), write: Vec::new(), spawn: true, scope, max_entities: 2, models: vec!["crate".into()], shaders: Vec::new(), drawn: false, build: false }
+        Grants {
+            package: package.into(),
+            write: Vec::new(),
+            spawn: true,
+            scope,
+            max_entities: 2,
+            models: vec!["crate".into()],
+            shaders: Vec::new(),
+            drawn: false,
+            build: false,
+        }
     }
 
     fn spawn(x: f32) -> Effect {
-        Effect::Spawn { position: [x, 0.0, 0.0], components: BTreeMap::from([("farm:crop".into(), json!({ "day": 0 }))]) }
+        Effect::Spawn {
+            position: [x, 0.0, 0.0],
+            components: BTreeMap::from([("farm:crop".into(), json!({ "day": 0 }))]),
+        }
     }
 
     #[test]
@@ -1590,14 +1983,28 @@ mod tests {
         let mut batch = world.batch(7, "a", 256);
         let id = batch.apply(&farm, &spawn(1.0)).unwrap().unwrap();
         assert_eq!(id, EntityId { change: 7, n: 0 });
-        batch.apply(&farm, &Effect::Set { entity: id, component: "farm:crop".into(), value: json!({ "day": 1 }) }).unwrap();
+        batch
+            .apply(
+                &farm,
+                &Effect::Set {
+                    entity: id,
+                    component: "farm:crop".into(),
+                    value: json!({ "day": 1 }),
+                },
+            )
+            .unwrap();
         // Dropping a batch leaves the world as it was.
         drop(batch);
         assert!(world.is_empty());
         let mut batch = world.batch(7, "a", 256);
         batch.apply(&farm, &spawn(1.0)).unwrap();
         batch.apply(&farm, &spawn(2.0)).unwrap();
-        assert!(batch.apply(&farm, &spawn(3.0)).unwrap_err().contains("allows 2"));
+        assert!(
+            batch
+                .apply(&farm, &spawn(3.0))
+                .unwrap_err()
+                .contains("allows 2")
+        );
         let done = batch.finish();
         world.commit(done);
         assert_eq!((world.len(), world.count("farm")), (2, 2));
@@ -1606,18 +2013,42 @@ mod tests {
     #[test]
     fn packages_keep_to_their_namespace_and_scope() {
         let mut world = GameState::default();
-        let farm = grants("farm", Scope::Parcels { parcels: vec![[0, 0]] });
+        let farm = grants(
+            "farm",
+            Scope::Parcels {
+                parcels: vec![[0, 0]],
+            },
+        );
         let mut batch = world.batch(1, "a", 256);
         let id = batch.apply(&farm, &spawn(1.0)).unwrap().unwrap();
         // 8 m is a parcel's edge (32 voxels of 25 cm).
         assert!(batch.apply(&farm, &spawn(9.0)).is_err());
-        assert!(batch.apply(&farm, &Effect::Move { entity: id, position: [9.0, 0.0, 0.0] }).is_err());
+        assert!(
+            batch
+                .apply(
+                    &farm,
+                    &Effect::Move {
+                        entity: id,
+                        position: [9.0, 0.0, 0.0]
+                    }
+                )
+                .is_err()
+        );
         world.commit(batch.finish());
 
         let fish = grants("fish", Scope::World);
         let mut batch = world.batch(2, "a", 256);
-        let set = |component: &str| Effect::Set { entity: id, component: component.into(), value: json!(true) };
-        assert!(batch.apply(&fish, &set("farm:crop")).unwrap_err().contains("belongs to farm"));
+        let set = |component: &str| Effect::Set {
+            entity: id,
+            component: component.into(),
+            value: json!(true),
+        };
+        assert!(
+            batch
+                .apply(&fish, &set("farm:crop"))
+                .unwrap_err()
+                .contains("belongs to farm")
+        );
         assert!(batch.apply(&fish, &Effect::Despawn { entity: id }).is_err());
         // Its own components on someone else's entity are fine (a "fished here" mark).
         batch.apply(&fish, &set("fish:visited")).unwrap();
@@ -1625,20 +2056,49 @@ mod tests {
         fish.write.push("farm".into());
         batch.apply(&fish, &set("farm:crop")).unwrap();
         assert!(batch.apply(&fish, &set("farm:nope!")).is_err());
-        assert!(batch.apply(&fish, &Effect::Set { entity: id, component: "farm:big".into(), value: json!("x".repeat(5000)) }).is_err());
+        assert!(
+            batch
+                .apply(
+                    &fish,
+                    &Effect::Set {
+                        entity: id,
+                        component: "farm:big".into(),
+                        value: json!("x".repeat(5000))
+                    }
+                )
+                .is_err()
+        );
     }
 
     #[test]
     fn items_are_given_and_taken_from_the_actor() {
         let mut world = GameState::default();
         let farm = grants("farm", Scope::World);
-        let give = |player: &str, count| Effect::Give { player: player.into(), item: "farm:seed".into(), count };
-        let take = |count| Effect::Take { item: "farm:seed".into(), count };
+        let give = |player: &str, count| Effect::Give {
+            player: player.into(),
+            item: "farm:seed".into(),
+            count,
+        };
+        let take = |count| Effect::Take {
+            item: "farm:seed".into(),
+            count,
+        };
         let mut batch = world.batch(1, "a", 256);
         batch.apply(&farm, &give("a", 3)).unwrap();
         batch.apply(&farm, &take(2)).unwrap();
         assert!(batch.apply(&farm, &take(2)).unwrap_err().contains("have 1"));
-        assert!(batch.apply(&farm, &Effect::Give { player: "a".into(), item: "fish:cod".into(), count: 1 }).is_err());
+        assert!(
+            batch
+                .apply(
+                    &farm,
+                    &Effect::Give {
+                        player: "a".into(),
+                        item: "fish:cod".into(),
+                        count: 1
+                    }
+                )
+                .is_err()
+        );
         assert!(batch.apply(&farm, &give("a", MAX_ITEMS)).is_err());
         world.commit(batch.finish());
         assert_eq!(world.items("a", "farm:seed"), 1);
@@ -1649,31 +2109,71 @@ mod tests {
         batch.apply(&farm, &give("b", 1)).unwrap();
         batch.apply(&farm, &take(1)).unwrap();
         world.commit(batch.finish());
-        assert_eq!((world.items("a", "farm:seed"), world.items("b", "farm:seed")), (1, 0));
+        assert_eq!(
+            (world.items("a", "farm:seed"), world.items("b", "farm:seed")),
+            (1, 0)
+        );
         assert_eq!(world.inventory("b").count(), 0);
     }
 
     #[test]
     fn timers_go_off_once_per_span() {
-        let once = Timer { due: 10, every: None, data: Value::Null, near: None, feature: None };
-        assert_eq!((once.fires(5, 9), once.fires(5, 10), once.fires(10, 20)), (None, Some((10, 1)), Some((10, 1))));
-        let every = Timer { due: 10, every: Some(3), data: Value::Null, near: None, feature: None };
+        let once = Timer {
+            due: 10,
+            every: None,
+            data: Value::Null,
+            near: None,
+            feature: None,
+        };
+        assert_eq!(
+            (once.fires(5, 9), once.fires(5, 10), once.fires(10, 20)),
+            (None, Some((10, 1)), Some((10, 1)))
+        );
+        let every = Timer {
+            due: 10,
+            every: Some(3),
+            data: Value::Null,
+            near: None,
+            feature: None,
+        };
         // 10, 13, 16, 19: by 20, all four, folded into the last.
         assert_eq!(every.fires(0, 20), Some((19, 4)));
         assert_eq!(every.fires(10, 15), Some((13, 1)));
         assert_eq!(every.fires(13, 15), None);
-        assert_eq!((every.next(0), every.next(10), every.next(14)), (Some(10), Some(13), Some(16)));
+        assert_eq!(
+            (every.next(0), every.next(10), every.next(14)),
+            (Some(10), Some(13), Some(16))
+        );
         let world = GameState::default();
         let mut batch = world.batch(1, "a", 1000);
         let game = grants("game", Scope::World);
-        let schedule = |name: String| Effect::Schedule { name, due: 5, every: None, data: Value::Null, near: None, feature: None };
+        let schedule = |name: String| Effect::Schedule {
+            name,
+            due: 5,
+            every: None,
+            data: Value::Null,
+            near: None,
+            feature: None,
+        };
         for n in 0..MAX_TIMERS {
             batch.apply(&game, &schedule(n.to_string())).unwrap();
         }
-        assert!(batch.apply(&game, &schedule("more".into())).unwrap_err().contains("timers waiting"));
+        assert!(
+            batch
+                .apply(&game, &schedule("more".into()))
+                .unwrap_err()
+                .contains("timers waiting")
+        );
         // Replacing one is fine.
         batch.apply(&game, &schedule("0".into())).unwrap();
-        let fast = Effect::Schedule { name: "0".into(), due: 5, every: Some(0), data: Value::Null, near: None, feature: None };
+        let fast = Effect::Schedule {
+            name: "0".into(),
+            due: 5,
+            every: Some(0),
+            data: Value::Null,
+            near: None,
+            feature: None,
+        };
         assert!(batch.apply(&game, &fast).is_err());
     }
 
@@ -1683,17 +2183,38 @@ mod tests {
         let game = grants("game", Scope::World);
         let look = json!({ "model": "crate" });
         let mut batch = world.batch(1, "a", 3);
-        let spawn = Effect::Spawn { position: [0.0; 3], components: BTreeMap::from([("look".into(), look), ("label".into(), json!("Box"))]) };
+        let spawn = Effect::Spawn {
+            position: [0.0; 3],
+            components: BTreeMap::from([("look".into(), look), ("label".into(), json!("Box"))]),
+        };
         let id = batch.apply(&game, &spawn).unwrap().unwrap();
-        let bad = Effect::Set { entity: id, component: "look".into(), value: json!({ "model": "barrel" }) };
-        assert!(batch.apply(&game, &bad).unwrap_err().contains("one of the package's models (crate)"));
+        let bad = Effect::Set {
+            entity: id,
+            component: "look".into(),
+            value: json!({ "model": "barrel" }),
+        };
+        assert!(
+            batch
+                .apply(&game, &bad)
+                .unwrap_err()
+                .contains("one of the package's models (crate)")
+        );
         // Another package can't restyle it, even with permission to write game's data.
         let mut other = grants("other", Scope::World);
         other.write.push("game".into());
-        let label = Effect::Set { entity: id, component: "label".into(), value: json!("Mine") };
+        let label = Effect::Set {
+            entity: id,
+            component: "label".into(),
+            value: json!("Mine"),
+        };
         assert!(batch.apply(&other, &label).is_err());
         // The batch caps how much one action does.
-        assert!(batch.apply(&game, &label).unwrap_err().contains("at most 3"));
+        assert!(
+            batch
+                .apply(&game, &label)
+                .unwrap_err()
+                .contains("at most 3")
+        );
         assert_eq!(batch.ids(), vec![id]);
         world.commit(batch.finish());
         assert_eq!(world.get(id).unwrap().components["label"], "Box");

@@ -37,8 +37,8 @@ use genverse_rules::{
     build::{BuildLimits, compile},
     logic::{
         Entity as Piece, EntityId, Intent, Logic, Package,
-        data,
         clockwork::keys_region_at,
+        data,
         walk::{position_at, walking_at},
     },
 };
@@ -95,7 +95,14 @@ impl Play {
 pub(super) enum Look {
     /// One of its package's voxel models (by package hash and name), turned by quarter
     /// turns.
-    Model { package: String, model: String, turn: u8, scale: f32, tint: Option<String>, glow: bool },
+    Model {
+        package: String,
+        model: String,
+        turn: u8,
+        scale: f32,
+        tint: Option<String>,
+        glow: bool,
+    },
     /// Nothing to draw (a pawn: the hero shows it).
     Hidden,
     /// Its package isn't installed (any more): kept, but asleep.
@@ -123,15 +130,31 @@ impl Models {
     }
 
     /// The model with its colors multiplied by `tint`, and all of it glowing if `glow`.
-    fn tinted(&mut self, logic: &Logic, package: &str, model: &str, tint: Option<&str>, glow: bool) -> Option<&ModelData> {
+    fn tinted(
+        &mut self,
+        logic: &Logic,
+        package: &str,
+        model: &str,
+        tint: Option<&str>,
+        glow: bool,
+    ) -> Option<&ModelData> {
         self.0
-            .entry((package.to_string(), model.to_string(), tint.map(str::to_string), glow))
+            .entry((
+                package.to_string(),
+                model.to_string(),
+                tint.map(str::to_string),
+                glow,
+            ))
             .or_insert_with(|| {
                 let mut spec = logic.packages.get(package)?.models.get(model)?.clone();
                 let tint = tint.and_then(|t| Srgba::hex(t.trim_start_matches('#')).ok());
                 for color in &mut spec.palette {
-                    if let (Some(tint), Ok(c)) = (tint, Srgba::hex(color.hex.trim_start_matches('#'))) {
-                        color.hex = Srgba::rgb(c.red * tint.red, c.green * tint.green, c.blue * tint.blue).to_hex();
+                    if let (Some(tint), Ok(c)) =
+                        (tint, Srgba::hex(color.hex.trim_start_matches('#')))
+                    {
+                        color.hex =
+                            Srgba::rgb(c.red * tint.red, c.green * tint.green, c.blue * tint.blue)
+                                .to_hex();
                     }
                     if glow && color.material != "glass" {
                         color.material = "glow".into();
@@ -145,7 +168,14 @@ impl Models {
     /// How tall a piece stands, in meters.
     fn height(&mut self, logic: &Logic, look: &Look) -> f32 {
         match look {
-            Look::Model { package, model, scale, .. } => self.get(logic, package, model).map_or(0.0, |m| m.grid.size().y as f32 * m.voxel_size * scale),
+            Look::Model {
+                package,
+                model,
+                scale,
+                ..
+            } => self
+                .get(logic, package, model)
+                .map_or(0.0, |m| m.grid.size().y as f32 * m.voxel_size * scale),
             other => other.block().map_or(0.0, |(size, _)| size.y),
         }
     }
@@ -158,38 +188,64 @@ fn package_of<'a>(logic: &'a Logic, package: &str) -> Option<&'a Package> {
 
 /// How a piece looks and what it's called: its `look` and `label`.
 fn describe(logic: &Logic, e: &Piece) -> (Look, Option<String>) {
-    let label = e.components.get("label").and_then(|l| l.as_str()).map(str::to_string);
+    let label = e
+        .components
+        .get("label")
+        .and_then(|l| l.as_str())
+        .map(str::to_string);
     if package_of(logic, &e.package).is_none() {
-        return (Look::Dormant, Some(format!("{} (not installed)", e.package)));
+        return (
+            Look::Dormant,
+            Some(format!("{} (not installed)", e.package)),
+        );
     }
     match e.components.get("look") {
         Some(look) if look["hidden"] == true => (Look::Hidden, label),
         Some(look) => {
-            let installed = logic.installed.get(&e.package).map(|i| i.package.hash.clone()).unwrap_or_default();
+            let installed = logic
+                .installed
+                .get(&e.package)
+                .map(|i| i.package.hash.clone())
+                .unwrap_or_default();
             let model = look["model"].as_str().unwrap_or_default().to_string();
             let turn = look["turn"].as_u64().unwrap_or(0).min(3) as u8;
             let scale = look["scale"].as_f64().unwrap_or(1.0).clamp(0.1, 8.0) as f32;
             let tint = look["tint"].as_str().map(str::to_string);
-            (Look::Model { package: installed, model, turn, scale, tint, glow: look["glow"] == true }, label)
+            (
+                Look::Model {
+                    package: installed,
+                    model,
+                    turn,
+                    scale,
+                    tint,
+                    glow: look["glow"] == true,
+                },
+                label,
+            )
         }
         None => (Look::Hidden, label),
     }
 }
 
 pub(super) fn now() -> u64 {
-    std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map_or(0, |d| d.as_secs())
+    std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map_or(0, |d| d.as_secs())
 }
 
 /// Now, to the millisecond: where walking pieces are.
 pub(super) fn now_exact() -> f64 {
-    std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map_or(0.0, |d| d.as_secs_f64())
+    std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map_or(0.0, |d| d.as_secs_f64())
 }
 
 /// Where a piece stands now and how it's turned: along its walk, facing the way it
 /// goes, if it's walking.
 pub(super) fn placement(e: &Piece, turn: u8, look: &Look) -> Transform {
     let (at, yaw) = walking_at(e, now_exact()).unwrap_or((e.position, turn as f32 * FRAC_PI_2));
-    let mut transform = Transform::from_translation(Vec3::from_array(at)).with_rotation(Quat::from_rotation_y(yaw));
+    let mut transform =
+        Transform::from_translation(Vec3::from_array(at)).with_rotation(Quat::from_rotation_y(yaw));
     if let Some((size, _)) = look.block() {
         transform.translation.y += size.y / 2.0;
     }
@@ -206,8 +262,14 @@ pub fn walk_pieces(ledger: Res<Ledger>, play: Res<Play>, mut transforms: Query<&
         if !e.components.contains_key("walk") {
             continue;
         }
-        let Some((entity, look)) = play.pieces.get(&id) else { continue };
-        let turn = if let Look::Model { turn, .. } = look { *turn } else { 0 };
+        let Some((entity, look)) = play.pieces.get(&id) else {
+            continue;
+        };
+        let turn = if let Look::Model { turn, .. } = look {
+            *turn
+        } else {
+            0
+        };
         if let Ok(mut transform) = transforms.get_mut(*entity) {
             *transform = placement(e, turn, look);
         }
@@ -236,7 +298,11 @@ pub fn sync_pieces(
     let mut keep = HashMap::new();
     for (id, e) in logic.state.entities() {
         let (look, _) = describe(logic, e);
-        let turn = if let Look::Model { turn, .. } = look { turn } else { 0 };
+        let turn = if let Look::Model { turn, .. } = look {
+            turn
+        } else {
+            0
+        };
         let mut transform = placement(e, turn, &Look::Hidden);
         // Solid while it stands still: the hero bumps into it as into a build.
         let solid = e.components.get("look").is_some_and(|l| l["solid"] == true)
@@ -258,8 +324,17 @@ pub fn sync_pieces(
         }
         let mut entity = commands.spawn((Visibility::default(), Name::new("Game piece")));
         match &look {
-            Look::Model { package, model, tint, glow, .. } => {
-                if let Some(data) = play.models.tinted(logic, package, model, tint.as_deref(), *glow) {
+            Look::Model {
+                package,
+                model,
+                tint,
+                glow,
+                ..
+            } => {
+                if let Some(data) =
+                    play.models
+                        .tinted(logic, package, model, tint.as_deref(), *glow)
+                {
                     // Pieces stand on the ground, so their faces often meet it, as builds' do.
                     entity.insert((VoxelModel::from(data), DepthBias(500.0)));
                     if solid {
@@ -272,7 +347,11 @@ pub fn sync_pieces(
                     transform.translation.y += size.y / 2.0;
                     entity.insert((
                         Mesh3d(meshes.add(Cuboid::from_size(size))),
-                        MeshMaterial3d(materials.add(StandardMaterial { base_color: color, perceptual_roughness: 0.8, ..default() })),
+                        MeshMaterial3d(materials.add(StandardMaterial {
+                            base_color: color,
+                            perceptual_roughness: 0.8,
+                            ..default()
+                        })),
                     ));
                 }
             }
@@ -288,10 +367,18 @@ pub fn sync_pieces(
 
 /// Shows what an action did: what the game said, what you got, or why not. Script
 /// errors also go to the chat, where the agent sees them next time.
-pub(super) fn report(result: Result<Acted, String>, ledger: &Ledger, play: &mut Play, chat: &mut Chat, now_s: f32) {
+pub(super) fn report(
+    result: Result<Acted, String>,
+    ledger: &Ledger,
+    play: &mut Play,
+    chat: &mut Chat,
+    now_s: f32,
+) {
     match result {
         Ok(acted) if !acted.notes.is_empty() => play.toast(acted.notes.join(" · "), now_s),
-        Ok(acted) if !acted.gained.is_empty() => play.toast(describe_gains(ledger, &acted.gained), now_s),
+        Ok(acted) if !acted.gained.is_empty() => {
+            play.toast(describe_gains(ledger, &acted.gained), now_s)
+        }
         Ok(_) => {}
         Err(why) => {
             if why.contains("script error") {
@@ -320,9 +407,18 @@ pub fn run_timers(
     if now_s - *last >= 0.5 {
         *last = now_s;
         let me = ledger.profile.id.clone();
-        let players: Vec<(String, [f32; 3])> = heroes.iter().map(|t| (me.clone(), t.translation.to_array())).collect();
+        let players: Vec<(String, [f32; 3])> = heroes
+            .iter()
+            .map(|t| (me.clone(), t.translation.to_array()))
+            .collect();
         for why in ledger.run_timers(&players, &*world) {
-            report(Err(format!("script error: {why}")), &ledger, &mut play, &mut chat, now_s);
+            report(
+                Err(format!("script error: {why}")),
+                &ledger,
+                &mut play,
+                &mut chat,
+                now_s,
+            );
         }
     }
     if !ledger.heard.is_empty() {
@@ -350,11 +446,19 @@ pub fn use_pieces(
         .state
         .entities()
         .filter(|(_, e)| describe(logic, e).1.is_some())
-        .map(|(id, e)| (id, Vec3::from_array(position_at(e, now_exact())).distance(feet)))
+        .map(|(id, e)| {
+            (
+                id,
+                Vec3::from_array(position_at(e, now_exact())).distance(feet),
+            )
+        })
         .filter(|(_, d)| *d <= REACH)
         .min_by(|a, b| a.1.total_cmp(&b.1))
         .map(|(id, _)| id);
-    let busy = creations.draft.is_some() || landscape.selecting || landscape.draft.is_some() || play.playing.is_some();
+    let busy = creations.draft.is_some()
+        || landscape.selecting
+        || landscape.draft.is_some()
+        || play.playing.is_some();
     if blocked.0 || busy {
         return;
     }
@@ -372,7 +476,11 @@ pub fn use_pieces(
 
 /// Puts the hero where games send them: each teleport once, and on coming into a world,
 /// the game's spawn point.
-pub fn follow_teleports(ledger: Res<Ledger>, mut seen: Local<(String, u64)>, mut heroes: Query<(&mut Transform, &mut Player)>) {
+pub fn follow_teleports(
+    ledger: Res<Ledger>,
+    mut seen: Local<(String, u64)>,
+    mut heroes: Query<(&mut Transform, &mut Player)>,
+) {
     let state = &ledger.logic.state;
     let me = &ledger.profile.id;
     let world = super::worlds::current_title(&ledger);
@@ -395,7 +503,11 @@ pub fn follow_teleports(ledger: Res<Ledger>, mut seen: Local<(String, u64)>, mut
 
 /// Puts the actions the world's games declare (their `action` definitions) among the
 /// player's controls, and takes them out when a game goes.
-pub fn sync_game_actions(ledger: Res<Ledger>, mut binds: ResMut<Bindings>, mut seen: Local<Option<(String, u64)>>) {
+pub fn sync_game_actions(
+    ledger: Res<Ledger>,
+    mut binds: ResMut<Bindings>,
+    mut seen: Local<Option<(String, u64)>>,
+) {
     // Looked at again when the world changes, or the player is in another one.
     let now = (super::worlds::current_title(&ledger), ledger.version);
     if seen.as_ref() == Some(&now) {
@@ -417,13 +529,23 @@ pub fn game_actions(ledger: &Ledger) -> Vec<crate::bindings::GameAction> {
         .values()
         .filter_map(|install| logic.package(install))
         .flat_map(|package| {
-            let group = if package.manifest.title.trim().is_empty() { package.manifest.name.clone() } else { package.manifest.title.clone() };
-            data::actions(package).into_iter().map(move |(name, title, key)| crate::bindings::GameAction {
-                name,
-                title,
-                group: group.clone(),
-                defaults: key.as_deref().and_then(crate::bindings::Input::named).into_iter().collect(),
-            })
+            let group = if package.manifest.title.trim().is_empty() {
+                package.manifest.name.clone()
+            } else {
+                package.manifest.title.clone()
+            };
+            data::actions(package)
+                .into_iter()
+                .map(move |(name, title, key)| crate::bindings::GameAction {
+                    name,
+                    title,
+                    group: group.clone(),
+                    defaults: key
+                        .as_deref()
+                        .and_then(crate::bindings::Input::named)
+                        .into_iter()
+                        .collect(),
+                })
         })
         .collect()
 }
@@ -446,30 +568,53 @@ pub fn follow_travels(
         *seen = (world, state.travel(me).map_or(0, |t| t.change), false);
         return;
     }
-    let Some(trip) = state.travel(me).filter(|t| t.change > seen.1) else { return };
+    let Some(trip) = state.travel(me).filter(|t| t.change > seen.1) else {
+        return;
+    };
     if creations.draft.is_some() || landscape.draft.is_some() {
         if !seen.2 {
             seen.2 = true;
-            chat.say(super::Role::System, format!("The game is taking you to {}: place or discard your draft first.", trip.to));
+            chat.say(
+                super::Role::System,
+                format!(
+                    "The game is taking you to {}: place or discard your draft first.",
+                    trip.to
+                ),
+            );
         }
         return;
     }
     (seen.1, seen.2) = (trip.change, false);
-    let to = genverse_rules::log::PortalTo::World { name: trip.to.clone() };
+    let to = genverse_rules::log::PortalTo::World {
+        name: trip.to.clone(),
+    };
     if let Err(why) = travel.portal(&to, &ledger) {
-        chat.say(super::Role::System, format!("The game tried to take you to {}. {why}", trip.to));
+        chat.say(
+            super::Role::System,
+            format!("The game tried to take you to {}. {why}", trip.to),
+        );
     }
 }
 
 /// How games have the hero move, and each throw once.
-pub fn follow_body(ledger: Res<Ledger>, mut seen: Local<(String, u64)>, mut body: ResMut<HeroBody>) {
+pub fn follow_body(
+    ledger: Res<Ledger>,
+    mut seen: Local<(String, u64)>,
+    mut body: ResMut<HeroBody>,
+) {
     let state = &ledger.logic.state;
     let me = &ledger.profile.id;
     let b = state.body(me);
-    (body.speed, body.jump, body.gravity, body.air_jumps) = (b.speed, b.jump, b.gravity, b.air_jumps);
+    (body.speed, body.jump, body.gravity, body.air_jumps) =
+        (b.speed, b.jump, b.gravity, b.air_jumps);
     // The world's own way of moving, which a game's multiples are of.
     let hero = ledger.rules.hero.bounded();
-    (body.walk, body.run, body.jump_speed, body.fall) = (hero.walk_speed, hero.run_speed, hero.jump_speed, hero.gravity);
+    (body.walk, body.run, body.jump_speed, body.fall) = (
+        hero.walk_speed,
+        hero.run_speed,
+        hero.jump_speed,
+        hero.gravity,
+    );
     let world = super::worlds::current_title(&ledger);
     let last = state.launch(me).map_or(0, |l| l.change);
     if seen.0 != world {
@@ -485,10 +630,13 @@ pub fn follow_body(ledger: Res<Ledger>, mut seen: Local<(String, u64)>, mut body
 /// it), if a game has given them one.
 fn my_pawn(ledger: &Ledger) -> Option<Vec3> {
     let me = ledger.profile.id.as_str();
-    let (_, pawn) = ledger.logic.state.entities().find(|(_, e)| e.components.get("pawn").and_then(|p| p.as_str()) == Some(me))?;
+    let (_, pawn) = ledger
+        .logic
+        .state
+        .entities()
+        .find(|(_, e)| e.components.get("pawn").and_then(|p| p.as_str()) == Some(me))?;
     Some(Vec3::from_array(position_at(pawn, now_exact())))
 }
-
 
 /// The movement actions, clockwise from forward: a grid game's direction keys.
 const MOVES: [&str; 4] = ["forward", "right", "back", "left"];
@@ -525,9 +673,16 @@ pub fn play_keys(
     pawned.0 = my_pawn(&ledger);
     // On their pawn in a region that takes keys, the player's moves go to its game;
     // walking in is the game's to notice (`on_enter`), as for any region.
-    play.playing = pawned.0.and_then(|at| keys_region_at(&ledger.logic.state, at.to_array(), now()));
-    let Some(region) = play.playing.filter(|_| !blocked.0) else { return };
-    let key = |name: &str| Intent::Key { entity: region, key: name.into() };
+    play.playing = pawned
+        .0
+        .and_then(|at| keys_region_at(&ledger.logic.state, at.to_array(), now()));
+    let Some(region) = play.playing.filter(|_| !blocked.0) else {
+        return;
+    };
+    let key = |name: &str| Intent::Key {
+        entity: region,
+        key: name.into(),
+    };
     let yaw = cameras.single().map_or(0.0, |c| c.yaw());
     let mut send = None;
     if let Some(k) = (0..MOVES.len()).find(|k| binds.just_pressed(MOVES[*k])) {
@@ -558,7 +713,14 @@ pub fn play_keys(
 fn describe_gains(ledger: &Ledger, gained: &[(String, i64)]) -> String {
     gained
         .iter()
-        .map(|(item, n)| format!("{}{} {}", if *n > 0 { "+" } else { "−" }, n.abs(), item_title(&ledger.logic, item)))
+        .map(|(item, n)| {
+            format!(
+                "{}{} {}",
+                if *n > 0 { "+" } else { "−" },
+                n.abs(),
+                item_title(&ledger.logic, item)
+            )
+        })
         .collect::<Vec<_>>()
         .join(", ")
 }
@@ -566,7 +728,10 @@ fn describe_gains(ledger: &Ledger, gained: &[(String, i64)]) -> String {
 pub(super) fn item_title(logic: &Logic, item: &str) -> String {
     let package = item.split(':').next().and_then(|ns| package_of(logic, ns));
     // Carried in from a world whose game rules aren't on here: its name will do.
-    package.map_or_else(|| item.rsplit(':').next().unwrap_or(item).replace('_', " "), |p| data::title(p, item))
+    package.map_or_else(
+        || item.rsplit(':').next().unwrap_or(item).replace('_', " "),
+        |p| data::title(p, item),
+    )
 }
 
 /// The toast, and labels over the pieces nearby.
@@ -615,20 +780,35 @@ pub fn game_labels(
         let mut nearby: Vec<_> = logic
             .state
             .entities()
-            .map(|(id, e)| (play.near != Some(id), Vec3::from_array(position_at(e, now_exact())).distance(hero.translation), id, e))
+            .map(|(id, e)| {
+                (
+                    play.near != Some(id),
+                    Vec3::from_array(position_at(e, now_exact())).distance(hero.translation),
+                    id,
+                    e,
+                )
+            })
             .filter(|(_, d, _, _)| *d <= LABEL_DISTANCE)
             .collect();
         nearby.sort_by(|a, b| a.0.cmp(&b.0).then(a.1.total_cmp(&b.1)));
         let mut shown: Vec<Vec2> = Vec::new();
         for (_, _, id, e) in nearby {
-            let (look, Some(label)) = describe(logic, e) else { continue };
-            let top = Vec3::from_array(position_at(e, now_exact())) + Vec3::Y * (play.models.height(logic, &look) + 0.3);
+            let (look, Some(label)) = describe(logic, e) else {
+                continue;
+            };
+            let top = Vec3::from_array(position_at(e, now_exact()))
+                + Vec3::Y * (play.models.height(logic, &look) + 0.3);
             // Only pieces in front of the camera.
             if (top - eye.translation()).dot(*eye.forward()) <= 0.0 {
                 continue;
             }
-            let Ok(at) = camera.world_to_viewport(eye, top) else { continue };
-            if shown.iter().any(|s| (s.x - at.x).abs() < 160.0 && (s.y - at.y).abs() < 40.0) {
+            let Ok(at) = camera.world_to_viewport(eye, top) else {
+                continue;
+            };
+            if shown
+                .iter()
+                .any(|s| (s.x - at.x).abs() < 160.0 && (s.y - at.y).abs() < 40.0)
+            {
                 continue;
             }
             shown.push(at);
@@ -637,17 +817,36 @@ pub fn game_labels(
                 .fixed_pos(egui::pos2(at.x, at.y))
                 .pivot(egui::Align2::CENTER_BOTTOM)
                 .interactable(false)
-                .order(if near { egui::Order::Foreground } else { egui::Order::Middle })
+                .order(if near {
+                    egui::Order::Foreground
+                } else {
+                    egui::Order::Middle
+                })
                 .show(ctx, |ui| {
-                    let frame = egui::Frame::new().corner_radius(6.0).inner_margin(egui::Margin::symmetric(8, 3));
+                    let frame = egui::Frame::new()
+                        .corner_radius(6.0)
+                        .inner_margin(egui::Margin::symmetric(8, 3));
                     if near {
                         frame.fill(p.overlay).show(ui, |ui| {
-                            ui.add(egui::Label::new(egui::RichText::new(label).color(p.strong)).extend());
-                            ui.add(egui::Label::new(egui::RichText::new("E to use · F to hit").color(p.muted).small()).extend());
+                            ui.add(
+                                egui::Label::new(egui::RichText::new(label).color(p.strong))
+                                    .extend(),
+                            );
+                            ui.add(
+                                egui::Label::new(
+                                    egui::RichText::new("E to use · F to hit")
+                                        .color(p.muted)
+                                        .small(),
+                                )
+                                .extend(),
+                            );
                         });
                     } else {
                         frame.fill(p.overlay.gamma_multiply(0.6)).show(ui, |ui| {
-                            ui.add(egui::Label::new(egui::RichText::new(label).color(p.text).small()).extend());
+                            ui.add(
+                                egui::Label::new(egui::RichText::new(label).color(p.text).small())
+                                    .extend(),
+                            );
                         });
                     }
                 });
@@ -670,19 +869,29 @@ pub fn script_play(
     mut steps: Local<Option<(Vec<String>, f32, usize)>>,
 ) {
     let now_s = time.elapsed_secs();
-    let Ok((mut player, mut hero)) = heroes.single_mut() else { return };
+    let Ok((mut player, mut hero)) = heroes.single_mut() else {
+        return;
+    };
     if chat.pending.is_some() {
         return;
     }
     if steps.is_none() {
-        let Ok(script) = std::env::var("GENVERSE_PLAY") else { return };
+        let Ok(script) = std::env::var("GENVERSE_PLAY") else {
+            return;
+        };
         if !player.has_landed() {
             return;
         }
-        let list = script.split(';').map(|s| s.trim().to_string()).filter(|s| !s.is_empty()).collect();
+        let list = script
+            .split(';')
+            .map(|s| s.trim().to_string())
+            .filter(|s| !s.is_empty())
+            .collect();
         *steps = Some((list, now_s + 1.0, 0));
     }
-    let Some((list, next, placed)) = steps.as_mut() else { return };
+    let Some((list, next, placed)) = steps.as_mut() else {
+        return;
+    };
     if list.is_empty() || now_s < *next {
         return;
     }
@@ -691,21 +900,33 @@ pub fn script_play(
     // The inventory: open or close it, or put hotbar slot N (1-9) in hand.
     if step == "inventory" {
         inventory.open = !inventory.open;
-        info!("GENVERSE_PLAY inventory: {}", if inventory.open { "open" } else { "closed" });
+        info!(
+            "GENVERSE_PLAY inventory: {}",
+            if inventory.open { "open" } else { "closed" }
+        );
         return;
     }
-    if let Some(n) = step.strip_prefix("slot ").and_then(|n| n.trim().parse::<usize>().ok()) {
+    if let Some(n) = step
+        .strip_prefix("slot ")
+        .and_then(|n| n.trim().parse::<usize>().ok())
+    {
         inventory.pick(n.saturating_sub(1), now_s);
         return;
     }
     // Time for the world to happen.
-    if let Some(seconds) = step.strip_prefix("wait ").and_then(|s| s.trim().parse::<f32>().ok()) {
+    if let Some(seconds) = step
+        .strip_prefix("wait ")
+        .and_then(|s| s.trim().parse::<f32>().ok())
+    {
         *next = now_s + seconds;
         return;
     }
     // The hero steps to x, z: regions and chasers notice.
     if let Some(to) = step.strip_prefix("go ") {
-        let xz: Vec<f32> = to.split_whitespace().filter_map(|v| v.parse().ok()).collect();
+        let xz: Vec<f32> = to
+            .split_whitespace()
+            .filter_map(|v| v.parse().ok())
+            .collect();
         if let [x, z] = xz[..] {
             let down = Ray3d::new(Vec3::new(x, 60.0, z), Dir3::NEG_Y);
             if let Some(hit) = world.raycast(down, 120.0) {
@@ -722,7 +943,11 @@ pub fn script_play(
         match to.map(|to| travel.portal(&to, &ledger)) {
             Some(Ok(())) => info!("GENVERSE_PLAY portal: going"),
             Some(Err(why)) => info!("GENVERSE_PLAY portal: {why}"),
-            None => info!("GENVERSE_PLAY portal: not at a portal (hero at {}, {} portals)", hero.translation, ledger.portals.len()),
+            None => info!(
+                "GENVERSE_PLAY portal: not at a portal (hero at {}, {} portals)",
+                hero.translation,
+                ledger.portals.len()
+            ),
         }
         return;
     }
@@ -730,7 +955,9 @@ pub fn script_play(
         step = inventory.held().map_or(step, str::to_string);
     }
     let result = if let Some(choice) = step.strip_prefix("choose ") {
-        ledger.act(Intent::Choose { choice: Some(choice.trim().to_string()) })
+        ledger.act(Intent::Choose {
+            choice: Some(choice.trim().to_string()),
+        })
     } else if step == "close" {
         ledger.act(Intent::Choose { choice: None })
     } else if step == "use" {
@@ -746,23 +973,34 @@ pub fn script_play(
     } else if genverse_rules::logic::KEYS.contains(&step.as_str()) {
         let at = my_pawn(&ledger).unwrap_or(hero.translation).to_array();
         match keys_region_at(&ledger.logic.state, at, now()) {
-            Some(entity) => ledger.act(Intent::Key { entity, key: step.clone() }),
+            Some(entity) => ledger.act(Intent::Key {
+                entity,
+                key: step.clone(),
+            }),
             None => Err("not in a region that takes keys".into()),
         }
     } else {
         // In a row 2 m ahead of the hero.
-        let forward = (hero.rotation * Vec3::NEG_Z).with_y(0.0).normalize_or_zero();
+        let forward = (hero.rotation * Vec3::NEG_Z)
+            .with_y(0.0)
+            .normalize_or_zero();
         let side = forward.cross(Vec3::Y);
         let spot = hero.translation + forward * 2.0 + side * (*placed as f32 * 0.8 - 0.8);
         *placed += 1;
         let down = Ray3d::new(spot + Vec3::Y * 4.0, Dir3::NEG_Y);
         match world.raycast(down, 12.0) {
-            Some(hit) => ledger.act(Intent::Place { item: step.clone(), position: down.get_point(hit.distance).to_array() }),
+            Some(hit) => ledger.act(Intent::Place {
+                item: step.clone(),
+                position: down.get_point(hit.distance).to_array(),
+            }),
             None => Err("no ground there".into()),
         }
     };
     match &result {
-        Ok(acted) => info!("GENVERSE_PLAY {step}: ok {:?} {:?}", acted.notes, acted.gained),
+        Ok(acted) => info!(
+            "GENVERSE_PLAY {step}: ok {:?} {:?}",
+            acted.notes, acted.gained
+        ),
         Err(why) => info!("GENVERSE_PLAY {step}: {why}"),
     }
     report(result, &ledger, &mut play, &mut chat, now_s);

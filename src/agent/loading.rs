@@ -41,12 +41,19 @@ impl Loading {
     /// How much of the view has loaded, from 0 to 1.
     pub fn progress(&self) -> f32 {
         let (loaded, total) = self.chunks;
-        if total == 0 { 0.0 } else { loaded as f32 / total as f32 }
+        if total == 0 {
+            0.0
+        } else {
+            loaded as f32 / total as f32
+        }
     }
 
     /// Covers the view again while another world loads.
     pub fn restart(&mut self, world: &str) {
-        *self = Self { entering: Some(world.to_string()), ..Self::default() };
+        *self = Self {
+            entering: Some(world.to_string()),
+            ..Self::default()
+        };
     }
 }
 
@@ -74,7 +81,11 @@ pub fn track_loading(
         return;
     }
     let since = *loading.settling_since.get_or_insert(now);
-    loading.steady = if time.delta_secs() * 1000.0 <= STEADY_MS { loading.steady + 1 } else { 0 };
+    loading.steady = if time.delta_secs() * 1000.0 <= STEADY_MS {
+        loading.steady + 1
+    } else {
+        0
+    };
     if loading.steady >= STEADY_FRAMES || now - since >= SETTLE_LIMIT {
         loading.ready_at = Some(now);
         auto.paused = false;
@@ -92,14 +103,20 @@ pub fn loading_screen(
     if start.open || welcome.open {
         return Ok(());
     }
-    let shown = loading.ready_at.map_or(1.0, |at| 1.0 - (time.elapsed_secs() - at) / FADE);
+    let shown = loading
+        .ready_at
+        .map_or(1.0, |at| 1.0 - (time.elapsed_secs() - at) / FADE);
     if shown <= 0.0 {
         return Ok(());
     }
     let ctx = contexts.ctx_mut()?;
     let p = theme::palette(ctx);
     let (loaded, total) = loading.chunks;
-    let progress = if total == 0 { 0.0 } else { loaded as f32 / total as f32 };
+    let progress = if total == 0 {
+        0.0
+    } else {
+        loaded as f32 / total as f32
+    };
     let screen = ctx.content_rect();
     egui::Area::new("loading_screen".into())
         .order(egui::Order::Foreground)
@@ -109,11 +126,19 @@ pub fn loading_screen(
             // Takes the clicks too, so nothing behind it reacts while it's up.
             let (rect, _) = ui.allocate_exact_size(screen.size(), egui::Sense::click_and_drag());
             ui.painter().rect_filled(rect, 0, p.panel);
-            let card = egui::Rect::from_center_size(rect.center(), egui::vec2(rect.width().min(360.0) - 32.0, 120.0));
+            let card = egui::Rect::from_center_size(
+                rect.center(),
+                egui::vec2(rect.width().min(360.0) - 32.0, 120.0),
+            );
             ui.scope_builder(egui::UiBuilder::new().max_rect(card), |ui| {
                 ui.vertical_centered(|ui| {
                     let title = loading.entering.as_deref().unwrap_or("Genverse");
-                    ui.label(egui::RichText::new(title).size(30.0).strong().color(p.strong));
+                    ui.label(
+                        egui::RichText::new(title)
+                            .size(30.0)
+                            .strong()
+                            .color(p.strong),
+                    );
                     ui.add_space(4.0);
                     let status = if loaded < total {
                         "Growing the world"
@@ -136,14 +161,23 @@ pub fn loading_screen(
 /// A trough with a grass block filling it: lit on top, a darker lip along the bottom.
 fn progress_bar(ui: &mut egui::Ui, progress: f32) {
     let p = theme::palette(ui.ctx());
-    let (rect, _) = ui.allocate_exact_size(egui::vec2(ui.available_width(), 16.0), egui::Sense::hover());
+    let (rect, _) =
+        ui.allocate_exact_size(egui::vec2(ui.available_width(), 16.0), egui::Sense::hover());
     let painter = ui.painter();
     painter.rect_filled(rect, theme::ROUND, p.input);
-    painter.rect_stroke(rect, theme::ROUND, egui::Stroke::new(1.0, p.line), egui::StrokeKind::Inside);
+    painter.rect_stroke(
+        rect,
+        theme::ROUND,
+        egui::Stroke::new(1.0, p.line),
+        egui::StrokeKind::Inside,
+    );
     if progress <= 0.0 {
         return;
     }
-    let fill = egui::Rect::from_min_size(rect.min, egui::vec2(rect.width() * progress.min(1.0), rect.height()));
+    let fill = egui::Rect::from_min_size(
+        rect.min,
+        egui::vec2(rect.width() * progress.min(1.0), rect.height()),
+    );
     painter.rect_filled(fill, theme::ROUND, theme::shade(p.primary, 0.72));
     let face = egui::Rect::from_min_max(fill.min, egui::pos2(fill.right(), fill.bottom() - 3.0));
     painter.rect_filled(face, theme::ROUND, p.primary);

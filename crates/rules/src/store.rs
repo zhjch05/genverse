@@ -42,7 +42,15 @@ struct Head {
 
 impl Head {
     fn of(log: &WorldLog) -> Self {
-        Self { seed: log.seed, rules_version: log.rules_version, admins: log.admins.clone(), rules: log.rules.clone(), flat: log.flat, terrain_version: log.terrain_version, recipe: log.recipe }
+        Self {
+            seed: log.seed,
+            rules_version: log.rules_version,
+            admins: log.admins.clone(),
+            rules: log.rules.clone(),
+            flat: log.flat,
+            terrain_version: log.terrain_version,
+            recipe: log.recipe,
+        }
     }
 }
 
@@ -68,14 +76,22 @@ pub struct LogFile {
 impl LogFile {
     /// The log kept in `dir`, read if it's there (or migrated from `world.json`).
     pub fn open(dir: &Path) -> io::Result<(Self, Option<WorldLog>)> {
-        let mut file = Self { path: dir.join("world.jsonl"), head: None, changes: 0, last: None, packages: HashSet::new() };
+        let mut file = Self {
+            path: dir.join("world.jsonl"),
+            head: None,
+            changes: 0,
+            last: None,
+            packages: HashSet::new(),
+        };
         if file.path.exists() {
             let log = read_lines(&file.path)?;
             file.mark(&log);
             return Ok((file, Some(log)));
         }
         let old = dir.join("world.json");
-        let Ok(text) = fs::read_to_string(&old) else { return Ok((file, None)) };
+        let Ok(text) = fs::read_to_string(&old) else {
+            return Ok((file, None));
+        };
         let log: WorldLog = serde_json::from_str(&text).map_err(io::Error::other)?;
         file.rewrite(&log)?;
         fs::rename(&old, dir.join("world.json.bak"))?;
@@ -106,11 +122,16 @@ impl LogFile {
         let mut lines = Vec::new();
         for (hash, package) in &log.packages {
             if !self.packages.contains(hash) {
-                lines.push(serde_json::to_string(&Line::Package(package.clone())).map_err(io::Error::other)?);
+                lines.push(
+                    serde_json::to_string(&Line::Package(package.clone()))
+                        .map_err(io::Error::other)?,
+                );
             }
         }
         for change in &log.changes[self.changes..] {
-            lines.push(serde_json::to_string(&Line::Change(change.clone())).map_err(io::Error::other)?);
+            lines.push(
+                serde_json::to_string(&Line::Change(change.clone())).map_err(io::Error::other)?,
+            );
         }
         if lines.is_empty() {
             return Ok(());
@@ -127,12 +148,17 @@ impl LogFile {
         if let Some(dir) = self.path.parent() {
             fs::create_dir_all(dir)?;
         }
-        let mut text = serde_json::to_string(&Line::Head(Head::of(log))).map_err(io::Error::other)? + "\n";
+        let mut text =
+            serde_json::to_string(&Line::Head(Head::of(log))).map_err(io::Error::other)? + "\n";
         for package in log.packages.values() {
-            text += &(serde_json::to_string(&Line::Package(package.clone())).map_err(io::Error::other)? + "\n");
+            text += &(serde_json::to_string(&Line::Package(package.clone()))
+                .map_err(io::Error::other)?
+                + "\n");
         }
         for change in &log.changes {
-            text += &(serde_json::to_string(&Line::Change(change.clone())).map_err(io::Error::other)? + "\n");
+            text += &(serde_json::to_string(&Line::Change(change.clone()))
+                .map_err(io::Error::other)?
+                + "\n");
         }
         let tmp = self.path.with_extension("jsonl.tmp");
         fs::write(&tmp, text)?;
@@ -145,7 +171,9 @@ impl LogFile {
 /// The game kept in `dir` (`game.json`), if there is one.
 pub fn read_game(dir: &Path) -> io::Result<Option<crate::game::GameLog>> {
     match fs::read_to_string(dir.join("game.json")) {
-        Ok(text) => serde_json::from_str(&text).map(Some).map_err(io::Error::other),
+        Ok(text) => serde_json::from_str(&text)
+            .map(Some)
+            .map_err(io::Error::other),
         Err(e) if e.kind() == io::ErrorKind::NotFound => Ok(None),
         Err(e) => Err(e),
     }
@@ -156,7 +184,10 @@ pub fn read_game(dir: &Path) -> io::Result<Option<crate::game::GameLog>> {
 pub fn write_game(dir: &Path, game: &crate::game::GameLog) -> io::Result<()> {
     fs::create_dir_all(dir)?;
     let tmp = dir.join("game.json.tmp");
-    fs::write(&tmp, serde_json::to_string_pretty(game).map_err(io::Error::other)?)?;
+    fs::write(
+        &tmp,
+        serde_json::to_string_pretty(game).map_err(io::Error::other)?,
+    )?;
     fs::rename(&tmp, dir.join("game.json"))
 }
 
@@ -167,13 +198,21 @@ pub fn write_state(dir: &Path, snapshot: &Snapshot) -> io::Result<()> {
     fs::create_dir_all(&dir)?;
     let path = dir.join(format!("{}.json", snapshot.upto));
     let tmp = path.with_extension("json.tmp");
-    fs::write(&tmp, serde_json::to_string(snapshot).map_err(io::Error::other)?)?;
+    fs::write(
+        &tmp,
+        serde_json::to_string(snapshot).map_err(io::Error::other)?,
+    )?;
     fs::rename(&tmp, path)
 }
 
 /// The world in `dir`, whose log is `log`, as of its change `save`: as it was kept then
 /// ([`write_state`]), or else replayed up to it (from `snapshot`, if that's older).
-pub fn state_of_save(dir: &Path, log: &WorldLog, save: u64, snapshot: Option<&Snapshot>) -> WorldState {
+pub fn state_of_save(
+    dir: &Path,
+    log: &WorldLog,
+    save: u64,
+    snapshot: Option<&Snapshot>,
+) -> WorldState {
     let kept = fs::read_to_string(dir.join("states").join(format!("{save}.json")))
         .ok()
         .and_then(|text| serde_json::from_str::<Snapshot>(&text).ok())
@@ -199,17 +238,31 @@ pub fn summary(dir: &Path) -> Option<Summary> {
     let modified = |p: &Path| fs::metadata(p).and_then(|m| m.modified()).ok();
     if let Ok(file) = fs::File::open(&path) {
         let mut lines = BufReader::new(file).lines().map_while(Result::ok);
-        let Line::Head(head) = serde_json::from_str(&lines.next()?).ok()? else { return None };
+        let Line::Head(head) = serde_json::from_str(&lines.next()?).ok()? else {
+            return None;
+        };
         let changes = lines.filter(|l| l.starts_with("{\"change\"")).count();
-        return Some(Summary { seed: head.seed, flat: head.flat, changes, modified: modified(&path) });
+        return Some(Summary {
+            seed: head.seed,
+            flat: head.flat,
+            changes,
+            modified: modified(&path),
+        });
     }
     let old = dir.join("world.json");
     let log: WorldLog = serde_json::from_str(&fs::read_to_string(&old).ok()?).ok()?;
-    Some(Summary { seed: log.seed, flat: log.flat, changes: log.changes.len(), modified: modified(&old) })
+    Some(Summary {
+        seed: log.seed,
+        flat: log.flat,
+        changes: log.changes.len(),
+        modified: modified(&old),
+    })
 }
 
 fn read_lines(path: &Path) -> io::Result<WorldLog> {
-    let lines: Vec<String> = BufReader::new(fs::File::open(path)?).lines().collect::<io::Result<_>>()?;
+    let lines: Vec<String> = BufReader::new(fs::File::open(path)?)
+        .lines()
+        .collect::<io::Result<_>>()?;
     let mut log: Option<WorldLog> = None;
     let count = lines.len();
     for (i, text) in lines.iter().enumerate() {
@@ -220,7 +273,13 @@ fn read_lines(path: &Path) -> io::Result<WorldLog> {
             Ok(line) => line,
             // The last line may be half written, if a save was cut off.
             Err(_) if i + 1 == count => break,
-            Err(e) => return Err(io::Error::other(format!("{}:{}: {e}", path.display(), i + 1))),
+            Err(e) => {
+                return Err(io::Error::other(format!(
+                    "{}:{}: {e}",
+                    path.display(),
+                    i + 1
+                )));
+            }
         };
         match (line, &mut log) {
             (Line::Head(h), None) => {
@@ -237,7 +296,13 @@ fn read_lines(path: &Path) -> io::Result<WorldLog> {
                 log.packages.insert(p.hash(), p);
             }
             (Line::Change(c), Some(log)) => log.changes.push(c),
-            _ => return Err(io::Error::other(format!("{}:{}: out of place", path.display(), i + 1))),
+            _ => {
+                return Err(io::Error::other(format!(
+                    "{}:{}: out of place",
+                    path.display(),
+                    i + 1
+                )));
+            }
         }
     }
     log.ok_or_else(|| io::Error::other(format!("{} has no header", path.display())))
@@ -252,17 +317,29 @@ mod tests {
     /// on the current one, and keeps it through its file.
     #[test]
     fn worlds_keep_their_terrain() {
-        let dir = std::env::temp_dir().join(format!("genverse-store-terrain-{}", std::process::id()));
+        let dir =
+            std::env::temp_dir().join(format!("genverse-store-terrain-{}", std::process::id()));
         let _ = fs::remove_dir_all(&dir);
         fs::create_dir_all(&dir).unwrap();
-        fs::write(dir.join("world.jsonl"), "{\"head\":{\"seed\":4,\"rules_version\":1}}\n").unwrap();
+        fs::write(
+            dir.join("world.jsonl"),
+            "{\"head\":{\"seed\":4,\"rules_version\":1}}\n",
+        )
+        .unwrap();
         let old = LogFile::open(&dir).unwrap().1.unwrap();
         assert_eq!(old.terrain().version, crate::terrain::LEGACY_TERRAIN);
         let (mut file, _) = LogFile::open(&dir.join("new")).unwrap();
         let log = WorldLog::new(4);
         assert_eq!(log.terrain().version, crate::terrain::TERRAIN_VERSION);
         file.rewrite(&log).unwrap();
-        assert_eq!(LogFile::open(&dir.join("new")).unwrap().1.unwrap().terrain(), log.terrain());
+        assert_eq!(
+            LogFile::open(&dir.join("new"))
+                .unwrap()
+                .1
+                .unwrap()
+                .terrain(),
+            log.terrain()
+        );
         let _ = fs::remove_dir_all(&dir);
     }
 
@@ -278,7 +355,9 @@ mod tests {
         let (mut file, read) = LogFile::open(&dir).unwrap();
         assert_eq!(read.as_ref(), Some(&log));
         assert!(dir.join("world.json.bak").exists());
-        let claim = |n: i32| Action::ClaimParcels { parcels: vec![[n, 0]] };
+        let claim = |n: i32| Action::ClaimParcels {
+            parcels: vec![[n, 0]],
+        };
         log.push(Provenance::new("a", "a", None, None, 1), claim(1));
         file.sync(&log).unwrap();
         log.push(Provenance::new("a", "a", None, None, 2), claim(2));

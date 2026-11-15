@@ -5,8 +5,8 @@
 use bevy::{
     prelude::*,
     window::{
-        Monitor, MonitorSelection, PresentMode, PrimaryMonitor, PrimaryWindow, VideoMode, VideoModeSelection,
-        WindowMode, WindowPosition,
+        Monitor, MonitorSelection, PresentMode, PrimaryMonitor, PrimaryWindow, VideoMode,
+        VideoModeSelection, WindowMode, WindowPosition,
     },
 };
 use bevy_egui::{EguiContexts, egui};
@@ -16,15 +16,23 @@ use serde::{Deserialize, Serialize};
 use genverse_rules::settings::WorldRules;
 
 use super::registry::{self, Changed, Kind, SETTINGS, Scope, Setting, Stores};
-use crate::world::ledger::Ledger;
-use crate::bindings::Bindings;
 use super::{prefs, theme};
+use crate::bindings::Bindings;
 use crate::graphics::{Antialias, Graphics, Level, Quality, RENDER_SCALES};
+use crate::world::ledger::Ledger;
 
 /// Window sizes offered in windowed mode, in points (a Retina screen draws twice as
 /// many pixels each way).
-const WINDOW_SIZES: [(u32, u32); 8] =
-    [(1280, 720), (1366, 768), (1440, 900), (1600, 900), (1680, 1050), (1920, 1080), (2560, 1440), (3840, 2160)];
+const WINDOW_SIZES: [(u32, u32); 8] = [
+    (1280, 720),
+    (1366, 768),
+    (1440, 900),
+    (1600, 900),
+    (1680, 1050),
+    (1920, 1080),
+    (2560, 1440),
+    (3840, 2160),
+];
 
 #[derive(Resource, Default)]
 pub struct SettingsWindow {
@@ -71,21 +79,34 @@ struct Display {
 
 impl Default for Display {
     fn default() -> Self {
-        Self { mode: Mode::Windowed, window: None, fullscreen: None, vsync: true }
+        Self {
+            mode: Mode::Windowed,
+            window: None,
+            fullscreen: None,
+            vsync: true,
+        }
     }
 }
 
 impl Display {
     fn apply(&self, window: &mut Window, monitor: Option<&Monitor>) {
-        window.present_mode = if self.vsync { PresentMode::AutoVsync } else { PresentMode::AutoNoVsync };
+        window.present_mode = if self.vsync {
+            PresentMode::AutoVsync
+        } else {
+            PresentMode::AutoNoVsync
+        };
         window.mode = match self.mode {
             Mode::Windowed => WindowMode::Windowed,
             Mode::Borderless => WindowMode::BorderlessFullscreen(MonitorSelection::Current),
             Mode::Fullscreen => {
                 let wanted = self.fullscreen.and_then(|(w, h, hz)| {
-                    monitor?.video_modes.iter().find(|m| m.physical_size == UVec2::new(w, h) && m.refresh_rate_millihertz == hz)
+                    monitor?.video_modes.iter().find(|m| {
+                        m.physical_size == UVec2::new(w, h) && m.refresh_rate_millihertz == hz
+                    })
                 });
-                let video = wanted.map_or(VideoModeSelection::Current, |m| VideoModeSelection::Specific(*m));
+                let video = wanted.map_or(VideoModeSelection::Current, |m| {
+                    VideoModeSelection::Specific(*m)
+                });
                 WindowMode::Fullscreen(MonitorSelection::Current, video)
             }
         };
@@ -106,10 +127,18 @@ pub fn load_settings(
     if let Some(saved) = prefs::get("graphics").and_then(|v| serde_json::from_value(v).ok()) {
         *graphics = saved;
     }
-    if let Some(q) = std::env::var("GENVERSE_QUALITY").ok().and_then(|k| Quality::from_key(&k)) {
-        *graphics = Graphics { build_animation: graphics.build_animation, ..q.settings(graphics.render_scale, graphics.auto_scale) };
+    if let Some(q) = std::env::var("GENVERSE_QUALITY")
+        .ok()
+        .and_then(|k| Quality::from_key(&k))
+    {
+        *graphics = Graphics {
+            build_animation: graphics.build_animation,
+            ..q.settings(graphics.render_scale, graphics.auto_scale)
+        };
     }
-    let display: Display = prefs::get("display").and_then(|v| serde_json::from_value(v).ok()).unwrap_or_default();
+    let display: Display = prefs::get("display")
+        .and_then(|v| serde_json::from_value(v).ok())
+        .unwrap_or_default();
     settings.display = display;
     settings.open = std::env::var("GENVERSE_SETTINGS").is_ok();
     if display != Display::default()
@@ -121,7 +150,10 @@ pub fn load_settings(
 
 /// The screen the window is on, as far as we can tell: the one holding its corner, or
 /// the main one.
-fn current_monitor<'a>(window: &Window, monitors: &'a Query<(&Monitor, Has<PrimaryMonitor>)>) -> Option<&'a Monitor> {
+fn current_monitor<'a>(
+    window: &Window,
+    monitors: &'a Query<(&Monitor, Has<PrimaryMonitor>)>,
+) -> Option<&'a Monitor> {
     if let WindowPosition::At(at) = window.position {
         let holding = monitors.iter().find(|(m, _)| {
             let size = IVec2::new(m.physical_width as i32, m.physical_height as i32);
@@ -131,13 +163,23 @@ fn current_monitor<'a>(window: &Window, monitors: &'a Query<(&Monitor, Has<Prima
             return Some(m);
         }
     }
-    monitors.iter().find(|(_, primary)| *primary).or(monitors.iter().next()).map(|(m, _)| m)
+    monitors
+        .iter()
+        .find(|(_, primary)| *primary)
+        .or(monitors.iter().next())
+        .map(|(m, _)| m)
 }
 
 /// The modes a screen offers, largest first, each size once at its fastest refresh.
 fn fullscreen_modes(monitor: &Monitor) -> Vec<VideoMode> {
     let mut modes = monitor.video_modes.clone();
-    modes.sort_by_key(|m| std::cmp::Reverse((m.physical_size.x, m.physical_size.y, m.refresh_rate_millihertz)));
+    modes.sort_by_key(|m| {
+        std::cmp::Reverse((
+            m.physical_size.x,
+            m.physical_size.y,
+            m.refresh_rate_millihertz,
+        ))
+    });
     modes.dedup_by_key(|m| m.physical_size);
     modes
 }
@@ -158,9 +200,14 @@ pub fn settings_window(
     let mut open_controls = false;
     // The world's settings, for its admins: edited on a copy, recorded on Apply.
     let admin = ledger.land.is_admin(&ledger.profile.id);
-    let mut world = settings.world.clone().unwrap_or_else(|| ledger.rules.clone());
+    let mut world = settings
+        .world
+        .clone()
+        .unwrap_or_else(|| ledger.rules.clone());
     let mut apply_world = false;
-    let Ok(mut window) = windows.single_mut() else { return Ok(()) };
+    let Ok(mut window) = windows.single_mut() else {
+        return Ok(());
+    };
     let ctx = contexts.ctx_mut()?;
     let p = theme::palette(ctx);
     let monitor = current_monitor(&window, &monitors);
@@ -354,13 +401,17 @@ pub fn settings_window(
         });
 
     if apply_world {
-        ledger.record(None, None, genverse_rules::log::Action::SetRules { rules: world.clone() });
+        ledger.record(
+            None,
+            None,
+            genverse_rules::log::Action::SetRules {
+                rules: world.clone(),
+            },
+        );
     }
     settings.world = (open && !apply_world && world != ledger.rules).then_some(world);
 
-    if open_controls
-        && let Err(why) = panels.open("controls")
-    {
+    if open_controls && let Err(why) = panels.open("controls") {
         warn!("{why}");
     }
     settings.open = open;
@@ -379,66 +430,121 @@ pub fn settings_window(
 /// A part of the window under a heading that folds, `open` to start with.
 fn section(ui: &mut egui::Ui, title: &str, open: bool, add: impl FnOnce(&mut egui::Ui)) {
     let muted = theme::palette(ui.ctx()).muted;
-    egui::CollapsingHeader::new(egui::RichText::new(title.to_uppercase()).size(11.0).strong().color(muted)).default_open(open).show(ui, add);
+    egui::CollapsingHeader::new(
+        egui::RichText::new(title.to_uppercase())
+            .size(11.0)
+            .strong()
+            .color(muted),
+    )
+    .default_open(open)
+    .show(ui, add);
     ui.add_space(4.0);
 }
 
 /// The control for one setting, by what it holds; returns its new value if it changed.
-pub(super) fn edit(ui: &mut egui::Ui, setting: &Setting, now: &serde_json::Value) -> Option<serde_json::Value> {
+pub(super) fn edit(
+    ui: &mut egui::Ui,
+    setting: &Setting,
+    now: &serde_json::Value,
+) -> Option<serde_json::Value> {
     use serde_json::json;
     match setting.kind {
         Kind::Whole { min, max } => {
             let mut n = now.as_u64().unwrap_or(min);
             let speed = (n as f64 * 0.02).max(1.0);
-            ui.add(egui::DragValue::new(&mut n).range(min..=max).speed(speed)).changed().then(|| json!(n))
+            ui.add(egui::DragValue::new(&mut n).range(min..=max).speed(speed))
+                .changed()
+                .then(|| json!(n))
         }
         Kind::Limit { max } => {
             let mut limited = !now.is_null();
             let mut n = now.as_u64().unwrap_or(60.min(max));
             let ticked = ui.checkbox(&mut limited, "limit").changed();
             let speed = (n as f64 * 0.02).max(1.0);
-            let dragged = limited && ui.add(egui::DragValue::new(&mut n).range(0..=max).speed(speed)).changed();
-            (ticked || dragged).then(|| if limited { json!(n) } else { serde_json::Value::Null })
+            let dragged = limited
+                && ui
+                    .add(egui::DragValue::new(&mut n).range(0..=max).speed(speed))
+                    .changed();
+            (ticked || dragged).then(|| {
+                if limited {
+                    json!(n)
+                } else {
+                    serde_json::Value::Null
+                }
+            })
         }
         Kind::Number { min, max } => {
             let mut n = now.as_f64().unwrap_or(min);
-            ui.add(egui::DragValue::new(&mut n).range(min..=max).speed((max - min) / 400.0).max_decimals(3)).changed().then(|| json!((n * 1000.0).round() / 1000.0))
+            ui.add(
+                egui::DragValue::new(&mut n)
+                    .range(min..=max)
+                    .speed((max - min) / 400.0)
+                    .max_decimals(3),
+            )
+            .changed()
+            .then(|| json!((n * 1000.0).round() / 1000.0))
         }
         Kind::Flag => {
             let mut on = now.as_bool().unwrap_or_default();
             ui.checkbox(&mut on, "").changed().then(|| json!(on))
         }
         Kind::Choice(choices) => {
-            let mut choice = choices.iter().copied().find(|c| Some(*c) == now.as_str()).unwrap_or(choices[0]);
+            let mut choice = choices
+                .iter()
+                .copied()
+                .find(|c| Some(*c) == now.as_str())
+                .unwrap_or(choices[0]);
             let mut changed = false;
-            egui::ComboBox::from_id_salt(setting.name).width(120.0).selected_text(choice).show_ui(ui, |ui| {
-                for c in choices {
-                    changed |= ui.selectable_value(&mut choice, *c, *c).changed();
-                }
-            });
+            egui::ComboBox::from_id_salt(setting.name)
+                .width(120.0)
+                .selected_text(choice)
+                .show_ui(ui, |ui| {
+                    for c in choices {
+                        changed |= ui.selectable_value(&mut choice, *c, *c).changed();
+                    }
+                });
             changed.then(|| json!(choice))
         }
     }
 }
 
 fn grid(ui: &mut egui::Ui, id: &str, add: impl FnOnce(&mut egui::Ui)) {
-    egui::Grid::new(id).num_columns(2).spacing([16.0, 8.0]).min_col_width(130.0).show(ui, add);
+    egui::Grid::new(id)
+        .num_columns(2)
+        .spacing([16.0, 8.0])
+        .min_col_width(130.0)
+        .show(ui, add);
 }
 
 /// A dropdown of `choices`; true when the pick changed.
-fn pick<T: PartialEq + Clone>(ui: &mut egui::Ui, id: &str, value: &mut T, choices: &[T], label: impl Fn(&T) -> String) -> bool {
+fn pick<T: PartialEq + Clone>(
+    ui: &mut egui::Ui,
+    id: &str,
+    value: &mut T,
+    choices: &[T],
+    label: impl Fn(&T) -> String,
+) -> bool {
     let mut changed = false;
-    egui::ComboBox::from_id_salt(id).width(200.0).selected_text(label(value)).show_ui(ui, |ui| {
-        for choice in choices {
-            if ui.selectable_label(*value == *choice, label(choice)).clicked() && *value != *choice {
-                *value = choice.clone();
-                changed = true;
+    egui::ComboBox::from_id_salt(id)
+        .width(200.0)
+        .selected_text(label(value))
+        .show_ui(ui, |ui| {
+            for choice in choices {
+                if ui
+                    .selectable_label(*value == *choice, label(choice))
+                    .clicked()
+                    && *value != *choice
+                {
+                    *value = choice.clone();
+                    changed = true;
+                }
             }
-        }
-    });
+        });
     changed
 }
 
 fn toggle(ui: &mut egui::Ui, id: &str, on: &mut bool) {
-    pick(ui, id, on, &[true, false], |&b| if b { "On" } else { "Off" }.into());
+    pick(ui, id, on, &[true, false], |&b| {
+        if b { "On" } else { "Off" }.into()
+    });
 }

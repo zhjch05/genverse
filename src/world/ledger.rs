@@ -23,7 +23,10 @@
 //! comes back to be applied. Local saves aren't touched while online.
 //!
 //! The web build has no saves and no builder yet, so nothing records there.
-#![cfg_attr(target_arch = "wasm32", allow(dead_code, unused_imports, unused_mut, unused_assignments))]
+#![cfg_attr(
+    target_arch = "wasm32",
+    allow(dead_code, unused_imports, unused_mut, unused_assignments)
+)]
 
 use std::{
     collections::{BTreeMap, HashMap},
@@ -33,14 +36,17 @@ use std::{
 use bevy::prelude::*;
 use genverse_rules::{
     budget::{Budgets, Footprint, Usage},
+    game::{GameAction, GameLog},
     identity::Keypair,
     land::Land,
+    log::{
+        Action, BuildState, PortalTo, Provenance, Replay, Snapshot, WorldLog, WorldState,
+        replay_from, signing_bytes,
+    },
+    logic::{Clockwork, Ground, Intent, Logic, Package, Scope},
     rate::Rates,
     settings::WorldRules,
-    log::{Action, BuildState, PortalTo, Provenance, Replay, Snapshot, WorldLog, WorldState, replay_from, signing_bytes},
     undo::{Cell, Op, UndoRecord},
-    game::{GameAction, GameLog},
-    logic::{Clockwork, Ground, Intent, Logic, Package, Scope},
 };
 use serde::{Deserialize, Serialize};
 
@@ -63,7 +69,10 @@ pub fn place() -> (String, String) {
     }
     #[cfg(not(target_arch = "wasm32"))]
     migrate_layout();
-    let game = std::env::var("GENVERSE_GAME").ok().and_then(|n| clean_name(&n)).unwrap_or("local".into());
+    let game = std::env::var("GENVERSE_GAME")
+        .ok()
+        .and_then(|n| clean_name(&n))
+        .unwrap_or("local".into());
     let log = read_game(&game);
     let world = std::env::var("GENVERSE_WORLD")
         .ok()
@@ -75,7 +84,15 @@ pub fn place() -> (String, String) {
     if log.world(&world).is_none() {
         let mut log = log;
         let by = Provenance::new("local", "local", None, None, now());
-        let _ = log.push(by, GameAction::CreateWorld { name: world.clone(), seed: crate::world::SEED, flat: true, recipe: Default::default() });
+        let _ = log.push(
+            by,
+            GameAction::CreateWorld {
+                name: world.clone(),
+                seed: crate::world::SEED,
+                flat: true,
+                recipe: Default::default(),
+            },
+        );
         write_game(&game, &log);
     }
     set_place(&game, &world);
@@ -104,7 +121,11 @@ fn game_dir_of(game: &str) -> std::path::PathBuf {
 /// Where the current world's log and caches are kept.
 pub fn world_dir() -> String {
     let (game, world) = place();
-    game_dir_of(&game).join("worlds").join(world).to_string_lossy().into()
+    game_dir_of(&game)
+        .join("worlds")
+        .join(world)
+        .to_string_lossy()
+        .into()
 }
 
 /// The current game's own directory (`game.json`, and `worlds/`): what hosting serves.
@@ -129,7 +150,15 @@ pub fn read_game(game: &str) -> GameLog {
 pub fn read_game(game: &str) -> GameLog {
     let mut log = GameLog::new(game);
     let by = Provenance::new("local", "local", None, None, 0);
-    let _ = log.push(by, GameAction::CreateWorld { name: "home".into(), seed: crate::world::SEED, flat: false, recipe: Default::default() });
+    let _ = log.push(
+        by,
+        GameAction::CreateWorld {
+            name: "home".into(),
+            seed: crate::world::SEED,
+            flat: false,
+            recipe: Default::default(),
+        },
+    );
     log
 }
 
@@ -158,9 +187,22 @@ fn migrate_layout() {
     let by = || Provenance::new(&profile.id, &profile.name, None, None, now());
     let home = local.join("worlds").join("home");
     let _ = std::fs::create_dir_all(&home);
-    let old_home = ["world.jsonl", "world.json", "world.json.bak", "snapshot.json"].iter().any(|f| Path::new("saves").join(f).exists());
+    let old_home = [
+        "world.jsonl",
+        "world.json",
+        "world.json.bak",
+        "snapshot.json",
+    ]
+    .iter()
+    .any(|f| Path::new("saves").join(f).exists());
     if old_home {
-        for file in ["world.jsonl", "world.json", "world.json.bak", "snapshot.json", "world_edits.json"] {
+        for file in [
+            "world.jsonl",
+            "world.json",
+            "world.json.bak",
+            "snapshot.json",
+            "world_edits.json",
+        ] {
             let from = Path::new("saves").join(file);
             if from.exists() {
                 let _ = std::fs::rename(&from, home.join(file));
@@ -174,24 +216,57 @@ fn migrate_layout() {
             let _ = file.rewrite(&log);
         }
     }
-    let home_log = genverse_rules::store::LogFile::open(&home).ok().and_then(|(_, log)| log);
-    let admins = home_log.as_ref().map(|l| l.admins.clone()).filter(|a| !a.is_empty()).unwrap_or(vec![profile.id.clone()]);
+    let home_log = genverse_rules::store::LogFile::open(&home)
+        .ok()
+        .and_then(|(_, log)| log);
+    let admins = home_log
+        .as_ref()
+        .map(|l| l.admins.clone())
+        .filter(|a| !a.is_empty())
+        .unwrap_or(vec![profile.id.clone()]);
     let _ = game.push(by(), GameAction::SetAdmins { admins });
     let (seed, flat) = home_log.map_or((crate::world::SEED, false), |l| (l.seed, l.flat));
-    let _ = game.push(by(), GameAction::CreateWorld { name: "home".into(), seed, flat, recipe: Default::default() });
-    for entry in std::fs::read_dir("saves/worlds").into_iter().flatten().flatten() {
+    let _ = game.push(
+        by(),
+        GameAction::CreateWorld {
+            name: "home".into(),
+            seed,
+            flat,
+            recipe: Default::default(),
+        },
+    );
+    for entry in std::fs::read_dir("saves/worlds")
+        .into_iter()
+        .flatten()
+        .flatten()
+    {
         let name = entry.file_name().to_string_lossy().to_string();
-        let Some(clean) = clean_name(&name).filter(|c| *c == name && *c != "home") else { continue };
+        let Some(clean) = clean_name(&name).filter(|c| *c == name && *c != "home") else {
+            continue;
+        };
         let to = local.join("worlds").join(&clean);
         if std::fs::rename(entry.path(), &to).is_err() {
             continue;
         }
-        let Some(summary) = genverse_rules::store::summary(&to) else { continue };
-        let _ = game.push(by(), GameAction::CreateWorld { name: clean, seed: summary.seed, flat: summary.flat, recipe: Default::default() });
+        let Some(summary) = genverse_rules::store::summary(&to) else {
+            continue;
+        };
+        let _ = game.push(
+            by(),
+            GameAction::CreateWorld {
+                name: clean,
+                seed: summary.seed,
+                flat: summary.flat,
+                recipe: Default::default(),
+            },
+        );
     }
     let _ = std::fs::remove_dir("saves/worlds");
     write_game("local", &game);
-    info!("moved your worlds into the game \"local\" ({} worlds)", game.worlds().len());
+    info!(
+        "moved your worlds into the game \"local\" ({} worlds)",
+        game.worlds().len()
+    );
 }
 
 /// A world in the current game, for lists.
@@ -211,7 +286,8 @@ pub fn list_worlds() -> Vec<WorldInfo> {
         .worlds()
         .into_iter()
         .map(|(name, ground)| {
-            let summary = genverse_rules::store::summary(&game_dir_of(&game).join("worlds").join(&name));
+            let summary =
+                genverse_rules::store::summary(&game_dir_of(&game).join("worlds").join(&name));
             WorldInfo {
                 flat: ground.flat,
                 changes: summary.as_ref().map_or(0, |s| s.changes),
@@ -245,8 +321,14 @@ pub fn list_games() -> Vec<GameInfo> {
         .filter_map(|e| {
             let name = e.file_name().to_string_lossy().to_string();
             let log = genverse_rules::store::read_game(&e.path()).ok().flatten()?;
-            let modified = std::fs::metadata(e.path().join("game.json")).and_then(|m| m.modified()).ok();
-            Some(GameInfo { name, worlds: log.worlds().len(), modified })
+            let modified = std::fs::metadata(e.path().join("game.json"))
+                .and_then(|m| m.modified())
+                .ok();
+            Some(GameInfo {
+                name,
+                worlds: log.worlds().len(),
+                modified,
+            })
         })
         .collect();
     games.sort_by_key(|g| std::cmp::Reverse(g.modified));
@@ -260,20 +342,43 @@ pub fn list_games() -> Vec<GameInfo> {
 
 /// Makes a new local game with one world, `main`, run by `admin`. Returns its name.
 #[cfg(not(target_arch = "wasm32"))]
-pub fn create_game(name: &str, flat: bool, seed: u32, admin: &Provenance) -> Result<String, String> {
+pub fn create_game(
+    name: &str,
+    flat: bool,
+    seed: u32,
+    admin: &Provenance,
+) -> Result<String, String> {
     let name = clean_name(name).ok_or("A game's name is letters, digits, - and _.")?;
     if game_dir_of(&name).exists() {
         return Err(format!("There's already a game called \"{name}\"."));
     }
     let mut game = GameLog::new(&name);
-    game.push(admin.clone(), GameAction::SetAdmins { admins: vec![admin.player.clone()] })?;
-    game.push(admin.clone(), GameAction::CreateWorld { name: "main".into(), seed, flat, recipe: Default::default() })?;
+    game.push(
+        admin.clone(),
+        GameAction::SetAdmins {
+            admins: vec![admin.player.clone()],
+        },
+    )?;
+    game.push(
+        admin.clone(),
+        GameAction::CreateWorld {
+            name: "main".into(),
+            seed,
+            flat,
+            recipe: Default::default(),
+        },
+    )?;
     write_game(&name, &game);
     Ok(name)
 }
 
 #[cfg(target_arch = "wasm32")]
-pub fn create_game(_name: &str, _flat: bool, _seed: u32, _admin: &Provenance) -> Result<String, String> {
+pub fn create_game(
+    _name: &str,
+    _flat: bool,
+    _seed: u32,
+    _admin: &Provenance,
+) -> Result<String, String> {
     Err("Games can't be saved on the web yet.".into())
 }
 
@@ -451,10 +556,23 @@ impl genverse_rules::logic::TimerHost for Keeper<'_> {
         self.ledger.log.changes.last().map_or(1, |c| c.id + 1)
     }
 
-    fn record(&mut self, package: &str, now: u64, effects: Vec<genverse_rules::logic::Effect>) -> Result<(), String> {
+    fn record(
+        &mut self,
+        package: &str,
+        now: u64,
+        effects: Vec<genverse_rules::logic::Effect>,
+    ) -> Result<(), String> {
         let ledger = &mut *self.ledger;
         let by = Provenance::new(&ledger.profile.id, &ledger.profile.name, None, None, now);
-        ledger.log.push_signed(by, Action::Timers { package: package.into(), until: now, effects }, &ledger.key);
+        ledger.log.push_signed(
+            by,
+            Action::Timers {
+                package: package.into(),
+                until: now,
+                effects,
+            },
+            &ledger.key,
+        );
         let result = ledger.advance();
         if result.is_err() {
             ledger.log.changes.pop();
@@ -475,7 +593,12 @@ impl Ledger {
 
     /// [`Self::record`], saying why if the world didn't take the change (offline; online,
     /// the server answers later).
-    pub fn record_checked(&mut self, agent: Option<&str>, prompt: Option<&str>, action: Action) -> Result<u64, String> {
+    pub fn record_checked(
+        &mut self,
+        agent: Option<&str>,
+        prompt: Option<&str>,
+        action: Action,
+    ) -> Result<u64, String> {
         self.refused = None;
         let change = self.record(agent, prompt, action);
         match self.refused.take() {
@@ -486,7 +609,13 @@ impl Ledger {
 
     /// [`Self::record`], with the package an [`Action::InstallPackage`] names (online,
     /// it goes to the server along with the change).
-    fn record_with(&mut self, agent: Option<&str>, prompt: Option<&str>, action: Action, package: Option<Package>) -> u64 {
+    fn record_with(
+        &mut self,
+        agent: Option<&str>,
+        prompt: Option<&str>,
+        action: Action,
+        package: Option<Package>,
+    ) -> u64 {
         let by = Provenance::new(&self.profile.id, &self.profile.name, agent, prompt, now());
         #[cfg(not(target_arch = "wasm32"))]
         if let Some(online) = &mut self.online {
@@ -494,7 +623,13 @@ impl Ledger {
             let request = online.next_request;
             online.next_request += 1;
             online.pending.insert(request, sig.clone());
-            online.client.send(genverse_net::ToServer::Propose { request, by, action, sig, package });
+            online.client.send(genverse_net::ToServer::Propose {
+                request,
+                by,
+                action,
+                sig,
+                package,
+            });
             return request;
         }
         if let Some(package) = package {
@@ -513,7 +648,9 @@ impl Ledger {
     /// Applies the log's last change on top of the current state, as a server does:
     /// the cost of a change never grows with the history.
     fn advance(&mut self) -> Result<(), String> {
-        let Some(change) = self.log.changes.last().cloned() else { return Ok(()) };
+        let Some(change) = self.log.changes.last().cloned() else {
+            return Ok(());
+        };
         let mut state = Replay::new(&self.log);
         // The ground games read is the seed's with these edits, as in replay.
         state.edits = std::mem::take(&mut self.edits);
@@ -523,7 +660,10 @@ impl Ledger {
         state.rates = std::mem::take(&mut self.rates);
         state.budgets = std::mem::take(&mut self.budgets);
         state.footprints = std::mem::take(&mut self.footprints);
-        state.logic = Logic { packages: self.log.packages.clone(), ..std::mem::take(&mut self.logic) };
+        state.logic = Logic {
+            packages: self.log.packages.clone(),
+            ..std::mem::take(&mut self.logic)
+        };
         state.portals = std::mem::take(&mut self.portals);
         state.undoable = std::mem::take(&mut self.undoable);
         let result = state.apply(&change, false).map(|_| ());
@@ -532,7 +672,10 @@ impl Ledger {
             self.follow.cells.append(&mut state.last_cells);
             match &change.action {
                 Action::Undo { .. } => self.follow.builds = true,
-                Action::Load { state: Some(loaded), .. } => {
+                Action::Load {
+                    state: Some(loaded),
+                    ..
+                } => {
                     self.follow.builds = true;
                     self.follow.cells.clear();
                     self.follow.edits = Some(loaded.edits.clone());
@@ -584,7 +727,10 @@ impl Ledger {
         state.logic = self.logic.clone();
         state.portals = self.portals.clone();
         state.undoable = self.undoable.clone();
-        WorldState { edits, ..state.state() }
+        WorldState {
+            edits,
+            ..state.state()
+        }
     }
 
     fn is_admin(&self) -> bool {
@@ -593,14 +739,31 @@ impl Ledger {
 
     /// Installs `package` over `scope` (or replaces the installed version), after checking
     /// the rules would allow it. Returns the change's reference.
-    pub fn install(&mut self, package: Package, scope: Scope, agent: Option<&str>, prompt: Option<&str>) -> Result<u64, String> {
+    pub fn install(
+        &mut self,
+        package: Package,
+        scope: Scope,
+        agent: Option<&str>,
+        prompt: Option<&str>,
+    ) -> Result<u64, String> {
         package.check().map_err(|e| e.join("; "))?;
         let reference = package.reference();
         let mut trial = self.logic.clone();
-        trial.packages.insert(reference.hash.clone(), Arc::new(package.clone()));
+        trial
+            .packages
+            .insert(reference.hash.clone(), Arc::new(package.clone()));
         self.check(&scope.parcels())?;
-        trial.install(&self.profile.id, self.is_admin(), &self.rules.logic, &reference, &scope)?;
-        let action = Action::InstallPackage { package: reference.clone(), scope };
+        trial.install(
+            &self.profile.id,
+            self.is_admin(),
+            &self.rules.logic,
+            &reference,
+            &scope,
+        )?;
+        let action = Action::InstallPackage {
+            package: reference.clone(),
+            scope,
+        };
         let id = self.record_with(agent, prompt, action, Some(package.clone()));
         // The game keeps it too, so other worlds can turn it on, and those that run it
         // move to this version.
@@ -611,8 +774,12 @@ impl Ledger {
         };
         #[cfg(target_arch = "wasm32")]
         let known = Some(read_game(&game_name()).packages());
-        if known.and_then(|k| k.get(&package.manifest.name).map(|p| p.hash())) != Some(reference.hash) {
-            let action = GameAction::AddPackage { package: Box::new(package) };
+        if known.and_then(|k| k.get(&package.manifest.name).map(|p| p.hash()))
+            != Some(reference.hash)
+        {
+            let action = GameAction::AddPackage {
+                package: Box::new(package),
+            };
             #[cfg(not(target_arch = "wasm32"))]
             if self.online.is_some() {
                 let _ = self.propose_game(action);
@@ -659,15 +826,29 @@ impl Ledger {
                 genverse_rules::game::Sync::Upgrade(package, scope) => {
                     let reference = package.reference();
                     self.log.packages.insert(reference.hash.clone(), package);
-                    self.record(None, None, Action::InstallPackage { package: reference, scope });
+                    self.record(
+                        None,
+                        None,
+                        Action::InstallPackage {
+                            package: reference,
+                            scope,
+                        },
+                    );
                 }
                 genverse_rules::game::Sync::Remove(name) => {
                     self.record(None, None, Action::UninstallPackage { name });
                 }
                 genverse_rules::game::Sync::Adopt(name) => {
-                    let found = self.logic.installed.get(&name).and_then(|i| self.logic.package(i)).cloned();
+                    let found = self
+                        .logic
+                        .installed
+                        .get(&name)
+                        .and_then(|i| self.logic.package(i))
+                        .cloned();
                     if let Some(found) = found {
-                        let _ = self.change_game(GameAction::AddPackage { package: Box::new(found) });
+                        let _ = self.change_game(GameAction::AddPackage {
+                            package: Box::new(found),
+                        });
                     }
                 }
             }
@@ -683,24 +864,53 @@ impl Ledger {
         }
         let mut trial = self.logic.clone();
         let next = self.log.changes.last().map_or(1, |c| c.id + 1);
-        let ground = genverse_rules::log::TerrainGround { terrain: self.log.terrain(), edits: &self.edits };
-        let outcome = trial.act(next, &self.profile.id, now(), self.log.seed, &self.rules.logic, &intent, &ground)?;
+        let ground = genverse_rules::log::TerrainGround {
+            terrain: self.log.terrain(),
+            edits: &self.edits,
+        };
+        let outcome = trial.act(
+            next,
+            &self.profile.id,
+            now(),
+            self.log.seed,
+            &self.rules.logic,
+            &intent,
+            &ground,
+        )?;
         let me = &self.profile.id;
-        let notes = outcome.notes.into_iter().filter(|(to, _)| to == me).map(|(_, text)| text).collect();
+        let notes = outcome
+            .notes
+            .into_iter()
+            .filter(|(to, _)| to == me)
+            .map(|(_, text)| text)
+            .collect();
         if outcome.effects == 0 {
             return match intent {
                 // Keys and messages a game ignores are nothing to complain about.
-                Intent::Key { .. } | Intent::Message { .. } | Intent::Chat { .. } => Ok(Acted { gained: Vec::new(), notes }),
-                Intent::Place { .. } => Err("Nothing here plays that; its game rules aren't installed (/packages)".into()),
+                Intent::Key { .. } | Intent::Message { .. } | Intent::Chat { .. } => Ok(Acted {
+                    gained: Vec::new(),
+                    notes,
+                }),
+                Intent::Place { .. } => Err(
+                    "Nothing here plays that; its game rules aren't installed (/packages)".into(),
+                ),
                 _ => Err("Nothing happened.".into()),
             };
         }
         let before: BTreeMap<&str, u32> = self.logic.state.inventory(me).collect();
         let after: BTreeMap<&str, u32> = trial.state.inventory(me).collect();
-        let items = before.keys().chain(after.keys()).collect::<std::collections::BTreeSet<_>>();
+        let items = before
+            .keys()
+            .chain(after.keys())
+            .collect::<std::collections::BTreeSet<_>>();
         let gained = items
             .into_iter()
-            .map(|item| (item.to_string(), *after.get(item).unwrap_or(&0) as i64 - *before.get(item).unwrap_or(&0) as i64))
+            .map(|item| {
+                (
+                    item.to_string(),
+                    *after.get(item).unwrap_or(&0) as i64 - *before.get(item).unwrap_or(&0) as i64,
+                )
+            })
             .filter(|(_, n)| *n != 0)
             .collect();
         self.refused = None;
@@ -718,7 +928,11 @@ impl Ledger {
     /// did, as a server would. Timers anchored to game pieces run only while one of
     /// `players` (the hero) is near; pieces walk over `ground`. Returns the timers that
     /// failed (and stopped).
-    pub fn run_timers(&mut self, players: &[(String, [f32; 3])], ground: &dyn Ground) -> Vec<String> {
+    pub fn run_timers(
+        &mut self,
+        players: &[(String, [f32; 3])],
+        ground: &dyn Ground,
+    ) -> Vec<String> {
         if self.is_online() || !self.is_admin() {
             return Vec::new();
         }
@@ -729,31 +943,69 @@ impl Ledger {
         }
         let mut clock = std::mem::take(&mut self.clock);
         let (seed, rules) = (self.log.seed, self.rules.logic);
-        let run = clock.run(&mut Keeper { ledger: self, ground }, now, seed, &rules, players);
+        let run = clock.run(
+            &mut Keeper {
+                ledger: self,
+                ground,
+            },
+            now,
+            seed,
+            &rules,
+            players,
+        );
         self.clock = clock;
         let me = &self.profile.id;
-        self.heard.extend(run.notes.into_iter().filter(|(to, _)| to == me).map(|(_, t)| t));
+        self.heard.extend(
+            run.notes
+                .into_iter()
+                .filter(|(to, _)| to == me)
+                .map(|(_, t)| t),
+        );
         run.errors
     }
 
     /// Adds a world to this (local) game on `ground` (flat and empty, or a landscape
     /// from its seed and recipe), or starting from `log` (a fork). Returns its name.
-    pub fn create_world(&mut self, name: &str, ground: genverse_rules::game::Ground, log: Option<WorldLog>) -> Result<String, String> {
+    pub fn create_world(
+        &mut self,
+        name: &str,
+        ground: genverse_rules::game::Ground,
+        log: Option<WorldLog>,
+    ) -> Result<String, String> {
         let name = clean_name(name).ok_or("A world's name is letters, digits, - and _.")?;
         let game = game_name();
         let mut game_log = read_game(&game);
-        let ground = log.as_ref().map_or(ground, |l| genverse_rules::game::Ground { seed: l.seed, flat: l.flat, recipe: l.recipe });
+        let ground = log
+            .as_ref()
+            .map_or(ground, |l| genverse_rules::game::Ground {
+                seed: l.seed,
+                flat: l.flat,
+                recipe: l.recipe,
+            });
         let by = Provenance::new(&self.profile.id, &self.profile.name, None, None, now());
-        game_log.push(by, GameAction::CreateWorld { name: name.clone(), seed: ground.seed, flat: ground.flat, recipe: ground.recipe })?;
+        game_log.push(
+            by,
+            GameAction::CreateWorld {
+                name: name.clone(),
+                seed: ground.seed,
+                flat: ground.flat,
+                recipe: ground.recipe,
+            },
+        )?;
         #[cfg(not(target_arch = "wasm32"))]
         {
             let dir = game_dir_of(&game).join("worlds").join(&name);
             if dir.exists() {
-                return Err(format!("There's a folder for \"{name}\" already ({}).", dir.display()));
+                return Err(format!(
+                    "There's a folder for \"{name}\" already ({}).",
+                    dir.display()
+                ));
             }
             let log = log.unwrap_or(ground.log());
-            let (mut file, _) = genverse_rules::store::LogFile::open(&dir).map_err(|e| e.to_string())?;
-            file.rewrite(&log).map_err(|e| format!("Couldn't write {}: {e}", dir.display()))?;
+            let (mut file, _) =
+                genverse_rules::store::LogFile::open(&dir).map_err(|e| e.to_string())?;
+            file.rewrite(&log)
+                .map_err(|e| format!("Couldn't write {}: {e}", dir.display()))?;
         }
         write_game(&game, &game_log);
         Ok(name)
@@ -773,7 +1025,8 @@ impl Ledger {
             let trash = std::path::Path::new("saves/trash");
             std::fs::create_dir_all(trash).map_err(|e| e.to_string())?;
             let from = game_dir_of(&game).join("worlds").join(name);
-            std::fs::rename(&from, trash.join(format!("{game}-{name}-{}", now()))).map_err(|e| e.to_string())?;
+            std::fs::rename(&from, trash.join(format!("{game}-{name}-{}", now())))
+                .map_err(|e| e.to_string())?;
         }
         write_game(&game, &game_log);
         Ok(())
@@ -786,17 +1039,27 @@ impl Ledger {
         let game = game_name();
         let mut game_log = read_game(&game);
         let by = Provenance::new(&self.profile.id, &self.profile.name, None, None, now());
-        game_log.push(by, GameAction::RenameWorld { from: from.into(), to: to.clone() })?;
+        game_log.push(
+            by,
+            GameAction::RenameWorld {
+                from: from.into(),
+                to: to.clone(),
+            },
+        )?;
         #[cfg(not(target_arch = "wasm32"))]
         {
             let worlds = game_dir_of(&game).join("worlds");
             let (old, new) = (worlds.join(from), worlds.join(&to));
             if new.exists() {
-                return Err(format!("There's a folder for \"{to}\" already ({}).", new.display()));
+                return Err(format!(
+                    "There's a folder for \"{to}\" already ({}).",
+                    new.display()
+                ));
             }
             // A world never entered may have no folder yet.
             if old.exists() {
-                std::fs::rename(&old, &new).map_err(|e| format!("Couldn't move {}: {e}", old.display()))?;
+                std::fs::rename(&old, &new)
+                    .map_err(|e| format!("Couldn't move {}: {e}", old.display()))?;
             }
         }
         write_game(&game, &game_log);
@@ -804,7 +1067,11 @@ impl Ledger {
             set_place(&game, &to);
             #[cfg(not(target_arch = "wasm32"))]
             if self.file.is_some() {
-                self.file = Some(genverse_rules::store::LogFile::open(std::path::Path::new(&world_dir())).map_err(|e| e.to_string())?.0);
+                self.file = Some(
+                    genverse_rules::store::LogFile::open(std::path::Path::new(&world_dir()))
+                        .map_err(|e| e.to_string())?
+                        .0,
+                );
             }
         }
         Ok(to)
@@ -823,7 +1090,8 @@ impl Ledger {
                 let last = if world == world_name() {
                     self.log.changes.last().map_or(0, |c| c.id)
                 } else {
-                    genverse_rules::store::summary(&game_dir_of(&game).join("worlds").join(&world)).map_or(0, |s| s.changes as u64)
+                    genverse_rules::store::summary(&game_dir_of(&game).join("worlds").join(&world))
+                        .map_or(0, |s| s.changes as u64)
                 };
                 (world, last)
             })
@@ -840,15 +1108,25 @@ impl Ledger {
                 continue;
             }
             let dir = game_dir_of(&game).join("worlds").join(world);
-            let Ok((_, Some(log))) = genverse_rules::store::LogFile::open(&dir) else { continue };
+            let Ok((_, Some(log))) = genverse_rules::store::LogFile::open(&dir) else {
+                continue;
+            };
             let snapshot = read_snapshot(&dir.join("snapshot.json"));
             let state = genverse_rules::store::state_of_save(&dir, &log, *last, snapshot.as_ref());
-            if let Err(e) = genverse_rules::store::write_state(&dir, &Snapshot::at(&log, *last, state)) {
+            if let Err(e) =
+                genverse_rules::store::write_state(&dir, &Snapshot::at(&log, *last, state))
+            {
                 warn!("couldn't keep {world}'s save: {e}");
             }
         }
         let by = Provenance::new(&self.profile.id, &self.profile.name, None, None, now());
-        game_log.push(by, GameAction::Save { name: name.trim().into(), worlds })?;
+        game_log.push(
+            by,
+            GameAction::Save {
+                name: name.trim().into(),
+                worlds,
+            },
+        )?;
         write_game(&game, &game_log);
         Ok(n)
     }
@@ -864,26 +1142,60 @@ impl Ledger {
         self.keep_saves(edits);
         #[cfg(not(target_arch = "wasm32"))]
         if let Some(online) = &self.online {
-            let game = online.game.as_ref().ok_or("the server hasn't welcomed us yet")?;
-            let worlds = game.save_named(name).ok_or(format!("There's no game save \"{name}\"."))?;
+            let game = online
+                .game
+                .as_ref()
+                .ok_or("the server hasn't welcomed us yet")?;
+            let worlds = game
+                .save_named(name)
+                .ok_or(format!("There's no game save \"{name}\"."))?;
             let by = Provenance::new(&self.profile.id, &self.profile.name, None, None, now());
             let signed = worlds
                 .iter()
-                .map(|(world, to)| (world.clone(), self.key.sign(&signing_bytes(&by, &genverse_rules::game::load_action(name, *to)))))
+                .map(|(world, to)| {
+                    (
+                        world.clone(),
+                        self.key.sign(&signing_bytes(
+                            &by,
+                            &genverse_rules::game::load_action(name, *to),
+                        )),
+                    )
+                })
                 .collect();
-            self.propose_game_by(by, GameAction::LoadSave { name: name.into(), signed })?;
+            self.propose_game_by(
+                by,
+                GameAction::LoadSave {
+                    name: name.into(),
+                    signed,
+                },
+            )?;
             return Ok(worlds.len());
         }
-        self.change_game(GameAction::LoadSave { name: name.into(), signed: BTreeMap::new() })?;
+        self.change_game(GameAction::LoadSave {
+            name: name.into(),
+            signed: BTreeMap::new(),
+        })?;
         let game = game_name();
         let game_log = read_game(&game);
-        let (_, _, worlds) = game_log.saves().rev().find(|(_, n, _)| n.eq_ignore_ascii_case(name)).ok_or(format!("There's no game save \"{name}\"."))?;
+        let (_, _, worlds) = game_log
+            .saves()
+            .rev()
+            .find(|(_, n, _)| n.eq_ignore_ascii_case(name))
+            .ok_or(format!("There's no game save \"{name}\"."))?;
         let mut n = 0;
         for (world, to) in &worlds {
             if *world == world_name() {
                 if self.log.changes.last().map_or(0, |c| c.id) > *to {
                     let state = Some(Box::new(self.state_of_save(*to)));
-                    self.record(None, None, Action::Load { save: *to, name: name.trim().into(), state });
+                    self.record(
+                        None,
+                        None,
+                        Action::Load {
+                            save: *to,
+                            name: name.trim().into(),
+                            state,
+                        },
+                    );
                     n += 1;
                 }
                 continue;
@@ -891,14 +1203,30 @@ impl Ledger {
             #[cfg(not(target_arch = "wasm32"))]
             {
                 let dir = game_dir_of(&game).join("worlds").join(world);
-                let Ok((mut file, Some(mut log))) = genverse_rules::store::LogFile::open(&dir) else { continue };
+                let Ok((mut file, Some(mut log))) = genverse_rules::store::LogFile::open(&dir)
+                else {
+                    continue;
+                };
                 if log.changes.last().map_or(0, |c| c.id) <= *to {
                     continue;
                 }
                 let snapshot = read_snapshot(&dir.join("snapshot.json"));
-                let state = Some(Box::new(genverse_rules::store::state_of_save(&dir, &log, *to, snapshot.as_ref())));
+                let state = Some(Box::new(genverse_rules::store::state_of_save(
+                    &dir,
+                    &log,
+                    *to,
+                    snapshot.as_ref(),
+                )));
                 let by = Provenance::new(&self.profile.id, &self.profile.name, None, None, now());
-                log.push_signed(by, Action::Load { save: *to, name: name.trim().into(), state }, &self.key);
+                log.push_signed(
+                    by,
+                    Action::Load {
+                        save: *to,
+                        name: name.trim().into(),
+                        state,
+                    },
+                    &self.key,
+                );
                 file.sync(&log).map_err(|e| e.to_string())?;
                 n += 1;
             }
@@ -911,13 +1239,18 @@ impl Ledger {
     #[cfg(not(target_arch = "wasm32"))]
     pub fn enter_remote(&mut self, world: &str, from_portal: Option<String>) -> Result<(), String> {
         let online = self.online.as_mut().ok_or("not online")?;
-        let game = online.game.as_ref().ok_or("the server hasn't welcomed us yet")?;
+        let game = online
+            .game
+            .as_ref()
+            .ok_or("the server hasn't welcomed us yet")?;
         if game.world(world).is_none() {
             return Err(format!("There's no world \"{world}\" in {}.", game.name));
         }
         online.world = Some(world.to_string());
         online.arriving_from = from_portal;
-        online.client.send(genverse_net::ToServer::Enter { world: world.to_string() });
+        online.client.send(genverse_net::ToServer::Enter {
+            world: world.to_string(),
+        });
         Ok(())
     }
 
@@ -931,11 +1264,18 @@ impl Ledger {
 
     #[cfg(not(target_arch = "wasm32"))]
     fn propose_game_by(&mut self, by: Provenance, action: GameAction) -> Result<u64, String> {
-        let sig = self.key.sign(&genverse_rules::game::signing_bytes(&by, &action));
+        let sig = self
+            .key
+            .sign(&genverse_rules::game::signing_bytes(&by, &action));
         let online = self.online.as_mut().ok_or("not online")?;
         let request = online.next_request;
         online.next_request += 1;
-        online.client.send(genverse_net::ToServer::ProposeGame { request, by, action, sig });
+        online.client.send(genverse_net::ToServer::ProposeGame {
+            request,
+            by,
+            action,
+            sig,
+        });
         Ok(request)
     }
 
@@ -944,7 +1284,11 @@ impl Ledger {
     pub fn resolve(&self, reference: u64) -> Option<u64> {
         #[cfg(not(target_arch = "wasm32"))]
         if let Some(online) = &self.online {
-            return if reference >= FIRST_REQUEST { online.committed.get(&reference).copied() } else { Some(reference) };
+            return if reference >= FIRST_REQUEST {
+                online.committed.get(&reference).copied()
+            } else {
+                Some(reference)
+            };
         }
         Some(reference)
     }
@@ -962,7 +1306,12 @@ impl Ledger {
     #[cfg(not(target_arch = "wasm32"))]
     pub fn reconnect(&mut self) -> Result<(), String> {
         let online = self.online.as_mut().ok_or("not online")?;
-        online.client = client_for(&online.addr, online.tunnel.as_ref(), &self.profile, &self.key)?;
+        online.client = client_for(
+            &online.addr,
+            online.tunnel.as_ref(),
+            &self.profile,
+            &self.key,
+        )?;
         online.state = None;
         online.closed = None;
         Ok(())
@@ -987,15 +1336,22 @@ impl Ledger {
         if self.land.is_admin(&self.profile.id) {
             return Ok(());
         }
-        self.rates.check(&self.rules.rates, &self.profile.id, now(), cost)
+        self.rates
+            .check(&self.rules.rates, &self.profile.id, now(), cost)
     }
 
     /// Whether someone else is working on any of `areas` right now: the server would
     /// refuse a change there, so it's refused here first, saying who.
     #[cfg(not(target_arch = "wasm32"))]
     pub fn held(&self, areas: Vec<genverse_rules::sculpt::Area>) -> Result<(), String> {
-        let Some(online) = &self.online else { return Ok(()) };
-        let live = online.others.values().filter(|(_, _, at)| at.elapsed() < genverse_net::LOCK_TTL).map(|(name, p, _)| (name.as_str(), p));
+        let Some(online) = &self.online else {
+            return Ok(());
+        };
+        let live = online
+            .others
+            .values()
+            .filter(|(_, _, at)| at.elapsed() < genverse_net::LOCK_TTL)
+            .map(|(name, p, _)| (name.as_str(), p));
         genverse_net::held(&genverse_rules::log::Touches::Areas(areas), live)
     }
 
@@ -1016,7 +1372,9 @@ impl Ledger {
     /// comes back on the world as it is now, or, if something changed there since, it
     /// says so and nothing happens.
     pub fn undo(&mut self, reference: u64) -> Result<(), String> {
-        let change = self.resolve(reference).ok_or("the server hasn't confirmed that change yet")?;
+        let change = self
+            .resolve(reference)
+            .ok_or("the server hasn't confirmed that change yet")?;
         let record = self.undoable.get(&change).ok_or(format!("Change {change} can't be undone (it's undone already, too old, or a kind that can't be)."))?;
         if record.by != self.profile.id && !self.is_admin() {
             return Err("You can only undo your own changes.".into());
@@ -1034,13 +1392,21 @@ impl Ledger {
     /// The local player's latest change that can be undone (`redo`: their latest undo,
     /// which undoing redoes).
     pub fn latest_undoable(&self, redo: bool) -> Option<u64> {
-        self.undoable.iter().rev().find(|(_, r)| r.by == self.profile.id && r.redo == redo).map(|(id, _)| *id)
+        self.undoable
+            .iter()
+            .rev()
+            .find(|(_, r)| r.by == self.profile.id && r.redo == redo)
+            .map(|(id, _)| *id)
     }
 
     /// Offline, the voxels land change `change` set, as the game applied them: kept to
     /// undo it (the ledger doesn't keep voxels itself).
     pub fn note_cells(&mut self, change: u64, cells: Vec<Cell>) {
-        if let Some(Op::Land { cells: kept, .. }) = self.undoable.get_mut(&change).and_then(|r| r.ops.first_mut()) {
+        if let Some(Op::Land { cells: kept, .. }) = self
+            .undoable
+            .get_mut(&change)
+            .and_then(|r| r.ops.first_mut())
+        {
             *kept = cells;
         }
     }
@@ -1050,7 +1416,12 @@ impl Ledger {
         #[cfg(not(target_arch = "wasm32"))]
         {
             let snapshot = read_snapshot(std::path::Path::new(&snapshot_path()));
-            genverse_rules::store::state_of_save(std::path::Path::new(&world_dir()), &self.log, save, snapshot.as_ref())
+            genverse_rules::store::state_of_save(
+                std::path::Path::new(&world_dir()),
+                &self.log,
+                save,
+                snapshot.as_ref(),
+            )
         }
         #[cfg(target_arch = "wasm32")]
         genverse_rules::log::state_at(&self.log, save, None)
@@ -1075,12 +1446,29 @@ impl Ledger {
         let Some(Action::Save { name }) = self.log.change(save).map(|c| c.action.clone()) else {
             return Err(format!("Change {save} isn't a save."));
         };
-        let before = format!("before loading {name}").chars().take(40).collect::<String>();
-        self.record(None, None, Action::Save { name: before.clone() });
+        let before = format!("before loading {name}")
+            .chars()
+            .take(40)
+            .collect::<String>();
+        self.record(
+            None,
+            None,
+            Action::Save {
+                name: before.clone(),
+            },
+        );
         self.keep_saves(edits);
         let state = (!self.is_online()).then(|| Box::new(self.state_of_save(save)));
         self.refused = None;
-        self.record(None, None, Action::Load { save, name: name.clone(), state });
+        self.record(
+            None,
+            None,
+            Action::Load {
+                save,
+                name: name.clone(),
+                state,
+            },
+        );
         if let Some(why) = self.refused.take() {
             self.log.changes.pop();
             self.save();
@@ -1094,7 +1482,10 @@ impl Ledger {
         let fullest = parcels
             .iter()
             .map(|p| self.budgets.parcel(*p))
-            .max_by_key(|u| u.faces * 1000 / self.rules.budgets.parcel_faces.max(1) + u.builds as usize * 1000 / self.rules.budgets.parcel_builds as usize)
+            .max_by_key(|u| {
+                u.faces * 1000 / self.rules.budgets.parcel_faces.max(1)
+                    + u.builds as usize * 1000 / self.rules.budgets.parcel_builds as usize
+            })
             .unwrap_or_default();
         format!(
             "Parcel budget: {}/{} builds · {}/{} faces · {}/{} glow",
@@ -1147,8 +1538,16 @@ impl Ledger {
 
     /// A short credit line: "Ada with Claude Code, 2 h ago" ("you" for the local player).
     pub fn describe(&self, by: &Provenance) -> String {
-        let who = if by.player == self.profile.id { "you".to_string() } else { by.player_name.clone() };
-        let how = by.agent.as_deref().map(|a| format!(" with {a}")).unwrap_or_default();
+        let who = if by.player == self.profile.id {
+            "you".to_string()
+        } else {
+            by.player_name.clone()
+        };
+        let how = by
+            .agent
+            .as_deref()
+            .map(|a| format!(" with {a}"))
+            .unwrap_or_default();
         format!("{who}{how}, {}", ago(now().saturating_sub(by.at)))
     }
 
@@ -1165,7 +1564,9 @@ impl Ledger {
 
 #[cfg(not(target_arch = "wasm32"))]
 fn now() -> u64 {
-    std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map_or(0, |d| d.as_secs())
+    std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map_or(0, |d| d.as_secs())
 }
 
 /// `SystemTime` isn't available on the web; there's no saved log there anyway.
@@ -1219,7 +1620,9 @@ pub fn keep_save(ledger: &Ledger, save: u64, edits: Vec<[i32; 4]>) {
     #[cfg(not(target_arch = "wasm32"))]
     {
         let snapshot = Snapshot::at(&ledger.log, save, ledger.world_state(edits));
-        if let Err(e) = genverse_rules::store::write_state(std::path::Path::new(&world_dir()), &snapshot) {
+        if let Err(e) =
+            genverse_rules::store::write_state(std::path::Path::new(&world_dir()), &snapshot)
+        {
             error!("couldn't keep the save: {e}");
         }
     }
@@ -1229,7 +1632,9 @@ pub fn keep_save(ledger: &Ledger, save: u64, edits: Vec<[i32; 4]>) {
 
 #[cfg(not(target_arch = "wasm32"))]
 fn write_json(path: &str, value: &impl Serialize) {
-    let dir = std::path::Path::new(path).parent().unwrap_or(std::path::Path::new("."));
+    let dir = std::path::Path::new(path)
+        .parent()
+        .unwrap_or(std::path::Path::new("."));
     let tmp = format!("{path}.tmp");
     let result = std::fs::create_dir_all(dir)
         .and_then(|_| std::fs::write(&tmp, serde_json::to_string(value).unwrap_or_default()))
@@ -1249,7 +1654,9 @@ fn read_snapshot(path: &std::path::Path) -> Option<Snapshot> {
 #[cfg(not(target_arch = "wasm32"))]
 fn read_json<T: serde::de::DeserializeOwned>(path: &str) -> Option<T> {
     let text = std::fs::read_to_string(path).ok()?;
-    serde_json::from_str(&text).map_err(|e| error!("couldn't read {path}: {e}")).ok()
+    serde_json::from_str(&text)
+        .map_err(|e| error!("couldn't read {path}: {e}"))
+        .ok()
 }
 
 /// Loads the log (or migrates old saves into one) and returns it with the voxel edits
@@ -1273,13 +1680,29 @@ fn load_with(seed: u32, join: bool) -> (Ledger, HashMap<IVec3, VoxelId>) {
     let mut game_log = read_game(&game);
     if game_log.admins().is_empty() {
         let by = Provenance::new(&profile.id, &profile.name, None, None, now());
-        let _ = game_log.push(by, GameAction::SetAdmins { admins: vec![profile.id.clone()] });
+        let _ = game_log.push(
+            by,
+            GameAction::SetAdmins {
+                admins: vec![profile.id.clone()],
+            },
+        );
         write_game(&game, &game_log);
     }
     // A world named with `GENVERSE_WORLD` that the game didn't have joins it.
     if game_log.world(&world_name()).is_none() {
         let by = Provenance::new(&profile.id, &profile.name, None, None, now());
-        if game_log.push(by, GameAction::CreateWorld { name: world_name(), seed: log.seed, flat: log.flat, recipe: log.recipe }).is_ok() {
+        if game_log
+            .push(
+                by,
+                GameAction::CreateWorld {
+                    name: world_name(),
+                    seed: log.seed,
+                    flat: log.flat,
+                    recipe: log.recipe,
+                },
+            )
+            .is_ok()
+        {
             write_game(&game, &game_log);
         }
     }
@@ -1355,7 +1778,12 @@ impl Ledger {
     /// An empty local world with a player in it, for tests that only read one.
     pub fn for_tests() -> Self {
         let key = Keypair::from_seed([7; 32]);
-        let profile = Profile { id: key.player_id(), name: "Tester".into(), secret: None, guest: true };
+        let profile = Profile {
+            id: key.player_id(),
+            name: "Tester".into(),
+            secret: None,
+            guest: true,
+        };
         empty(WorldLog::new(1), profile, key)
     }
 }
@@ -1399,9 +1827,13 @@ fn empty(log: WorldLog, profile: Profile, key: Keypair) -> Ledger {
 /// can't be reached, the local world loads instead.
 #[cfg(not(target_arch = "wasm32"))]
 fn connect(profile: &Profile, key: &Keypair) -> Option<Online> {
-    let addr = std::env::var("GENVERSE_SERVER").ok().filter(|a| !a.trim().is_empty())?;
+    let addr = std::env::var("GENVERSE_SERVER")
+        .ok()
+        .filter(|a| !a.trim().is_empty())?;
     let (profile, key) = guest().unwrap_or((profile.clone(), key.clone()));
-    connect_to(&addr, &profile, &key).map_err(|e| error!("{e}; playing the local world instead")).ok()
+    connect_to(&addr, &profile, &key)
+        .map_err(|e| error!("{e}; playing the local world instead"))
+        .ok()
 }
 
 #[cfg(not(target_arch = "wasm32"))]
@@ -1411,7 +1843,10 @@ fn connect_to(addr: &str, profile: &Profile, key: &Keypair) -> Result<Online, St
         // A fresh key each time: the player proves who they are to the server, not here.
         let mut secret = [0u8; 32];
         getrandom::fill(&mut secret).map_err(|e| e.to_string())?;
-        (addr.to_string(), Some(genverse_net::internet::Tunnel::start(addr, secret)?))
+        (
+            addr.to_string(),
+            Some(genverse_net::internet::Tunnel::start(addr, secret)?),
+        )
     } else if addr.contains(':') {
         (addr.to_string(), None)
     } else {
@@ -1440,17 +1875,27 @@ fn connect_to(addr: &str, profile: &Profile, key: &Keypair) -> Result<Online, St
 
 /// A client for the server at `addr`, through `tunnel` when there is one.
 #[cfg(not(target_arch = "wasm32"))]
-fn client_for(addr: &str, tunnel: Option<&genverse_net::internet::Tunnel>, profile: &Profile, key: &Keypair) -> Result<genverse_net::Client, String> {
+fn client_for(
+    addr: &str,
+    tunnel: Option<&genverse_net::internet::Tunnel>,
+    profile: &Profile,
+    key: &Keypair,
+) -> Result<genverse_net::Client, String> {
     let at = tunnel.map_or(addr.to_string(), |t| t.addr().to_string());
     let signer = key.clone();
-    genverse_net::Client::connect(&at, profile.id.clone(), profile.name.clone(), move |m| signer.sign(m))
+    genverse_net::Client::connect(&at, profile.id.clone(), profile.name.clone(), move |m| {
+        signer.sign(m)
+    })
 }
 
 /// What we joined, short enough to show: an invite by the start of its key.
 #[cfg(not(target_arch = "wasm32"))]
 pub fn shown_addr(addr: &str) -> String {
     if genverse_net::internet::is_invite(addr) {
-        format!("an invite ({}…)", addr.trim().chars().take(11).collect::<String>())
+        format!(
+            "an invite ({}…)",
+            addr.trim().chars().take(11).collect::<String>()
+        )
     } else {
         addr.to_string()
     }
@@ -1462,26 +1907,45 @@ fn guest() -> Option<(Profile, Keypair)> {
     #[cfg(target_arch = "wasm32")]
     return None;
     #[cfg(not(target_arch = "wasm32"))]
-    std::env::var("GENVERSE_AS").ok().filter(|n| !n.trim().is_empty()).map(|name| {
-        info!("playing as {name}");
-        // The game's old name: the key is derived from it, so changing it makes every guest
-        // someone new who no longer owns their land.
-        let tag = format!("cubelark guest {}", name.trim().to_lowercase());
-        let mut seed = [0; 32];
-        for (i, chunk) in seed.chunks_mut(8).enumerate() {
-            chunk.copy_from_slice(&genverse_rules::log::fnv1a(format!("{tag} {i}").as_bytes()).to_le_bytes());
-        }
-        let key = Keypair::from_seed(seed);
-        let profile = Profile { id: key.player_id(), name: name.trim().into(), secret: None, guest: true };
-        (profile, key)
-    })
+    std::env::var("GENVERSE_AS")
+        .ok()
+        .filter(|n| !n.trim().is_empty())
+        .map(|name| {
+            info!("playing as {name}");
+            // The game's old name: the key is derived from it, so changing it makes every guest
+            // someone new who no longer owns their land.
+            let tag = format!("cubelark guest {}", name.trim().to_lowercase());
+            let mut seed = [0; 32];
+            for (i, chunk) in seed.chunks_mut(8).enumerate() {
+                chunk.copy_from_slice(
+                    &genverse_rules::log::fnv1a(format!("{tag} {i}").as_bytes()).to_le_bytes(),
+                );
+            }
+            let key = Keypair::from_seed(seed);
+            let profile = Profile {
+                id: key.player_id(),
+                name: name.trim().into(),
+                secret: None,
+                guest: true,
+            };
+            (profile, key)
+        })
 }
 
 /// The web build has no saves; its player is the same every time.
 #[cfg(target_arch = "wasm32")]
 fn load_profile() -> (Profile, Keypair, Option<String>) {
     let key = Keypair::from_seed([1; 32]);
-    (Profile { id: key.player_id(), name: "Player".into(), secret: None, guest: false }, key, None)
+    (
+        Profile {
+            id: key.player_id(),
+            name: "Player".into(),
+            secret: None,
+            guest: false,
+        },
+        key,
+        None,
+    )
 }
 
 /// The local player and their key, creating them on first run. The third value is the
@@ -1492,13 +1956,25 @@ fn load_profile() -> (Profile, Keypair, Option<String>) {
     if let Some(p) = &saved
         && let Some(key) = p.secret.as_deref().and_then(Keypair::from_secret_hex)
     {
-        return (Profile { id: key.player_id(), ..p.clone() }, key, None);
+        return (
+            Profile {
+                id: key.player_id(),
+                ..p.clone()
+            },
+            key,
+            None,
+        );
     }
     let mut seed = [0; 32];
     getrandom::fill(&mut seed).expect("the OS provides randomness");
     let key = Keypair::from_seed(seed);
     let name = saved.as_ref().map_or("Player".into(), |p| p.name.clone());
-    let profile = Profile { id: key.player_id(), name, secret: Some(key.secret_hex()), guest: false };
+    let profile = Profile {
+        id: key.player_id(),
+        name,
+        secret: Some(key.secret_hex()),
+        guest: false,
+    };
     write_json(PROFILE_PATH, &profile);
     (profile, key, saved.map(|p| p.id))
 }
@@ -1510,7 +1986,13 @@ fn load_log(seed: u32) -> (WorldLog, Option<()>, Option<Snapshot>) {
 }
 
 #[cfg(not(target_arch = "wasm32"))]
-fn load_log(seed: u32) -> (WorldLog, Option<genverse_rules::store::LogFile>, Option<Snapshot>) {
+fn load_log(
+    seed: u32,
+) -> (
+    WorldLog,
+    Option<genverse_rules::store::LogFile>,
+    Option<Snapshot>,
+) {
     use genverse_rules::store::LogFile;
     let dir = world_dir();
     let (mut file, log) = match LogFile::open(std::path::Path::new(&dir)) {
@@ -1527,7 +2009,10 @@ fn load_log(seed: u32) -> (WorldLog, Option<genverse_rules::store::LogFile>, Opt
             let ground = read_game(&game_name()).world(&world_name());
             let (seed, flat) = ground.map_or((seed, true), |g| (g.seed, g.flat));
             info!("made world {} in {dir}", world_name());
-            WorldLog { flat, ..WorldLog::new(seed) }
+            WorldLog {
+                flat,
+                ..WorldLog::new(seed)
+            }
         }
     };
     if !file.path().exists()
@@ -1557,9 +2042,16 @@ fn migrate(seed: u32, voxels: Option<SavedEdits>) -> WorldLog {
 
     let mut log = WorldLog::new(seed);
     let (profile, _, _) = load_profile();
-    let by = |agent: Option<&str>, prompt: Option<&str>| Provenance::new(&profile.id, &profile.name, agent, prompt, now());
+    let by = |agent: Option<&str>, prompt: Option<&str>| {
+        Provenance::new(&profile.id, &profile.name, agent, prompt, now())
+    };
     if let Some(voxels) = voxels.filter(|v| !v.edits.is_empty()) {
-        log.push(by(None, None), Action::LegacyVoxels { edits: voxels.edits });
+        log.push(
+            by(None, None),
+            Action::LegacyVoxels {
+                edits: voxels.edits,
+            },
+        );
     }
     let builds: Vec<OldCreation> = read_json("saves/creations.json").unwrap_or_default();
     for c in builds {
@@ -1581,7 +2073,11 @@ fn migrate(seed: u32, voxels: Option<SavedEdits>) -> WorldLog {
         // Those saves were edits and builds on the first terrain; a first run starts
         // on the current one.
         log.terrain_version = genverse_rules::terrain::LEGACY_TERRAIN;
-        info!("migrated old saves into {} ({} changes)", world_dir(), log.changes.len());
+        info!(
+            "migrated old saves into {} ({} changes)",
+            world_dir(),
+            log.changes.len()
+        );
     }
     for old in ["saves/creations.json", "saves/terrain_changes.json"] {
         if std::path::Path::new(old).exists() {

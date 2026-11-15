@@ -41,7 +41,16 @@ pub struct Beacon {
 
 impl Beacon {
     pub fn new(id: u64, world: String, host: String, port: u16, players: u32) -> Self {
-        Self { magic: MAGIC.into(), id, protocol: VERSION, rules: RULES_VERSION, world, host, port, players }
+        Self {
+            magic: MAGIC.into(),
+            id,
+            protocol: VERSION,
+            rules: RULES_VERSION,
+            world,
+            host,
+            port,
+            players,
+        }
     }
 
     /// Whether this game can play on it.
@@ -81,16 +90,21 @@ impl Announcer {
         let beacon = Arc::new(Mutex::new(beacon));
         let stop = Arc::new(AtomicBool::new(false));
         let (shared, stopped) = (beacon.clone(), stop.clone());
-        thread::Builder::new().name("lan-announce".into()).spawn(move || {
-            while !stopped.load(Ordering::Relaxed) {
-                let bytes = shared.lock().map(|b| serde_json::to_vec(&*b).unwrap_or_default()).unwrap_or_default();
-                // Interfaces come and go (Wi-Fi, VPNs), so look again each time.
-                for address in broadcast_addresses() {
-                    let _ = socket.send_to(&bytes, SocketAddrV4::new(address, LAN_PORT));
+        thread::Builder::new()
+            .name("lan-announce".into())
+            .spawn(move || {
+                while !stopped.load(Ordering::Relaxed) {
+                    let bytes = shared
+                        .lock()
+                        .map(|b| serde_json::to_vec(&*b).unwrap_or_default())
+                        .unwrap_or_default();
+                    // Interfaces come and go (Wi-Fi, VPNs), so look again each time.
+                    for address in broadcast_addresses() {
+                        let _ = socket.send_to(&bytes, SocketAddrV4::new(address, LAN_PORT));
+                    }
+                    thread::sleep(EVERY);
                 }
-                thread::sleep(EVERY);
-            }
-        })?;
+            })?;
         Ok(Self { beacon, stop })
     }
 
@@ -122,26 +136,35 @@ impl Listener {
         socket.bind(&SocketAddr::from((Ipv4Addr::UNSPECIFIED, LAN_PORT)).into())?;
         let socket: UdpSocket = socket.into();
         let (tx, heard) = mpsc::channel();
-        thread::Builder::new().name("lan-listen".into()).spawn(move || {
-            let mut buffer = [0u8; 1024];
-            while let Ok((n, from)) = socket.recv_from(&mut buffer) {
-                let Ok(beacon) = serde_json::from_slice::<Beacon>(&buffer[..n]) else { continue };
-                if beacon.magic != MAGIC {
-                    continue;
+        thread::Builder::new()
+            .name("lan-listen".into())
+            .spawn(move || {
+                let mut buffer = [0u8; 1024];
+                while let Ok((n, from)) = socket.recv_from(&mut buffer) {
+                    let Ok(beacon) = serde_json::from_slice::<Beacon>(&buffer[..n]) else {
+                        continue;
+                    };
+                    if beacon.magic != MAGIC {
+                        continue;
+                    }
+                    // The game is reached on the beacon's port, at the address it came from.
+                    let at = SocketAddr::new(from.ip(), beacon.port);
+                    if tx.send((beacon, at)).is_err() {
+                        return;
+                    }
                 }
-                // The game is reached on the beacon's port, at the address it came from.
-                let at = SocketAddr::new(from.ip(), beacon.port);
-                if tx.send((beacon, at)).is_err() {
-                    return;
-                }
-            }
-        })?;
-        Ok(Self { heard: Mutex::new(heard) })
+            })?;
+        Ok(Self {
+            heard: Mutex::new(heard),
+        })
     }
 
     /// Beacons heard since the last poll, with the address to join each world at.
     pub fn poll(&self) -> Vec<(Beacon, SocketAddr)> {
-        self.heard.lock().map(|rx| rx.try_iter().collect()).unwrap_or_default()
+        self.heard
+            .lock()
+            .map(|rx| rx.try_iter().collect())
+            .unwrap_or_default()
     }
 }
 
@@ -151,9 +174,28 @@ impl Listener {
 pub fn local_ipv4() -> Option<Ipv4Addr> {
     let interfaces = if_addrs::get_if_addrs().ok()?;
     let rank = |name: &str, ip: Ipv4Addr| {
-        let virtual_ = ["utun", "tun", "tap", "ppp", "ipsec", "bridge", "vmnet", "vmenet", "vbox", "anpi", "ap", "docker", "veth", "wg", "zt", "tailscale", "llw", "awdl"]
-            .iter()
-            .any(|p| name.starts_with(p));
+        let virtual_ = [
+            "utun",
+            "tun",
+            "tap",
+            "ppp",
+            "ipsec",
+            "bridge",
+            "vmnet",
+            "vmenet",
+            "vbox",
+            "anpi",
+            "ap",
+            "docker",
+            "veth",
+            "wg",
+            "zt",
+            "tailscale",
+            "llw",
+            "awdl",
+        ]
+        .iter()
+        .any(|p| name.starts_with(p));
         match (ip.is_private(), virtual_) {
             (true, false) => 0,
             (true, true) => 2,
@@ -164,7 +206,9 @@ pub fn local_ipv4() -> Option<Ipv4Addr> {
     interfaces
         .iter()
         .filter_map(|i| match i.addr {
-            if_addrs::IfAddr::V4(ref v4) if !v4.ip.is_loopback() && !v4.ip.is_link_local() => Some((rank(&i.name, v4.ip), v4.ip)),
+            if_addrs::IfAddr::V4(ref v4) if !v4.ip.is_loopback() && !v4.ip.is_link_local() => {
+                Some((rank(&i.name, v4.ip), v4.ip))
+            }
             _ => None,
         })
         .filter(|(rank, _)| *rank < 3)

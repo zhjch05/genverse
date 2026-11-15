@@ -74,13 +74,30 @@ struct ToolServer {
 
 /// Starts a request, in `folder` (the world's, which it may read and edit) or an empty
 /// scratch folder.
-pub fn start(provider: Provider, system: String, prompt: String, tools: Option<&McpServer>, folder: Option<PathBuf>) -> AgentJob {
+pub fn start(
+    provider: Provider,
+    system: String,
+    prompt: String,
+    tools: Option<&McpServer>,
+    folder: Option<PathBuf>,
+) -> AgentJob {
     let (tx, rx) = mpsc::channel();
     let cancel = Arc::new(AtomicBool::new(false));
     let flag = cancel.clone();
-    let tools = tools.map(|t| ToolServer { url: t.url.clone(), token: t.token.clone() });
+    let tools = tools.map(|t| ToolServer {
+        url: t.url.clone(),
+        token: t.token.clone(),
+    });
     thread::spawn(move || {
-        let result = run(provider, &system, &prompt, tools.as_ref(), folder, &tx, &flag);
+        let result = run(
+            provider,
+            &system,
+            &prompt,
+            tools.as_ref(),
+            folder,
+            &tx,
+            &flag,
+        );
         let _ = tx.send(AgentEvent::Finished(Box::new(result)));
     });
     AgentJob { events: rx, cancel }
@@ -121,14 +138,26 @@ fn run(
         Provider::Claude => {
             cmd = crate::platform::command(&program("claude", provider)?);
             // Partial messages: what it says arrives as it's written, for the live feed.
-            cmd.args(["-p", prompt, "--output-format", "stream-json", "--verbose", "--include-partial-messages"])
-                .args(["--json-schema", SCHEMA, "--system-prompt", system])
-                .args(["--strict-mcp-config", "--setting-sources", ""])
-                .args(["--disable-slash-commands", "--no-session-persistence"]);
+            cmd.args([
+                "-p",
+                prompt,
+                "--output-format",
+                "stream-json",
+                "--verbose",
+                "--include-partial-messages",
+            ])
+            .args(["--json-schema", SCHEMA, "--system-prompt", system])
+            .args(["--strict-mcp-config", "--setting-sources", ""])
+            .args(["--disable-slash-commands", "--no-session-persistence"]);
             // In the world's folder: reading and searching it, and editing files in it
             // (edits are accepted only inside the working folder).
             if files {
-                cmd.args(["--tools", "Read,Glob,Grep,Edit,Write", "--permission-mode", "acceptEdits"]);
+                cmd.args([
+                    "--tools",
+                    "Read,Glob,Grep,Edit,Write",
+                    "--permission-mode",
+                    "acceptEdits",
+                ]);
             } else {
                 cmd.args(["--tools", ""]);
             }
@@ -148,21 +177,39 @@ fn run(
             std::fs::write(&schema, SCHEMA).map_err(|e| e.to_string())?;
             let _ = std::fs::remove_file(&last_message);
             cmd = crate::platform::command(&program("codex", provider)?);
-            cmd.args(["exec", "--json", "--ignore-user-config", "--ephemeral", "--skip-git-repo-check"])
-                .args(["--sandbox", if files { "workspace-write" } else { "read-only" }, "-c", "model_reasoning_effort=\"low\""]);
+            cmd.args([
+                "exec",
+                "--json",
+                "--ignore-user-config",
+                "--ephemeral",
+                "--skip-git-repo-check",
+            ])
+            .args([
+                "--sandbox",
+                if files {
+                    "workspace-write"
+                } else {
+                    "read-only"
+                },
+                "-c",
+                "model_reasoning_effort=\"low\"",
+            ]);
             if let Some(tools) = tools {
                 cmd.arg("-c")
                     .arg(format!("mcp_servers.{SERVER_NAME}.url=\"{}\"", tools.url))
                     .arg("-c")
-                    .arg(format!("mcp_servers.{SERVER_NAME}.bearer_token_env_var=\"GENVERSE_MCP_TOKEN\""))
+                    .arg(format!(
+                        "mcp_servers.{SERVER_NAME}.bearer_token_env_var=\"GENVERSE_MCP_TOKEN\""
+                    ))
                     // Headless runs can't ask for approval; the game asks the player itself
                     // about the tools that need it.
                     .arg("-c")
-                    .arg(format!("mcp_servers.{SERVER_NAME}.default_tools_approval_mode=\"approve\""))
+                    .arg(format!(
+                        "mcp_servers.{SERVER_NAME}.default_tools_approval_mode=\"approve\""
+                    ))
                     .env("GENVERSE_MCP_TOKEN", &tools.token);
             }
-            cmd
-                .arg("--output-schema")
+            cmd.arg("--output-schema")
                 .arg(&schema)
                 .arg("-o")
                 .arg(&last_message)
@@ -178,7 +225,12 @@ fn run(
         .stdout(Stdio::piped())
         .stderr(Stdio::piped())
         .spawn()
-        .map_err(|e| format!("couldn't start {}: {e}. Is it installed and on PATH?", provider.label()))?;
+        .map_err(|e| {
+            format!(
+                "couldn't start {}: {e}. Is it installed and on PATH?",
+                provider.label()
+            )
+        })?;
 
     // Read stdout on its own thread so we can enforce the timeout and cancellation.
     let stdout = child.stdout.take().expect("stdout is piped");
@@ -213,7 +265,11 @@ fn run(
         if cancel.load(Ordering::Relaxed) || Instant::now() > deadline {
             let _ = child.kill();
             let _ = child.wait();
-            return Err(if cancel.load(Ordering::Relaxed) { "stopped".into() } else { "timed out".into() });
+            return Err(if cancel.load(Ordering::Relaxed) {
+                "stopped".into()
+            } else {
+                "timed out".into()
+            });
         }
         let line = match lines.recv_timeout(Duration::from_millis(200)) {
             Ok(line) => line,
@@ -233,17 +289,29 @@ fn run(
         match (provider, event["type"].as_str()) {
             (Provider::Claude, Some("result")) => {
                 if event["is_error"].as_bool() == Some(true) {
-                    let why = event["result"].as_str().map(str::to_string).unwrap_or_else(|| {
-                        let kind = event["subtype"].as_str().unwrap_or("error");
-                        format!("Claude reported an error ({kind}: {})", event["errors"].to_string().chars().take(300).collect::<String>())
-                    });
+                    let why = event["result"]
+                        .as_str()
+                        .map(str::to_string)
+                        .unwrap_or_else(|| {
+                            let kind = event["subtype"].as_str().unwrap_or("error");
+                            format!(
+                                "Claude reported an error ({kind}: {})",
+                                event["errors"]
+                                    .to_string()
+                                    .chars()
+                                    .take(300)
+                                    .collect::<String>()
+                            )
+                        });
                     failure = Some(why);
                 } else {
                     answer = Some(event["structured_output"].clone());
                 }
             }
             (Provider::Codex, Some("turn.failed" | "error")) => {
-                let message = event["error"]["message"].as_str().or(event["message"].as_str());
+                let message = event["error"]["message"]
+                    .as_str()
+                    .or(event["message"].as_str());
                 failure = Some(message.unwrap_or("Codex reported an error").to_string());
             }
             _ => {}
@@ -256,11 +324,17 @@ fn run(
     if provider == Provider::Codex {
         let text = std::fs::read_to_string(&last_message)
             .map_err(|_| format!("Codex exited ({status}) without an answer"))?;
-        answer = Some(serde_json::from_str(&text).map_err(|e| format!("Codex answer wasn't JSON: {e}"))?);
+        answer = Some(
+            serde_json::from_str(&text).map_err(|e| format!("Codex answer wasn't JSON: {e}"))?,
+        );
     }
     let answer = answer.ok_or_else(|| {
         let stderr = stderr.join().unwrap_or_default();
-        format!("{} exited ({status}) without an answer. {}", provider.label(), stderr.trim())
+        format!(
+            "{} exited ({status}) without an answer. {}",
+            provider.label(),
+            stderr.trim()
+        )
     })?;
     serde_json::from_value(answer).map_err(|e| format!("answer didn't match the build schema: {e}"))
 }

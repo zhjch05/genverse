@@ -6,7 +6,10 @@ use serde_json::{Map, Value};
 const PATH: &str = "saves/settings.json";
 
 fn load() -> Map<String, Value> {
-    std::fs::read_to_string(PATH).ok().and_then(|text| serde_json::from_str(&text).ok()).unwrap_or_default()
+    std::fs::read_to_string(PATH)
+        .ok()
+        .and_then(|text| serde_json::from_str(&text).ok())
+        .unwrap_or_default()
 }
 
 pub fn get(key: &str) -> Option<Value> {
@@ -17,7 +20,8 @@ pub fn get(key: &str) -> Option<Value> {
 pub fn set(key: &str, value: impl Into<Value>) {
     let mut all = load();
     all.insert(key.into(), value.into());
-    let result = std::fs::create_dir_all("saves").and_then(|_| std::fs::write(PATH, Value::Object(all).to_string()));
+    let result = std::fs::create_dir_all("saves")
+        .and_then(|_| std::fs::write(PATH, Value::Object(all).to_string()));
     if let Err(e) = result {
         bevy::log::error!("couldn't save {PATH}: {e}");
     }

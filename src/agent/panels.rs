@@ -158,21 +158,44 @@ pub enum Node {
 pub const LISTS: &[(&str, &str, &str)] = &[
     ("actions", "action", "name, label, title, group, keys"),
     ("action_groups", "group", "name"),
-    ("settings", "setting", "name, label, title, group, scope (world or player), value, default, range"),
+    (
+        "settings",
+        "setting",
+        "name, label, title, group, scope (world or player), value, default, range",
+    ),
     ("setting_groups", "group", "name, scope"),
-    ("worlds", "world", "name, ground, here (yes where the player is)"),
+    (
+        "worlds",
+        "world",
+        "name, ground, here (yes where the player is)",
+    ),
     ("saves", "save", "name, change"),
     ("panels", "panel", "id, title"),
-    ("ops", "op", "name, usage, about, admin (yes if only admins may)"),
+    (
+        "ops",
+        "op",
+        "name, usage, about, admin (yes if only admins may)",
+    ),
     ("landscapes", "landscape", "name"),
-    ("packages", "package", "name, title, on (yes if it runs in this world)"),
-    ("blocks", "block", "name, color (#rrggbb), material, kind (own or ground), recolored (yes for a family of the ground the world gave a color)"),
+    (
+        "packages",
+        "package",
+        "name, title, on (yes if it runs in this world)",
+    ),
+    (
+        "blocks",
+        "block",
+        "name, color (#rrggbb), material, kind (own or ground), recolored (yes for a family of the ground the world gave a color)",
+    ),
 ];
 
 impl Node {
     fn children(&self) -> Vec<&Node> {
         match self {
-            Node::Row { items } | Node::Column { items } | Node::Section { items, .. } | Node::Scroll { items, .. } => items.iter().collect(),
+            Node::Row { items }
+            | Node::Column { items }
+            | Node::Section { items, .. }
+            | Node::Scroll { items, .. } => items.iter().collect(),
             Node::Tabs { tabs } => tabs.iter().flat_map(|t| &t.items).collect(),
             Node::Each { item, .. } => vec![item],
             _ => Vec::new(),
@@ -193,20 +216,33 @@ impl Node {
         let fixed = |text: &str| !text.contains('{');
         match self {
             Node::Button { op, label, .. } if !ops::OPS.iter().any(|o| o.name == op) => {
-                return Err(format!("the button \"{label}\" runs \"{op}\", which isn't an op (the ops list has them: set, bind, newworld, ...)"));
+                return Err(format!(
+                    "the button \"{label}\" runs \"{op}\", which isn't an op (the ops list has them: set, bind, newworld, ...)"
+                ));
             }
             Node::Setting { name } if fixed(name) => {
                 registry::find(name)?;
             }
             // A game's action has a package's name before it, and is there while its game is on.
-            Node::Keys { action } if fixed(action) && !action.contains(':') && crate::bindings::action_named(action).is_none() => {
+            Node::Keys { action }
+                if fixed(action)
+                    && !action.contains(':')
+                    && crate::bindings::action_named(action).is_none() =>
+            {
                 return Err(format!("keys: there's no action \"{action}\""));
             }
             Node::Each { of, .. } if !LISTS.iter().any(|(list, _, _)| list == of) => {
-                return Err(format!("each: there's no list \"{of}\" ({})", LISTS.iter().map(|l| l.0).collect::<Vec<_>>().join(", ")));
+                return Err(format!(
+                    "each: there's no list \"{of}\" ({})",
+                    LISTS.iter().map(|l| l.0).collect::<Vec<_>>().join(", ")
+                ));
             }
-            Node::Text { style: Some(style), .. } if !["title", "small", "muted"].contains(&style.as_str()) => {
-                return Err(format!("a text's style is title, small or muted, not \"{style}\""));
+            Node::Text {
+                style: Some(style), ..
+            } if !["title", "small", "muted"].contains(&style.as_str()) => {
+                return Err(format!(
+                    "a text's style is title, small or muted, not \"{style}\""
+                ));
             }
             _ => {}
         }
@@ -217,9 +253,12 @@ impl Node {
 impl Panel {
     /// Reads a panel's file, saying what's wrong with it if it isn't one.
     pub fn read(text: &str) -> Result<Self, String> {
-        let panel: Panel = serde_json::from_str(text).map_err(|e| format!("it isn't a panel: {e}"))?;
+        let panel: Panel =
+            serde_json::from_str(text).map_err(|e| format!("it isn't a panel: {e}"))?;
         if panel.body.count() > MAX_NODES || panel.body.depth() > MAX_DEPTH {
-            return Err(format!("a panel holds at most {MAX_NODES} nodes, {MAX_DEPTH} deep (use each to repeat rows)"));
+            return Err(format!(
+                "a panel holds at most {MAX_NODES} nodes, {MAX_DEPTH} deep (use each to repeat rows)"
+            ));
         }
         panel.body.check()?;
         Ok(panel)
@@ -229,24 +268,39 @@ impl Panel {
 /// A panel's id from its file name: letters, digits, - and _.
 fn id_of(path: &Path) -> Option<String> {
     let name = path.file_name()?.to_str()?.strip_suffix(".json")?;
-    (!name.is_empty() && name.chars().all(|c| c.is_ascii_alphanumeric() || c == '-' || c == '_')).then(|| name.to_lowercase())
+    (!name.is_empty()
+        && name
+            .chars()
+            .all(|c| c.is_ascii_alphanumeric() || c == '-' || c == '_'))
+    .then(|| name.to_lowercase())
 }
 
 fn files_in(dir: &Path) -> BTreeMap<String, String> {
-    let Ok(entries) = std::fs::read_dir(dir) else { return BTreeMap::new() };
-    entries.flatten().filter_map(|e| Some((id_of(&e.path())?, std::fs::read_to_string(e.path()).ok()?))).collect()
+    let Ok(entries) = std::fs::read_dir(dir) else {
+        return BTreeMap::new();
+    };
+    entries
+        .flatten()
+        .filter_map(|e| Some((id_of(&e.path())?, std::fs::read_to_string(e.path()).ok()?)))
+        .collect()
 }
 
 /// Every panel there is, as its file's text: the built-in ones, with the player's own
 /// over them.
 pub fn sources() -> BTreeMap<String, String> {
-    let mut all: BTreeMap<String, String> = BUILT_IN.iter().map(|(id, text)| (id.to_string(), text.to_string())).collect();
+    let mut all: BTreeMap<String, String> = BUILT_IN
+        .iter()
+        .map(|(id, text)| (id.to_string(), text.to_string()))
+        .collect();
     all.extend(files_in(Path::new(DIR)));
     all
 }
 
 fn same_json(a: &str, b: &str) -> bool {
-    match (serde_json::from_str::<Value>(a), serde_json::from_str::<Value>(b)) {
+    match (
+        serde_json::from_str::<Value>(a),
+        serde_json::from_str::<Value>(b),
+    ) {
         (Ok(a), Ok(b)) => a == b,
         _ => a == b,
     }
@@ -262,9 +316,17 @@ pub fn take_from(folder: &Path) -> (Vec<String>, Vec<String>) {
         return (done, wrong);
     }
     // A file emptied is a file deleted: the agent's tools write files, but don't remove them.
-    let written: BTreeMap<String, String> = files_in(&folder.join("panels")).into_iter().filter(|(_, text)| !text.trim().is_empty()).collect();
+    let written: BTreeMap<String, String> = files_in(&folder.join("panels"))
+        .into_iter()
+        .filter(|(_, text)| !text.trim().is_empty())
+        .collect();
     let kept = files_in(Path::new(DIR));
-    let built_in = |id: &str| BUILT_IN.iter().find(|(b, _)| *b == id).map(|(_, text)| *text);
+    let built_in = |id: &str| {
+        BUILT_IN
+            .iter()
+            .find(|(b, _)| *b == id)
+            .map(|(_, text)| *text)
+    };
     let path = |id: &str| PathBuf::from(DIR).join(format!("{id}.json"));
     for (id, text) in &written {
         let before = kept.get(id).map(String::as_str).or(built_in(id));
@@ -277,10 +339,15 @@ pub fn take_from(folder: &Path) -> (Vec<String>, Vec<String>) {
             continue;
         }
         match Panel::read(text) {
-            Ok(panel) => match std::fs::create_dir_all(DIR).and_then(|_| std::fs::write(path(id), text)) {
-                Ok(()) => done.push(format!("Kept the panel \"{id}\" ({}): /panel {id} opens it.", panel.title)),
-                Err(e) => wrong.push(format!("panels/{id}.json couldn't be kept: {e}")),
-            },
+            Ok(panel) => {
+                match std::fs::create_dir_all(DIR).and_then(|_| std::fs::write(path(id), text)) {
+                    Ok(()) => done.push(format!(
+                        "Kept the panel \"{id}\" ({}): /panel {id} opens it.",
+                        panel.title
+                    )),
+                    Err(e) => wrong.push(format!("panels/{id}.json couldn't be kept: {e}")),
+                }
+            }
             Err(why) => wrong.push(format!("panels/{id}.json: {why}")),
         }
     }
@@ -299,12 +366,17 @@ pub fn take_from(folder: &Path) -> (Vec<String>, Vec<String>) {
 pub fn remove(id: &str, folder: Option<&Path>) -> Result<String, String> {
     let id = id.trim().to_lowercase();
     let kept = Path::new(DIR).join(format!("{id}.json"));
-    let built_in = BUILT_IN.iter().find(|(b, _)| *b == id).map(|(_, text)| *text);
+    let built_in = BUILT_IN
+        .iter()
+        .find(|(b, _)| *b == id)
+        .map(|(_, text)| *text);
     let copy = folder.map(|folder| folder.join("panels").join(format!("{id}.json")));
     let had_copy = copy.as_ref().is_some_and(|copy| copy.exists());
     if !kept.exists() && (!had_copy || built_in.is_some()) {
         return Err(match built_in {
-            Some(_) => format!("The panel \"{id}\" is the app's own: it can be changed (write panels/{id}.json), not removed."),
+            Some(_) => format!(
+                "The panel \"{id}\" is the app's own: it can be changed (write panels/{id}.json), not removed."
+            ),
             None => format!("There's no panel \"{id}\"."),
         });
     }
@@ -346,14 +418,20 @@ pub struct Panels {
 impl Panels {
     /// Reads the panels again (they changed on disk).
     pub fn reload(&mut self) {
-        self.loaded = sources().into_iter().map(|(id, text)| (id, Arc::new(Panel::read(&text)))).collect();
+        self.loaded = sources()
+            .into_iter()
+            .map(|(id, text)| (id, Arc::new(Panel::read(&text))))
+            .collect();
         self.open.retain(|id| self.loaded.contains_key(id));
     }
 
     /// Opens the panel `id`, or says why it can't.
     pub fn open(&mut self, id: &str) -> Result<String, String> {
         let id = id.trim().to_lowercase();
-        let panel = self.loaded.get(&id).ok_or_else(|| format!("There's no panel \"{id}\". {}", self.list()))?;
+        let panel = self
+            .loaded
+            .get(&id)
+            .ok_or_else(|| format!("There's no panel \"{id}\". {}", self.list()))?;
         let title = match panel.as_ref() {
             Ok(panel) => panel.title.clone(),
             Err(why) => return Err(format!("The panel \"{id}\" can't be shown: {why}")),
@@ -395,13 +473,22 @@ impl Panels {
             .loaded
             .iter()
             .map(|(id, panel)| {
-                let title = panel.as_ref().as_ref().map_or("can't be shown".to_string(), |p| p.title.clone());
-                let whose = match (BUILT_IN.iter().any(|(b, _)| b == id), Path::new(DIR).join(format!("{id}.json")).exists()) {
+                let title = panel
+                    .as_ref()
+                    .as_ref()
+                    .map_or("can't be shown".to_string(), |p| p.title.clone());
+                let whose = match (
+                    BUILT_IN.iter().any(|(b, _)| b == id),
+                    Path::new(DIR).join(format!("{id}.json")).exists(),
+                ) {
                     (true, false) => "the app's",
                     (true, true) => "yours, in place of the app's",
                     _ => "yours",
                 };
-                format!("{id} (\"{title}\", {whose}{})", if self.open.contains(id) { ", open" } else { "" })
+                format!(
+                    "{id} (\"{title}\", {whose}{})",
+                    if self.open.contains(id) { ", open" } else { "" }
+                )
             })
             .collect();
         format!("Panels: {}. /panel <id> opens one.", panels.join(" · "))
@@ -427,7 +514,8 @@ struct Shown<'a> {
 
 /// The rows a list holds now, with what a row is called.
 fn rows(of: &str, shown: &Shown) -> (&'static str, Vec<BTreeMap<&'static str, String>>) {
-    let row = |fields: &[(&'static str, String)]| fields.iter().cloned().collect::<BTreeMap<_, _>>();
+    let row =
+        |fields: &[(&'static str, String)]| fields.iter().cloned().collect::<BTreeMap<_, _>>();
     let spaced = |name: &str| name.rsplit('.').next().unwrap_or(name).replace('_', " ");
     match of {
         // The app's actions, and those of the games on in this world.
@@ -438,15 +526,31 @@ fn rows(of: &str, shown: &Shown) -> (&'static str, Vec<BTreeMap<&'static str, St
                 .all()
                 .into_iter()
                 .map(|a| {
-                    let (label, keys) = (spaced(a.name.rsplit(':').next().unwrap_or(&a.name)), shown.binds.label(&a.name));
-                    row(&[("name", a.name), ("label", label), ("title", a.title), ("group", a.group), ("keys", keys)])
+                    let (label, keys) = (
+                        spaced(a.name.rsplit(':').next().unwrap_or(&a.name)),
+                        shown.binds.label(&a.name),
+                    );
+                    row(&[
+                        ("name", a.name),
+                        ("label", label),
+                        ("title", a.title),
+                        ("group", a.group),
+                        ("keys", keys),
+                    ])
                 })
                 .collect(),
         ),
         "action_groups" => {
             let mut groups: Vec<String> = Vec::new();
-            shown.binds.all().into_iter().for_each(|a| if !groups.contains(&a.group) { groups.push(a.group) });
-            ("group", groups.into_iter().map(|g| row(&[("name", g)])).collect())
+            shown.binds.all().into_iter().for_each(|a| {
+                if !groups.contains(&a.group) {
+                    groups.push(a.group)
+                }
+            });
+            (
+                "group",
+                groups.into_iter().map(|g| row(&[("name", g)])).collect(),
+            )
         }
         "settings" => (
             "setting",
@@ -458,8 +562,19 @@ fn rows(of: &str, shown: &Shown) -> (&'static str, Vec<BTreeMap<&'static str, St
                         ("label", spaced(s.name)),
                         ("title", s.title.into()),
                         ("group", s.group().into()),
-                        ("scope", if s.scope() == Scope::World { "world" } else { "player" }.into()),
-                        ("value", registry::show(s, &registry::value(s, &shown.stores))),
+                        (
+                            "scope",
+                            if s.scope() == Scope::World {
+                                "world"
+                            } else {
+                                "player"
+                            }
+                            .into(),
+                        ),
+                        (
+                            "value",
+                            registry::show(s, &registry::value(s, &shown.stores)),
+                        ),
                         ("default", registry::show(s, &registry::default(s))),
                         ("range", registry::range(s)),
                     ])
@@ -468,49 +583,173 @@ fn rows(of: &str, shown: &Shown) -> (&'static str, Vec<BTreeMap<&'static str, St
         ),
         "setting_groups" => {
             let mut groups: Vec<(&str, Scope)> = Vec::new();
-            SETTINGS.iter().for_each(|s| if !groups.iter().any(|(g, _)| *g == s.group()) { groups.push((s.group(), s.scope())) });
-            ("group", groups.into_iter().map(|(g, scope)| row(&[("name", g.into()), ("scope", if scope == Scope::World { "world" } else { "player" }.into())])).collect())
+            SETTINGS.iter().for_each(|s| {
+                if !groups.iter().any(|(g, _)| *g == s.group()) {
+                    groups.push((s.group(), s.scope()))
+                }
+            });
+            (
+                "group",
+                groups
+                    .into_iter()
+                    .map(|(g, scope)| {
+                        row(&[
+                            ("name", g.into()),
+                            (
+                                "scope",
+                                if scope == Scope::World {
+                                    "world"
+                                } else {
+                                    "player"
+                                }
+                                .into(),
+                            ),
+                        ])
+                    })
+                    .collect(),
+            )
         }
         "worlds" => {
             let here = super::worlds::current_title(shown.ledger);
             let worlds: Vec<(String, String)> = match &shown.ledger.online {
-                Some(online) => online.game.as_ref().map(|g| g.worlds()).unwrap_or_default().into_iter().map(|(n, g)| (n, if g.flat { "flat" } else { "natural" }.to_string())).collect(),
-                None => crate::world::ledger::list_worlds().into_iter().map(|w| (w.name, if w.flat { "flat" } else { "natural" }.to_string())).collect(),
+                Some(online) => online
+                    .game
+                    .as_ref()
+                    .map(|g| g.worlds())
+                    .unwrap_or_default()
+                    .into_iter()
+                    .map(|(n, g)| (n, if g.flat { "flat" } else { "natural" }.to_string()))
+                    .collect(),
+                None => crate::world::ledger::list_worlds()
+                    .into_iter()
+                    .map(|w| (w.name, if w.flat { "flat" } else { "natural" }.to_string()))
+                    .collect(),
             };
-            ("world", worlds.into_iter().map(|(name, ground)| row(&[("here", if here.starts_with(&name) { "yes" } else { "" }.into()), ("name", name), ("ground", ground)])).collect())
+            (
+                "world",
+                worlds
+                    .into_iter()
+                    .map(|(name, ground)| {
+                        row(&[
+                            (
+                                "here",
+                                if here.starts_with(&name) { "yes" } else { "" }.into(),
+                            ),
+                            ("name", name),
+                            ("ground", ground),
+                        ])
+                    })
+                    .collect(),
+            )
         }
         "saves" => {
             let mut seen = std::collections::HashSet::new();
-            let saves = shown.ledger.log.saves().rev().filter(|(_, name)| seen.insert(name.to_lowercase()));
-            ("save", saves.map(|(change, name)| row(&[("name", name.into()), ("change", change.id.to_string())])).collect())
+            let saves = shown
+                .ledger
+                .log
+                .saves()
+                .rev()
+                .filter(|(_, name)| seen.insert(name.to_lowercase()));
+            (
+                "save",
+                saves
+                    .map(|(change, name)| {
+                        row(&[("name", name.into()), ("change", change.id.to_string())])
+                    })
+                    .collect(),
+            )
         }
-        "panels" => ("panel", shown.panels.iter().map(|(id, title)| row(&[("id", id.clone()), ("title", title.clone())])).collect()),
+        "panels" => (
+            "panel",
+            shown
+                .panels
+                .iter()
+                .map(|(id, title)| row(&[("id", id.clone()), ("title", title.clone())]))
+                .collect(),
+        ),
         "ops" => (
             "op",
             ops::OPS
                 .iter()
-                .map(|op| row(&[("name", op.name.into()), ("usage", op.args.into()), ("about", op.about.into()), ("admin", if op.admin { "yes" } else { "" }.into())]))
+                .map(|op| {
+                    row(&[
+                        ("name", op.name.into()),
+                        ("usage", op.args.into()),
+                        ("about", op.about.into()),
+                        ("admin", if op.admin { "yes" } else { "" }.into()),
+                    ])
+                })
                 .collect(),
         ),
         "landscapes" => (
             "landscape",
-            std::iter::once("flat").chain(genverse_rules::recipe::Recipe::NAMES).map(|name| row(&[("name", name.into())])).collect(),
+            std::iter::once("flat")
+                .chain(genverse_rules::recipe::Recipe::NAMES)
+                .map(|name| row(&[("name", name.into())]))
+                .collect(),
         ),
         "packages" => {
             let logic = &shown.ledger.logic;
-            let on = logic.installed.values().map(|i| (i.package.name.clone(), logic.package(i).map_or(i.package.name.clone(), |p| p.manifest.title.clone()), "yes"));
-            let off = ops::catalog(shown.ledger).into_iter().filter(|(name, _)| !logic.installed.contains_key(name)).map(|(name, package)| (name, package.manifest.title.clone(), ""));
-            ("package", on.chain(off).collect::<Vec<_>>().into_iter().map(|(name, title, on)| row(&[("name", name), ("title", title), ("on", on.into())])).collect())
+            let on = logic.installed.values().map(|i| {
+                (
+                    i.package.name.clone(),
+                    logic
+                        .package(i)
+                        .map_or(i.package.name.clone(), |p| p.manifest.title.clone()),
+                    "yes",
+                )
+            });
+            let off = ops::catalog(shown.ledger)
+                .into_iter()
+                .filter(|(name, _)| !logic.installed.contains_key(name))
+                .map(|(name, package)| (name, package.manifest.title.clone(), ""));
+            (
+                "package",
+                on.chain(off)
+                    .collect::<Vec<_>>()
+                    .into_iter()
+                    .map(|(name, title, on)| {
+                        row(&[("name", name), ("title", title), ("on", on.into())])
+                    })
+                    .collect(),
+            )
         }
         "blocks" => {
             let content = &shown.ledger.rules.content;
             let palette = content.palette(shown.ledger.log.terrain());
-            let own = content.own().map(|(_, b)| row(&[("name", b.name.clone()), ("color", b.hex.clone()), ("material", b.material.clone()), ("kind", "own".into()), ("recolored", String::new())]));
-            let ground = genverse_rules::recipe::FAMILIES.iter().map(|(family, middle, _)| {
-                let hex = palette.find(middle).map(|id| bevy::color::Srgba::from(palette.entry(id).color).to_hex().to_lowercase()).unwrap_or_default();
-                let recolored = if content.colors.contains_key(*family) { "yes" } else { "" };
-                row(&[("name", family.to_string()), ("color", hex.chars().take(7).collect()), ("material", "matte".into()), ("kind", "ground".into()), ("recolored", recolored.into())])
+            let own = content.own().map(|(_, b)| {
+                row(&[
+                    ("name", b.name.clone()),
+                    ("color", b.hex.clone()),
+                    ("material", b.material.clone()),
+                    ("kind", "own".into()),
+                    ("recolored", String::new()),
+                ])
             });
+            let ground = genverse_rules::recipe::FAMILIES
+                .iter()
+                .map(|(family, middle, _)| {
+                    let hex = palette
+                        .find(middle)
+                        .map(|id| {
+                            bevy::color::Srgba::from(palette.entry(id).color)
+                                .to_hex()
+                                .to_lowercase()
+                        })
+                        .unwrap_or_default();
+                    let recolored = if content.colors.contains_key(*family) {
+                        "yes"
+                    } else {
+                        ""
+                    };
+                    row(&[
+                        ("name", family.to_string()),
+                        ("color", hex.chars().take(7).collect()),
+                        ("material", "matte".into()),
+                        ("kind", "ground".into()),
+                        ("recolored", recolored.into()),
+                    ])
+                });
             ("block", own.chain(ground).collect())
         }
         _ => ("row", Vec::new()),
@@ -537,17 +776,24 @@ fn fill(text: &str, vars: &Vars, shown: &Shown, state: &State) -> String {
             break;
         };
         let key = &rest[start + 1..start + end];
-        let value = vars.iter().rev().find(|(name, _)| name == key).map(|(_, value)| value.clone()).or_else(|| match key.split_once(':') {
-            Some(("input", id)) => Some(state.inputs.get(id).cloned().unwrap_or_default()),
-            Some(("setting", name)) => registry::find(name).ok().map(|s| registry::show(s, &registry::value(s, &shown.stores))),
-            Some(("keys", action)) => Some(shown.binds.label(action)),
-            _ => match key {
-                "world" => Some(super::worlds::current_title(shown.ledger)),
-                "game" => Some(crate::world::ledger::game_name()),
-                "player" => Some(shown.ledger.profile.name.clone()),
-                _ => None,
-            },
-        });
+        let value = vars
+            .iter()
+            .rev()
+            .find(|(name, _)| name == key)
+            .map(|(_, value)| value.clone())
+            .or_else(|| match key.split_once(':') {
+                Some(("input", id)) => Some(state.inputs.get(id).cloned().unwrap_or_default()),
+                Some(("setting", name)) => registry::find(name)
+                    .ok()
+                    .map(|s| registry::show(s, &registry::value(s, &shown.stores))),
+                Some(("keys", action)) => Some(shown.binds.label(action)),
+                _ => match key {
+                    "world" => Some(super::worlds::current_title(shown.ledger)),
+                    "game" => Some(crate::world::ledger::game_name()),
+                    "player" => Some(shown.ledger.profile.name.clone()),
+                    _ => None,
+                },
+            });
         match value {
             Some(value) => out.push_str(&value),
             None => out.push_str(&rest[start..=start + end]),
@@ -562,8 +808,17 @@ fn fill(text: &str, vars: &Vars, shown: &Shown, state: &State) -> String {
 fn fill_value(value: &Value, vars: &Vars, shown: &Shown, state: &State) -> Value {
     match value {
         Value::String(text) => Value::String(fill(text, vars, shown, state)),
-        Value::Array(items) => Value::Array(items.iter().map(|v| fill_value(v, vars, shown, state)).collect()),
-        Value::Object(map) => Value::Object(map.iter().map(|(k, v)| (k.clone(), fill_value(v, vars, shown, state))).collect()),
+        Value::Array(items) => Value::Array(
+            items
+                .iter()
+                .map(|v| fill_value(v, vars, shown, state))
+                .collect(),
+        ),
+        Value::Object(map) => Value::Object(
+            map.iter()
+                .map(|(k, v)| (k.clone(), fill_value(v, vars, shown, state)))
+                .collect(),
+        ),
         other => other.clone(),
     }
 }
@@ -571,20 +826,44 @@ fn fill_value(value: &Value, vars: &Vars, shown: &Shown, state: &State) -> Value
 /// An op a panel asked for.
 type Asked = (String, Value);
 
-fn draw_all(ui: &mut egui::Ui, items: &[Node], vars: &mut Vars, shown: &Shown, state: &mut State, asked: &mut Vec<Asked>, path: &str) {
+fn draw_all(
+    ui: &mut egui::Ui,
+    items: &[Node],
+    vars: &mut Vars,
+    shown: &Shown,
+    state: &mut State,
+    asked: &mut Vec<Asked>,
+    path: &str,
+) {
     for (i, node) in items.iter().enumerate() {
         draw(ui, node, vars, shown, state, asked, &format!("{path}/{i}"));
     }
 }
 
 /// Draws one node. `path` is where it is in the tree and its rows, for egui's ids.
-fn draw(ui: &mut egui::Ui, node: &Node, vars: &mut Vars, shown: &Shown, state: &mut State, asked: &mut Vec<Asked>, path: &str) {
+fn draw(
+    ui: &mut egui::Ui,
+    node: &Node,
+    vars: &mut Vars,
+    shown: &Shown,
+    state: &mut State,
+    asked: &mut Vec<Asked>,
+    path: &str,
+) {
     let p = theme::palette(ui.ctx());
     match node {
-        Node::Text { text, style, width, hint } => {
+        Node::Text {
+            text,
+            style,
+            width,
+            hint,
+        } => {
             let text = fill(text, vars, shown, state);
             let rich = match style.as_deref() {
-                Some("title") => egui::RichText::new(text).size(15.0).strong().color(p.strong),
+                Some("title") => egui::RichText::new(text)
+                    .size(15.0)
+                    .strong()
+                    .color(p.strong),
                 Some("small") => egui::RichText::new(text).size(11.5).color(p.text),
                 Some("muted") => egui::RichText::new(text).size(11.5).color(p.muted),
                 _ => egui::RichText::new(text).color(p.text),
@@ -598,10 +877,14 @@ fn draw(ui: &mut egui::Ui, node: &Node, vars: &mut Vars, shown: &Shown, state: &
             };
             match width {
                 Some(width) => {
-                    ui.allocate_ui_with_layout(egui::vec2(*width, 18.0), egui::Layout::left_to_right(egui::Align::Center), |ui| {
-                        ui.set_min_width(*width);
-                        label(ui);
-                    });
+                    ui.allocate_ui_with_layout(
+                        egui::vec2(*width, 18.0),
+                        egui::Layout::left_to_right(egui::Align::Center),
+                        |ui| {
+                            ui.set_min_width(*width);
+                            label(ui);
+                        },
+                    );
                 }
                 None => label(ui),
             }
@@ -621,17 +904,26 @@ fn draw(ui: &mut egui::Ui, node: &Node, vars: &mut Vars, shown: &Shown, state: &
             egui::CollapsingHeader::new(egui::RichText::new(title).strong().color(p.strong))
                 .id_salt(path)
                 .default_open(*open)
-                .show(ui, |ui| draw_all(ui, items, vars, shown, state, asked, path));
+                .show(ui, |ui| {
+                    draw_all(ui, items, vars, shown, state, asked, path)
+                });
         }
         Node::Scroll { height, items } => {
             egui::ScrollArea::vertical()
                 .id_salt(path)
                 .max_height(height.unwrap_or(240.0))
                 .auto_shrink([false, true])
-                .show(ui, |ui| draw_all(ui, items, vars, shown, state, asked, path));
+                .show(ui, |ui| {
+                    draw_all(ui, items, vars, shown, state, asked, path)
+                });
         }
         Node::Tabs { tabs } => {
-            let mut at = state.tabs.get(path).copied().unwrap_or(0).min(tabs.len().saturating_sub(1));
+            let mut at = state
+                .tabs
+                .get(path)
+                .copied()
+                .unwrap_or(0)
+                .min(tabs.len().saturating_sub(1));
             ui.horizontal(|ui| {
                 for (i, tab) in tabs.iter().enumerate() {
                     ui.selectable_value(&mut at, i, fill(&tab.title, vars, shown, state));
@@ -640,12 +932,26 @@ fn draw(ui: &mut egui::Ui, node: &Node, vars: &mut Vars, shown: &Shown, state: &
             ui.separator();
             state.tabs.insert(path.to_string(), at);
             if let Some(tab) = tabs.get(at) {
-                draw_all(ui, &tab.items, vars, shown, state, asked, &format!("{path}/tab{at}"));
+                draw_all(
+                    ui,
+                    &tab.items,
+                    vars,
+                    shown,
+                    state,
+                    asked,
+                    &format!("{path}/tab{at}"),
+                );
             }
         }
-        Node::Button { label, op, args, hint } => {
+        Node::Button {
+            label,
+            op,
+            args,
+            hint,
+        } => {
             let allowed = shown.admin || !ops::OPS.iter().any(|o| o.name == op && o.admin);
-            let mut response = ui.add_enabled(allowed, egui::Button::new(fill(label, vars, shown, state)));
+            let mut response =
+                ui.add_enabled(allowed, egui::Button::new(fill(label, vars, shown, state)));
             if let Some(hint) = hint {
                 response = response.on_hover_text(fill(hint, vars, shown, state));
             }
@@ -653,13 +959,20 @@ fn draw(ui: &mut egui::Ui, node: &Node, vars: &mut Vars, shown: &Shown, state: &
                 response = response.on_disabled_hover_text("Only admins of this game can do that.");
             }
             if response.clicked() {
-                asked.push((op.clone(), fill_value(&Value::Object(args.clone()), vars, shown, state)));
+                asked.push((
+                    op.clone(),
+                    fill_value(&Value::Object(args.clone()), vars, shown, state),
+                ));
             }
         }
         Node::Input { id, hint, width } => {
             let hint = fill(hint, vars, shown, state);
             let text = state.inputs.entry(id.clone()).or_default();
-            ui.add(egui::TextEdit::singleline(text).hint_text(hint).desired_width(width.unwrap_or(160.0)));
+            ui.add(
+                egui::TextEdit::singleline(text)
+                    .hint_text(hint)
+                    .desired_width(width.unwrap_or(160.0)),
+            );
         }
         Node::Setting { name } => {
             let name = fill(name, vars, shown, state);
@@ -668,11 +981,17 @@ fn draw(ui: &mut egui::Ui, node: &Node, vars: &mut Vars, shown: &Shown, state: &
                 return;
             };
             let now = registry::value(setting, &shown.stores);
-            let showing = state.drafts.get(setting.name).cloned().unwrap_or_else(|| now.clone());
+            let showing = state
+                .drafts
+                .get(setting.name)
+                .cloned()
+                .unwrap_or_else(|| now.clone());
             let may = setting.scope() == Scope::Player || shown.admin;
             let mut changed = None;
             ui.push_id(path, |ui| {
-                ui.add_enabled_ui(may, |ui| changed = super::settings::edit(ui, setting, &showing));
+                ui.add_enabled_ui(may, |ui| {
+                    changed = super::settings::edit(ui, setting, &showing)
+                });
             });
             if let Some(value) = changed {
                 state.drafts.insert(setting.name, value);
@@ -682,34 +1001,71 @@ fn draw(ui: &mut egui::Ui, node: &Node, vars: &mut Vars, shown: &Shown, state: &
                 && let Some(value) = state.drafts.remove(setting.name)
                 && value != now
             {
-                asked.push(("set".into(), json!({ "name": setting.name, "value": registry::show(setting, &value) })));
+                asked.push((
+                    "set".into(),
+                    json!({ "name": setting.name, "value": registry::show(setting, &value) }),
+                ));
             }
         }
         Node::Keys { action } => {
             let action = fill(action, vars, shown, state);
             for input in shown.binds.inputs(&action) {
-                if ui.small_button(format!("{} {}", input.label, icon::X)).on_hover_text("Take this key off").clicked() {
-                    asked.push(("unbind".into(), json!({ "action": action, "key": input.name })));
+                if ui
+                    .small_button(format!("{} {}", input.label, icon::X))
+                    .on_hover_text("Take this key off")
+                    .clicked()
+                {
+                    asked.push((
+                        "unbind".into(),
+                        json!({ "action": action, "key": input.name }),
+                    ));
                 }
             }
             if state.capturing.as_deref() == Some(action.as_str()) {
-                ui.label(egui::RichText::new("press a key… (Esc cancels)").small().color(p.primary));
-            } else if ui.small_button(icon::PLUS).on_hover_text("Add a key").clicked() {
+                ui.label(
+                    egui::RichText::new("press a key… (Esc cancels)")
+                        .small()
+                        .color(p.primary),
+                );
+            } else if ui
+                .small_button(icon::PLUS)
+                .on_hover_text("Add a key")
+                .clicked()
+            {
                 state.capturing = Some(action.clone());
             }
             let usual = shown.binds.is_usual(&action);
-            if !usual && ui.small_button(icon::ARROW_COUNTER_CLOCKWISE).on_hover_text("Back to its default").clicked() {
+            if !usual
+                && ui
+                    .small_button(icon::ARROW_COUNTER_CLOCKWISE)
+                    .on_hover_text("Back to its default")
+                    .clicked()
+            {
                 asked.push(("resetkeys".into(), json!({ "action": action })));
             }
         }
-        Node::Each { of, name, only, item } => {
+        Node::Each {
+            of,
+            name,
+            only,
+            item,
+        } => {
             let (row_name, rows) = rows(of, shown);
             let name = name.as_deref().unwrap_or(row_name);
-            let only: Vec<(&String, String)> = only.iter().map(|(field, value)| (field, fill(value, vars, shown, state))).collect();
-            let kept = rows.iter().filter(|row| only.iter().all(|(field, value)| row.get(field.as_str()) == Some(value)));
+            let only: Vec<(&String, String)> = only
+                .iter()
+                .map(|(field, value)| (field, fill(value, vars, shown, state)))
+                .collect();
+            let kept = rows.iter().filter(|row| {
+                only.iter()
+                    .all(|(field, value)| row.get(field.as_str()) == Some(value))
+            });
             for (i, row) in kept.take(MAX_ROWS).enumerate() {
                 let before = vars.len();
-                vars.extend(row.iter().map(|(field, value)| (format!("{name}.{field}"), value.clone())));
+                vars.extend(
+                    row.iter()
+                        .map(|(field, value)| (format!("{name}.{field}"), value.clone())),
+                );
                 draw(ui, item, vars, shown, state, asked, &format!("{path}#{i}"));
                 vars.truncate(before);
             }
@@ -722,7 +1078,13 @@ pub fn panel_windows(
     mut contexts: EguiContexts,
     mut panels: ResMut<Panels>,
     mut chat: ResMut<Chat>,
-    (mut ledger, mut world, mut creations, mut landscape, mut travel): (ResMut<Ledger>, ResMut<VoxelWorld>, ResMut<Creations>, ResMut<Landscape>, ResMut<Travel>),
+    (mut ledger, mut world, mut creations, mut landscape, mut travel): (
+        ResMut<Ledger>,
+        ResMut<VoxelWorld>,
+        ResMut<Creations>,
+        ResMut<Landscape>,
+        ResMut<Travel>,
+    ),
     (mut binds, mut graphics): (ResMut<Bindings>, ResMut<Graphics>),
     (keys, buttons): (Res<ButtonInput<KeyCode>>, Res<ButtonInput<MouseButton>>),
     players: Query<&Transform, With<Player>>,
@@ -733,12 +1095,21 @@ pub fn panel_windows(
     let mut asked: Vec<Asked> = std::mem::take(&mut panels.queued);
     // A panel waiting for a key: the next one pressed is bound (Esc cancels). A left
     // click is how the panel itself is used, so it's bound from the chat instead.
-    let waiting: Vec<(String, String)> = panels.state.iter().filter_map(|(id, state)| Some((id.clone(), state.capturing.clone()?))).collect();
+    let waiting: Vec<(String, String)> = panels
+        .state
+        .iter()
+        .filter_map(|(id, state)| Some((id.clone(), state.capturing.clone()?)))
+        .collect();
     for (id, action) in &waiting {
-        let pressed = INPUTS.iter().find(|input| input.name != "mouse_left" && input.just_pressed(&keys, &buttons));
+        let pressed = INPUTS
+            .iter()
+            .find(|input| input.name != "mouse_left" && input.just_pressed(&keys, &buttons));
         if keys.just_pressed(KeyCode::Escape) || pressed.is_some() {
             if let Some(input) = pressed {
-                asked.push(("bind".into(), json!({ "action": action, "key": input.name })));
+                asked.push((
+                    "bind".into(),
+                    json!({ "action": action, "key": input.name }),
+                ));
             }
             if let Some(state) = panels.state.get_mut(id) {
                 state.capturing = None;
@@ -748,14 +1119,23 @@ pub fn panel_windows(
     binds.capturing = panels.state.values().any(|state| state.capturing.is_some());
 
     let ctx = contexts.ctx_mut()?;
-    let titles: Vec<(String, String)> = panels.loaded.iter().filter_map(|(id, panel)| Some((id.clone(), panel.as_ref().as_ref().ok()?.title.clone()))).collect();
+    let titles: Vec<(String, String)> = panels
+        .loaded
+        .iter()
+        .filter_map(|(id, panel)| Some((id.clone(), panel.as_ref().as_ref().ok()?.title.clone())))
+        .collect();
     let mut closed = Vec::new();
     for id in panels.open.clone() {
-        let Some(panel) = panels.loaded.get(&id).cloned() else { continue };
+        let Some(panel) = panels.loaded.get(&id).cloned() else {
+            continue;
+        };
         let state = panels.state.entry(id.clone()).or_default();
         let shown = Shown {
             binds: &binds,
-            stores: Stores { rules: &ledger.rules, graphics: &graphics },
+            stores: Stores {
+                rules: &ledger.rules,
+                graphics: &graphics,
+            },
             ledger: &ledger,
             panels: &titles,
             admin: ledger.land.is_admin(&ledger.profile.id),
@@ -765,14 +1145,30 @@ pub fn panel_windows(
             Ok(panel) => (panel.title.clone(), panel.width.unwrap_or(380.0)),
             Err(_) => (id.clone(), 380.0),
         };
-        theme::centered(egui::Window::new(title), ctx, 0.0).id(egui::Id::new(("panel", &id))).collapsible(false).open(&mut open).default_width(width.clamp(200.0, 900.0)).default_height(520.0).vscroll(true).show(ctx, |ui| {
-            match panel.as_ref() {
-                Ok(panel) => draw(ui, &panel.body, &mut Vec::new(), &shown, state, &mut asked, &id),
+        theme::centered(egui::Window::new(title), ctx, 0.0)
+            .id(egui::Id::new(("panel", &id)))
+            .collapsible(false)
+            .open(&mut open)
+            .default_width(width.clamp(200.0, 900.0))
+            .default_height(520.0)
+            .vscroll(true)
+            .show(ctx, |ui| match panel.as_ref() {
+                Ok(panel) => draw(
+                    ui,
+                    &panel.body,
+                    &mut Vec::new(),
+                    &shown,
+                    state,
+                    &mut asked,
+                    &id,
+                ),
                 Err(why) => {
-                    ui.label(egui::RichText::new(format!("This panel can't be shown: {why}")).color(theme::palette(ui.ctx()).danger));
+                    ui.label(
+                        egui::RichText::new(format!("This panel can't be shown: {why}"))
+                            .color(theme::palette(ui.ctx()).danger),
+                    );
                 }
-            }
-        });
+            });
         if !open {
             closed.push(id);
         }
@@ -790,7 +1186,9 @@ pub fn panel_windows(
             creations: &mut creations,
             landscape: &mut landscape,
             travel: &mut travel,
-            at: players.single().map_or([0.0; 3], |t| t.translation.to_array()),
+            at: players
+                .single()
+                .map_or([0.0; 3], |t| t.translation.to_array()),
             agent: None,
             binds: &mut binds,
             graphics: &mut graphics,
@@ -887,42 +1285,100 @@ mod tests {
     #[test]
     fn what_isnt_a_panel_says_why() {
         let with = |body: &str| Panel::read(&format!(r#"{{"title": "T", "body": {body}}}"#));
-        assert!(with(r#"{"kind": "button", "label": "Go", "op": "world", "args": {"name": "home"}}"#).is_ok());
-        assert!(with(r#"{"kind": "button", "label": "Go", "op": "launch_rocket"}"#).unwrap_err().contains("isn't an op"));
+        assert!(
+            with(r#"{"kind": "button", "label": "Go", "op": "world", "args": {"name": "home"}}"#)
+                .is_ok()
+        );
+        assert!(
+            with(r#"{"kind": "button", "label": "Go", "op": "launch_rocket"}"#)
+                .unwrap_err()
+                .contains("isn't an op")
+        );
         assert!(with(r#"{"kind": "setting", "name": "hero.wingspan"}"#).is_err());
-        assert!(with(r#"{"kind": "keys", "action": "fly"}"#).unwrap_err().contains("no action"));
-        assert!(with(r#"{"kind": "each", "of": "planets", "item": {"kind": "space"}}"#).unwrap_err().contains("no list"));
-        assert!(with(r#"{"kind": "text", "text": "hi", "colour": "red"}"#).is_err(), "a field it doesn't have");
-        assert!(with(r#"{"kind": "script", "code": "os.exit()"}"#).is_err(), "a panel never runs code");
+        assert!(
+            with(r#"{"kind": "keys", "action": "fly"}"#)
+                .unwrap_err()
+                .contains("no action")
+        );
+        assert!(
+            with(r#"{"kind": "each", "of": "planets", "item": {"kind": "space"}}"#)
+                .unwrap_err()
+                .contains("no list")
+        );
+        assert!(
+            with(r#"{"kind": "text", "text": "hi", "colour": "red"}"#).is_err(),
+            "a field it doesn't have"
+        );
+        assert!(
+            with(r#"{"kind": "script", "code": "os.exit()"}"#).is_err(),
+            "a panel never runs code"
+        );
         // A name filled in from a row is checked when it's drawn, not here.
         assert!(with(r#"{"kind": "each", "of": "actions", "item": {"kind": "keys", "action": "{action.name}"}}"#).is_ok());
         // Too deep.
-        let deep = (0..MAX_DEPTH + 1).fold(r#"{"kind": "space"}"#.to_string(), |inner, _| format!(r#"{{"kind": "column", "items": [{inner}]}}"#));
+        let deep = (0..MAX_DEPTH + 1).fold(r#"{"kind": "space"}"#.to_string(), |inner, _| {
+            format!(r#"{{"kind": "column", "items": [{inner}]}}"#)
+        });
         assert!(with(&deep).unwrap_err().contains("at most"));
     }
 
     #[test]
     fn text_is_filled_from_rows_inputs_settings_and_keys() {
-        let (binds, rules, graphics) = (Bindings::default(), genverse_rules::settings::WorldRules::default(), Graphics::default());
+        let (binds, rules, graphics) = (
+            Bindings::default(),
+            genverse_rules::settings::WorldRules::default(),
+            Graphics::default(),
+        );
         let ledger = Ledger::for_tests();
-        let shown = Shown { binds: &binds, stores: Stores { rules: &rules, graphics: &graphics }, ledger: &ledger, panels: &[], admin: true };
+        let shown = Shown {
+            binds: &binds,
+            stores: Stores {
+                rules: &rules,
+                graphics: &graphics,
+            },
+            ledger: &ledger,
+            panels: &[],
+            admin: true,
+        };
         let mut state = State::default();
         state.inputs.insert("name".into(), "dungeon".into());
-        let vars = vec![("action.name".to_string(), "jump".to_string()), ("group.name".to_string(), "outer".to_string()), ("group.name".to_string(), "inner".to_string())];
+        let vars = vec![
+            ("action.name".to_string(), "jump".to_string()),
+            ("group.name".to_string(), "outer".to_string()),
+            ("group.name".to_string(), "inner".to_string()),
+        ];
         let fill = |text: &str| fill(text, &vars, &shown, &state);
         assert_eq!(fill("{action.name} is on {keys:jump}"), "jump is on Space");
         assert_eq!(fill("{group.name}"), "inner", "the innermost row wins");
-        assert_eq!(fill("go to {input:name}; run {setting:hero.run_speed}"), "go to dungeon; run 7");
-        assert_eq!(fill("{nothing.here} stays, and so does an open {brace"), "{nothing.here} stays, and so does an open {brace");
-        let args = fill_value(&json!({"name": "{input:name}", "n": 3, "list": ["{action.name}"]}), &vars, &shown, &state);
+        assert_eq!(
+            fill("go to {input:name}; run {setting:hero.run_speed}"),
+            "go to dungeon; run 7"
+        );
+        assert_eq!(
+            fill("{nothing.here} stays, and so does an open {brace"),
+            "{nothing.here} stays, and so does an open {brace"
+        );
+        let args = fill_value(
+            &json!({"name": "{input:name}", "n": 3, "list": ["{action.name}"]}),
+            &vars,
+            &shown,
+            &state,
+        );
         assert_eq!(args, json!({"name": "dungeon", "n": 3, "list": ["jump"]}));
 
         // The lists hold what the game's tables hold.
         let (name, actions) = rows("actions", &shown);
-        assert_eq!((name, actions.len()), ("action", crate::bindings::ACTIONS.len()));
-        assert!(actions.iter().any(|row| row["name"] == "jump" && row["keys"] == "Space" && row["group"] == "Moving"));
+        assert_eq!(
+            (name, actions.len()),
+            ("action", crate::bindings::ACTIONS.len())
+        );
+        assert!(actions.iter().any(|row| row["name"] == "jump"
+            && row["keys"] == "Space"
+            && row["group"] == "Moving"));
         let (_, settings) = rows("settings", &shown);
-        assert!(settings.iter().any(|row| row["name"] == "hero.run_speed" && row["value"] == "7" && row["scope"] == "world"));
+        assert!(settings.iter().any(|row| row["name"] == "hero.run_speed"
+            && row["value"] == "7"
+            && row["scope"] == "world"));
         for (list, row, fields) in LISTS {
             let (called, rows) = rows(list, &shown);
             assert_eq!(called, *row, "{list}");

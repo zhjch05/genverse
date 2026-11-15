@@ -55,28 +55,70 @@ impl Cell {
 #[serde(tag = "kind", rename_all = "snake_case")]
 pub enum Op {
     /// A build appearing, changing or going, with its portal.
-    Build { id: u64, from: Option<Box<Placed>>, to: Option<Box<Placed>> },
+    Build {
+        id: u64,
+        from: Option<Box<Placed>>,
+        to: Option<Box<Placed>>,
+    },
     /// Land reshaped: its voxels, and what it costs `owner` (`charge` adds the cost;
     /// otherwise it's given back).
-    Land { owner: String, area: Area, cost: usize, charge: bool, cells: Vec<Cell> },
-    Rules { from: Box<WorldRules>, to: Box<WorldRules> },
-    Install { name: String, from: Option<Install>, to: Option<Install> },
+    Land {
+        owner: String,
+        area: Area,
+        cost: usize,
+        charge: bool,
+        cells: Vec<Cell>,
+    },
+    Rules {
+        from: Box<WorldRules>,
+        to: Box<WorldRules>,
+    },
+    Install {
+        name: String,
+        from: Option<Install>,
+        to: Option<Install>,
+    },
 }
 
 impl Op {
     /// The op that takes it back.
     fn inverse(&self) -> Op {
         match self {
-            Op::Build { id, from, to } => Op::Build { id: *id, from: to.clone(), to: from.clone() },
-            Op::Land { owner, area, cost, charge, cells } => Op::Land {
+            Op::Build { id, from, to } => Op::Build {
+                id: *id,
+                from: to.clone(),
+                to: from.clone(),
+            },
+            Op::Land {
+                owner,
+                area,
+                cost,
+                charge,
+                cells,
+            } => Op::Land {
                 owner: owner.clone(),
                 area: *area,
                 cost: *cost,
                 charge: !charge,
-                cells: cells.iter().rev().map(|c| Cell { p: c.p, from: c.to, to: c.from }).collect(),
+                cells: cells
+                    .iter()
+                    .rev()
+                    .map(|c| Cell {
+                        p: c.p,
+                        from: c.to,
+                        to: c.from,
+                    })
+                    .collect(),
             },
-            Op::Rules { from, to } => Op::Rules { from: to.clone(), to: from.clone() },
-            Op::Install { name, from, to } => Op::Install { name: name.clone(), from: to.clone(), to: from.clone() },
+            Op::Rules { from, to } => Op::Rules {
+                from: to.clone(),
+                to: from.clone(),
+            },
+            Op::Install { name, from, to } => Op::Install {
+                name: name.clone(),
+                from: to.clone(),
+                to: from.clone(),
+            },
         }
     }
 }
@@ -96,8 +138,15 @@ impl Replay {
     /// Build `id` as it stands now.
     pub fn placed(&self, id: u64) -> Option<Placed> {
         let build = self.builds.get(&id)?.clone();
-        let owner = self.footprints.get(&id).map_or(String::new(), |f| f.owner.clone());
-        Some(Placed { build, owner, portal: self.portals.get(&id).cloned() })
+        let owner = self
+            .footprints
+            .get(&id)
+            .map_or(String::new(), |f| f.owner.clone());
+        Some(Placed {
+            build,
+            owner,
+            portal: self.portals.get(&id).cloned(),
+        })
     }
 
     /// Keeps what change `change` did, so it can be undone; the oldest records go.
@@ -105,7 +154,14 @@ impl Replay {
         if ops.is_empty() {
             return;
         }
-        self.undoable.insert(change, UndoRecord { by: by.into(), redo, ops });
+        self.undoable.insert(
+            change,
+            UndoRecord {
+                by: by.into(),
+                redo,
+                ops,
+            },
+        );
         while self.undoable.len() > UNDO_DEPTH {
             self.undoable.pop_first();
         }
@@ -114,7 +170,14 @@ impl Replay {
     /// Undoes change `target` as change `change` by `player`, on the world as it is now:
     /// all of it or, if anything it touched has changed since, none of it. Returns the
     /// voxels it set back.
-    pub(crate) fn undo(&mut self, change: u64, target: u64, by: &Provenance, admin: bool, voxels: bool) -> Result<Vec<(IVec3, VoxelId)>, String> {
+    pub(crate) fn undo(
+        &mut self,
+        change: u64,
+        target: u64,
+        by: &Provenance,
+        admin: bool,
+        voxels: bool,
+    ) -> Result<Vec<(IVec3, VoxelId)>, String> {
         let player = by.player.as_str();
         let record = self
             .undoable
@@ -133,8 +196,15 @@ impl Replay {
                     if self.placed(*id).map(Box::new) != *from {
                         return Err(format!("build {id} has changed since"));
                     }
-                    let mut touched = from.as_ref().map(|p| parcels_of(&p.build)).unwrap_or_default();
-                    touched.extend(to.as_ref().map(|p| parcels_of(&p.build)).unwrap_or_default());
+                    let mut touched = from
+                        .as_ref()
+                        .map(|p| parcels_of(&p.build))
+                        .unwrap_or_default();
+                    touched.extend(
+                        to.as_ref()
+                            .map(|p| parcels_of(&p.build))
+                            .unwrap_or_default(),
+                    );
                     self.land.authorize(player, &touched)?;
                     let old = from.as_ref().map(|p| footprint(p));
                     if let Some(new) = to.as_ref().map(|p| footprint(p)) {
@@ -145,8 +215,18 @@ impl Replay {
                         budgets.remove(&old);
                     }
                 }
-                Op::Land { owner, area, cost, charge, cells } => {
-                    if voxels && cells.iter().any(|c| self.edits.get(&c.pos()).copied() != c.from.0) {
+                Op::Land {
+                    owner,
+                    area,
+                    cost,
+                    charge,
+                    cells,
+                } => {
+                    if voxels
+                        && cells
+                            .iter()
+                            .any(|c| self.edits.get(&c.pos()).copied() != c.from.0)
+                    {
                         return Err("the ground there has changed since".into());
                     }
                     self.land.authorize(player, &area_parcels(*area))?;
@@ -172,7 +252,13 @@ impl Replay {
                         return Err(format!("{name} has changed since"));
                     }
                     match to {
-                        Some(install) => logic.install(player, admin, &self.rules.logic, &install.package, &install.scope)?,
+                        Some(install) => logic.install(
+                            player,
+                            admin,
+                            &self.rules.logic,
+                            &install.package,
+                            &install.scope,
+                        )?,
                         None => logic.uninstall(player, admin, &self.rules.logic, name)?,
                     }
                 }
@@ -203,7 +289,13 @@ impl Replay {
                     }
                     done.push(Op::Build { id, from, to });
                 }
-                Op::Land { owner, area, cost, charge, cells } => {
+                Op::Land {
+                    owner,
+                    area,
+                    cost,
+                    charge,
+                    cells,
+                } => {
                     for cell in &cells {
                         if voxels {
                             match cell.to.0 {
@@ -214,7 +306,13 @@ impl Replay {
                         made.push((cell.pos(), cell.to.1));
                     }
                     self.last_cells.extend(cells.iter().copied());
-                    done.push(Op::Land { owner, area, cost, charge, cells });
+                    done.push(Op::Land {
+                        owner,
+                        area,
+                        cost,
+                        charge,
+                        cells,
+                    });
                 }
                 Op::Rules { from, to } => {
                     self.land.spawn = to.spawn.clone();
@@ -234,5 +332,9 @@ impl Replay {
 }
 
 fn footprint(placed: &Placed) -> Footprint {
-    Footprint { owner: placed.owner.clone(), parcels: parcels_of(&placed.build), usage: build_usage(&placed.build.spec) }
+    Footprint {
+        owner: placed.owner.clone(),
+        parcels: parcels_of(&placed.build),
+        usage: build_usage(&placed.build.spec),
+    }
 }

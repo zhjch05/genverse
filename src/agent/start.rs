@@ -10,9 +10,9 @@ use bevy_egui::{EguiContexts, egui};
 use egui_phosphor::regular as icon;
 
 use super::{
-    Chat, prefs, presence,
+    Chat,
     loading::Loading,
-    menu,
+    menu, prefs, presence,
     settings::SettingsWindow,
     theme::{self, Tone},
     welcome::Welcome,
@@ -41,9 +41,19 @@ impl StartScreen {
 
 /// Whether this run is driven by variables, which a screen to click through would stall.
 pub fn scripted() -> bool {
-    ["GENVERSE_SHOT", "GENVERSE_PROMPT", "GENVERSE_PLAY", "GENVERSE_AS", "GENVERSE_MENU", "GENVERSE_SERVER", "GENVERSE_WORLDS", "GENVERSE_WORLD", "GENVERSE_GAME"]
-        .iter()
-        .any(|v| std::env::var_os(v).is_some())
+    [
+        "GENVERSE_SHOT",
+        "GENVERSE_PROMPT",
+        "GENVERSE_PLAY",
+        "GENVERSE_AS",
+        "GENVERSE_MENU",
+        "GENVERSE_SERVER",
+        "GENVERSE_WORLDS",
+        "GENVERSE_WORLD",
+        "GENVERSE_GAME",
+    ]
+    .iter()
+    .any(|v| std::env::var_os(v).is_some())
 }
 
 /// Whether the player has been through the welcome yet.
@@ -95,7 +105,11 @@ pub fn start_screen(
     let screen = ctx.viewport_rect();
     let new_player = !welcomed();
     let world = worlds::world_of(&ledger);
-    let world = if world.is_empty() { worlds::game_of(&ledger) } else { world };
+    let world = if world.is_empty() {
+        worlds::game_of(&ledger)
+    } else {
+        world
+    };
     let ready = loading.is_done();
     let mut pick = None;
 
@@ -110,26 +124,56 @@ pub fn start_screen(
             let margin = if screen.width() < 700.0 { 24.0 } else { 64.0 };
             let held = COLUMN + 2.0 * margin;
             let painter = ui.painter();
-            let side = egui::Rect::from_x_y_ranges(screen.left()..=screen.left() + held, screen.y_range());
+            let side =
+                egui::Rect::from_x_y_ranges(screen.left()..=screen.left() + held, screen.y_range());
             painter.rect_filled(side, 0, p.panel);
-            painter.vline(side.right(), screen.y_range(), egui::Stroke::new(1.0, p.line));
+            painter.vline(
+                side.right(),
+                screen.y_range(),
+                egui::Stroke::new(1.0, p.line),
+            );
 
-            let height = ui.ctx().data(|d| d.get_temp::<f32>(egui::Id::new("start_height"))).unwrap_or(460.0);
+            let height = ui
+                .ctx()
+                .data(|d| d.get_temp::<f32>(egui::Id::new("start_height")))
+                .unwrap_or(460.0);
             let top = screen.top() + ((screen.height() - height) / 2.0).max(24.0);
-            let column = egui::Rect::from_min_size(egui::pos2(screen.left() + margin, top), egui::vec2(COLUMN.min(screen.width() - 2.0 * margin), screen.height()));
+            let column = egui::Rect::from_min_size(
+                egui::pos2(screen.left() + margin, top),
+                egui::vec2(COLUMN.min(screen.width() - 2.0 * margin), screen.height()),
+            );
             let mut child = ui.new_child(egui::UiBuilder::new().max_rect(column));
             let inner = child.vertical(|ui| {
                 ui.set_width(column.width());
-                ui.label(egui::RichText::new("Genverse").size(52.0).strong().color(p.strong));
-                ui.label(egui::RichText::new("Build a world by describing it.").size(15.0).color(p.muted));
+                ui.label(
+                    egui::RichText::new("Genverse")
+                        .size(52.0)
+                        .strong()
+                        .color(p.strong),
+                );
+                ui.label(
+                    egui::RichText::new("Build a world by describing it.")
+                        .size(15.0)
+                        .color(p.muted),
+                );
                 ui.add_space(28.0);
 
                 if new_player {
-                    if menu::entry(ui, icon::HAND_WAVING, "Get started", "Enter", Tone::Primary).clicked() {
+                    if menu::entry(ui, icon::HAND_WAVING, "Get started", "Enter", Tone::Primary)
+                        .clicked()
+                    {
                         pick = Some(Pick::GetStarted);
                     }
                 } else if ready {
-                    if menu::entry(ui, icon::PLAY, &format!("Continue · {world}"), "Enter", Tone::Primary).clicked() {
+                    if menu::entry(
+                        ui,
+                        icon::PLAY,
+                        &format!("Continue · {world}"),
+                        "Enter",
+                        Tone::Primary,
+                    )
+                    .clicked()
+                    {
                         pick = Some(Pick::Continue);
                     }
                 } else {
@@ -137,7 +181,8 @@ pub fn start_screen(
                     let _ = menu::entry(ui, icon::HOURGLASS_MEDIUM, &label, "", Tone::Primary);
                 }
                 ui.add_space(8.0);
-                if menu::entry(ui, icon::GLOBE_HEMISPHERE_WEST, "Worlds", "", Tone::Plain).clicked() {
+                if menu::entry(ui, icon::GLOBE_HEMISPHERE_WEST, "Worlds", "", Tone::Plain).clicked()
+                {
                     pick = Some(Pick::Worlds);
                 }
                 if menu::entry(ui, icon::USERS_THREE, "Play together", "", Tone::Plain).clicked() {
@@ -147,25 +192,38 @@ pub fn start_screen(
                     pick = Some(Pick::Settings);
                 }
                 ui.add_space(10.0);
-                let quit = if start.quitting { "Click again to quit" } else { "Quit" };
+                let quit = if start.quitting {
+                    "Click again to quit"
+                } else {
+                    "Quit"
+                };
                 if menu::entry(ui, icon::SIGN_OUT, quit, "", Tone::Plain).clicked() {
                     pick = Some(Pick::Quit);
                 }
             });
             let height = inner.response.rect.height();
-            ui.ctx().data_mut(|d| d.insert_temp(egui::Id::new("start_height"), height));
+            ui.ctx()
+                .data_mut(|d| d.insert_temp(egui::Id::new("start_height"), height));
 
             // Who you are, and which version, along the bottom.
-            let foot = egui::Rect::from_min_max(egui::pos2(screen.left() + margin, screen.bottom() - 56.0), egui::pos2(screen.left() + held - margin, screen.bottom() - 16.0));
+            let foot = egui::Rect::from_min_max(
+                egui::pos2(screen.left() + margin, screen.bottom() - 56.0),
+                egui::pos2(screen.left() + held - margin, screen.bottom() - 16.0),
+            );
             let mut foot_ui = ui.new_child(egui::UiBuilder::new().max_rect(foot));
             foot_ui.horizontal(|ui| {
                 if !new_player {
-                    let mine = theme::color(presence::marker_color(chat.marker(&ledger.profile.id)));
+                    let mine =
+                        theme::color(presence::marker_color(chat.marker(&ledger.profile.id)));
                     theme::avatar(ui, &ledger.profile.name, mine, 28.0);
                     ui.label(egui::RichText::new(&ledger.profile.name).color(p.text));
                     ui.add_space(10.0);
                 }
-                ui.label(egui::RichText::new(concat!("v", env!("CARGO_PKG_VERSION"))).size(11.5).color(p.muted));
+                ui.label(
+                    egui::RichText::new(concat!("v", env!("CARGO_PKG_VERSION")))
+                        .size(11.5)
+                        .color(p.muted),
+                );
             });
         });
 

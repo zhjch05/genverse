@@ -157,7 +157,11 @@ packages, and whether the player is an admin)
 "#,
         );
         for tool in super::ops::tools() {
-            out.push_str(&format!("- {}: {}\n", tool["name"].as_str().unwrap_or_default(), tool["description"].as_str().unwrap_or_default()));
+            out.push_str(&format!(
+                "- {}: {}\n",
+                tool["name"].as_str().unwrap_or_default(),
+                tool["description"].as_str().unwrap_or_default()
+            ));
         }
         out.push_str(
             r#"One new object with no place named is a draft: answer with "build", and the player places it.
@@ -200,7 +204,13 @@ pub struct Turn<'a> {
 
 /// The user prompt: the world's game rules, the selected area (for terrain), recent
 /// conversation, the current draft (so "make it taller" works), and the new request.
-pub fn request(history: &[Turn], draft: Option<&BuildSpec>, area: Option<&str>, game: Option<&str>, message: &str) -> String {
+pub fn request(
+    history: &[Turn],
+    draft: Option<&BuildSpec>,
+    area: Option<&str>,
+    game: Option<&str>,
+    message: &str,
+) -> String {
     let mut out = String::new();
     if let Some(game) = game {
         out.push_str(game);
@@ -219,7 +229,9 @@ pub fn request(history: &[Turn], draft: Option<&BuildSpec>, area: Option<&str>, 
         out.push('\n');
     }
     if let Some(draft) = draft {
-        out.push_str("The current draft the player is looking at (edit it if they ask for changes):\n");
+        out.push_str(
+            "The current draft the player is looking at (edit it if they ask for changes):\n",
+        );
         out.push_str(&serde_json::to_string(draft).unwrap_or_default());
         out.push_str("\n\n");
     }

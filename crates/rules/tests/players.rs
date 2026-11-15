@@ -22,33 +22,59 @@ fn model(name: &str, size: [i64; 3]) -> ModelSpec {
             "shapes":[{{"kind":"box","color":"stone","from":[0,0,0],"to":[{},{},{}],"radius":null,"wobble":null}}]}}"##,
         size[0], size[1], size[2], size[0], size[1], size[2]
     );
-    ModelSpec { name: name.into(), build: serde_json::from_str(&json).unwrap() }
+    ModelSpec {
+        name: name.into(),
+        build: serde_json::from_str(&json).unwrap(),
+    }
 }
 
 fn game(name: &str, defs: Vec<DefSpec>, script: Option<&str>, models: Vec<ModelSpec>) -> GameSpec {
-    GameSpec { shaders: Default::default(),
-        remove: None, rename: None,
+    GameSpec {
+        shaders: Default::default(),
+        remove: None,
+        rename: None,
         name: name.into(),
         title: name.into(),
         defs,
-        scripts: script.map(|s| vec![ScriptSpec { name: "main.luau".into(), source: s.into() }]).unwrap_or_default(),
+        scripts: script
+            .map(|s| {
+                vec![ScriptSpec {
+                    name: "main.luau".into(),
+                    source: s.into(),
+                }]
+            })
+            .unwrap_or_default(),
         models,
     }
 }
 
 fn fixture(name: &str) -> DefSpec {
-    DefSpec { name: name.into(), kind: "fixture".into(), title: name.into(), ..Default::default() }
+    DefSpec {
+        name: name.into(),
+        kind: "fixture".into(),
+        title: name.into(),
+        ..Default::default()
+    }
 }
 
 /// A flat world run by `admin`, with `spec` installed everywhere.
 fn world(spec: &GameSpec) -> WorldLog {
-    let mut log = WorldLog { flat: true, ..WorldLog::new(7) };
+    let mut log = WorldLog {
+        flat: true,
+        ..WorldLog::new(7)
+    };
     log.admins = vec!["admin".into()];
     let package = spec.to_package(1);
     assert!(package.check().is_ok(), "{:?}", package.check());
     let reference = package.reference();
     log.add_package(package);
-    log.push(by("admin", 100), Action::InstallPackage { package: reference, scope: Scope::World });
+    log.push(
+        by("admin", 100),
+        Action::InstallPackage {
+            package: reference,
+            scope: Scope::World,
+        },
+    );
     log
 }
 
@@ -81,41 +107,132 @@ end
 
 #[test]
 fn stats_hud_and_panels() {
-    let spec = game("inn", vec![fixture("inn")], Some(INN), vec![model("keeper", [6, 12, 6])]);
+    let spec = game(
+        "inn",
+        vec![fixture("inn")],
+        Some(INN),
+        vec![model("keeper", [6, 12, 6])],
+    );
     let mut log = world(&spec);
-    let placed = log.push(by("ada", 101), Action::Intent { intent: Intent::Place { item: "inn:inn".into(), position: [0.0, 9.0, 0.0] } });
-    let keeper = EntityId { change: placed, n: 0 };
-    log.push(by("ada", 102), Action::Intent { intent: Intent::Interact { entity: keeper } });
+    let placed = log.push(
+        by("ada", 101),
+        Action::Intent {
+            intent: Intent::Place {
+                item: "inn:inn".into(),
+                position: [0.0, 9.0, 0.0],
+            },
+        },
+    );
+    let keeper = EntityId {
+        change: placed,
+        n: 0,
+    };
+    log.push(
+        by("ada", 102),
+        Action::Intent {
+            intent: Intent::Interact { entity: keeper },
+        },
+    );
     let state = replay(&log);
     assert!(state.problems.is_empty(), "{:?}", state.problems);
     let game = &state.logic.state;
-    assert_eq!(game.stat("ada", "inn:hp").map(|s| (s.value, s.max)), Some((3.0, Some(10.0))));
+    assert_eq!(
+        game.stat("ada", "inn:hp").map(|s| (s.value, s.max)),
+        Some((3.0, Some(10.0)))
+    );
     let panel = game.panel("ada").expect("the innkeeper talks");
-    assert_eq!((panel.spec.id.as_str(), panel.spec.body.buttons().len(), panel.spec.entity), ("inn", 2, Some(keeper)));
+    assert_eq!(
+        (
+            panel.spec.id.as_str(),
+            panel.spec.body.buttons().len(),
+            panel.spec.entity
+        ),
+        ("inn", 2, Some(keeper))
+    );
     // Everyone sees the quest; only Ada her HP.
     assert_eq!(game.hud("ada").count(), 3);
-    assert!(game.hud("ada").any(|(_, w)| matches!(w, Ui::Value { item: Some(item), .. } if item == "inn:key")));
-    assert!(matches!(game.hud("bo").collect::<Vec<_>>().as_slice(), [(_, Ui::Text { .. })]));
+    assert!(
+        game.hud("ada")
+            .any(|(_, w)| matches!(w, Ui::Value { item: Some(item), .. } if item == "inn:key"))
+    );
+    assert!(matches!(
+        game.hud("bo").collect::<Vec<_>>().as_slice(),
+        [(_, Ui::Text { .. })]
+    ));
     assert!(game.panel("bo").is_none());
 
     // A choice that isn't offered is refused; renting a room twice runs out of gold.
-    log.push(by("ada", 103), Action::Intent { intent: Intent::Choose { choice: Some("steal".into()) } });
-    log.push(by("ada", 104), Action::Intent { intent: Intent::Choose { choice: Some("room".into()) } });
+    log.push(
+        by("ada", 103),
+        Action::Intent {
+            intent: Intent::Choose {
+                choice: Some("steal".into()),
+            },
+        },
+    );
+    log.push(
+        by("ada", 104),
+        Action::Intent {
+            intent: Intent::Choose {
+                choice: Some("room".into()),
+            },
+        },
+    );
     let state = replay(&log);
-    assert!(state.problems.iter().any(|p| p.contains("isn't a choice")), "{:?}", state.problems);
+    assert!(
+        state.problems.iter().any(|p| p.contains("isn't a choice")),
+        "{:?}",
+        state.problems
+    );
     let game = &state.logic.state;
     assert_eq!(game.stat("ada", "inn:gold").map(|s| s.value), Some(7.0));
     assert_eq!(game.stat("ada", "inn:hp").map(|s| s.value), Some(10.0));
     assert!(game.panel("ada").is_none(), "closed after the choice");
-    log.push(by("ada", 105), Action::Intent { intent: Intent::Interact { entity: keeper } });
-    log.push(by("ada", 106), Action::Intent { intent: Intent::Choose { choice: Some("room".into()) } });
-    log.push(by("ada", 107), Action::Intent { intent: Intent::Interact { entity: keeper } });
-    log.push(by("ada", 108), Action::Intent { intent: Intent::Choose { choice: Some("room".into()) } });
+    log.push(
+        by("ada", 105),
+        Action::Intent {
+            intent: Intent::Interact { entity: keeper },
+        },
+    );
+    log.push(
+        by("ada", 106),
+        Action::Intent {
+            intent: Intent::Choose {
+                choice: Some("room".into()),
+            },
+        },
+    );
+    log.push(
+        by("ada", 107),
+        Action::Intent {
+            intent: Intent::Interact { entity: keeper },
+        },
+    );
+    log.push(
+        by("ada", 108),
+        Action::Intent {
+            intent: Intent::Choose {
+                choice: Some("room".into()),
+            },
+        },
+    );
     let state = replay(&log);
-    assert!(state.problems.iter().any(|p| p.contains("not enough gold")), "{:?}", state.problems);
-    assert_eq!(state.logic.state.stat("ada", "inn:gold").map(|s| s.value), Some(2.0));
+    assert!(
+        state.problems.iter().any(|p| p.contains("not enough gold")),
+        "{:?}",
+        state.problems
+    );
+    assert_eq!(
+        state.logic.state.stat("ada", "inn:gold").map(|s| s.value),
+        Some(2.0)
+    );
     // The player can always close a panel.
-    log.push(by("ada", 109), Action::Intent { intent: Intent::Choose { choice: None } });
+    log.push(
+        by("ada", 109),
+        Action::Intent {
+            intent: Intent::Choose { choice: None },
+        },
+    );
     assert!(replay(&log).logic.state.panel("ada").is_none());
 }
 
@@ -142,16 +259,35 @@ end
 
 #[test]
 fn games_build_with_the_installers_budget() {
-    let spec = game("mason", vec![fixture("mason")], Some(MASON), vec![model("wall", [16, 16, 4]), model("post", [4, 8, 4])]);
+    let spec = game(
+        "mason",
+        vec![fixture("mason")],
+        Some(MASON),
+        vec![model("wall", [16, 16, 4]), model("post", [4, 8, 4])],
+    );
     let mut log = world(&spec);
-    let placed = log.push(by("ada", 101), Action::Intent { intent: Intent::Place { item: "mason:mason".into(), position: [20.0, 9.0, 20.0] } });
-    let mason = EntityId { change: placed, n: 0 };
+    let placed = log.push(
+        by("ada", 101),
+        Action::Intent {
+            intent: Intent::Place {
+                item: "mason:mason".into(),
+                position: [20.0, 9.0, 20.0],
+            },
+        },
+    );
+    let mason = EntityId {
+        change: placed,
+        n: 0,
+    };
     let state = replay(&log);
     assert!(state.problems.is_empty(), "{:?}", state.problems);
     // A solid build, charged to the admin who installed the game, not to Ada.
     let (id, build) = state.builds.iter().next().expect("the mason built a wall");
     assert!(*id >= SCRIPT_BUILDS);
-    assert_eq!((build.name.as_str(), build.provider.as_str()), ("wall", "mason"));
+    assert_eq!(
+        (build.name.as_str(), build.provider.as_str()),
+        ("wall", "mason")
+    );
     assert_eq!(state.footprints[id].owner, "admin");
     assert!(!state.edits.is_empty(), "the pit was dug");
     assert_eq!(state.logic.state.build_owner(*id), Some("mason"));
@@ -159,40 +295,90 @@ fn games_build_with_the_installers_budget() {
     // Snapshots keep games' builds: replay from one doesn't run the script again.
     let snapshot = Snapshot::take(&log, &state);
     let again = replay_from(&log, Some(&snapshot));
-    assert_eq!(again.builds.keys().collect::<Vec<_>>(), state.builds.keys().collect::<Vec<_>>());
+    assert_eq!(
+        again.builds.keys().collect::<Vec<_>>(),
+        state.builds.keys().collect::<Vec<_>>()
+    );
     assert_eq!(again.footprints[id].owner, "admin");
 
     // It takes its wall down.
-    log.push(by("ada", 102), Action::Intent { intent: Intent::Interact { entity: mason } });
+    log.push(
+        by("ada", 102),
+        Action::Intent {
+            intent: Intent::Interact { entity: mason },
+        },
+    );
     assert!(replay(&log).builds.is_empty());
     // Two more walls with a budget of one: neither goes up, and nothing else changes.
     let mut tight = log.clone();
     tight.rules.budgets.player_builds = 1;
-    tight.push(by("ada", 103), Action::Intent { intent: Intent::Interact { entity: mason } });
+    tight.push(
+        by("ada", 103),
+        Action::Intent {
+            intent: Intent::Interact { entity: mason },
+        },
+    );
     let state = replay(&tight);
-    assert!(state.problems.iter().any(|p| p.contains("mason:")), "{:?}", state.problems);
+    assert!(
+        state.problems.iter().any(|p| p.contains("mason:")),
+        "{:?}",
+        state.problems
+    );
     assert!(state.builds.is_empty());
-    log.push(by("ada", 103), Action::Intent { intent: Intent::Interact { entity: mason } });
+    log.push(
+        by("ada", 103),
+        Action::Intent {
+            intent: Intent::Interact { entity: mason },
+        },
+    );
     assert_eq!(replay(&log).builds.len(), 2);
 }
 
 #[test]
 fn trials_show_panels_stats_and_builds() {
-    let spec = game("inn", vec![fixture("inn")], Some(INN), vec![model("keeper", [6, 12, 6])]);
-    let steps: Vec<String> = ["place inn", "interact", "choose room"].iter().map(|s| s.to_string()).collect();
+    let spec = game(
+        "inn",
+        vec![fixture("inn")],
+        Some(INN),
+        vec![model("keeper", [6, 12, 6])],
+    );
+    let steps: Vec<String> = ["place inn", "interact", "choose room"]
+        .iter()
+        .map(|s| s.to_string())
+        .collect();
     let report = trial::play(&spec.to_package(1), &steps);
     println!("{report}");
     assert!(report.contains("3. choose room: ok"), "{report}");
     assert!(report.contains("inn:gold = 7"), "{report}");
-    let steps: Vec<String> = ["place inn", "interact innkeeper", "choose buy:0"].iter().map(|s| s.to_string()).collect();
+    let steps: Vec<String> = ["place inn", "interact innkeeper", "choose buy:0"]
+        .iter()
+        .map(|s| s.to_string())
+        .collect();
     let report = trial::play(&spec.to_package(1), &steps);
-    assert!(report.contains("Panel open: \"The innkeeper\" (inn)"), "{report}");
+    assert!(
+        report.contains("Panel open: \"The innkeeper\" (inn)"),
+        "{report}"
+    );
     // Says what was pressed, and what the panel does offer.
-    assert!(report.contains("2. interact innkeeper (Innkeeper, "), "{report}");
-    assert!(report.contains("\"buy:0\" isn't a choice in \"The innkeeper\" (it offers room, bye)"), "{report}");
-    let spec = game("mason", vec![fixture("mason")], Some(MASON), vec![model("wall", [16, 16, 4]), model("post", [4, 8, 4])]);
+    assert!(
+        report.contains("2. interact innkeeper (Innkeeper, "),
+        "{report}"
+    );
+    assert!(
+        report.contains("\"buy:0\" isn't a choice in \"The innkeeper\" (it offers room, bye)"),
+        "{report}"
+    );
+    let spec = game(
+        "mason",
+        vec![fixture("mason")],
+        Some(MASON),
+        vec![model("wall", [16, 16, 4]), model("post", [4, 8, 4])],
+    );
     let report = trial::play(&spec.to_package(1), &["place mason".to_string()]);
-    assert!(report.contains("built wall") && report.contains("reshaped 16x16 columns"), "{report}");
+    assert!(
+        report.contains("built wall") && report.contains("reshaped 16x16 columns"),
+        "{report}"
+    );
 }
 
 /// `take` reads like `give`: with the player first, as long as it's the player acting.
@@ -209,14 +395,30 @@ function on_interact(ev)
   if ev.pos.x > 100 then take("someone else", "coin") end
 end
 "#;
-    let spec = game("inn", vec![fixture("inn")], Some(script), vec![model("keeper", [6, 12, 6])]);
-    let steps: Vec<String> = ["place inn", "interact"].iter().map(|s| s.to_string()).collect();
+    let spec = game(
+        "inn",
+        vec![fixture("inn")],
+        Some(script),
+        vec![model("keeper", [6, 12, 6])],
+    );
+    let steps: Vec<String> = ["place inn", "interact"]
+        .iter()
+        .map(|s| s.to_string())
+        .collect();
     let report = trial::play(&spec.to_package(1), &steps);
     assert!(report.contains("inn:coin ×2"), "{report}");
     let script = script.replace("ev.pos.x > 100", "true");
-    let spec = game("inn", vec![fixture("inn")], Some(&script), vec![model("keeper", [6, 12, 6])]);
+    let spec = game(
+        "inn",
+        vec![fixture("inn")],
+        Some(&script),
+        vec![model("keeper", [6, 12, 6])],
+    );
     let report = trial::play(&spec.to_package(1), &steps);
-    assert!(report.contains("take: only from the player acting"), "{report}");
+    assert!(
+        report.contains("take: only from the player acting"),
+        "{report}"
+    );
     assert!(!report.contains("stack traceback"), "{report}");
 }
 
@@ -252,16 +454,48 @@ end
 
 #[test]
 fn panels_are_ui_trees() {
-    let defs = ["coin", "torch", "rope"].map(|n| DefSpec { name: n.into(), kind: "item".into(), title: n.into(), ..Default::default() }).to_vec();
-    let spec = game("market", defs, Some(MARKET), vec![model("keeper", [6, 12, 6])]);
-    let steps: Vec<String> = ["interact trader", "choose buy:torch", "choose buy:rope", "choose buy:torch"].iter().map(|s| s.to_string()).collect();
+    let defs = ["coin", "torch", "rope"]
+        .map(|n| DefSpec {
+            name: n.into(),
+            kind: "item".into(),
+            title: n.into(),
+            ..Default::default()
+        })
+        .to_vec();
+    let spec = game(
+        "market",
+        defs,
+        Some(MARKET),
+        vec![model("keeper", [6, 12, 6])],
+    );
+    let steps: Vec<String> = [
+        "interact trader",
+        "choose buy:torch",
+        "choose buy:rope",
+        "choose buy:torch",
+    ]
+    .iter()
+    .map(|s| s.to_string())
+    .collect();
     let report = trial::play(&spec.to_package(1), &steps);
     println!("{report}");
-    assert!(report.contains("2. choose buy:torch") && report.contains("3. choose buy:rope: ok"), "{report}");
+    assert!(
+        report.contains("2. choose buy:torch") && report.contains("3. choose buy:rope: ok"),
+        "{report}"
+    );
     // 5 coins: a torch (2) and a rope (3), then nothing left for another torch.
-    assert!(report.contains("4. choose buy:torch") && report.contains("REFUSED"), "{report}");
-    assert!(report.contains("market:torch ×1") && report.contains("market:rope ×1"), "{report}");
-    assert!(report.contains("Panel open: \"Trader\" (market): Market You have (market:coin)"), "{report}");
+    assert!(
+        report.contains("4. choose buy:torch") && report.contains("REFUSED"),
+        "{report}"
+    );
+    assert!(
+        report.contains("market:torch ×1") && report.contains("market:rope ×1"),
+        "{report}"
+    );
+    assert!(
+        report.contains("Panel open: \"Trader\" (market): Market You have (market:coin)"),
+        "{report}"
+    );
     assert!(report.contains("[buy:torch: Buy]"), "{report}");
 }
 
@@ -287,19 +521,43 @@ end
 
 #[test]
 fn games_make_portals_and_send_players_to_other_worlds() {
-    let spec = game("gate", vec![fixture("gate")], Some(GATE), vec![model("arch", [16, 20, 4]), model("post", [4, 8, 4])]);
+    let spec = game(
+        "gate",
+        vec![fixture("gate")],
+        Some(GATE),
+        vec![model("arch", [16, 20, 4]), model("post", [4, 8, 4])],
+    );
     let mut log = world(&spec);
-    let placed = log.push(by("ada", 101), Action::Intent { intent: Intent::Place { item: "gate:gate".into(), position: [20.0, 9.0, 20.0] } });
-    let keeper = EntityId { change: placed, n: 0 };
+    let placed = log.push(
+        by("ada", 101),
+        Action::Intent {
+            intent: Intent::Place {
+                item: "gate:gate".into(),
+                position: [20.0, 9.0, 20.0],
+            },
+        },
+    );
+    let keeper = EntityId {
+        change: placed,
+        n: 0,
+    };
     let state = replay(&log);
     assert!(state.problems.is_empty(), "{:?}", state.problems);
     // The build it placed is a portal, linked in the same action.
     let (arch, _) = state.builds.iter().next().expect("the gate built an arch");
-    assert_eq!(state.portals.get(arch).map(|to| to.label()), Some("dungeon".to_string()));
+    assert_eq!(
+        state.portals.get(arch).map(|to| to.label()),
+        Some("dungeon".to_string())
+    );
     assert!(state.logic.state.travel("ada").is_none());
 
     // E on the keeper sends that player, and only them, to the other world.
-    let sent = log.push(by("ada", 102), Action::Intent { intent: Intent::Interact { entity: keeper } });
+    let sent = log.push(
+        by("ada", 102),
+        Action::Intent {
+            intent: Intent::Interact { entity: keeper },
+        },
+    );
     let state = replay(&log);
     assert!(state.problems.is_empty(), "{:?}", state.problems);
     let travel = state.logic.state.travel("ada").expect("ada was sent");
@@ -307,14 +565,31 @@ fn games_make_portals_and_send_players_to_other_worlds() {
     assert!(state.logic.state.travel("bob").is_none());
 
     // The game unlinks its own portal; the build stays.
-    log.push(by("ada", 103), Action::Intent { intent: Intent::Hit { entity: keeper } });
+    log.push(
+        by("ada", 103),
+        Action::Intent {
+            intent: Intent::Hit { entity: keeper },
+        },
+    );
     let state = replay(&log);
     assert!(state.problems.is_empty(), "{:?}", state.problems);
     assert!(state.portals.is_empty() && state.builds.len() == 1);
 
     // A name that isn't a world's is refused, and the last trip stands.
-    log.push(by("bob", 104), Action::Intent { intent: Intent::Hit { entity: keeper } });
+    log.push(
+        by("bob", 104),
+        Action::Intent {
+            intent: Intent::Hit { entity: keeper },
+        },
+    );
     let state = replay(&log);
-    assert!(state.problems.iter().any(|p| p.contains("travel takes one player")), "{:?}", state.problems);
+    assert!(
+        state
+            .problems
+            .iter()
+            .any(|p| p.contains("travel takes one player")),
+        "{:?}",
+        state.problems
+    );
     assert!(state.logic.state.travel("bob").is_none());
 }

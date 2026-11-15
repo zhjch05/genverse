@@ -19,7 +19,10 @@ fn by(player: &str, at: u64) -> Provenance {
 fn model(name: &str) -> ModelSpec {
     let build = r##"{"name":"Piece","size":[4,8,4],"palette":[{"name":"skin","hex":"#e0b090","material":"matte"}],
         "shapes":[{"kind":"box","color":"skin","from":[0,0,0],"to":[4,8,4],"radius":null,"wobble":null}]}"##;
-    ModelSpec { name: name.into(), build: serde_json::from_str(build).unwrap() }
+    ModelSpec {
+        name: name.into(),
+        build: serde_json::from_str(build).unwrap(),
+    }
 }
 
 /// Where pieces stand in a flat world.
@@ -27,13 +30,22 @@ const Y: f32 = (FLAT_GROUND + 1) as f32 * VOXEL_SIZE;
 
 /// A flat world with `game` installed everywhere.
 fn world(game: &GameSpec) -> WorldLog {
-    let mut log = WorldLog { flat: true, ..WorldLog::new(7) };
+    let mut log = WorldLog {
+        flat: true,
+        ..WorldLog::new(7)
+    };
     log.admins = vec!["admin".into()];
     let package = game.to_package(1);
     assert!(package.check().is_ok(), "{:?}", package.check());
     let reference = package.reference();
     log.add_package(package);
-    log.push(by("admin", 100), Action::InstallPackage { package: reference, scope: Scope::World });
+    log.push(
+        by("admin", 100),
+        Action::InstallPackage {
+            package: reference,
+            scope: Scope::World,
+        },
+    );
     log
 }
 
@@ -47,7 +59,11 @@ fn tick(clock: &mut Clockwork, log: &mut WorldLog, now: u64, players: &[[f32; 3]
         fn heights(&self, min: [i32; 2], step: i32, count: [i32; 2]) -> Option<Vec<Option<i32>>> {
             self.state.heights(min, step, count)
         }
-        fn solids(&self, lo: [f32; 2], hi: [f32; 2]) -> Vec<genverse_rules::logic::solid::Solid<'_>> {
+        fn solids(
+            &self,
+            lo: [f32; 2],
+            hi: [f32; 2],
+        ) -> Vec<genverse_rules::logic::solid::Solid<'_>> {
             self.state.solids(lo, hi)
         }
     }
@@ -59,15 +75,32 @@ fn tick(clock: &mut Clockwork, log: &mut WorldLog, now: u64, players: &[[f32; 3]
             self.log.changes.last().unwrap().id + 1
         }
         fn record(&mut self, package: &str, now: u64, effects: Vec<Effect>) -> Result<(), String> {
-            let id = self.log.push(by(WORLD, now), Action::Timers { package: package.into(), until: now, effects });
-            let change = self.log.changes.iter().find(|c| c.id == id).unwrap().clone();
+            let id = self.log.push(
+                by(WORLD, now),
+                Action::Timers {
+                    package: package.into(),
+                    until: now,
+                    effects,
+                },
+            );
+            let change = self
+                .log
+                .changes
+                .iter()
+                .find(|c| c.id == id)
+                .unwrap()
+                .clone();
             self.state.apply(&change, true).map(|_| ())
         }
     }
     let seed = log.seed;
     let state = replay(log);
     let mut host = Host { log, state };
-    let players: Vec<(String, [f32; 3])> = players.iter().enumerate().map(|(i, p)| (format!("p{i}"), *p)).collect();
+    let players: Vec<(String, [f32; 3])> = players
+        .iter()
+        .enumerate()
+        .map(|(i, p)| (format!("p{i}"), *p))
+        .collect();
     let run = clock.run(&mut host, now, seed, &LogicRules::default(), &players);
     run.errors
 }
@@ -87,18 +120,44 @@ end
 
 #[test]
 fn a_walk_is_one_change_and_ends_in_on_arrive() {
-    let game = GameSpec { shaders: Default::default(),
-        remove: None, rename: None,
+    let game = GameSpec {
+        shaders: Default::default(),
+        remove: None,
+        rename: None,
         name: "town".into(),
         title: "Town".into(),
-        defs: vec![DefSpec { name: "walker".into(), kind: "fixture".into(), title: "Walker".into(), ..Default::default() }],
-        scripts: vec![ScriptSpec { name: "main.luau".into(), source: WALKER.into() }],
+        defs: vec![DefSpec {
+            name: "walker".into(),
+            kind: "fixture".into(),
+            title: "Walker".into(),
+            ..Default::default()
+        }],
+        scripts: vec![ScriptSpec {
+            name: "main.luau".into(),
+            source: WALKER.into(),
+        }],
         models: vec![model("walker")],
     };
     let mut log = world(&game);
-    let placed = log.push(by("ada", 100), Action::Intent { intent: Intent::Place { item: "town:walker".into(), position: [20.0, Y, 20.0] } });
-    let id = EntityId { change: placed, n: 0 };
-    log.push(by("ada", 101), Action::Intent { intent: Intent::Interact { entity: id } });
+    let placed = log.push(
+        by("ada", 100),
+        Action::Intent {
+            intent: Intent::Place {
+                item: "town:walker".into(),
+                position: [20.0, Y, 20.0],
+            },
+        },
+    );
+    let id = EntityId {
+        change: placed,
+        n: 0,
+    };
+    log.push(
+        by("ada", 101),
+        Action::Intent {
+            intent: Intent::Interact { entity: id },
+        },
+    );
     let here = [[20.0, Y, 20.0]];
     let mut clock = Clockwork::new(100);
 
@@ -108,7 +167,11 @@ fn a_walk_is_one_change_and_ends_in_on_arrive() {
     assert_eq!(log.changes.len(), before + 1);
     let walker = replay(&log).logic.state.get(id).unwrap().clone();
     assert_eq!(walker.components["walk"]["start"], 102);
-    assert_eq!(walker.position, [20.0, Y, 20.0], "it stands where it set off until it arrives");
+    assert_eq!(
+        walker.position,
+        [20.0, Y, 20.0],
+        "it stands where it set off until it arrives"
+    );
     // Players see it on its way.
     assert_eq!(position_at(&walker, 103.5), [23.0, Y, 20.0]);
     // Nothing more until it gets there.
@@ -147,23 +210,60 @@ end
 
 #[test]
 fn games_change_how_players_move_and_carry_them() {
-    let game = GameSpec { shaders: Default::default(),
-        remove: None, rename: None,
+    let game = GameSpec {
+        shaders: Default::default(),
+        remove: None,
+        rename: None,
         name: "tower".into(),
         title: "Tower".into(),
-        defs: vec![DefSpec { name: "lift".into(), kind: "fixture".into(), title: "Lift".into(), ..Default::default() }],
-        scripts: vec![ScriptSpec { name: "main.luau".into(), source: LIFT.into() }],
+        defs: vec![DefSpec {
+            name: "lift".into(),
+            kind: "fixture".into(),
+            title: "Lift".into(),
+            ..Default::default()
+        }],
+        scripts: vec![ScriptSpec {
+            name: "main.luau".into(),
+            source: LIFT.into(),
+        }],
         models: vec![model("lift")],
     };
     let mut log = world(&game);
-    let placed = log.push(by("ada", 100), Action::Intent { intent: Intent::Place { item: "tower:lift".into(), position: [20.0, Y, 20.0] } });
-    log.push(by("ada", 101), Action::Intent { intent: Intent::Interact { entity: EntityId { change: placed, n: 0 } } });
+    let placed = log.push(
+        by("ada", 100),
+        Action::Intent {
+            intent: Intent::Place {
+                item: "tower:lift".into(),
+                position: [20.0, Y, 20.0],
+            },
+        },
+    );
+    log.push(
+        by("ada", 101),
+        Action::Intent {
+            intent: Intent::Interact {
+                entity: EntityId {
+                    change: placed,
+                    n: 0,
+                },
+            },
+        },
+    );
     let state = replay(&log);
     assert!(state.problems.is_empty(), "{:?}", state.problems);
     let body = state.logic.state.body("ada");
     assert_eq!((body.speed, body.jump, body.air_jumps), (2.0, 1.0, 1));
-    assert_eq!(state.logic.state.launch("ada").unwrap().velocity, [0.0, 15.0, 0.0]);
-    let seat = state.logic.state.entities().find(|(_, e)| e.components.contains_key("pawn")).unwrap().0;
+    assert_eq!(
+        state.logic.state.launch("ada").unwrap().velocity,
+        [0.0, 15.0, 0.0]
+    );
+    let seat = state
+        .logic
+        .state
+        .entities()
+        .find(|(_, e)| e.components.contains_key("pawn"))
+        .unwrap()
+        .0;
 
     // It flies straight up, over nothing a walk could stand on, carrying her.
     let here = [[20.0, Y, 20.0]];
@@ -174,8 +274,15 @@ fn games_change_how_players_move_and_carry_them() {
     let said = tick(&mut clock, &mut log, 107, &here);
     let state = replay(&log);
     assert!(state.problems.is_empty(), "{:?}", state.problems);
-    assert!(state.logic.state.get(seat).is_none(), "the ride is over: {said:?}");
-    assert_eq!(state.logic.state.body("ada"), Default::default(), "and she moves as usual again");
+    assert!(
+        state.logic.state.get(seat).is_none(),
+        "the ride is over: {said:?}"
+    );
+    assert_eq!(
+        state.logic.state.body("ada"),
+        Default::default(),
+        "and she moves as usual again"
+    );
 }
 
 /// A world that is the game: it sets itself up on install, greets players, a wolf
@@ -212,23 +319,37 @@ end
 
 #[test]
 fn the_world_is_the_game() {
-    let game = GameSpec { shaders: Default::default(),
-        remove: None, rename: None,
+    let game = GameSpec {
+        shaders: Default::default(),
+        remove: None,
+        rename: None,
         name: "night".into(),
         title: "Night".into(),
         defs: Vec::new(),
-        scripts: vec![ScriptSpec { name: "main.luau".into(), source: NIGHT.into() }],
+        scripts: vec![ScriptSpec {
+            name: "main.luau".into(),
+            source: NIGHT.into(),
+        }],
         models: vec![model("wolf")],
     };
     // In the trial: set up on install, the tester joins, walks into the wolf's region,
     // gets chased, bitten until sent back to camp; then hits the wolf.
-    let steps: Vec<String> = ["go 15 0", "wait 12", "go 3 0", "hit wolf"].iter().map(|s| s.to_string()).collect();
+    let steps: Vec<String> = ["go 15 0", "wait 12", "go 3 0", "hit wolf"]
+        .iter()
+        .map(|s| s.to_string())
+        .collect();
     let report = genverse_rules::logic::trial::play(&game.to_package(1), &steps);
     println!("{report}");
     assert!(report.contains("on_start:"), "{report}");
-    assert!(report.contains("joined") && report.contains("\"Survive the night.\""), "{report}");
+    assert!(
+        report.contains("joined") && report.contains("\"Survive the night.\""),
+        "{report}"
+    );
     assert!(report.contains("entered"), "{report}");
-    assert!(report.contains("\"The wolf got you. Back to camp.\""), "{report}");
+    assert!(
+        report.contains("\"The wolf got you. Back to camp.\""),
+        "{report}"
+    );
     assert!(report.contains("\"You drove the wolf off!\""), "{report}");
 
     // Through the log, as a server runs it: players can't build while the game runs.
@@ -236,9 +357,15 @@ fn the_world_is_the_game() {
     let mut clock = Clockwork::new(100);
     assert!(tick(&mut clock, &mut log, 101, &[[0.0, Y, 0.0]]).is_empty());
     let state = replay(&log);
-    assert_eq!(state.logic.state.stat("p0", "night:hp").map(|s| s.value), Some(10.0));
+    assert_eq!(
+        state.logic.state.stat("p0", "night:hp").map(|s| s.value),
+        Some(10.0)
+    );
     assert!(!state.logic.building_allowed());
-    assert_eq!(state.logic.state.teleport("*").map(|t| t.position), Some([0.0, 8.75, 0.0]));
+    assert_eq!(
+        state.logic.state.teleport("*").map(|t| t.position),
+        Some([0.0, 8.75, 0.0])
+    );
     let lamp = serde_json::from_str(
         r##"{"name":"Lamp","size":[3,4,3],"palette":[{"name":"iron","hex":"#3d4248","material":"metal"}],
             "shapes":[{"kind":"box","color":"iron","from":[0,0,0],"to":[3,4,3],"radius":null,"wobble":null}]}"##,
@@ -254,10 +381,22 @@ fn the_world_is_the_game() {
         yaw: 0.0,
     };
     log.push(by("bo", 102), Action::PlaceBuild(build));
-    assert!(replay(&log).problems.last().unwrap().contains("only admins build"));
+    assert!(
+        replay(&log)
+            .problems
+            .last()
+            .unwrap()
+            .contains("only admins build")
+    );
     // Walking into the wolf's region sets it running at them.
     tick(&mut clock, &mut log, 103, &[[14.0, Y, 0.0]]);
-    let wolf = replay(&log).logic.state.entities().find(|(_, e)| e.components.contains_key("night:wolf")).map(|(_, e)| e.clone()).unwrap();
+    let wolf = replay(&log)
+        .logic
+        .state
+        .entities()
+        .find(|(_, e)| e.components.contains_key("night:wolf"))
+        .map(|(_, e)| e.clone())
+        .unwrap();
     assert_eq!(wolf.components["chase"]["player"], "p0");
 }
 
@@ -297,40 +436,73 @@ end
 
 #[test]
 fn routines_wandering_and_spawners_are_lua() {
-    let game = GameSpec { shaders: Default::default(),
+    let game = GameSpec {
+        shaders: Default::default(),
         remove: None,
         rename: None,
         name: "vale".into(),
         title: "Vale".into(),
         defs: Vec::new(),
-        scripts: vec![ScriptSpec { name: "village.luau".into(), source: VILLAGE.into() }],
+        scripts: vec![ScriptSpec {
+            name: "village.luau".into(),
+            source: VILLAGE.into(),
+        }],
         models: vec![model("slime"), model("baker")],
     };
     // Day 10 begins at 12000 (days are 1200 s): installed then.
     let start = 12_000;
-    let mut log = WorldLog { flat: true, ..WorldLog::new(7) };
+    let mut log = WorldLog {
+        flat: true,
+        ..WorldLog::new(7)
+    };
     log.admins = vec!["admin".into()];
     let package = game.to_package(1);
     assert!(package.check().is_ok(), "{:?}", package.check());
     let reference = package.reference();
     log.add_package(package);
-    log.push(by("admin", start), Action::InstallPackage { package: reference, scope: Scope::World });
+    log.push(
+        by("admin", start),
+        Action::InstallPackage {
+            package: reference,
+            scope: Scope::World,
+        },
+    );
     let mut clock = Clockwork::new(start);
     let near = [[20.0, Y, 0.0]];
-    let slimes = |log: &WorldLog| replay(log).logic.state.entities().filter(|(_, e)| e.components.contains_key("vale:slime")).count();
+    let slimes = |log: &WorldLog| {
+        replay(log)
+            .logic
+            .state
+            .entities()
+            .filter(|(_, e)| e.components.contains_key("vale:slime"))
+            .count()
+    };
     for t in (start + 1..start + 120).step_by(5) {
         let errors = tick(&mut clock, &mut log, t, &near);
         assert!(errors.is_empty(), "{errors:?}");
     }
     assert_eq!(slimes(&log), 2);
-    assert!(replay(&log).logic.state.entities().any(|(_, e)| e.components.contains_key("vale:slime") && e.components.contains_key("walk")));
+    assert!(
+        replay(&log)
+            .logic
+            .state
+            .entities()
+            .any(|(_, e)| e.components.contains_key("vale:slime")
+                && e.components.contains_key("walk"))
+    );
     // At noon the baker walks to her stall.
     for t in (start + 120..start + 700).step_by(10) {
         tick(&mut clock, &mut log, t, &near);
     }
     let state = replay(&log);
     assert!(state.problems.is_empty(), "{:?}", state.problems);
-    let baker = state.logic.state.entities().find(|(_, e)| e.components.contains_key("vale:baker")).map(|(_, e)| e.clone()).unwrap();
+    let baker = state
+        .logic
+        .state
+        .entities()
+        .find(|(_, e)| e.components.contains_key("vale:baker"))
+        .map(|(_, e)| e.clone())
+        .unwrap();
     assert_eq!(baker.position, [10.0, Y, 0.0]);
 }
 
@@ -351,43 +523,98 @@ fn walks_go_around_solid_pieces() {
     // 25 cm thick, 2 m tall, 6 m long across the way.
     fence.build.size = vec![2, 16, 48];
     fence.build.shapes[0].to = vec![2.0, 16.0, 48.0];
-    let game = GameSpec { shaders: Default::default(),
-        remove: None, rename: None,
+    let game = GameSpec {
+        shaders: Default::default(),
+        remove: None,
+        rename: None,
         name: "yard".into(),
         title: "Yard".into(),
-        defs: vec![DefSpec { name: "walker".into(), kind: "fixture".into(), title: "Walker".into(), ..Default::default() }],
-        scripts: vec![ScriptSpec { name: "main.luau".into(), source: FENCED.into() }],
+        defs: vec![DefSpec {
+            name: "walker".into(),
+            kind: "fixture".into(),
+            title: "Walker".into(),
+            ..Default::default()
+        }],
+        scripts: vec![ScriptSpec {
+            name: "main.luau".into(),
+            source: FENCED.into(),
+        }],
         models: vec![model("walker"), fence],
     };
     let mut log = world(&game);
-    let placed = log.push(by("ada", 100), Action::Intent { intent: Intent::Place { item: "yard:walker".into(), position: [20.0, Y, 20.0] } });
-    let walker = EntityId { change: placed, n: 1 };
-    log.push(by("ada", 101), Action::Intent { intent: Intent::Interact { entity: walker } });
+    let placed = log.push(
+        by("ada", 100),
+        Action::Intent {
+            intent: Intent::Place {
+                item: "yard:walker".into(),
+                position: [20.0, Y, 20.0],
+            },
+        },
+    );
+    let walker = EntityId {
+        change: placed,
+        n: 1,
+    };
+    log.push(
+        by("ada", 101),
+        Action::Intent {
+            intent: Intent::Interact { entity: walker },
+        },
+    );
     let mut clock = Clockwork::new(100);
     assert!(tick(&mut clock, &mut log, 102, &[[20.0, Y, 20.0]]).is_empty());
     let state = replay(&log);
-    let path = state.logic.state.get(walker).unwrap().components["walk"]["path"].as_array().unwrap().clone();
+    let path = state.logic.state.get(walker).unwrap().components["walk"]["path"]
+        .as_array()
+        .unwrap()
+        .clone();
     let z = |p: &serde_json::Value| p[2].as_f64().unwrap() as f32;
-    assert!(path.iter().any(|p| (z(p) - 20.0).abs() >= 3.0), "around the fence's end: {path:?}");
+    assert!(
+        path.iter().any(|p| (z(p) - 20.0).abs() >= 3.0),
+        "around the fence's end: {path:?}"
+    );
 }
 
 #[test]
 fn agents_query_the_world_without_changing_it() {
-    let game = GameSpec { shaders: Default::default(),
-        remove: None, rename: None,
+    let game = GameSpec {
+        shaders: Default::default(),
+        remove: None,
+        rename: None,
         name: "town".into(),
         title: "Town".into(),
-        defs: vec![DefSpec { name: "walker".into(), kind: "fixture".into(), title: "Walker".into(), ..Default::default() }],
-        scripts: vec![ScriptSpec { name: "main.luau".into(), source: WALKER.into() }],
+        defs: vec![DefSpec {
+            name: "walker".into(),
+            kind: "fixture".into(),
+            title: "Walker".into(),
+            ..Default::default()
+        }],
+        scripts: vec![ScriptSpec {
+            name: "main.luau".into(),
+            source: WALKER.into(),
+        }],
         models: vec![model("walker")],
     };
     let mut log = world(&game);
     for x in [20.0, 30.0, 90.0] {
-        log.push(by("ada", 100), Action::Intent { intent: Intent::Place { item: "town:walker".into(), position: [x, Y, 20.0] } });
+        log.push(
+            by("ada", 100),
+            Action::Intent {
+                intent: Intent::Place {
+                    item: "town:walker".into(),
+                    position: [x, Y, 20.0],
+                },
+            },
+        );
     }
     let state = replay(&log);
     let rules = LogicRules::default();
-    let ask = |code: &str| state.logic.query("town", "ada", code, 200, &rules, None).unwrap();
+    let ask = |code: &str| {
+        state
+            .logic
+            .query("town", "ada", code, 200, &rules, None)
+            .unwrap()
+    };
     // The package's own names, and what's near: nearest first, with how far.
     assert_eq!(ask("return #find('walker')").0, 3);
     let near = ask("local n = near({x = 21, y = 9, z = 20}, 15, 'walker') return {#n, n[1].distance < n[2].distance}").0;
@@ -396,51 +623,123 @@ fn agents_query_the_world_without_changing_it() {
     let (_, changes) = ask("despawn(find('walker')[1].id) return nil");
     assert_eq!(changes, 1);
     assert_eq!(state.logic.state.len(), 3);
-    assert!(state.logic.query("town", "ada", "return near({x = 0, y = 0, z = 0}, 500)", 200, &rules, None).unwrap_err().contains("0-128"));
+    assert!(
+        state
+            .logic
+            .query(
+                "town",
+                "ada",
+                "return near({x = 0, y = 0, z = 0}, 500)",
+                200,
+                &rules,
+                None
+            )
+            .unwrap_err()
+            .contains("0-128")
+    );
 }
 
 #[test]
 fn packages_tell_each_other_and_keep_values() {
-    let pkg = |name: &str, source: &str| GameSpec { shaders: Default::default(),
-        remove: None, rename: None,
+    let pkg = |name: &str, source: &str| GameSpec {
+        shaders: Default::default(),
+        remove: None,
+        rename: None,
         name: name.into(),
         title: name.into(),
-        defs: vec![DefSpec { name: "bell".into(), kind: "fixture".into(), title: "Bell".into(), ..Default::default() }],
-        scripts: vec![ScriptSpec { name: "main.luau".into(), source: source.into() }],
+        defs: vec![DefSpec {
+            name: "bell".into(),
+            kind: "fixture".into(),
+            title: "Bell".into(),
+            ..Default::default()
+        }],
+        scripts: vec![ScriptSpec {
+            name: "main.luau".into(),
+            source: source.into(),
+        }],
         models: vec![model("bell")],
     };
-    let bells = pkg("bells", r#"
+    let bells = pkg(
+        "bells",
+        r#"
         function on_place(ev) spawn(ev.pos, { look = { model = "bell" }, label = "Bell" }) end
         function on_interact(ev)
           remember("rings", (recall("rings") or 0) + 1)
           emit("rang", { times = recall("rings") })
         end
-    "#);
-    let town = pkg("town", r#"
+    "#,
+    );
+    let town = pkg(
+        "town",
+        r#"
         function on_signal(ev) remember("heard", ev.from .. ":" .. ev.name .. ":" .. ev.data.times) end
-    "#);
+    "#,
+    );
     let mut log = world(&bells);
     let package = town.to_package(1);
     let reference = package.reference();
     log.add_package(package);
-    log.push(by("admin", 100), Action::InstallPackage { package: reference, scope: Scope::World });
-    let placed = log.push(by("ada", 101), Action::Intent { intent: Intent::Place { item: "bells:bell".into(), position: [20.0, Y, 20.0] } });
-    let bell = EntityId { change: placed, n: 0 };
-    log.push(by("ada", 102), Action::Intent { intent: Intent::Interact { entity: bell } });
-    log.push(by("ada", 103), Action::Intent { intent: Intent::Interact { entity: bell } });
+    log.push(
+        by("admin", 100),
+        Action::InstallPackage {
+            package: reference,
+            scope: Scope::World,
+        },
+    );
+    let placed = log.push(
+        by("ada", 101),
+        Action::Intent {
+            intent: Intent::Place {
+                item: "bells:bell".into(),
+                position: [20.0, Y, 20.0],
+            },
+        },
+    );
+    let bell = EntityId {
+        change: placed,
+        n: 0,
+    };
+    log.push(
+        by("ada", 102),
+        Action::Intent {
+            intent: Intent::Interact { entity: bell },
+        },
+    );
+    log.push(
+        by("ada", 103),
+        Action::Intent {
+            intent: Intent::Interact { entity: bell },
+        },
+    );
     // The town hears it at its next tick, recorded like any timer's work.
     let mut clock = Clockwork::new(103);
     tick(&mut clock, &mut log, 104, &[[20.0, Y, 20.0]]);
     let state = replay(&log);
     assert!(state.problems.is_empty(), "{:?}", state.problems);
     let rules = LogicRules::default();
-    let ask = |package: &str, code: &str| state.logic.query(package, "ada", code, 200, &rules, None).unwrap().0;
+    let ask = |package: &str, code: &str| {
+        state
+            .logic
+            .query(package, "ada", code, 200, &rules, None)
+            .unwrap()
+            .0
+    };
     assert_eq!(ask("bells", "return recall('rings')"), 2);
     assert_eq!(ask("town", "return recall('heard')"), "bells:rang:2");
     // Heard once: nothing new next time.
     assert!(state.logic.state.unheard("town").next().is_none());
     // A script from before calling what the game no longer has hears what to use instead.
-    let old = state.logic.query("town", "ada", "wander('1.0', {radius = 5}) return nil", 200, &rules, None).unwrap_err();
+    let old = state
+        .logic
+        .query(
+            "town",
+            "ada",
+            "wander('1.0', {radius = 5}) return nil",
+            200,
+            &rules,
+            None,
+        )
+        .unwrap_err();
     assert!(old.contains("isn't in the game any more"), "{old}");
 }
 
@@ -471,35 +770,85 @@ fn trials_play_player_scripts_items_and_time() {
         ],
         models: vec![model("pad")],
     };
-    let steps: Vec<String> = ["place pad", "use key on Chest", "say /home", "hold space 1", "press q", "wait until night"].iter().map(|s| s.to_string()).collect();
+    let steps: Vec<String> = [
+        "place pad",
+        "use key on Chest",
+        "say /home",
+        "hold space 1",
+        "press q",
+        "wait until night",
+    ]
+    .iter()
+    .map(|s| s.to_string())
+    .collect();
     let report = genverse_rules::logic::trial::play(&game.to_package(1), &steps);
     println!("{report}");
-    assert!(report.contains("2. use key on Chest") && report.contains("opened with the key"), "{report}");
+    assert!(
+        report.contains("2. use key on Chest") && report.contains("opened with the key"),
+        "{report}"
+    );
     assert!(report.contains("heard /home"), "{report}");
-    assert!(report.contains("4.0 m up at most, steered in 30"), "{report}");
-    assert!(report.contains("sent \"dash\": 1 change(s), said \"dash north\""), "{report}");
+    assert!(
+        report.contains("4.0 m up at most, steered in 30"),
+        "{report}"
+    );
+    assert!(
+        report.contains("sent \"dash\": 1 change(s), said \"dash north\""),
+        "{report}"
+    );
     assert!(report.contains("time of day 0.85"), "{report}");
 }
 
 #[test]
 fn scripts_read_the_ground() {
-    let game = GameSpec { shaders: Default::default(),
-        remove: None, rename: None,
+    let game = GameSpec {
+        shaders: Default::default(),
+        remove: None,
+        rename: None,
         name: "town".into(),
         title: "Town".into(),
-        defs: vec![DefSpec { name: "walker".into(), kind: "fixture".into(), title: "Walker".into(), ..Default::default() }],
-        scripts: vec![ScriptSpec { name: "main.luau".into(), source: WALKER.into() }],
+        defs: vec![DefSpec {
+            name: "walker".into(),
+            kind: "fixture".into(),
+            title: "Walker".into(),
+            ..Default::default()
+        }],
+        scripts: vec![ScriptSpec {
+            name: "main.luau".into(),
+            source: WALKER.into(),
+        }],
         models: vec![model("walker")],
     };
     let mut log = world(&game);
-    log.push(by("ada", 100), Action::Intent { intent: Intent::Place { item: "town:walker".into(), position: [20.0, Y, 20.0] } });
+    log.push(
+        by("ada", 100),
+        Action::Intent {
+            intent: Intent::Place {
+                item: "town:walker".into(),
+                position: [20.0, Y, 20.0],
+            },
+        },
+    );
     let state = replay(&log);
     let rules = LogicRules::default();
     // The flat world's ground, where pieces stand.
-    let (y, _) = state.logic.query("town", "ada", "return ground(5, 5)", 200, &rules, Some(&state)).unwrap();
+    let (y, _) = state
+        .logic
+        .query(
+            "town",
+            "ada",
+            "return ground(5, 5)",
+            200,
+            &rules,
+            Some(&state),
+        )
+        .unwrap();
     assert_eq!(y, serde_json::json!(Y));
     // Nothing known: nil.
-    let (none, _) = state.logic.query("town", "ada", "return ground(5, 5)", 200, &rules, None).unwrap();
+    let (none, _) = state
+        .logic
+        .query("town", "ada", "return ground(5, 5)", 200, &rules, None)
+        .unwrap();
     assert!(none.is_null());
 }
 
@@ -517,18 +866,45 @@ fn games_know_names_and_set_the_time() {
         models: vec![model("walker")],
     };
     let mut log = world(&game);
-    let placed = log.push(by("ada", 100), Action::Intent { intent: Intent::Place { item: "town:walker".into(), position: [20.0, Y, 20.0] } });
+    let placed = log.push(
+        by("ada", 100),
+        Action::Intent {
+            intent: Intent::Place {
+                item: "town:walker".into(),
+                position: [20.0, Y, 20.0],
+            },
+        },
+    );
     let state = replay(&log);
     let rules = LogicRules::default();
-    let ask = |state: &Replay, code: &str| state.logic.query("town", "ada", code, 5000, &rules, None).unwrap().0;
+    let ask = |state: &Replay, code: &str| {
+        state
+            .logic
+            .query("town", "ada", code, 5000, &rules, None)
+            .unwrap()
+            .0
+    };
     // Players are known by the names they signed their changes with.
     assert_eq!(ask(&state, "return name('ada')"), "ada");
     assert!(ask(&state, "return name('nobody')").is_null());
     // The game sets night; its clock runs on from there.
-    log.push(by("ada", 5000), Action::Intent { intent: Intent::Interact { entity: EntityId { change: placed, n: 0 } } });
+    log.push(
+        by("ada", 5000),
+        Action::Intent {
+            intent: Intent::Interact {
+                entity: EntityId {
+                    change: placed,
+                    n: 0,
+                },
+            },
+        },
+    );
     let state = replay(&log);
     let t = state.logic.time(&rules, 5000).time_of_day;
     assert!((t - 0.85).abs() < 0.01, "{t}");
-    let later = state.logic.time(&rules, 5000 + rules.clock.day_seconds as u64 / 10).time_of_day;
+    let later = state
+        .logic
+        .time(&rules, 5000 + rules.clock.day_seconds as u64 / 10)
+        .time_of_day;
     assert!((later - 0.95).abs() < 0.01, "{later}");
 }

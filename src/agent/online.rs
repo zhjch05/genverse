@@ -28,7 +28,9 @@ pub fn join(ledger: &mut Ledger, addr: &str) -> Reply {
         return Err("Already online; /leave first.".into());
     }
     match ledger.go_online(addr) {
-        Ok(()) if genverse_net::internet::is_invite(addr) => Ok("Joining by invite… finding the host can take a few seconds.".into()),
+        Ok(()) if genverse_net::internet::is_invite(addr) => {
+            Ok("Joining by invite… finding the host can take a few seconds.".into())
+        }
         Ok(()) => Ok(format!("Joining {addr}…")),
         Err(e) => Err(format!("⚠ {e}")),
     }
@@ -57,20 +59,29 @@ pub fn host(ledger: &mut Ledger) -> Reply {
     if let Err(e) = ledger.go_online(&format!("127.0.0.1:{port}")) {
         return Err(format!("⚠ {e}"));
     }
-    let lan = lan_ip().map_or(format!("this computer's address, port {port}"), |ip| format!("{ip}:{port}"));
+    let lan = lan_ip().map_or(format!("this computer's address, port {port}"), |ip| {
+        format!("{ip}:{port}")
+    });
     // The same key gives the same invite each time this player hosts.
-    let internet = match genverse_net::internet::Host::start(port, ledger.derive_secret("internet host")) {
+    let internet = match genverse_net::internet::Host::start(
+        port,
+        ledger.derive_secret("internet host"),
+    ) {
         Ok(door) => {
-            info!("hosting over the internet with the invite {}", door.invite());
+            info!(
+                "hosting over the internet with the invite {}",
+                door.invite()
+            );
             let invite = " Friends anywhere join with your invite: copy it under Play together once it's ready.".to_string();
             ledger.internet = Some(door);
             invite
         }
         Err(e) => format!(" (Not open to the internet: {e}.)"),
     };
-    Ok(format!("Hosting this world; Leave closes it. Others on your network join with {lan}.{internet}"))
+    Ok(format!(
+        "Hosting this world; Leave closes it. Others on your network join with {lan}.{internet}"
+    ))
 }
-
 
 /// Leaves the server for the local world; a hosted one closes on the way out.
 pub fn leave(ledger: &mut Ledger, travel: &mut super::worlds::Travel) -> Reply {
@@ -78,7 +89,10 @@ pub fn leave(ledger: &mut Ledger, travel: &mut super::worlds::Travel) -> Reply {
         return Err("You're in your local world.".into());
     }
     travel.stop_hosting = ledger.hosting.is_some();
-    travel.next = Some(super::worlds::Trip::Local { game: crate::world::ledger::game_name(), world: crate::world::ledger::world_name() });
+    travel.next = Some(super::worlds::Trip::Local {
+        game: crate::world::ledger::game_name(),
+        world: crate::world::ledger::world_name(),
+    });
     Ok(String::new())
 }
 
@@ -159,11 +173,23 @@ pub fn sync_online(
     for event in events {
         match event {
             ClientEvent::Closed(why) => {
-                let Some(online) = &mut ledger.online else { continue };
+                let Some(online) = &mut ledger.online else {
+                    continue;
+                };
                 // Through a tunnel, the tunnel knows why better than the client does.
-                let why = online.tunnel.as_ref().and_then(|t| t.error()).unwrap_or(why);
+                let why = online
+                    .tunnel
+                    .as_ref()
+                    .and_then(|t| t.error())
+                    .unwrap_or(why);
                 if online.closed.is_none() {
-                    chat.say(Role::System, format!("⚠ Lost the connection to {} ({why}); reconnecting…", crate::world::ledger::shown_addr(&online.addr)));
+                    chat.say(
+                        Role::System,
+                        format!(
+                            "⚠ Lost the connection to {} ({why}); reconnecting…",
+                            crate::world::ledger::shown_addr(&online.addr)
+                        ),
+                    );
                 }
                 online.closed = Some(why);
                 *retry_at = Some(time.elapsed_secs() + backoff(online.attempts));
@@ -178,11 +204,24 @@ pub fn sync_online(
                 *retry_at = None;
             }
             ClientEvent::Message(ToClient::Challenge { .. }) => {}
-            ClientEvent::Message(ToClient::Bye { why }) => chat.say(Role::System, format!("⚠ The server says: {why}")),
-            ClientEvent::Message(ToClient::Presence { player, name, presence }) => {
+            ClientEvent::Message(ToClient::Bye { why }) => {
+                chat.say(Role::System, format!("⚠ The server says: {why}"))
+            }
+            ClientEvent::Message(ToClient::Presence {
+                player,
+                name,
+                presence,
+            }) => {
                 if let Some(online) = &mut ledger.online {
-                    let shown = if presence.name.trim().is_empty() { name.clone() } else { presence.name.trim().to_string() };
-                    online.others.insert(player.clone(), (shown, presence.clone(), std::time::Instant::now()));
+                    let shown = if presence.name.trim().is_empty() {
+                        name.clone()
+                    } else {
+                        presence.name.trim().to_string()
+                    };
+                    online.others.insert(
+                        player.clone(),
+                        (shown, presence.clone(), std::time::Instant::now()),
+                    );
                 }
                 peers.seen(&mut commands, &assets, player, name, presence);
             }
@@ -195,21 +234,35 @@ pub fn sync_online(
             ClientEvent::Message(ToClient::Chunks { chunks }) => {
                 heal(&mut ledger, &mut world, chunks);
             }
-            ClientEvent::Message(ToClient::Welcome { game, world: name, log, snapshot }) => {
+            ClientEvent::Message(ToClient::Welcome {
+                game,
+                world: name,
+                log,
+                snapshot,
+            }) => {
                 peers.clear(&mut commands);
-                let Some(online) = &mut ledger.online else { continue };
+                let Some(online) = &mut ledger.online else {
+                    continue;
+                };
                 online.others.clear();
                 // Worlds renamed while we were away are the same worlds.
                 let renamed = |w: Option<String>| w.map(|w| game.current(&w).unwrap_or(w));
                 online.world = renamed(online.world.take());
                 online.shown = renamed(online.shown.take());
                 // A reconnect lands in the game's first world: back to where we were.
-                if let Some(wanted) = online.world.clone().filter(|w| *w != name && game.world(w).is_some()) {
+                if let Some(wanted) = online
+                    .world
+                    .clone()
+                    .filter(|w| *w != name && game.world(w).is_some())
+                {
                     online.game = Some(game);
-                    online.client.send(genverse_net::ToServer::Enter { world: wanted });
+                    online
+                        .client
+                        .send(genverse_net::ToServer::Enter { world: wanted });
                     continue;
                 }
-                let moved = online.shown.is_some() && online.shown.as_deref() != Some(name.as_str());
+                let moved =
+                    online.shown.is_some() && online.shown.as_deref() != Some(name.as_str());
                 online.game = Some(game);
                 online.world = Some(name.clone());
                 online.shown = Some(name.clone());
@@ -226,7 +279,13 @@ pub fn sync_online(
                     let pending: Vec<(u64, String)> = online.pending.drain().collect();
                     let mut lost = 0;
                     for (request, sig) in pending {
-                        match l.log.changes.iter().find(|c| c.sig.as_deref() == Some(sig.as_str())).filter(|_| !moved) {
+                        match l
+                            .log
+                            .changes
+                            .iter()
+                            .find(|c| c.sig.as_deref() == Some(sig.as_str()))
+                            .filter(|_| !moved)
+                        {
                             Some(change) => {
                                 online.committed.insert(request, change.id);
                             }
@@ -243,7 +302,11 @@ pub fn sync_online(
                 }
                 let full = replay_from(&ledger.log, snapshot.as_ref());
                 if fresh {
-                    world.reset(&mut commands, ledger.log.terrain(), full.edits.iter().map(|(p, id)| (*p, *id)));
+                    world.reset(
+                        &mut commands,
+                        ledger.log.terrain(),
+                        full.edits.iter().map(|(p, id)| (*p, *id)),
+                    );
                 } else {
                     world.replace_edits(full.edits.iter().map(|(p, id)| (*p, *id)));
                 }
@@ -254,7 +317,9 @@ pub fn sync_online(
                     play.leave_world();
                     let spot = from_portal
                         .and_then(|from| super::worlds::arrival(&ledger, &from))
-                        .unwrap_or_else(|| crate::player::spawn_point(ledger.log.terrain(), IVec2::ZERO));
+                        .unwrap_or_else(|| {
+                            crate::player::spawn_point(ledger.log.terrain(), IVec2::ZERO)
+                        });
                     if let Ok((mut transform, mut player)) = heroes.single_mut() {
                         transform.translation = spot;
                         player.arrive();
@@ -262,19 +327,32 @@ pub fn sync_online(
                     loading.restart(&name);
                 }
                 worlds_window.refresh();
-                let addr = ledger.online.as_ref().map(|o| crate::world::ledger::shown_addr(&o.addr)).unwrap_or_default();
+                let addr = ledger
+                    .online
+                    .as_ref()
+                    .map(|o| crate::world::ledger::shown_addr(&o.addr))
+                    .unwrap_or_default();
                 chat.say(
                     Role::System,
-                    format!("In {name} on {addr}: {} changes, {} builds.", ledger.log.changes.len(), full.builds.len()),
+                    format!(
+                        "In {name} on {addr}: {} changes, {} builds.",
+                        ledger.log.changes.len(),
+                        full.builds.len()
+                    ),
                 );
                 if let Some(online) = &mut ledger.online {
                     online.state = Some(full);
                 }
             }
             ClientEvent::Message(ToClient::Game { game, request }) => {
-                let Some(online) = &mut ledger.online else { continue };
+                let Some(online) = &mut ledger.online else {
+                    continue;
+                };
                 // The request is set only for whoever proposed the change.
-                if request.is_some() && let Some(reply) = super::worlds::game_reply(game.changes.last().map(|c| &c.action)) {
+                if request.is_some()
+                    && let Some(reply) =
+                        super::worlds::game_reply(game.changes.last().map(|c| &c.action))
+                {
                     chat.say(Role::System, reply);
                 }
                 // The world we're in renamed: we're still in it.
@@ -284,7 +362,12 @@ pub fn sync_online(
                 online.game = Some(game);
                 worlds_window.refresh();
             }
-            ClientEvent::Message(ToClient::Committed { change, request, prints, package }) => {
+            ClientEvent::Message(ToClient::Committed {
+                change,
+                request,
+                prints,
+                package,
+            }) => {
                 if let Some(package) = package {
                     let hash = ledger.log.add_package(package);
                     let package = ledger.log.packages[&hash].clone();
@@ -292,7 +375,16 @@ pub fn sync_online(
                         state.logic.packages.insert(hash, package);
                     }
                 }
-                committed(&mut commands, &mut ledger, &mut world, &mut creations, &mut landscape, &mut chat, change, request);
+                committed(
+                    &mut commands,
+                    &mut ledger,
+                    &mut world,
+                    &mut creations,
+                    &mut landscape,
+                    &mut chat,
+                    change,
+                    request,
+                );
                 check_prints(&ledger, prints);
             }
             ClientEvent::Message(ToClient::Rejected { request, why }) => {
@@ -339,7 +431,10 @@ fn committed(
         return;
     };
 
-    let applied = state.apply(&change, true).map_err(|why| warn!("{why}")).ok();
+    let applied = state
+        .apply(&change, true)
+        .map_err(|why| warn!("{why}"))
+        .ok();
     match applied {
         Some(edits) => {
             match (&change.action, own) {
@@ -370,7 +465,13 @@ fn committed(
                         world.set(*p, *id);
                     }
                     let built = state.last_world.as_ref().is_some_and(|(_, w)| {
-                        w.iter().any(|c| matches!(c, genverse_rules::logic::WorldChange::Build { .. } | genverse_rules::logic::WorldChange::Unbuild { .. }))
+                        w.iter().any(|c| {
+                            matches!(
+                                c,
+                                genverse_rules::logic::WorldChange::Build { .. }
+                                    | genverse_rules::logic::WorldChange::Unbuild { .. }
+                            )
+                        })
                     });
                     if built {
                         creations.resync(commands, &state.builds);
@@ -394,8 +495,13 @@ fn committed(
                     }
                 }
             }
-            if own.is_none() && !matches!(change.action, Action::Intent { .. } | Action::Timers { .. }) {
-                chat.say(Role::System, format!("{} {}.", change.by.player_name, change.action.describe()));
+            if own.is_none()
+                && !matches!(change.action, Action::Intent { .. } | Action::Timers { .. })
+            {
+                chat.say(
+                    Role::System,
+                    format!("{} {}.", change.by.player_name, change.action.describe()),
+                );
             }
         }
         // A change the local copy disagrees with (it shouldn't happen): rebuild from the log.
@@ -404,8 +510,13 @@ fn committed(
             world.replace_edits(state.edits.iter().map(|(p, id)| (*p, *id)));
             creations.resync(commands, &state.builds);
             landscape.forget_history();
-            if own.is_none() && !matches!(change.action, Action::Intent { .. } | Action::Timers { .. }) {
-                chat.say(Role::System, format!("{} {}.", change.by.player_name, change.action.describe()));
+            if own.is_none()
+                && !matches!(change.action, Action::Intent { .. } | Action::Timers { .. })
+            {
+                chat.say(
+                    Role::System,
+                    format!("{} {}.", change.by.player_name, change.action.describe()),
+                );
             }
         }
     }
@@ -423,21 +534,33 @@ fn check_prints(ledger: &Ledger, prints: Vec<([i32; 3], u64)>) {
     }
     let chunks: Vec<IVec3> = prints.iter().map(|(c, _)| IVec3::from_array(*c)).collect();
     let ours = chunk_prints(&state.edits, &chunks);
-    let differ: Vec<[i32; 3]> =
-        prints.iter().filter(|print| !ours.contains(print)).map(|(c, _)| *c).collect();
+    let differ: Vec<[i32; 3]> = prints
+        .iter()
+        .filter(|print| !ours.contains(print))
+        .map(|(c, _)| *c)
+        .collect();
     if !differ.is_empty() {
-        warn!("{} chunk(s) differ from the server's; fetching them", differ.len());
+        warn!(
+            "{} chunk(s) differ from the server's; fetching them",
+            differ.len()
+        );
         online.client.send(ToServer::FetchChunks { chunks: differ });
     }
 }
 
 /// Replaces our edits in `chunks` with the server's, and regenerates those chunks.
 fn heal(ledger: &mut Ledger, world: &mut VoxelWorld, chunks: Vec<([i32; 3], Vec<[i32; 4]>)>) {
-    let Some(state) = ledger.online.as_mut().and_then(|o| o.state.as_mut()) else { return };
+    let Some(state) = ledger.online.as_mut().and_then(|o| o.state.as_mut()) else {
+        return;
+    };
     for (chunk, edits) in &chunks {
         let chunk = IVec3::from_array(*chunk);
         state.edits.retain(|p, _| chunk_of(*p) != chunk);
-        state.edits.extend(edits.iter().map(|[x, y, z, id]| (IVec3::new(*x, *y, *z), *id as u8)));
+        state.edits.extend(
+            edits
+                .iter()
+                .map(|[x, y, z, id]| (IVec3::new(*x, *y, *z), *id as u8)),
+        );
     }
     world.replace_edits(state.edits.iter().map(|(p, id)| (*p, *id)));
     info!("healed {} chunk(s) from the server", chunks.len());

@@ -48,7 +48,9 @@ pub enum Ui {
         color: Option<String>,
     },
     /// An item's tile, with how many the player carries.
-    Item { item: String },
+    Item {
+        item: String,
+    },
     /// Pressing it gives `id` to the package's `on_choose` (in a panel).
     Button {
         id: String,
@@ -57,8 +59,12 @@ pub enum Ui {
         #[serde(default, skip_serializing_if = "String::is_empty")]
         detail: String,
     },
-    Row { items: Vec<Ui> },
-    Column { items: Vec<Ui> },
+    Row {
+        items: Vec<Ui>,
+    },
+    Column {
+        items: Vec<Ui>,
+    },
     Space,
 }
 
@@ -74,14 +80,25 @@ impl Ui {
 
     fn depth(&self) -> usize {
         match self {
-            Ui::Row { items } | Ui::Column { items } => 1 + items.iter().map(Ui::depth).max().unwrap_or(0),
+            Ui::Row { items } | Ui::Column { items } => {
+                1 + items.iter().map(Ui::depth).max().unwrap_or(0)
+            }
             _ => 1,
         }
     }
 
     /// Its buttons' ids.
     pub fn buttons(&self) -> Vec<&str> {
-        self.nodes().into_iter().filter_map(|n| if let Ui::Button { id, .. } = n { Some(id.as_str()) } else { None }).collect()
+        self.nodes()
+            .into_iter()
+            .filter_map(|n| {
+                if let Ui::Button { id, .. } = n {
+                    Some(id.as_str())
+                } else {
+                    None
+                }
+            })
+            .collect()
     }
 
     /// The stats and items it shows.
@@ -102,7 +119,9 @@ impl Ui {
     pub fn check(&self) -> Result<(), String> {
         let nodes = self.nodes();
         if nodes.len() > MAX_NODES || self.depth() > MAX_DEPTH {
-            return Err(format!("a UI holds at most {MAX_NODES} nodes, {MAX_DEPTH} deep"));
+            return Err(format!(
+                "a UI holds at most {MAX_NODES} nodes, {MAX_DEPTH} deep"
+            ));
         }
         let mut text = 0;
         for node in nodes {
@@ -116,7 +135,11 @@ impl Ui {
                 }
                 Ui::Bar { label, .. } => text += label.chars().count(),
                 Ui::Button { id, label, detail } => {
-                    if id.is_empty() || id.len() > 40 || label.chars().count() > 60 || detail.chars().count() > 40 {
+                    if id.is_empty()
+                        || id.len() > 40
+                        || label.chars().count() > 60
+                        || detail.chars().count() > 40
+                    {
                         return Err("a button has an id (up to 40 characters), a label of up to 60, and a detail of up to 40".into());
                     }
                     text += label.chars().count() + detail.chars().count();
@@ -136,7 +159,10 @@ impl Ui {
             .into_iter()
             .filter_map(|n| match n {
                 Ui::Text { text, .. } => Some(text.clone()),
-                Ui::Value { label, stat, item } => Some(format!("{label} ({})", stat.as_deref().or(item.as_deref()).unwrap_or_default())),
+                Ui::Value { label, stat, item } => Some(format!(
+                    "{label} ({})",
+                    stat.as_deref().or(item.as_deref()).unwrap_or_default()
+                )),
                 Ui::Bar { label, stat, .. } => Some(format!("{label} [bar {stat}]")),
                 Ui::Item { item } => Some(format!("[item {item}]")),
                 Ui::Button { id, label, .. } => Some(format!("[{id}: {label}]")),
@@ -187,18 +213,37 @@ impl From<PanelWire> for PanelSpec {
         let body = w.body.unwrap_or_else(|| {
             let mut items = Vec::new();
             if !w.text.is_empty() {
-                items.push(Ui::Text { text: w.text, style: None });
+                items.push(Ui::Text {
+                    text: w.text,
+                    style: None,
+                });
             }
-            items.extend(w.choices.into_iter().map(|c| Ui::Button { id: c.id, label: c.label, detail: c.detail }));
+            items.extend(w.choices.into_iter().map(|c| Ui::Button {
+                id: c.id,
+                label: c.label,
+                detail: c.detail,
+            }));
             Ui::Column { items }
         });
-        Self { id: w.id, title: w.title, body, entity: w.entity }
+        Self {
+            id: w.id,
+            title: w.title,
+            body,
+            entity: w.entity,
+        }
     }
 }
 
 impl From<PanelSpec> for PanelWire {
     fn from(p: PanelSpec) -> Self {
-        Self { id: p.id, title: p.title, body: Some(p.body), text: String::new(), choices: Vec::new(), entity: p.entity }
+        Self {
+            id: p.id,
+            title: p.title,
+            body: Some(p.body),
+            text: String::new(),
+            choices: Vec::new(),
+            entity: p.entity,
+        }
     }
 }
 
@@ -209,30 +254,74 @@ mod tests {
 
     #[test]
     fn old_widgets_and_panels_still_read() {
-        let counter: Ui = serde_json::from_value(json!({ "kind": "counter", "label": "Gold", "stat": "inn:gold" })).unwrap();
-        assert_eq!(counter, Ui::Value { label: "Gold".into(), stat: Some("inn:gold".into()), item: None });
-        let items: Ui = serde_json::from_value(json!({ "kind": "items", "label": "Keys", "item": "inn:key" })).unwrap();
-        assert_eq!(items, Ui::Value { label: "Keys".into(), stat: None, item: Some("inn:key".into()) });
-        let panel: PanelSpec = serde_json::from_value(json!({ "id": "inn", "title": "The innkeeper", "text": "Hello",
-            "choices": [{ "id": "room", "label": "Rent a room", "detail": "5 gold" }] }))
+        let counter: Ui = serde_json::from_value(
+            json!({ "kind": "counter", "label": "Gold", "stat": "inn:gold" }),
+        )
+        .unwrap();
+        assert_eq!(
+            counter,
+            Ui::Value {
+                label: "Gold".into(),
+                stat: Some("inn:gold".into()),
+                item: None
+            }
+        );
+        let items: Ui =
+            serde_json::from_value(json!({ "kind": "items", "label": "Keys", "item": "inn:key" }))
+                .unwrap();
+        assert_eq!(
+            items,
+            Ui::Value {
+                label: "Keys".into(),
+                stat: None,
+                item: Some("inn:key".into())
+            }
+        );
+        let panel: PanelSpec = serde_json::from_value(
+            json!({ "id": "inn", "title": "The innkeeper", "text": "Hello",
+            "choices": [{ "id": "room", "label": "Rent a room", "detail": "5 gold" }] }),
+        )
         .unwrap();
         assert_eq!(panel.body.buttons(), vec!["room"]);
         assert!(panel.body.summary().contains("Hello"));
         // Written back, it's a body; read again, the same.
-        let again: PanelSpec = serde_json::from_value(serde_json::to_value(&panel).unwrap()).unwrap();
+        let again: PanelSpec =
+            serde_json::from_value(serde_json::to_value(&panel).unwrap()).unwrap();
         assert_eq!(again, panel);
     }
 
     #[test]
     fn trees_have_limits() {
-        let button = |id: &str| Ui::Button { id: id.into(), label: "Buy".into(), detail: String::new() };
-        let shop = Ui::Column { items: vec![Ui::Text { text: "Torches".into(), style: Some("title".into()) }, Ui::Row { items: vec![Ui::Item { item: "t".into() }, button("buy")] }] };
+        let button = |id: &str| Ui::Button {
+            id: id.into(),
+            label: "Buy".into(),
+            detail: String::new(),
+        };
+        let shop = Ui::Column {
+            items: vec![
+                Ui::Text {
+                    text: "Torches".into(),
+                    style: Some("title".into()),
+                },
+                Ui::Row {
+                    items: vec![Ui::Item { item: "t".into() }, button("buy")],
+                },
+            ],
+        };
         assert!(shop.check().is_ok());
         assert_eq!(shop.buttons(), vec!["buy"]);
         assert_eq!(shop.names(), vec!["t"]);
         let deep = (0..8).fold(Ui::Space, |inner, _| Ui::Row { items: vec![inner] });
         assert!(deep.check().is_err());
-        assert!(Ui::Value { label: "x".into(), stat: None, item: None }.check().is_err());
+        assert!(
+            Ui::Value {
+                label: "x".into(),
+                stat: None,
+                item: None
+            }
+            .check()
+            .is_err()
+        );
         assert!(button("").check().is_err());
     }
 }

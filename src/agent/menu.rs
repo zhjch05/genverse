@@ -52,7 +52,12 @@ pub fn toggle_menu(
     landscape: Res<Landscape>,
     inventory: Res<Inventory>,
     play: Res<Play>,
-    (mut settings, mut worlds_window, mut history, mut panels): (ResMut<SettingsWindow>, ResMut<WorldsWindow>, ResMut<History>, ResMut<Panels>),
+    (mut settings, mut worlds_window, mut history, mut panels): (
+        ResMut<SettingsWindow>,
+        ResMut<WorldsWindow>,
+        ResMut<History>,
+        ResMut<Panels>,
+    ),
     mut started: Local<bool>,
     (welcome, start): (Res<super::welcome::Welcome>, Res<super::start::StartScreen>),
 ) {
@@ -100,7 +105,13 @@ pub fn toggle_menu(
 }
 
 /// While the menu is up the world dims, and offline its games wait for you.
-pub fn follow_menu(menu: Res<GameMenu>, welcome: Res<super::welcome::Welcome>, start: Res<super::start::StartScreen>, mut dim: ResMut<crate::graphics::Dim>, mut ledger: ResMut<Ledger>) {
+pub fn follow_menu(
+    menu: Res<GameMenu>,
+    welcome: Res<super::welcome::Welcome>,
+    start: Res<super::start::StartScreen>,
+    mut dim: ResMut<crate::graphics::Dim>,
+    mut ledger: ResMut<Ledger>,
+) {
     // Linear light: 0.15 shows at about 40%.
     let want = if menu.open || welcome.open { 0.15 } else { 1.0 };
     if dim.0 != want {
@@ -132,7 +143,12 @@ pub fn menu_window(
     binds: Res<Bindings>,
     ledger: Res<Ledger>,
     mut chat: ResMut<Chat>,
-    (mut settings, mut worlds_window, mut history, mut panels): (ResMut<SettingsWindow>, ResMut<WorldsWindow>, ResMut<History>, ResMut<Panels>),
+    (mut settings, mut worlds_window, mut history, mut panels): (
+        ResMut<SettingsWindow>,
+        ResMut<WorldsWindow>,
+        ResMut<History>,
+        ResMut<Panels>,
+    ),
     mut exit: MessageWriter<AppExit>,
     mut welcome: ResMut<super::welcome::Welcome>,
 ) -> Result {
@@ -164,72 +180,120 @@ pub fn menu_window(
             let (_, _) = ui.allocate_exact_size(screen.size(), egui::Sense::click_and_drag());
 
             let card = egui::Rect::from_center_size(screen.center(), egui::vec2(MENU_WIDTH, 0.0));
-            let mut child = ui.new_child(egui::UiBuilder::new().max_rect(egui::Rect::from_min_size(egui::pos2(card.left(), screen.top()), egui::vec2(MENU_WIDTH, screen.height()))));
-            child.with_layout(egui::Layout::top_down(egui::Align::Center).with_main_justify(false), |ui| {
-                // Centered by height once the card's height is known (from the last frame).
-                let height = ui.ctx().data(|d| d.get_temp::<f32>(egui::Id::new("game_menu_height"))).unwrap_or(420.0);
-                ui.add_space(((screen.height() - height) / 2.0).max(16.0));
-                let inner = egui::Frame::new()
-                    .fill(p.panel)
-                    .stroke(egui::Stroke::new(1.0, p.line))
-                    .corner_radius(theme::ROUND + 2)
-                    .inner_margin(egui::Margin::same(18))
-                    .shadow(egui::Shadow { offset: [0, 10], blur: 28, spread: 0, color: egui::Color32::from_black_alpha(90) })
-                    .show(ui, |ui| {
-                        ui.set_width(MENU_WIDTH - 36.0);
-                        header(ui, &world, &status, online, &me, mine, badge);
-                        ui.add_space(14.0);
-                        let item = |ui: &mut egui::Ui, glyph: &str, label: &str, key: &str, tone: Tone| entry(ui, glyph, label, key, tone).clicked();
-                        let resume = entry(ui, icon::PLAY, "Resume", "Esc", Tone::Primary);
-                        if resume.clicked() {
-                            pick = Some(Pick::Resume);
-                        }
-                        ui.add_space(8.0);
-                        theme::section(ui, "Game");
-                        if item(ui, icon::GLOBE_HEMISPHERE_WEST, "Worlds and saves", binds.short("game_window"), Tone::Plain) {
-                            pick = Some(Pick::Worlds);
-                        }
-                        if item(ui, icon::CLOCK_COUNTER_CLOCKWISE, "History", binds.short("history"), Tone::Plain) {
-                            pick = Some(Pick::History);
-                        }
-                        if item(ui, icon::USERS_THREE, "Play together", "", Tone::Plain) {
-                            pick = Some(Pick::PlayTogether);
-                        }
-                        // Admins pause everyone's games; offline the menu pauses them anyway.
-                        if admin && (online || world_paused) {
-                            let (glyph, label) = if world_paused { (icon::PLAY_CIRCLE, "Resume world") } else { (icon::PAUSE_CIRCLE, "Pause world for everyone") };
+            let mut child =
+                ui.new_child(egui::UiBuilder::new().max_rect(egui::Rect::from_min_size(
+                    egui::pos2(card.left(), screen.top()),
+                    egui::vec2(MENU_WIDTH, screen.height()),
+                )));
+            child.with_layout(
+                egui::Layout::top_down(egui::Align::Center).with_main_justify(false),
+                |ui| {
+                    // Centered by height once the card's height is known (from the last frame).
+                    let height = ui
+                        .ctx()
+                        .data(|d| d.get_temp::<f32>(egui::Id::new("game_menu_height")))
+                        .unwrap_or(420.0);
+                    ui.add_space(((screen.height() - height) / 2.0).max(16.0));
+                    let inner = egui::Frame::new()
+                        .fill(p.panel)
+                        .stroke(egui::Stroke::new(1.0, p.line))
+                        .corner_radius(theme::ROUND + 2)
+                        .inner_margin(egui::Margin::same(18))
+                        .shadow(egui::Shadow {
+                            offset: [0, 10],
+                            blur: 28,
+                            spread: 0,
+                            color: egui::Color32::from_black_alpha(90),
+                        })
+                        .show(ui, |ui| {
+                            ui.set_width(MENU_WIDTH - 36.0);
+                            header(ui, &world, &status, online, &me, mine, badge);
+                            ui.add_space(14.0);
+                            let item = |ui: &mut egui::Ui,
+                                        glyph: &str,
+                                        label: &str,
+                                        key: &str,
+                                        tone: Tone| {
+                                entry(ui, glyph, label, key, tone).clicked()
+                            };
+                            let resume = entry(ui, icon::PLAY, "Resume", "Esc", Tone::Primary);
+                            if resume.clicked() {
+                                pick = Some(Pick::Resume);
+                            }
+                            ui.add_space(8.0);
+                            theme::section(ui, "Game");
+                            if item(
+                                ui,
+                                icon::GLOBE_HEMISPHERE_WEST,
+                                "Worlds and saves",
+                                binds.short("game_window"),
+                                Tone::Plain,
+                            ) {
+                                pick = Some(Pick::Worlds);
+                            }
+                            if item(
+                                ui,
+                                icon::CLOCK_COUNTER_CLOCKWISE,
+                                "History",
+                                binds.short("history"),
+                                Tone::Plain,
+                            ) {
+                                pick = Some(Pick::History);
+                            }
+                            if item(ui, icon::USERS_THREE, "Play together", "", Tone::Plain) {
+                                pick = Some(Pick::PlayTogether);
+                            }
+                            // Admins pause everyone's games; offline the menu pauses them anyway.
+                            if admin && (online || world_paused) {
+                                let (glyph, label) = if world_paused {
+                                    (icon::PLAY_CIRCLE, "Resume world")
+                                } else {
+                                    (icon::PAUSE_CIRCLE, "Pause world for everyone")
+                                };
+                                if item(ui, glyph, label, "", Tone::Plain) {
+                                    pick = Some(Pick::PauseWorld);
+                                }
+                            }
+                            ui.add_space(8.0);
+                            theme::section(ui, "Options");
+                            if item(ui, icon::GAUGE, "Settings", "", Tone::Plain) {
+                                pick = Some(Pick::Settings);
+                            }
+                            if item(ui, icon::KEYBOARD, "Controls", "", Tone::Plain) {
+                                pick = Some(Pick::Controls);
+                            }
+                            let (glyph, label) = if dark {
+                                (icon::SUN, "Light theme")
+                            } else {
+                                (icon::MOON, "Dark theme")
+                            };
                             if item(ui, glyph, label, "", Tone::Plain) {
-                                pick = Some(Pick::PauseWorld);
+                                pick = Some(Pick::Theme);
                             }
-                        }
-                        ui.add_space(8.0);
-                        theme::section(ui, "Options");
-                        if item(ui, icon::GAUGE, "Settings", "", Tone::Plain) {
-                            pick = Some(Pick::Settings);
-                        }
-                        if item(ui, icon::KEYBOARD, "Controls", "", Tone::Plain) {
-                            pick = Some(Pick::Controls);
-                        }
-                        let (glyph, label) = if dark { (icon::SUN, "Light theme") } else { (icon::MOON, "Dark theme") };
-                        if item(ui, glyph, label, "", Tone::Plain) {
-                            pick = Some(Pick::Theme);
-                        }
-                        if item(ui, icon::HAND_WAVING, "Getting started", "", Tone::Plain) {
-                            pick = Some(Pick::Welcome);
-                        }
-                        if cfg!(not(target_arch = "wasm32")) {
-                            ui.add_space(10.0);
-                            let label = if menu.quitting { "Click again to quit" } else { "Quit to desktop" };
-                            if item(ui, icon::SIGN_OUT, label, "", Tone::Danger) {
-                                pick = Some(Pick::Quit);
+                            if item(ui, icon::HAND_WAVING, "Getting started", "", Tone::Plain) {
+                                pick = Some(Pick::Welcome);
                             }
-                        }
-                        ui.add_space(8.0);
-                        ui.vertical_centered(|ui| theme::note(ui, "Your world is saved as it changes."));
-                    });
-                let height = inner.response.rect.height();
-                ui.ctx().data_mut(|d| d.insert_temp(egui::Id::new("game_menu_height"), height));
-            });
+                            if cfg!(not(target_arch = "wasm32")) {
+                                ui.add_space(10.0);
+                                let label = if menu.quitting {
+                                    "Click again to quit"
+                                } else {
+                                    "Quit to desktop"
+                                };
+                                if item(ui, icon::SIGN_OUT, label, "", Tone::Danger) {
+                                    pick = Some(Pick::Quit);
+                                }
+                            }
+                            ui.add_space(8.0);
+                            ui.vertical_centered(|ui| {
+                                theme::note(ui, "Your world is saved as it changes.")
+                            });
+                        });
+                    let height = inner.response.rect.height();
+                    ui.ctx()
+                        .data_mut(|d| d.insert_temp(egui::Id::new("game_menu_height"), height));
+                },
+            );
         });
 
     let Some(pick) = pick else { return Ok(()) };
@@ -287,71 +351,160 @@ const MENU_WIDTH: f32 = 320.0;
 fn place(ledger: &Ledger) -> (String, String, bool) {
     let world = worlds::world_of(ledger);
     let game = worlds::game_of(ledger);
-    let world = if world.is_empty() { game.clone() } else { world };
+    let world = if world.is_empty() {
+        game.clone()
+    } else {
+        world
+    };
     match (&ledger.online, &ledger.hosting) {
         (None, _) if game == world || game == "local" => (world, "Local world".into(), false),
         (None, _) => (world, format!("Local world · {game}"), false),
         (Some(online), _) if online.closed.is_some() => (world, "Reconnecting…".into(), false),
         (Some(online), None) if online.state.is_none() => (world, "Joining…".into(), false),
-        (Some(_), Some(server)) => (world, format!("Hosting on port {}", server.addr.port()), true),
-        (Some(online), None) => (world, format!("Online at {}", crate::world::ledger::shown_addr(&online.addr)), true),
+        (Some(_), Some(server)) => (
+            world,
+            format!("Hosting on port {}", server.addr.port()),
+            true,
+        ),
+        (Some(online), None) => (
+            world,
+            format!(
+                "Online at {}",
+                crate::world::ledger::shown_addr(&online.addr)
+            ),
+            true,
+        ),
     }
 }
 
-fn header(ui: &mut egui::Ui, world: &str, status: &str, online: bool, me: &str, mine: egui::Color32, (badge, tip): (&str, &str)) {
+fn header(
+    ui: &mut egui::Ui,
+    world: &str,
+    status: &str,
+    online: bool,
+    me: &str,
+    mine: egui::Color32,
+    (badge, tip): (&str, &str),
+) {
     let p = theme::palette(ui.ctx());
     ui.horizontal(|ui| {
         theme::avatar(ui, me, mine, 40.0);
         ui.add_space(4.0);
         ui.vertical(|ui| {
             ui.spacing_mut().item_spacing.y = 1.0;
-            ui.label(egui::RichText::new(world).size(18.0).strong().color(p.strong));
+            ui.label(
+                egui::RichText::new(world)
+                    .size(18.0)
+                    .strong()
+                    .color(p.strong),
+            );
             ui.horizontal(|ui| {
                 let (dot, _) = ui.allocate_exact_size(egui::vec2(7.0, 7.0), egui::Sense::hover());
-                ui.painter().rect_filled(dot.translate(egui::vec2(0.0, 1.0)), 1, if online { p.online } else { p.faint });
+                ui.painter().rect_filled(
+                    dot.translate(egui::vec2(0.0, 1.0)),
+                    1,
+                    if online { p.online } else { p.faint },
+                );
                 ui.label(egui::RichText::new(status).size(11.5).color(p.muted));
             });
         });
         ui.with_layout(egui::Layout::right_to_left(egui::Align::Min), |ui| {
-            let color = if badge == "WORLD PAUSED" { p.warn } else { p.faint };
-            ui.label(egui::RichText::new(badge).size(10.0).strong().color(color)).on_hover_text(tip);
+            let color = if badge == "WORLD PAUSED" {
+                p.warn
+            } else {
+                p.faint
+            };
+            ui.label(egui::RichText::new(badge).size(10.0).strong().color(color))
+                .on_hover_text(tip);
         });
     });
 }
 
 /// A menu entry: a wide block with an icon, its label, and its key on the right.
-pub(super) fn entry(ui: &mut egui::Ui, glyph: &str, label: &str, key: &str, tone: Tone) -> egui::Response {
+pub(super) fn entry(
+    ui: &mut egui::Ui,
+    glyph: &str,
+    label: &str,
+    key: &str,
+    tone: Tone,
+) -> egui::Response {
     let p = theme::palette(ui.ctx());
     let (fill, text) = match tone {
         Tone::Plain => (p.raised, p.text),
         Tone::Primary => (p.primary, p.on_primary),
         Tone::Danger => (p.danger, egui::Color32::WHITE),
     };
-    let size = egui::vec2(ui.available_width(), if matches!(tone, Tone::Primary) { 42.0 } else { 36.0 });
+    let size = egui::vec2(
+        ui.available_width(),
+        if matches!(tone, Tone::Primary) {
+            42.0
+        } else {
+            36.0
+        },
+    );
     let (rect, response) = ui.allocate_exact_size(size, egui::Sense::click());
     let pressed = response.is_pointer_button_down_on();
     let painter = ui.painter();
     // Pushed in: the face drops onto where the lip was.
-    let face = if pressed { rect.translate(egui::vec2(0.0, 2.0)).with_max_y(rect.bottom()) } else { rect.with_max_y(rect.bottom() - 3.0) };
+    let face = if pressed {
+        rect.translate(egui::vec2(0.0, 2.0))
+            .with_max_y(rect.bottom())
+    } else {
+        rect.with_max_y(rect.bottom() - 3.0)
+    };
     if !pressed {
         painter.rect_filled(rect, theme::ROUND, theme::shade(fill, 0.72));
     }
     painter.rect_filled(face, theme::ROUND, fill);
-    painter.rect_stroke(face, theme::ROUND, egui::Stroke::new(1.0, theme::shade(fill, 0.8)), egui::StrokeKind::Inside);
+    painter.rect_stroke(
+        face,
+        theme::ROUND,
+        egui::Stroke::new(1.0, theme::shade(fill, 0.8)),
+        egui::StrokeKind::Inside,
+    );
     if response.hovered() || response.has_focus() {
-        let glow = if ui.visuals().dark_mode { egui::Color32::from_white_alpha(22) } else { egui::Color32::from_black_alpha(14) };
+        let glow = if ui.visuals().dark_mode {
+            egui::Color32::from_white_alpha(22)
+        } else {
+            egui::Color32::from_black_alpha(14)
+        };
         painter.rect_filled(face, theme::ROUND, glow);
     }
     if response.has_focus() {
-        painter.rect_stroke(rect.expand(2.0), theme::ROUND + 1, egui::Stroke::new(1.5, p.select), egui::StrokeKind::Outside);
+        painter.rect_stroke(
+            rect.expand(2.0),
+            theme::ROUND + 1,
+            egui::Stroke::new(1.5, p.select),
+            egui::StrokeKind::Outside,
+        );
     }
     let middle = face.left_center() + egui::vec2(14.0, 0.0);
-    let size = if matches!(tone, Tone::Primary) { 15.5 } else { 14.0 };
-    painter.text(middle, egui::Align2::LEFT_CENTER, glyph, egui::FontId::proportional(size + 3.0), text);
-    painter.text(middle + egui::vec2(28.0, 0.0), egui::Align2::LEFT_CENTER, label, egui::FontId::proportional(size), text);
+    let size = if matches!(tone, Tone::Primary) {
+        15.5
+    } else {
+        14.0
+    };
+    painter.text(
+        middle,
+        egui::Align2::LEFT_CENTER,
+        glyph,
+        egui::FontId::proportional(size + 3.0),
+        text,
+    );
+    painter.text(
+        middle + egui::vec2(28.0, 0.0),
+        egui::Align2::LEFT_CENTER,
+        label,
+        egui::FontId::proportional(size),
+        text,
+    );
     if !key.is_empty() && key != "unbound" {
-        let galley = painter.layout_no_wrap(key.to_string(), egui::FontId::proportional(10.5), text);
-        let cap = egui::Rect::from_center_size(face.right_center() - egui::vec2(14.0 + galley.size().x / 2.0 + 5.0, 0.0), galley.size() + egui::vec2(10.0, 4.0));
+        let galley =
+            painter.layout_no_wrap(key.to_string(), egui::FontId::proportional(10.5), text);
+        let cap = egui::Rect::from_center_size(
+            face.right_center() - egui::vec2(14.0 + galley.size().x / 2.0 + 5.0, 0.0),
+            galley.size() + egui::vec2(10.0, 4.0),
+        );
         painter.rect_filled(cap, theme::ROUND, theme::shade(fill, 0.82));
         painter.galley(cap.center() - galley.size() / 2.0, galley, text);
     }
@@ -359,7 +512,12 @@ pub(super) fn entry(ui: &mut egui::Ui, glyph: &str, label: &str, key: &str, tone
 }
 
 /// While an admin has the world paused, a note at the top says so, for everyone.
-pub fn paused_banner(mut contexts: EguiContexts, ledger: Res<Ledger>, menu: Res<GameMenu>, chat: Res<Chat>) -> Result {
+pub fn paused_banner(
+    mut contexts: EguiContexts,
+    ledger: Res<Ledger>,
+    menu: Res<GameMenu>,
+    chat: Res<Chat>,
+) -> Result {
     if !ledger.rules.logic.paused || menu.open {
         return Ok(());
     }
@@ -378,9 +536,17 @@ pub fn paused_banner(mut contexts: EguiContexts, ledger: Res<Ledger>, menu: Res<
                 .inner_margin(egui::Margin::symmetric(12, 6))
                 .show(ui, |ui| {
                     ui.horizontal(|ui| {
-                        ui.label(egui::RichText::new(icon::PAUSE_CIRCLE).size(16.0).color(p.warn));
+                        ui.label(
+                            egui::RichText::new(icon::PAUSE_CIRCLE)
+                                .size(16.0)
+                                .color(p.warn),
+                        );
                         ui.label(egui::RichText::new("World paused").strong().color(p.strong));
-                        let why = if admin { "games stand still · /pause or the Esc menu resumes" } else { "games stand still until an admin resumes them" };
+                        let why = if admin {
+                            "games stand still · /pause or the Esc menu resumes"
+                        } else {
+                            "games stand still until an admin resumes them"
+                        };
                         ui.label(egui::RichText::new(why).size(12.0).color(p.muted));
                     });
                 });

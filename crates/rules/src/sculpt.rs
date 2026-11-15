@@ -47,7 +47,9 @@ impl Default for TerrainLimits {
     }
 }
 
-pub const OP_KINDS: [&str; 9] = ["raise", "lower", "flatten", "smooth", "terrace", "water", "paint", "scatter", "path"];
+pub const OP_KINDS: [&str; 9] = [
+    "raise", "lower", "flatten", "smooth", "terrace", "water", "paint", "scatter", "path",
+];
 pub const CLEAR: &str = "clear";
 pub const MATERIALS: [&str; 5] = ["grass", "dirt", "stone", "sand", "snow"];
 pub const ITEMS: [&str; 6] = ["tree", "bush", "rock", "flowers", "grass", "plants"];
@@ -67,7 +69,10 @@ impl Area {
     pub fn from_corners(a: IVec2, b: IVec2) -> Self {
         let min = a.min(b);
         let size = (a.max(b) - min) + 1;
-        Self { min: min.to_array(), size: size.to_array() }
+        Self {
+            min: min.to_array(),
+            size: size.to_array(),
+        }
     }
 
     pub fn min(&self) -> IVec2 {
@@ -95,7 +100,10 @@ impl Area {
 
     /// The area with `by` more columns on every side.
     pub fn grown(self, by: i32) -> Self {
-        Self { min: (self.min() - by).to_array(), size: (self.size() + 2 * by).max(IVec2::ZERO).to_array() }
+        Self {
+            min: (self.min() - by).to_array(),
+            size: (self.size() + 2 * by).max(IVec2::ZERO).to_array(),
+        }
     }
 
     /// The center of column `(x, z)` in the area frame, in meters.
@@ -124,7 +132,10 @@ pub fn surface(column: &[VoxelId]) -> (i32, i32, VoxelId) {
     let Some(ground) = (0..column.len()).rev().find(|&y| is_ground(column[y])) else {
         return (0, 0, AIR);
     };
-    let water = (ground + 1..column.len()).take_while(|&y| column[y] == block::WATER).last().unwrap_or(ground);
+    let water = (ground + 1..column.len())
+        .take_while(|&y| column[y] == block::WATER)
+        .last()
+        .unwrap_or(ground);
     (ground as i32, water as i32, column[ground])
 }
 
@@ -210,7 +221,10 @@ impl Columns {
 
     /// Reads the columns under `area`. `read(x, z, out)` fills one world column
     /// (`y = 0..WORLD_HEIGHT`) and returns false if it isn't loaded.
-    pub fn read(area: Area, mut read: impl FnMut(i32, i32, &mut [VoxelId]) -> bool) -> Option<Self> {
+    pub fn read(
+        area: Area,
+        mut read: impl FnMut(i32, i32, &mut [VoxelId]) -> bool,
+    ) -> Option<Self> {
         let (min, size) = Self::bounds(area);
         let n = (size.x * size.y) as usize;
         let mut vox = vec![AIR; n * H];
@@ -221,7 +235,15 @@ impl Columns {
                 return None;
             }
         }
-        let mut columns = Self { min, size, orig: vox.clone(), vox, ground: vec![0; n], water: vec![0; n], cap: WORLD_HEIGHT - 40 };
+        let mut columns = Self {
+            min,
+            size,
+            orig: vox.clone(),
+            vox,
+            ground: vec![0; n],
+            water: vec![0; n],
+            cap: WORLD_HEIGHT - 40,
+        };
         for i in 0..n {
             columns.rescan(i);
         }
@@ -235,7 +257,9 @@ impl Columns {
     /// The voxel at `p` as it was read, before any edit; `None` outside the columns.
     pub fn original(&self, p: IVec3) -> Option<VoxelId> {
         let i = self.index(IVec2::new(p.x, p.z))?;
-        (0..H as i32).contains(&p.y).then(|| self.orig[i * H + p.y as usize])
+        (0..H as i32)
+            .contains(&p.y)
+            .then(|| self.orig[i * H + p.y as usize])
     }
 
     fn column_of(&self, i: usize) -> IVec2 {
@@ -244,7 +268,8 @@ impl Columns {
 
     fn index(&self, c: IVec2) -> Option<usize> {
         let l = c - self.min;
-        (l.cmpge(IVec2::ZERO).all() && l.cmplt(self.size).all()).then(|| (l.x + l.y * self.size.x) as usize)
+        (l.cmpge(IVec2::ZERO).all() && l.cmplt(self.size).all())
+            .then(|| (l.x + l.y * self.size.x) as usize)
     }
 
     fn col(&mut self, i: usize) -> &mut [VoxelId] {
@@ -277,7 +302,13 @@ impl Columns {
     #[cfg(test)]
     fn ground_at(&self, c: IVec2) -> Option<(i32, i32, VoxelId)> {
         let i = self.index(c)?;
-        (self.orig[i * H] != AIR).then(|| (self.ground[i], self.water[i], self.vox[i * H + self.ground[i] as usize]))
+        (self.orig[i * H] != AIR).then(|| {
+            (
+                self.ground[i],
+                self.water[i],
+                self.vox[i * H + self.ground[i] as usize],
+            )
+        })
     }
 
     /// Moves a column's ground to `new`: fills with its own soil when it rises, cuts
@@ -358,7 +389,14 @@ impl Columns {
         if seeds.is_empty() {
             return;
         }
-        const NEIGHBORS: [IVec3; 6] = [IVec3::X, IVec3::NEG_X, IVec3::Y, IVec3::NEG_Y, IVec3::Z, IVec3::NEG_Z];
+        const NEIGHBORS: [IVec3; 6] = [
+            IVec3::X,
+            IVec3::NEG_X,
+            IVec3::Y,
+            IVec3::NEG_Y,
+            IVec3::Z,
+            IVec3::NEG_Z,
+        ];
         let mut seen = std::collections::HashSet::new();
         let mut stack = seeds;
         let mut trunk = Vec::new();
@@ -369,11 +407,22 @@ impl Columns {
             trunk.push(p);
             stack.extend(NEIGHBORS.map(|n| p + n));
         }
-        let near_trunk = |p: IVec3, trunk: &[IVec3]| trunk.iter().any(|t| (t.xz() - p.xz()).abs().max_element() <= 11 && p.y >= t.y);
-        let mut stack: Vec<IVec3> = trunk.iter().flat_map(|p| NEIGHBORS.map(|n| *p + n)).collect();
+        let near_trunk = |p: IVec3, trunk: &[IVec3]| {
+            trunk
+                .iter()
+                .any(|t| (t.xz() - p.xz()).abs().max_element() <= 11 && p.y >= t.y)
+        };
+        let mut stack: Vec<IVec3> = trunk
+            .iter()
+            .flat_map(|p| NEIGHBORS.map(|n| *p + n))
+            .collect();
         let mut leaves = Vec::new();
         while let Some(p) = stack.pop() {
-            if leaves.len() > 40_000 || !block::LEAVES.contains(&self.get(p)) || !seen.insert(p) || !near_trunk(p, &trunk) {
+            if leaves.len() > 40_000
+                || !block::LEAVES.contains(&self.get(p))
+                || !seen.insert(p)
+                || !near_trunk(p, &trunk)
+            {
                 continue;
             }
             leaves.push(p);
@@ -433,7 +482,11 @@ fn smoothstep(edge: f32, d: f32) -> f32 {
 /// `edge` meters at the shape's border.
 fn shape_weight(shape: Option<&OpArea>, whole: Vec2, edge: f32, p: Vec2) -> f32 {
     let (lo, size, ellipse) = match shape {
-        Some(a) => (Vec2::new(a.x as f32, a.z as f32), Vec2::new(a.w as f32, a.d as f32), a.shape == "ellipse"),
+        Some(a) => (
+            Vec2::new(a.x as f32, a.z as f32),
+            Vec2::new(a.w as f32, a.d as f32),
+            a.shape == "ellipse",
+        ),
         None => (Vec2::ZERO, whole, false),
     };
     let inside = if ellipse {
@@ -443,7 +496,11 @@ fn shape_weight(shape: Option<&OpArea>, whole: Vec2, edge: f32, p: Vec2) -> f32 
     } else {
         (p - lo).min(lo + size - p).min_element()
     };
-    if inside <= 0.0 { 0.0 } else { smoothstep(edge, inside) }
+    if inside <= 0.0 {
+        0.0
+    } else {
+        smoothstep(edge, inside)
+    }
 }
 
 /// Distance from `p` to a polyline, and how far along it the closest point is.
@@ -454,7 +511,11 @@ fn polyline_distance(points: &[Vec2], p: Vec2) -> (f32, f32) {
         let (a, b) = (w[0], w[1]);
         let ab = b - a;
         let len = ab.length();
-        let t = if len > 0.0 { ((p - a).dot(ab) / (len * len)).clamp(0.0, 1.0) } else { 0.0 };
+        let t = if len > 0.0 {
+            ((p - a).dot(ab) / (len * len)).clamp(0.0, 1.0)
+        } else {
+            0.0
+        };
         let d = p.distance(a + ab * t);
         if d < best.0 {
             best = (d, along + t * len);
@@ -469,8 +530,18 @@ fn finite(v: Option<f64>) -> Option<f32> {
 }
 
 /// Checks a spec without touching any terrain. Errors are phrased for the agent.
-pub fn validate(spec: &TerrainSpec, area: Area, limits: &TerrainLimits, content: &Content) -> Vec<String> {
-    let TerrainLimits { max_ops, max_height_change_m, max_path_points, .. } = *limits;
+pub fn validate(
+    spec: &TerrainSpec,
+    area: Area,
+    limits: &TerrainLimits,
+    content: &Content,
+) -> Vec<String> {
+    let TerrainLimits {
+        max_ops,
+        max_height_change_m,
+        max_path_points,
+        ..
+    } = *limits;
     let mut errors = Vec::new();
     let whole = area.size_m();
     if spec.ops.is_empty() {
@@ -482,7 +553,10 @@ pub fn validate(spec: &TerrainSpec, area: Area, limits: &TerrainLimits, content:
     for (n, op) in spec.ops.iter().enumerate() {
         let at = format!("op {n} ({})", op.kind);
         if !OP_KINDS.contains(&op.kind.as_str()) && op.kind != CLEAR {
-            errors.push(format!("{at}: unknown kind; use one of {}, {CLEAR}", OP_KINDS.join(", ")));
+            errors.push(format!(
+                "{at}: unknown kind; use one of {}, {CLEAR}",
+                OP_KINDS.join(", ")
+            ));
             continue;
         }
         for (name, v) in [
@@ -501,22 +575,45 @@ pub fn validate(spec: &TerrainSpec, area: Area, limits: &TerrainLimits, content:
             if a.shape != "rect" && a.shape != "ellipse" {
                 errors.push(format!("{at}: area.shape must be \"rect\" or \"ellipse\""));
             }
-            let fits = a.w > 0.0 && a.d > 0.0 && a.x + a.w > 0.0 && a.z + a.d > 0.0
-                && a.x < whole.x as f64 && a.z < whole.y as f64;
+            let fits = a.w > 0.0
+                && a.d > 0.0
+                && a.x + a.w > 0.0
+                && a.z + a.d > 0.0
+                && a.x < whole.x as f64
+                && a.z < whole.y as f64;
             if !fits {
-                errors.push(format!("{at}: area must overlap the selection (0..{:.1} × 0..{:.1} m)", whole.x, whole.y));
+                errors.push(format!(
+                    "{at}: area must overlap the selection (0..{:.1} × 0..{:.1} m)",
+                    whole.x, whole.y
+                ));
             }
         }
         let amount = finite(op.amount_m).unwrap_or(0.0).abs();
-        if amount > max_height_change_m || finite(op.depth_m).unwrap_or(0.0).abs() > max_height_change_m {
+        if amount > max_height_change_m
+            || finite(op.depth_m).unwrap_or(0.0).abs() > max_height_change_m
+        {
             errors.push(format!("{at}: changes are at most {max_height_change_m} m"));
         }
         match op.kind.as_str() {
-            "raise" | "lower" if op.amount_m.is_none() => errors.push(format!("{at}: needs amount_m")),
-            "paint" | "path" if op.material.as_deref().is_some_and(|m| !MATERIALS.contains(&m) && content.id(m).is_none()) => {
+            "raise" | "lower" if op.amount_m.is_none() => {
+                errors.push(format!("{at}: needs amount_m"))
+            }
+            "paint" | "path"
+                if op
+                    .material
+                    .as_deref()
+                    .is_some_and(|m| !MATERIALS.contains(&m) && content.id(m).is_none()) =>
+            {
                 let own: Vec<&str> = content.own().map(|(_, b)| b.name.as_str()).collect();
-                let own = if own.is_empty() { "; this world has no blocks of its own (the block tool makes one)".to_string() } else { format!(", or one of this world's own: {}", own.join(", ")) };
-                errors.push(format!("{at}: material must be one of {}{own}", MATERIALS.join(", ")));
+                let own = if own.is_empty() {
+                    "; this world has no blocks of its own (the block tool makes one)".to_string()
+                } else {
+                    format!(", or one of this world's own: {}", own.join(", "))
+                };
+                errors.push(format!(
+                    "{at}: material must be one of {}{own}",
+                    MATERIALS.join(", ")
+                ));
             }
             "paint" if op.material.is_none() => errors.push(format!("{at}: needs a material")),
             "scatter" | "clear" if op.item.as_deref().is_some_and(|m| !ITEMS.contains(&m)) => {
@@ -525,8 +622,15 @@ pub fn validate(spec: &TerrainSpec, area: Area, limits: &TerrainLimits, content:
             "scatter" if op.item.is_none() => errors.push(format!("{at}: needs an item")),
             "path" => {
                 let points = op.points.as_deref().unwrap_or_default();
-                if points.len() < 2 || points.len() > max_path_points || points.iter().any(|p| p.len() != 2 || p.iter().any(|v| !v.is_finite())) {
-                    errors.push(format!("{at}: points needs 2..{max_path_points} [x, z] pairs"));
+                if points.len() < 2
+                    || points.len() > max_path_points
+                    || points
+                        .iter()
+                        .any(|p| p.len() != 2 || p.iter().any(|v| !v.is_finite()))
+                {
+                    errors.push(format!(
+                        "{at}: points needs 2..{max_path_points} [x, z] pairs"
+                    ));
                 }
             }
             _ => {}
@@ -572,7 +676,9 @@ pub fn compile(
             .collect();
         let covered = || (0..n).filter(|&i| weights[i] > 0.0);
         let mean_ground = || {
-            let (sum, count) = covered().fold((0.0, 0.0), |(s, c), i| (s + columns.ground[i] as f32 * weights[i], c + weights[i]));
+            let (sum, count) = covered().fold((0.0, 0.0), |(s, c), i| {
+                (s + columns.ground[i] as f32 * weights[i], c + weights[i])
+            });
             if count > 0.0 { sum / count } else { sea as f32 }
         };
         let density = finite(op.density).unwrap_or(0.5).clamp(0.0, 1.0);
@@ -587,18 +693,24 @@ pub fn compile(
                 }
             }
             "flatten" => {
-                let target = finite(op.level_m).map_or_else(mean_ground, |l| voxel_of_level(l) as f32);
+                let target =
+                    finite(op.level_m).map_or_else(mean_ground, |l| voxel_of_level(l) as f32);
                 for i in covered().collect::<Vec<_>>() {
                     let g = columns.ground[i] as f32;
                     columns.set_ground(i, (g + (target - g) * weights[i]).round() as i32);
                 }
             }
             "terrace" => {
-                let step = (finite(op.amount_m).unwrap_or(1.0).abs() / VOXEL_SIZE).round().max(2.0) as i32;
+                let step = (finite(op.amount_m).unwrap_or(1.0).abs() / VOXEL_SIZE)
+                    .round()
+                    .max(2.0) as i32;
                 for i in covered().collect::<Vec<_>>() {
                     let g = columns.ground[i];
                     let stepped = sea + (g - sea).div_euclid(step) * step;
-                    columns.set_ground(i, (g as f32 + (stepped - g) as f32 * weights[i]).round() as i32);
+                    columns.set_ground(
+                        i,
+                        (g as f32 + (stepped - g) as f32 * weights[i]).round() as i32,
+                    );
                 }
             }
             "smooth" => {
@@ -631,7 +743,13 @@ pub fn compile(
             }
             "water" => {
                 let level = finite(op.level_m).map_or_else(
-                    || covered().filter(|&i| weights[i] > 0.5).map(|i| columns.ground[i]).min().unwrap_or(sea),
+                    || {
+                        covered()
+                            .filter(|&i| weights[i] > 0.5)
+                            .map(|i| columns.ground[i])
+                            .min()
+                            .unwrap_or(sea)
+                    },
                     voxel_of_level,
                 );
                 let depth = finite(op.depth_m).unwrap_or(1.0).abs().max(VOXEL_SIZE) / VOXEL_SIZE;
@@ -649,7 +767,8 @@ pub fn compile(
                     // Sandy banks and bed.
                     if g <= level {
                         for y in (g - 1).max(1)..=g {
-                            columns.col(i)[y as usize] = pick(block::SAND, hash01(IVec3::new(c.x, y, c.y), seed));
+                            columns.col(i)[y as usize] =
+                                pick(block::SAND, hash01(IVec3::new(c.x, y, c.y), seed));
                         }
                     }
                     for y in g + 1..=level {
@@ -673,14 +792,23 @@ pub fn compile(
                     }
                     let depth = if material == "sand" { 3 } else { 1 };
                     for y in (g - depth + 1).max(1)..=g {
-                        columns.col(i)[y as usize] = material_block(material, IVec3::new(c.x, y, c.y), seed, content);
+                        columns.col(i)[y as usize] =
+                            material_block(material, IVec3::new(c.x, y, c.y), seed, content);
                     }
                     if material != "grass" {
                         columns.clear_plants(i);
                     }
                 }
             }
-            "scatter" => scatter(&mut columns, &weights, op.item.as_deref().unwrap_or("plants"), density, terrain, seed, &mut stats),
+            "scatter" => scatter(
+                &mut columns,
+                &weights,
+                op.item.as_deref().unwrap_or("plants"),
+                density,
+                terrain,
+                seed,
+                &mut stats,
+            ),
             "clear" => {
                 let item = op.item.as_deref();
                 let mut trunks = Vec::new();
@@ -690,7 +818,11 @@ pub fn compile(
                     if item != Some("tree") {
                         trunks.extend(columns.clear_plants(i));
                     } else {
-                        trunks.extend((g + 1..H as i32).map(|y| IVec3::new(c.x, y, c.y)).filter(|p| block::BARK.contains(&columns.get(*p))));
+                        trunks.extend(
+                            (g + 1..H as i32)
+                                .map(|y| IVec3::new(c.x, y, c.y))
+                                .filter(|p| block::BARK.contains(&columns.get(*p))),
+                        );
                     }
                     if matches!(item, Some("rock")) {
                         // Rocks are stone sitting on the ground.
@@ -707,7 +839,12 @@ pub fn compile(
                 }
             }
             "path" => {
-                let points: Vec<Vec2> = op.points.iter().flatten().map(|p| Vec2::new(p[0] as f32, p[1] as f32)).collect();
+                let points: Vec<Vec2> = op
+                    .points
+                    .iter()
+                    .flatten()
+                    .map(|p| Vec2::new(p[0] as f32, p[1] as f32))
+                    .collect();
                 let half = finite(op.width_m).unwrap_or(1.5).clamp(VOXEL_SIZE, 6.0) / 2.0;
                 let material = op.material.as_deref().unwrap_or("dirt");
                 // The path's own height: ground sampled along it, then eased.
@@ -716,7 +853,9 @@ pub fn compile(
                 let mut profile: Vec<f32> = (0..samples)
                     .map(|s| {
                         let at = point_along(&points, s as f32 * VOXEL_SIZE);
-                        columns.index(area.to_world(at)).map_or(sea as f32, |i| columns.ground[i] as f32)
+                        columns
+                            .index(area.to_world(at))
+                            .map_or(sea as f32, |i| columns.ground[i] as f32)
                     })
                     .collect();
                 for _ in 0..3 {
@@ -744,7 +883,8 @@ pub fn compile(
                     if distance <= half {
                         let c = columns.column_of(i);
                         let g = columns.ground[i];
-                        columns.col(i)[g as usize] = material_block(material, IVec3::new(c.x, g, c.y), seed, content);
+                        columns.col(i)[g as usize] =
+                            material_block(material, IVec3::new(c.x, g, c.y), seed, content);
                     }
                 }
                 columns.fell(trunks);
@@ -768,12 +908,22 @@ pub fn compile(
     stats.changed = edits.len();
     let mut errors = Vec::new();
     if stats.changed > limits.max_changed_voxels {
-        errors.push(format!("changes {} voxels, at most {}", stats.changed, limits.max_changed_voxels));
+        errors.push(format!(
+            "changes {} voxels, at most {}",
+            stats.changed, limits.max_changed_voxels
+        ));
     }
     if stats.trees > limits.max_trees {
-        errors.push(format!("adds {} trees, at most {}", stats.trees, limits.max_trees));
+        errors.push(format!(
+            "adds {} trees, at most {}",
+            stats.trees, limits.max_trees
+        ));
     }
-    if errors.is_empty() { Ok(TerrainEdit { edits, stats }) } else { Err(errors) }
+    if errors.is_empty() {
+        Ok(TerrainEdit { edits, stats })
+    } else {
+        Err(errors)
+    }
 }
 
 fn point_along(points: &[Vec2], mut distance: f32) -> Vec2 {
@@ -787,9 +937,18 @@ fn point_along(points: &[Vec2], mut distance: f32) -> Vec2 {
     *points.last().unwrap_or(&Vec2::ZERO)
 }
 
-fn scatter(columns: &mut Columns, weights: &[f32], item: &str, density: f32, terrain: Terrain, seed: u32, stats: &mut SculptStats) {
+fn scatter(
+    columns: &mut Columns,
+    weights: &[f32],
+    item: &str,
+    density: f32,
+    terrain: Terrain,
+    seed: u32,
+    stats: &mut SculptStats,
+) {
     let dry = |columns: &Columns, i: usize| columns.water[i] <= columns.ground[i];
-    let soft = |id: VoxelId| block::GRASS.contains(&id) || block::DIRT.contains(&id) || id == block::SNOW;
+    let soft =
+        |id: VoxelId| block::GRASS.contains(&id) || block::DIRT.contains(&id) || id == block::SNOW;
 
     // Single-voxel plants: a chance per column.
     if matches!(item, "flowers" | "grass" | "plants") {
@@ -844,21 +1003,34 @@ fn scatter(columns: &mut Columns, weights: &[f32], item: &str, density: f32, ter
                 "tree" if soft(top) => {
                     let mut grid = VoxelGrid::new(UVec3::new(25, 40, 25));
                     let min = base + IVec3::new(-12, 1, -12);
-                    terrain.grow_tree(&mut grid, min, base, key + IVec3::new(0, seed as i32 & 0xff, 0));
+                    terrain.grow_tree(
+                        &mut grid,
+                        min,
+                        base,
+                        key + IVec3::new(0, seed as i32 & 0xff, 0),
+                    );
                     copy_into(columns, &grid, min);
                     stats.trees += 1;
                 }
                 "bush" if soft(top) => {
                     let r = 1.6 + hash01(key, seed + 4) * 1.2;
-                    blob(columns, base.as_vec3() + Vec3::new(0.5, 1.0 + r * 0.6, 0.5), Vec3::new(r, r * 0.8, r), seed, |p, t| {
-                        pick(block::LEAVES, (t + hash01(p, seed) * 0.4).min(0.99))
-                    });
+                    blob(
+                        columns,
+                        base.as_vec3() + Vec3::new(0.5, 1.0 + r * 0.6, 0.5),
+                        Vec3::new(r, r * 0.8, r),
+                        seed,
+                        |p, t| pick(block::LEAVES, (t + hash01(p, seed) * 0.4).min(0.99)),
+                    );
                 }
                 "rock" => {
                     let r = 1.2 + hash01(key, seed + 5) * 2.2;
-                    blob(columns, base.as_vec3() + Vec3::new(0.5, 0.6 + r * 0.25, 0.5), Vec3::new(r * 1.2, r * 0.8, r), seed, |p, _| {
-                        pick(block::STONE, value(p.as_vec3() / 2.0, seed + 6))
-                    });
+                    blob(
+                        columns,
+                        base.as_vec3() + Vec3::new(0.5, 0.6 + r * 0.25, 0.5),
+                        Vec3::new(r * 1.2, r * 0.8, r),
+                        seed,
+                        |p, _| pick(block::STONE, value(p.as_vec3() / 2.0, seed + 6)),
+                    );
                 }
                 _ => {}
             }
@@ -867,7 +1039,13 @@ fn scatter(columns: &mut Columns, weights: &[f32], item: &str, density: f32, ter
 }
 
 /// A noisy ellipsoid of voxels, only into open space.
-fn blob(columns: &mut Columns, center: Vec3, radii: Vec3, seed: u32, color: impl Fn(IVec3, f32) -> VoxelId) {
+fn blob(
+    columns: &mut Columns,
+    center: Vec3,
+    radii: Vec3,
+    seed: u32,
+    color: impl Fn(IVec3, f32) -> VoxelId,
+) {
     let lo = (center - radii - 1.0).floor().as_ivec3();
     let hi = (center + radii + 1.0).ceil().as_ivec3();
     for z in lo.z..=hi.z {
@@ -879,7 +1057,9 @@ fn blob(columns: &mut Columns, center: Vec3, radii: Vec3, seed: u32, color: impl
                 if q.length() > 1.0 + wobble {
                     continue;
                 }
-                if matches!(columns.get(p), AIR | block::TUFT) || block::FLOWERS.contains(&columns.get(p)) {
+                if matches!(columns.get(p), AIR | block::TUFT)
+                    || block::FLOWERS.contains(&columns.get(p))
+                {
                     columns.set(p, color(p, 1.0 - (q.y + 1.0) / 2.0));
                 }
             }
@@ -911,7 +1091,12 @@ fn copy_into(columns: &mut Columns, grid: &VoxelGrid, min: IVec3) {
 mod tests {
     use super::*;
 
-    const TERRAIN: Terrain = Terrain { seed: 1337, flat: false, version: crate::terrain::TERRAIN_VERSION, recipe: crate::recipe::Recipe::NATURAL };
+    const TERRAIN: Terrain = Terrain {
+        seed: 1337,
+        flat: false,
+        version: crate::terrain::TERRAIN_VERSION,
+        recipe: crate::recipe::Recipe::NATURAL,
+    };
 
     fn columns(area: Area) -> Columns {
         Columns::read(area, |x, z, out| {
@@ -941,8 +1126,20 @@ mod tests {
     }
 
     fn run(area: Area, ops: Vec<TerrainOp>) -> (Columns, TerrainEdit) {
-        let spec = TerrainSpec { name: "test".into(), ops, about: None };
-        let edit = compile(&spec, area, TERRAIN, columns(area), &TerrainLimits::default(), &Content::default()).unwrap();
+        let spec = TerrainSpec {
+            name: "test".into(),
+            ops,
+            about: None,
+        };
+        let edit = compile(
+            &spec,
+            area,
+            TERRAIN,
+            columns(area),
+            &TerrainLimits::default(),
+            &Content::default(),
+        )
+        .unwrap();
         let mut after = columns(area);
         for (p, id) in &edit.edits {
             after.set(*p, *id);
@@ -959,7 +1156,10 @@ mod tests {
         while TERRAIN.height(x, 0) <= TERRAIN.sea_level() + 4 {
             x += 7;
         }
-        Area { min: [x, 0], size: [24, 24] }
+        Area {
+            min: [x, 0],
+            size: [24, 24],
+        }
     }
 
     #[test]
@@ -978,14 +1178,23 @@ mod tests {
         }
         // Outside the area nothing moved.
         let outside = area.min() - IVec2::splat(3);
-        assert_eq!(after.ground_at(outside).unwrap().0, TERRAIN.height(outside.x, outside.y));
+        assert_eq!(
+            after.ground_at(outside).unwrap().0,
+            TERRAIN.height(outside.x, outside.y)
+        );
     }
 
     #[test]
     fn water_fills_a_basin() {
         let area = dry_area();
         let mut pond = op("water");
-        pond.area = Some(OpArea { shape: "ellipse".into(), x: 1.0, z: 1.0, w: 4.0, d: 4.0 });
+        pond.area = Some(OpArea {
+            shape: "ellipse".into(),
+            x: 1.0,
+            z: 1.0,
+            w: 4.0,
+            d: 4.0,
+        });
         pond.depth_m = Some(1.0);
         pond.edge_m = Some(1.0);
         let (after, edit) = run(area, vec![pond]);
@@ -1000,7 +1209,11 @@ mod tests {
         let area = dry_area();
         let mut up = op("raise");
         up.amount_m = Some(20.0);
-        let spec = TerrainSpec { name: "too much".into(), ops: vec![up, op("teleport")], about: None };
+        let spec = TerrainSpec {
+            name: "too much".into(),
+            ops: vec![up, op("teleport")],
+            about: None,
+        };
         let errors = validate(&spec, area, &TerrainLimits::default(), &Content::default());
         assert_eq!(errors.len(), 2, "{errors:?}");
 
@@ -1017,17 +1230,46 @@ mod tests {
         let area = dry_area();
         let mut paint = op("paint");
         paint.material = Some("lava".into());
-        let spec = TerrainSpec { name: "lava field".into(), ops: vec![paint], about: None };
+        let spec = TerrainSpec {
+            name: "lava field".into(),
+            ops: vec![paint],
+            about: None,
+        };
         let none = Content::default();
-        assert!(validate(&spec, area, &TerrainLimits::default(), &none)[0].contains("no blocks of its own"));
+        assert!(
+            validate(&spec, area, &TerrainLimits::default(), &none)[0]
+                .contains("no blocks of its own")
+        );
 
         let mut content = Content::default();
-        let lava = |name: &str| crate::content::BlockDef { name: name.into(), hex: "#ff5a00".into(), material: "glow".into(), tune: Default::default(), variation: None, gone: false };
+        let lava = |name: &str| crate::content::BlockDef {
+            name: name.into(),
+            hex: "#ff5a00".into(),
+            material: "glow".into(),
+            tune: Default::default(),
+            variation: None,
+            gone: false,
+        };
         content.define(lava("ice")).unwrap();
         content.define(lava("lava")).unwrap();
-        let edit = compile(&spec, area, TERRAIN, columns(area), &TerrainLimits::default(), &content).expect("lava is a block here");
+        let edit = compile(
+            &spec,
+            area,
+            TERRAIN,
+            columns(area),
+            &TerrainLimits::default(),
+            &content,
+        )
+        .expect("lava is a block here");
         let id = content.id("lava").unwrap();
-        assert!(!edit.edits.is_empty() && edit.edits.iter().all(|(_, block)| *block == id || *block == AIR), "only lava, and plants cleared");
+        assert!(
+            !edit.edits.is_empty()
+                && edit
+                    .edits
+                    .iter()
+                    .all(|(_, block)| *block == id || *block == AIR),
+            "only lava, and plants cleared"
+        );
         // It's ground from then on: the next change stands on it.
         let mut after = columns(area);
         for (p, id) in &edit.edits {
@@ -1038,7 +1280,10 @@ mod tests {
         }
         let c = area.min() + IVec2::splat(5);
         assert_eq!(after.ground_at(c).unwrap().0, TERRAIN.height(c.x, c.y));
-        assert_eq!(after.get(IVec3::new(c.x, TERRAIN.height(c.x, c.y), c.y)), id);
+        assert_eq!(
+            after.get(IVec3::new(c.x, TERRAIN.height(c.x, c.y), c.y)),
+            id
+        );
     }
 
     #[test]
@@ -1049,7 +1294,13 @@ mod tests {
         up.edge_m = Some(3.0);
         let mut down = op("lower");
         down.amount_m = Some(1.0);
-        down.area = Some(OpArea { shape: "ellipse".into(), x: 2.0, z: 2.0, w: 3.0, d: 3.0 });
+        down.area = Some(OpArea {
+            shape: "ellipse".into(),
+            x: 2.0,
+            z: 2.0,
+            w: 3.0,
+            d: 3.0,
+        });
         let mut smooth = op("smooth");
         smooth.density = Some(1.0);
         let (_, edit) = run(area, vec![up, down, smooth]);
@@ -1080,9 +1331,15 @@ mod tests {
         let mut clear = op("clear");
         clear.item = Some("tree".into());
         let (after, _) = run(area, vec![trees, clear]);
-        let bark = (0..after.len()).flat_map(|i| after.vox[i * H..(i + 1) * H].to_vec()).filter(|id| block::BARK.contains(id)).count();
+        let bark = (0..after.len())
+            .flat_map(|i| after.vox[i * H..(i + 1) * H].to_vec())
+            .filter(|id| block::BARK.contains(id))
+            .count();
         let before = columns(area);
-        let bark_before = (0..before.len()).flat_map(|i| before.vox[i * H..(i + 1) * H].to_vec()).filter(|id| block::BARK.contains(id)).count();
+        let bark_before = (0..before.len())
+            .flat_map(|i| before.vox[i * H..(i + 1) * H].to_vec())
+            .filter(|id| block::BARK.contains(id))
+            .count();
         assert!(bark <= bark_before, "bark {bark} vs {bark_before}");
     }
 }

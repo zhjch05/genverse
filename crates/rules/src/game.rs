@@ -15,7 +15,12 @@ use crate::{
 
 /// A game or world name as kept on disk: lowercase letters, digits, - and _.
 pub fn clean_name(name: &str) -> Option<String> {
-    let name: String = name.trim().to_lowercase().chars().filter(|c| c.is_ascii_alphanumeric() || *c == '-' || *c == '_').collect();
+    let name: String = name
+        .trim()
+        .to_lowercase()
+        .chars()
+        .filter(|c| c.is_ascii_alphanumeric() || *c == '-' || *c == '_')
+        .collect();
     (!name.is_empty() && name.len() <= 40 && name != "trash").then_some(name)
 }
 
@@ -39,7 +44,10 @@ pub enum GameAction {
     /// Who runs the game, and every world in it.
     SetAdmins { admins: Vec<String> },
     /// A save of every world at once: each world's last change then.
-    Save { name: String, worlds: BTreeMap<String, u64> },
+    Save {
+        name: String,
+        worlds: BTreeMap<String, u64>,
+    },
     /// Adds a package to the game, or a new version of one: worlds that run it move to
     /// this version when they're next loaded (at once, on a server, for loaded ones).
     AddPackage { package: Box<Package> },
@@ -47,7 +55,10 @@ pub enum GameAction {
     RemovePackage { name: String },
     /// Loads a game save: each world goes back to it. `signed` is the admin's signature
     /// of each world's [`load_action`], by world.
-    LoadSave { name: String, signed: BTreeMap<String, String> },
+    LoadSave {
+        name: String,
+        signed: BTreeMap<String, String>,
+    },
 }
 
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
@@ -80,7 +91,11 @@ pub struct Ground {
 impl Ground {
     /// A new world's log on this ground.
     pub fn log(&self) -> crate::log::WorldLog {
-        crate::log::WorldLog { flat: self.flat, recipe: self.recipe, ..crate::log::WorldLog::new(self.seed) }
+        crate::log::WorldLog {
+            flat: self.flat,
+            recipe: self.recipe,
+            ..crate::log::WorldLog::new(self.seed)
+        }
     }
 }
 
@@ -93,7 +108,10 @@ pub struct GameLog {
 
 impl GameLog {
     pub fn new(name: &str) -> Self {
-        Self { name: name.into(), changes: Vec::new() }
+        Self {
+            name: name.into(),
+            changes: Vec::new(),
+        }
     }
 
     /// The worlds in the game, in the order they were made.
@@ -101,9 +119,21 @@ impl GameLog {
         let mut out: Vec<(String, Ground)> = Vec::new();
         for c in &self.changes {
             match &c.action {
-                GameAction::CreateWorld { name, seed, flat, recipe } => {
+                GameAction::CreateWorld {
+                    name,
+                    seed,
+                    flat,
+                    recipe,
+                } => {
                     out.retain(|(n, _)| n != name);
-                    out.push((name.clone(), Ground { seed: *seed, flat: *flat, recipe: *recipe }));
+                    out.push((
+                        name.clone(),
+                        Ground {
+                            seed: *seed,
+                            flat: *flat,
+                            recipe: *recipe,
+                        },
+                    ));
                 }
                 GameAction::RemoveWorld { name } => out.retain(|(n, _)| n != name),
                 GameAction::RenameWorld { from, to } => {
@@ -124,7 +154,8 @@ impl GameLog {
         if self.world(name).is_some() {
             return Some(name.to_string());
         }
-        self.renamed_after(name, 0).filter(|now| self.world(now).is_some())
+        self.renamed_after(name, 0)
+            .filter(|now| self.world(now).is_some())
     }
 
     /// What the world called `name` as of change `id` is called now, following the
@@ -142,7 +173,10 @@ impl GameLog {
     }
 
     pub fn world(&self, name: &str) -> Option<Ground> {
-        self.worlds().into_iter().find(|(n, _)| n == name).map(|(_, g)| g)
+        self.worlds()
+            .into_iter()
+            .find(|(n, _)| n == name)
+            .map(|(_, g)| g)
     }
 
     /// Where players start: the first world still in the game.
@@ -167,10 +201,15 @@ impl GameLog {
 
     /// Game saves, newest last: the change, its name, and each world's last change, by
     /// the world's name now (worlds taken out since are left out).
-    pub fn saves(&self) -> impl DoubleEndedIterator<Item = (&GameChange, &str, BTreeMap<String, u64>)> {
+    pub fn saves(
+        &self,
+    ) -> impl DoubleEndedIterator<Item = (&GameChange, &str, BTreeMap<String, u64>)> {
         self.changes.iter().filter_map(|c| match &c.action {
             GameAction::Save { name, worlds } => {
-                let worlds = worlds.iter().filter_map(|(w, last)| Some((self.renamed_after(w, c.id)?, *last))).collect();
+                let worlds = worlds
+                    .iter()
+                    .filter_map(|(w, last)| Some((self.renamed_after(w, c.id)?, *last)))
+                    .collect();
                 Some((c, name.as_str(), worlds))
             }
             _ => None,
@@ -205,7 +244,10 @@ impl GameLog {
 
     /// The save named `name`, newest first.
     pub fn save_named(&self, name: &str) -> Option<BTreeMap<String, u64>> {
-        self.saves().rev().find(|(_, n, _)| n.eq_ignore_ascii_case(name)).map(|(_, _, w)| w)
+        self.saves()
+            .rev()
+            .find(|(_, n, _)| n.eq_ignore_ascii_case(name))
+            .map(|(_, _, w)| w)
     }
 
     /// What a world running `installed` must do to match the game's packages.
@@ -214,7 +256,9 @@ impl GameLog {
         let mut out = Vec::new();
         for (name, install) in installed {
             match catalog.get(name) {
-                Some(p) if p.hash() != install.package.hash => out.push(Sync::Upgrade(p.clone(), install.scope.clone())),
+                Some(p) if p.hash() != install.package.hash => {
+                    out.push(Sync::Upgrade(p.clone(), install.scope.clone()))
+                }
                 Some(_) => {}
                 None if self.removed(name) => out.push(Sync::Remove(name.clone())),
                 // Installed before the game kept packages: the game takes it on.
@@ -315,14 +359,21 @@ impl GameLog {
 
 /// What a player signs to change a game: who, how, when, and what.
 pub fn signing_bytes(by: &Provenance, action: &GameAction) -> Vec<u8> {
-    let by = Provenance { prompt: None, ..by.clone() };
+    let by = Provenance {
+        prompt: None,
+        ..by.clone()
+    };
     serde_json::to_vec(&("game", by, action)).unwrap_or_default()
 }
 
 /// What loading game save `name` does in a world whose part of it is change `save`: the
 /// change the admin signs for it (whoever keeps the world fills in its state).
 pub fn load_action(name: &str, save: u64) -> crate::log::Action {
-    crate::log::Action::Load { save, name: name.into(), state: None }
+    crate::log::Action::Load {
+        save,
+        name: name.into(),
+        state: None,
+    }
 }
 
 #[cfg(test)]
@@ -337,34 +388,154 @@ mod tests {
     fn games_hold_worlds_and_admins() {
         let mut game = GameLog::new("local");
         // The first player runs a new game.
-        game.push(by("ada"), GameAction::SetAdmins { admins: vec!["ada".into()] }).unwrap();
-        game.push(by("ada"), GameAction::CreateWorld { name: "home".into(), seed: 1, flat: false, recipe: Default::default() }).unwrap();
-        game.push(by("ada"), GameAction::CreateWorld { name: "sokoban".into(), seed: 1, flat: true, recipe: Default::default() }).unwrap();
-        assert!(game.push(by("bo"), GameAction::CreateWorld { name: "mine".into(), seed: 1, flat: true, recipe: Default::default() }).is_err());
-        assert!(game.push(by("ada"), GameAction::CreateWorld { name: "home".into(), seed: 2, flat: true, recipe: Default::default() }).is_err());
-        assert!(game.push(by("ada"), GameAction::CreateWorld { name: "Bad Name".into(), seed: 2, flat: true, recipe: Default::default() }).is_err());
+        game.push(
+            by("ada"),
+            GameAction::SetAdmins {
+                admins: vec!["ada".into()],
+            },
+        )
+        .unwrap();
+        game.push(
+            by("ada"),
+            GameAction::CreateWorld {
+                name: "home".into(),
+                seed: 1,
+                flat: false,
+                recipe: Default::default(),
+            },
+        )
+        .unwrap();
+        game.push(
+            by("ada"),
+            GameAction::CreateWorld {
+                name: "sokoban".into(),
+                seed: 1,
+                flat: true,
+                recipe: Default::default(),
+            },
+        )
+        .unwrap();
+        assert!(
+            game.push(
+                by("bo"),
+                GameAction::CreateWorld {
+                    name: "mine".into(),
+                    seed: 1,
+                    flat: true,
+                    recipe: Default::default()
+                }
+            )
+            .is_err()
+        );
+        assert!(
+            game.push(
+                by("ada"),
+                GameAction::CreateWorld {
+                    name: "home".into(),
+                    seed: 2,
+                    flat: true,
+                    recipe: Default::default()
+                }
+            )
+            .is_err()
+        );
+        assert!(
+            game.push(
+                by("ada"),
+                GameAction::CreateWorld {
+                    name: "Bad Name".into(),
+                    seed: 2,
+                    flat: true,
+                    recipe: Default::default()
+                }
+            )
+            .is_err()
+        );
         assert_eq!(game.start().as_deref(), Some("home"));
-        assert_eq!(game.world("sokoban"), Some(Ground { seed: 1, flat: true, recipe: Default::default() }));
-        game.push(by("ada"), GameAction::RemoveWorld { name: "home".into() }).unwrap();
-        assert!(game.push(by("ada"), GameAction::RemoveWorld { name: "sokoban".into() }).unwrap_err().contains("at least one"));
+        assert_eq!(
+            game.world("sokoban"),
+            Some(Ground {
+                seed: 1,
+                flat: true,
+                recipe: Default::default()
+            })
+        );
+        game.push(
+            by("ada"),
+            GameAction::RemoveWorld {
+                name: "home".into(),
+            },
+        )
+        .unwrap();
+        assert!(
+            game.push(
+                by("ada"),
+                GameAction::RemoveWorld {
+                    name: "sokoban".into()
+                }
+            )
+            .unwrap_err()
+            .contains("at least one")
+        );
         assert_eq!(game.start().as_deref(), Some("sokoban"));
         // Anyone saves the game.
         let worlds = BTreeMap::from([("sokoban".to_string(), 7)]);
-        game.push(by("bo"), GameAction::Save { name: "before".into(), worlds }).unwrap();
+        game.push(
+            by("bo"),
+            GameAction::Save {
+                name: "before".into(),
+                worlds,
+            },
+        )
+        .unwrap();
         assert_eq!(game.saves().count(), 1);
     }
 
     #[test]
     fn renamed_worlds_keep_their_place_saves_and_portals() {
         let mut game = GameLog::new("local");
-        game.push(by("ada"), GameAction::SetAdmins { admins: vec!["ada".into()] }).unwrap();
-        let ground = |seed| GameAction::CreateWorld { name: "home".into(), seed, flat: false, recipe: Default::default() };
+        game.push(
+            by("ada"),
+            GameAction::SetAdmins {
+                admins: vec!["ada".into()],
+            },
+        )
+        .unwrap();
+        let ground = |seed| GameAction::CreateWorld {
+            name: "home".into(),
+            seed,
+            flat: false,
+            recipe: Default::default(),
+        };
         game.push(by("ada"), ground(1)).unwrap();
-        game.push(by("ada"), GameAction::CreateWorld { name: "arena".into(), seed: 2, flat: true, recipe: Default::default() }).unwrap();
-        game.push(by("ada"), GameAction::Save { name: "before".into(), worlds: BTreeMap::from([("home".into(), 3), ("arena".into(), 4)]) }).unwrap();
-        let rename = |from: &str, to: &str| GameAction::RenameWorld { from: from.into(), to: to.into() };
+        game.push(
+            by("ada"),
+            GameAction::CreateWorld {
+                name: "arena".into(),
+                seed: 2,
+                flat: true,
+                recipe: Default::default(),
+            },
+        )
+        .unwrap();
+        game.push(
+            by("ada"),
+            GameAction::Save {
+                name: "before".into(),
+                worlds: BTreeMap::from([("home".into(), 3), ("arena".into(), 4)]),
+            },
+        )
+        .unwrap();
+        let rename = |from: &str, to: &str| GameAction::RenameWorld {
+            from: from.into(),
+            to: to.into(),
+        };
         assert!(game.push(by("bo"), rename("home", "base")).is_err());
-        assert!(game.push(by("ada"), rename("home", "arena")).unwrap_err().contains("already"));
+        assert!(
+            game.push(by("ada"), rename("home", "arena"))
+                .unwrap_err()
+                .contains("already")
+        );
         assert!(game.push(by("ada"), rename("home", "Big Base")).is_err());
         assert!(game.push(by("ada"), rename("nowhere", "base")).is_err());
         game.push(by("ada"), rename("home", "base")).unwrap();
@@ -374,36 +545,95 @@ mod tests {
         assert!(game.world("home").is_none());
         // Portals naming the old name find it; saves name it by its new one.
         assert_eq!(game.current("home").as_deref(), Some("base"));
-        assert_eq!(game.save_named("before").unwrap(), BTreeMap::from([("base".into(), 3), ("arena".into(), 4)]));
+        assert_eq!(
+            game.save_named("before").unwrap(),
+            BTreeMap::from([("base".into(), 3), ("arena".into(), 4)])
+        );
         // Renamed again, then the old name given to a new world: that one wins.
         game.push(by("ada"), rename("base", "camp")).unwrap();
         assert_eq!(game.current("home").as_deref(), Some("camp"));
         game.push(by("ada"), ground(9)).unwrap();
         assert_eq!(game.current("home").as_deref(), Some("home"));
-        assert_eq!(game.save_named("before").unwrap().keys().collect::<Vec<_>>(), ["arena", "camp"]);
+        assert_eq!(
+            game.save_named("before")
+                .unwrap()
+                .keys()
+                .collect::<Vec<_>>(),
+            ["arena", "camp"]
+        );
         // A world taken out leaves its saves.
-        game.push(by("ada"), GameAction::RemoveWorld { name: "arena".into() }).unwrap();
+        game.push(
+            by("ada"),
+            GameAction::RemoveWorld {
+                name: "arena".into(),
+            },
+        )
+        .unwrap();
         assert_eq!(game.current("arena"), None);
-        assert_eq!(game.save_named("before").unwrap().keys().collect::<Vec<_>>(), ["camp"]);
+        assert_eq!(
+            game.save_named("before")
+                .unwrap()
+                .keys()
+                .collect::<Vec<_>>(),
+            ["camp"]
+        );
     }
 
     #[test]
     fn worlds_follow_the_games_packages() {
         use crate::logic::package::tests::farm;
         let mut game = GameLog::new("g");
-        game.push(by("ada"), GameAction::SetAdmins { admins: vec!["ada".into()] }).unwrap();
-        let install = |version| Install { package: farm(version).reference(), scope: Scope::World, by: "ada".into() };
+        game.push(
+            by("ada"),
+            GameAction::SetAdmins {
+                admins: vec!["ada".into()],
+            },
+        )
+        .unwrap();
+        let install = |version| Install {
+            package: farm(version).reference(),
+            scope: Scope::World,
+            by: "ada".into(),
+        };
         let installed = |version| BTreeMap::from([("farm".to_string(), install(version))]);
         // A world running a package the game doesn't know yet: the game takes it on.
         assert!(matches!(game.sync(&installed(1)).as_slice(), [Sync::Adopt(n)] if n == "farm"));
-        assert!(game.push(by("bo"), GameAction::AddPackage { package: Box::new(farm(1)) }).is_err());
-        game.push(by("ada"), GameAction::AddPackage { package: Box::new(farm(1)) }).unwrap();
+        assert!(
+            game.push(
+                by("bo"),
+                GameAction::AddPackage {
+                    package: Box::new(farm(1))
+                }
+            )
+            .is_err()
+        );
+        game.push(
+            by("ada"),
+            GameAction::AddPackage {
+                package: Box::new(farm(1)),
+            },
+        )
+        .unwrap();
         assert!(game.sync(&installed(1)).is_empty());
         // A new version: worlds running the old one move to it.
-        game.push(by("ada"), GameAction::AddPackage { package: Box::new(farm(2)) }).unwrap();
-        assert!(matches!(game.sync(&installed(1)).as_slice(), [Sync::Upgrade(p, _)] if p.manifest.version == 2));
+        game.push(
+            by("ada"),
+            GameAction::AddPackage {
+                package: Box::new(farm(2)),
+            },
+        )
+        .unwrap();
+        assert!(
+            matches!(game.sync(&installed(1)).as_slice(), [Sync::Upgrade(p, _)] if p.manifest.version == 2)
+        );
         // Taken out of the game: worlds stop running it.
-        game.push(by("ada"), GameAction::RemovePackage { name: "farm".into() }).unwrap();
+        game.push(
+            by("ada"),
+            GameAction::RemovePackage {
+                name: "farm".into(),
+            },
+        )
+        .unwrap();
         assert!(matches!(game.sync(&installed(2)).as_slice(), [Sync::Remove(n)] if n == "farm"));
         assert!(game.packages().is_empty());
     }

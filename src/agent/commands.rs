@@ -21,9 +21,16 @@ pub fn run(text: &str, cx: &mut Context) -> String {
         Some(op) => ops::said(ops::run_op(op, &Args::from_words(op.params, &words), cx)),
         // Not the game's own: the world's game logic may answer it (`on_chat`).
         None if !cx.ledger.logic.installed.is_empty() => {
-            match cx.ledger.act(genverse_rules::logic::Intent::Chat { text: text.trim().to_string(), at: cx.at }) {
+            match cx.ledger.act(genverse_rules::logic::Intent::Chat {
+                text: text.trim().to_string(),
+                at: cx.at,
+            }) {
                 Ok(acted) if !acted.notes.is_empty() => acted.notes.join("\n"),
-                Ok(_) => format!("The game didn't answer \"{}\". {}", text.trim(), ops::help()),
+                Ok(_) => format!(
+                    "The game didn't answer \"{}\". {}",
+                    text.trim(),
+                    ops::help()
+                ),
                 Err(why) => format!("⚠ {why}"),
             }
         }

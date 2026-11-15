@@ -26,7 +26,11 @@ pub struct Found {
 impl Found {
     /// The address to join at: loopback for a world hosted on this machine.
     pub fn address(&self) -> String {
-        if is_local(self.at.ip()) { format!("127.0.0.1:{}", self.at.port()) } else { self.at.to_string() }
+        if is_local(self.at.ip()) {
+            format!("127.0.0.1:{}", self.at.port())
+        } else {
+            self.at.to_string()
+        }
     }
 }
 
@@ -55,23 +59,46 @@ pub fn start_listening(mut lan: ResMut<Lan>) {
     }
 }
 
-pub fn update_lan(time: Res<Time>, mut lan: ResMut<Lan>, mut ledger: ResMut<Ledger>, mut chat: ResMut<Chat>) {
+pub fn update_lan(
+    time: Res<Time>,
+    mut lan: ResMut<Lan>,
+    mut ledger: ResMut<Ledger>,
+    mut chat: ResMut<Chat>,
+) {
     let now = time.elapsed_secs();
     if std::mem::take(&mut chat.play_together) {
         lan.play_together(now);
     }
-    let hosting = ledger.hosting.as_ref().map(|server| (server.addr.port(), server.players.load(Ordering::Relaxed)));
+    let hosting = ledger
+        .hosting
+        .as_ref()
+        .map(|server| (server.addr.port(), server.players.load(Ordering::Relaxed)));
 
     // Worlds heard (not our own).
-    let heard = lan.listener.as_ref().map(Listener::poll).unwrap_or_default();
+    let heard = lan
+        .listener
+        .as_ref()
+        .map(Listener::poll)
+        .unwrap_or_default();
     for (beacon, at) in heard {
         if hosting.is_some_and(|(port, _)| port == at.port()) && is_local(at.ip()) {
             continue;
         }
         // Heard on several interfaces: keep the first address, refresh the rest.
-        let at = lan.worlds.iter().find(|w| w.beacon.id == beacon.id).map_or(at, |w| w.at);
+        let at = lan
+            .worlds
+            .iter()
+            .find(|w| w.beacon.id == beacon.id)
+            .map_or(at, |w| w.at);
         lan.worlds.retain(|w| w.beacon.id != beacon.id);
-        lan.worlds.insert(0, Found { beacon, at, seen: now });
+        lan.worlds.insert(
+            0,
+            Found {
+                beacon,
+                at,
+                seen: now,
+            },
+        );
     }
     lan.worlds.retain(|w| now - w.seen < FORGET_AFTER);
 
@@ -84,7 +111,13 @@ pub fn update_lan(time: Res<Time>, mut lan: ResMut<Lan>, mut ledger: ResMut<Ledg
                 lan.id = u64::from_le_bytes(bytes) | 1;
             }
             let name = ledger.profile.name.clone();
-            let beacon = Beacon::new(lan.id, format!("{name}'s world"), name, port, players as u32);
+            let beacon = Beacon::new(
+                lan.id,
+                format!("{name}'s world"),
+                name,
+                port,
+                players as u32,
+            );
             match &lan.announcer {
                 Some(announcer) => announcer.set(beacon),
                 None => match Announcer::start(beacon) {
@@ -103,10 +136,16 @@ pub fn update_lan(time: Res<Time>, mut lan: ResMut<Lan>, mut ledger: ResMut<Ledg
         let (name, address) = (world.beacon.world.clone(), world.address());
         lan.play_until = None;
         let reply = said(online::join(&mut ledger, &address));
-        chat.say(Role::System, format!("Found {name} on your network. {reply}"));
+        chat.say(
+            Role::System,
+            format!("Found {name} on your network. {reply}"),
+        );
     } else if now >= until {
         lan.play_until = None;
         let reply = said(online::host(&mut ledger));
-        chat.say(Role::System, format!("No worlds on your network yet, so this one is open for others. {reply}"));
+        chat.say(
+            Role::System,
+            format!("No worlds on your network yet, so this one is open for others. {reply}"),
+        );
     }
 }

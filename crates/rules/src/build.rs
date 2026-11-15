@@ -10,12 +10,12 @@ use bevy_math::prelude::*;
 use serde::{Deserialize, Serialize};
 
 use crate::content::{self, Tune};
-use crate::{logic::data::GameSpec, sculpt::TerrainSpec};
 use crate::voxel::{
     ModelData,
     faces::count_visible,
     model::{Fill, Geom, ModelDef, NoiseDef, OpDef, PaletteDef, SurfaceDef, build_ordered},
 };
+use crate::{logic::data::GameSpec, sculpt::TerrainSpec};
 
 pub const SCHEMA: &str = include_str!("build_spec.schema.json");
 
@@ -151,30 +151,60 @@ pub fn shape_order(spec: &BuildSpec) -> Option<Vec<u16>> {
     Some(order)
 }
 
-fn compile_ordered(spec: &BuildSpec, limits: &BuildLimits, order: Option<&mut Vec<u16>>) -> Result<CompiledBuild, Vec<String>> {
-    let BuildLimits { max_size, max_shapes, max_colors, max_voxels, max_faces, max_glow_voxels, max_glass_voxels } =
-        *limits;
+fn compile_ordered(
+    spec: &BuildSpec,
+    limits: &BuildLimits,
+    order: Option<&mut Vec<u16>>,
+) -> Result<CompiledBuild, Vec<String>> {
+    let BuildLimits {
+        max_size,
+        max_shapes,
+        max_colors,
+        max_voxels,
+        max_faces,
+        max_glow_voxels,
+        max_glass_voxels,
+    } = *limits;
     let mut errors = Vec::new();
 
     if spec.size.len() != 3 || spec.size.iter().any(|&s| s < 1 || s > max_size as i64) {
-        errors.push(format!("size must be [x, y, z] with each between 1 and {max_size}"));
+        errors.push(format!(
+            "size must be [x, y, z] with each between 1 and {max_size}"
+        ));
     }
     if spec.shapes.is_empty() || spec.shapes.len() > max_shapes {
-        errors.push(format!("use between 1 and {max_shapes} shapes (got {})", spec.shapes.len()));
+        errors.push(format!(
+            "use between 1 and {max_shapes} shapes (got {})",
+            spec.shapes.len()
+        ));
     }
     if spec.palette.is_empty() || spec.palette.len() > max_colors {
-        errors.push(format!("use between 1 and {max_colors} colors (got {})", spec.palette.len()));
+        errors.push(format!(
+            "use between 1 and {max_colors} colors (got {})",
+            spec.palette.len()
+        ));
     }
     if !errors.is_empty() {
         return Err(errors);
     }
-    let size = UVec3::new(spec.size[0] as u32, spec.size[1] as u32, spec.size[2] as u32);
+    let size = UVec3::new(
+        spec.size[0] as u32,
+        spec.size[1] as u32,
+        spec.size[2] as u32,
+    );
 
     // The plain materials, shared by every color that doesn't change them.
     let mut surfaces: Vec<SurfaceDef> = content::MATERIALS
         .iter()
         .filter(|(_, finish, _)| finish.glow == 0.0)
-        .map(|(name, f, _)| SurfaceDef { name: name.to_string(), roughness: f.roughness, metallic: f.metallic, reflectance: f.reflectance, emissive: None, alpha: f.alpha })
+        .map(|(name, f, _)| SurfaceDef {
+            name: name.to_string(),
+            roughness: f.roughness,
+            metallic: f.metallic,
+            reflectance: f.reflectance,
+            emissive: None,
+            alpha: f.alpha,
+        })
         .collect();
     let mut palette = Vec::new();
     for (i, c) in spec.palette.iter().enumerate() {
@@ -207,7 +237,12 @@ fn compile_ordered(spec: &BuildSpec, limits: &BuildLimits, order: Option<&mut Ve
             });
             name
         };
-        palette.push(PaletteDef { name: c.name.clone(), color: c.hex.clone(), surface, variation: 0.04 });
+        palette.push(PaletteDef {
+            name: c.name.clone(),
+            color: c.hex.clone(),
+            surface,
+            variation: 0.04,
+        });
     }
 
     let mut ops = Vec::new();
@@ -226,7 +261,10 @@ fn compile_ordered(spec: &BuildSpec, limits: &BuildLimits, order: Option<&mut Ve
         }
         let (lo, hi) = (a.min(b), a.max(b));
         let geom = match s.kind.as_str() {
-            "box" => Geom::Box { min: lo.into(), max: hi.into() },
+            "box" => Geom::Box {
+                min: lo.into(),
+                max: hi.into(),
+            },
             "ellipsoid" => Geom::Ellipsoid {
                 center: ((lo + hi) / 2.0).into(),
                 radii: ((hi - lo) / 2.0).max(Vec3::splat(0.5)).into(),
@@ -244,7 +282,12 @@ fn compile_ordered(spec: &BuildSpec, limits: &BuildLimits, order: Option<&mut Ve
                 if !(0.5..=16.0).contains(&r) {
                     errors.push(format!("{what} radius must be between 0.5 and 16"));
                 }
-                Geom::Capsule { a: from, b: to, radius_a: r, radius_b: r }
+                Geom::Capsule {
+                    a: from,
+                    b: to,
+                    radius_a: r,
+                    radius_b: r,
+                }
             }
             other => {
                 errors.push(format!("{what} has unknown kind {other:?}"));
@@ -255,7 +298,11 @@ fn compile_ordered(spec: &BuildSpec, limits: &BuildLimits, order: Option<&mut Ve
         ops.push(OpDef::Shape {
             geom,
             fill: Fill::Solid(s.color.clone()),
-            noise: (wobble > 0.0).then_some(NoiseDef { scale: 3.0, amplitude: wobble, seed: i as u32 }),
+            noise: (wobble > 0.0).then_some(NoiseDef {
+                scale: 3.0,
+                amplitude: wobble,
+                seed: i as u32,
+            }),
             mask: None,
         });
     }
@@ -276,7 +323,10 @@ fn compile_ordered(spec: &BuildSpec, limits: &BuildLimits, order: Option<&mut Ve
     // One op per shape, in the spec's order, so an op's index is its shape's.
     let model = build_ordered(def, order).map_err(|e| vec![e])?;
 
-    let mut stats = BuildStats { size, ..Default::default() };
+    let mut stats = BuildStats {
+        size,
+        ..Default::default()
+    };
     let (mut glass, grid) = (0, &model.grid);
     for z in 0..size.z as i32 {
         for y in 0..size.y as i32 {
@@ -302,18 +352,33 @@ fn compile_ordered(spec: &BuildSpec, limits: &BuildLimits, order: Option<&mut Ve
         errors.push("the build is empty".into());
     }
     if stats.voxels > max_voxels {
-        errors.push(format!("{} voxels is over the limit of {max_voxels}; hollow it out or shrink it", stats.voxels));
+        errors.push(format!(
+            "{} voxels is over the limit of {max_voxels}; hollow it out or shrink it",
+            stats.voxels
+        ));
     }
     if stats.faces > max_faces {
-        errors.push(format!("{} visible faces is over the limit of {max_faces}; use fewer, larger shapes", stats.faces));
+        errors.push(format!(
+            "{} visible faces is over the limit of {max_faces}; use fewer, larger shapes",
+            stats.faces
+        ));
     }
     if stats.glow > max_glow_voxels {
-        errors.push(format!("{} glowing voxels is over the limit of {max_glow_voxels}", stats.glow));
+        errors.push(format!(
+            "{} glowing voxels is over the limit of {max_glow_voxels}",
+            stats.glow
+        ));
     }
     if glass > max_glass_voxels {
-        errors.push(format!("{glass} glass voxels is over the limit of {max_glass_voxels}"));
+        errors.push(format!(
+            "{glass} glass voxels is over the limit of {max_glass_voxels}"
+        ));
     }
-    if errors.is_empty() { Ok(CompiledBuild { model, stats }) } else { Err(errors) }
+    if errors.is_empty() {
+        Ok(CompiledBuild { model, stats })
+    } else {
+        Err(errors)
+    }
 }
 
 #[cfg(test)]
@@ -321,7 +386,14 @@ mod tests {
     use super::*;
 
     fn shape(kind: &str, color: &str, from: [f64; 3], to: [f64; 3]) -> ShapeSpec {
-        ShapeSpec { kind: kind.into(), color: color.into(), from: from.into(), to: to.into(), radius: None, wobble: None }
+        ShapeSpec {
+            kind: kind.into(),
+            color: color.into(),
+            from: from.into(),
+            to: to.into(),
+            radius: None,
+            wobble: None,
+        }
     }
 
     fn lamp() -> BuildSpec {
@@ -329,8 +401,18 @@ mod tests {
             name: "Lamp post".into(),
             size: vec![7, 22, 7],
             palette: vec![
-                ColorSpec { name: "iron".into(), hex: "#3d4248".into(), material: "metal".into(), tune: Tune::default() },
-                ColorSpec { name: "light".into(), hex: "#ffd88a".into(), material: "glow".into(), tune: Tune::default() },
+                ColorSpec {
+                    name: "iron".into(),
+                    hex: "#3d4248".into(),
+                    material: "metal".into(),
+                    tune: Tune::default(),
+                },
+                ColorSpec {
+                    name: "light".into(),
+                    hex: "#ffd88a".into(),
+                    material: "glow".into(),
+                    tune: Tune::default(),
+                },
             ],
             shapes: vec![
                 shape("box", "iron", [1.0, 0.0, 1.0], [6.0, 2.0, 6.0]),
@@ -344,7 +426,8 @@ mod tests {
 
     #[test]
     fn prompt_example_compiles() {
-        let build = compile(&lamp(), &BuildLimits::default()).expect("the example in the system prompt must be valid");
+        let build = compile(&lamp(), &BuildLimits::default())
+            .expect("the example in the system prompt must be valid");
         assert_eq!(build.stats.size, UVec3::new(7, 22, 7));
         assert_eq!(build.stats.glow, 5 * 4 * 5);
         assert!(build.stats.faces > 0);
@@ -355,7 +438,10 @@ mod tests {
         let order = shape_order(&lamp()).unwrap();
         let at = |x: u32, y: u32, z: u32| order[(x + 7 * (y + 22 * z)) as usize];
         // The base, the pole, the lamp and the cap, from the ground up.
-        assert_eq!([at(3, 0, 3), at(3, 10, 3), at(3, 18, 3), at(3, 21, 3)], [0, 1, 2, 3]);
+        assert_eq!(
+            [at(3, 0, 3), at(3, 10, 3), at(3, 18, 3), at(3, 21, 3)],
+            [0, 1, 2, 3]
+        );
         assert_eq!(order.len(), 7 * 22 * 7);
     }
 
@@ -374,19 +460,40 @@ mod tests {
     fn a_color_tunes_its_material() {
         let mut spec = lamp();
         // Iron that glows a little, and a light that's see-through.
-        spec.palette[0].tune = Tune { glow: Some(0.5), ..Default::default() };
-        spec.palette[1].tune = Tune { alpha: Some(0.5), ..Default::default() };
+        spec.palette[0].tune = Tune {
+            glow: Some(0.5),
+            ..Default::default()
+        };
+        spec.palette[1].tune = Tune {
+            alpha: Some(0.5),
+            ..Default::default()
+        };
         let build = compile(&spec, &BuildLimits::default()).expect("in range");
         let palette = &build.model.palette;
-        let (iron, light) = (palette.find("iron").unwrap(), palette.find("light").unwrap());
+        let (iron, light) = (
+            palette.find("iron").unwrap(),
+            palette.find("light").unwrap(),
+        );
         assert_ne!(palette.surface_of(iron).emissive, LinearRgba::BLACK);
-        assert_eq!((palette.surface_of(iron).metallic, palette.surface_of(light).alpha), (0.9, 0.5));
+        assert_eq!(
+            (
+                palette.surface_of(iron).metallic,
+                palette.surface_of(light).alpha
+            ),
+            (0.9, 0.5)
+        );
         assert!(build.stats.glow > 5 * 4 * 5);
         spec.palette[0].tune.roughness = Some(3.0);
-        assert!(compile(&spec, &BuildLimits::default()).err().unwrap()[0].contains("roughness is from 0 to 1"));
+        assert!(
+            compile(&spec, &BuildLimits::default()).err().unwrap()[0]
+                .contains("roughness is from 0 to 1")
+        );
         // A plain color is written, and read, as before.
         let plain = serde_json::to_string(&lamp().palette[0]).unwrap();
-        assert_eq!(plain, r##"{"name":"iron","hex":"#3d4248","material":"metal"}"##);
+        assert_eq!(
+            plain,
+            r##"{"name":"iron","hex":"#3d4248","material":"metal"}"##
+        );
         let nulls: ColorSpec = serde_json::from_str(r##"{"name":"iron","hex":"#3d4248","material":"metal","glow":null,"alpha":0.5,"roughness":null,"metallic":null}"##).unwrap();
         assert_eq!(nulls.tune.alpha, Some(0.5));
     }
@@ -397,7 +504,11 @@ mod tests {
         spec.size = vec![64, 64, 64];
         spec.shapes = vec![shape("box", "iron", [0.0, 0.0, 0.0], [64.0, 64.0, 64.0])];
         let errors = compile(&spec, &BuildLimits::default()).err().unwrap();
-        assert!(errors.iter().any(|e| e.contains("voxels is over the limit")));
+        assert!(
+            errors
+                .iter()
+                .any(|e| e.contains("voxels is over the limit"))
+        );
     }
 
     /// The answer schema is what agents are held to, so it must list what the rules
@@ -407,24 +518,56 @@ mod tests {
     fn the_schema_lists_what_the_rules_take() {
         let schema: serde_json::Value = serde_json::from_str(SCHEMA).unwrap();
         let listed = |pointer: &str| -> Vec<String> {
-            let list = schema.pointer(pointer).and_then(|v| v.as_array()).unwrap_or_else(|| panic!("the schema has no list at {pointer}"));
-            list.iter().map(|v| v.as_str().unwrap_or_default().to_string()).collect()
+            let list = schema
+                .pointer(pointer)
+                .and_then(|v| v.as_array())
+                .unwrap_or_else(|| panic!("the schema has no list at {pointer}"));
+            list.iter()
+                .map(|v| v.as_str().unwrap_or_default().to_string())
+                .collect()
         };
-        assert_eq!(listed("/$defs/color/properties/material/enum"), content::MATERIALS.map(|(name, ..)| name));
-        let kinds: Vec<&str> = crate::sculpt::OP_KINDS.into_iter().chain([crate::sculpt::CLEAR]).collect();
+        assert_eq!(
+            listed("/$defs/color/properties/material/enum"),
+            content::MATERIALS.map(|(name, ..)| name)
+        );
+        let kinds: Vec<&str> = crate::sculpt::OP_KINDS
+            .into_iter()
+            .chain([crate::sculpt::CLEAR])
+            .collect();
         assert_eq!(listed("/$defs/terrain_op/properties/kind/enum"), kinds);
-        assert_eq!(listed("/$defs/terrain_op/properties/item/anyOf/0/enum"), crate::sculpt::ITEMS);
+        assert_eq!(
+            listed("/$defs/terrain_op/properties/item/anyOf/0/enum"),
+            crate::sculpt::ITEMS
+        );
         // Every shape the schema offers is one the compiler makes.
         for kind in listed("/$defs/shape/properties/kind/enum") {
             let mut spec = lamp();
-            spec.shapes = vec![ShapeSpec { radius: Some(1.0), ..shape(&kind, "iron", [1.0, 1.0, 1.0], [5.0, 9.0, 5.0]) }];
-            assert!(compile(&spec, &BuildLimits::default()).is_ok(), "{kind} is in the schema and doesn't compile");
+            spec.shapes = vec![ShapeSpec {
+                radius: Some(1.0),
+                ..shape(&kind, "iron", [1.0, 1.0, 1.0], [5.0, 9.0, 5.0])
+            }];
+            assert!(
+                compile(&spec, &BuildLimits::default()).is_ok(),
+                "{kind} is in the schema and doesn't compile"
+            );
         }
         // And every number a color can tune is one the schema lets it give.
-        let color = schema.pointer("/$defs/color/properties").and_then(|v| v.as_object()).unwrap();
-        let tuned = serde_json::to_value(Tune { roughness: Some(0.5), metallic: Some(0.5), glow: Some(0.5), alpha: Some(0.5) }).unwrap();
+        let color = schema
+            .pointer("/$defs/color/properties")
+            .and_then(|v| v.as_object())
+            .unwrap();
+        let tuned = serde_json::to_value(Tune {
+            roughness: Some(0.5),
+            metallic: Some(0.5),
+            glow: Some(0.5),
+            alpha: Some(0.5),
+        })
+        .unwrap();
         for field in tuned.as_object().unwrap().keys() {
-            assert!(color.contains_key(field), "the schema's colors have no {field}");
+            assert!(
+                color.contains_key(field),
+                "the schema's colors have no {field}"
+            );
         }
     }
 

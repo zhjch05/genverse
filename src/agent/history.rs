@@ -176,12 +176,17 @@ pub fn follow_ledger(
     mut landscape: ResMut<Landscape>,
 ) {
     let follow = &ledger.follow;
-    if follow.cells.is_empty() && !follow.builds && follow.edits.is_none() && follow.keep.is_empty() {
+    if follow.cells.is_empty() && !follow.builds && follow.edits.is_none() && follow.keep.is_empty()
+    {
         return;
     }
     let follow = std::mem::take(&mut ledger.follow);
     if let Some(edits) = follow.edits {
-        world.replace_edits(edits.iter().map(|[x, y, z, id]| (IVec3::new(*x, *y, *z), *id as VoxelId)));
+        world.replace_edits(
+            edits
+                .iter()
+                .map(|[x, y, z, id]| (IVec3::new(*x, *y, *z), *id as VoxelId)),
+        );
         landscape.forget_history();
     }
     for cell in &follow.cells {

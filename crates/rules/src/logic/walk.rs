@@ -102,7 +102,10 @@ impl Eq for Node {}
 
 impl Ord for Node {
     fn cmp(&self, other: &Self) -> Ordering {
-        other.cost.total_cmp(&self.cost).then_with(|| self.cell.cmp(&other.cell))
+        other
+            .cost
+            .total_cmp(&self.cost)
+            .then_with(|| self.cell.cmp(&other.cell))
     }
 }
 
@@ -122,16 +125,25 @@ pub fn path(ground: &dyn Ground, from: [f32; 3], to: [f32; 3]) -> Result<Vec<[f3
     let hi = [from[0].max(to[0]) + MARGIN, from[2].max(to[2]) + MARGIN];
     let min = [column(lo[0]), column(lo[1])];
     // Cells of CELL × CELL columns, read at their corner column.
-    let cells = [(column(hi[0]) - min[0]) / CELL + 1, (column(hi[1]) - min[1]) / CELL + 1];
+    let cells = [
+        (column(hi[0]) - min[0]) / CELL + 1,
+        (column(hi[1]) - min[1]) / CELL + 1,
+    ];
     let Some(heights) = ground.heights(min, CELL, cells) else {
         return Ok(vec![from, to]);
     };
     // Where a piece stands in each cell: on the ground, or on top of what's built there
     // (in any of the cell's columns, so a thin wall can't be slipped through).
-    let mut stands: Vec<Option<f32>> = heights.iter().map(|y| y.map(|y| (y + 1) as f32 * VOXEL_SIZE)).collect();
+    let mut stands: Vec<Option<f32>> = heights
+        .iter()
+        .map(|y| y.map(|y| (y + 1) as f32 * VOXEL_SIZE))
+        .collect();
     let near = |s: &Solid| {
         let r = s.reach();
-        s.position[0] + r >= lo[0] && s.position[0] - r <= hi[0] && s.position[2] + r >= lo[1] && s.position[2] - r <= hi[1]
+        s.position[0] + r >= lo[0]
+            && s.position[0] - r <= hi[0]
+            && s.position[2] + r >= lo[1]
+            && s.position[2] - r <= hi[1]
     };
     for solid in ground.solids(lo, hi).iter().filter(|s| near(s)) {
         for (&(x, z), runs) in solid.spans().iter() {
@@ -140,15 +152,24 @@ pub fn path(ground: &dyn Ground, from: [f32; 3], to: [f32; 3]) -> Result<Vec<[f3
                 continue;
             }
             if let Some(Some(at)) = stands.get_mut((j * cells[0] + i) as usize) {
-                let base = (heights[(j * cells[0] + i) as usize].unwrap_or(0) + 1) as f32 * VOXEL_SIZE;
+                let base =
+                    (heights[(j * cells[0] + i) as usize].unwrap_or(0) + 1) as f32 * VOXEL_SIZE;
                 *at = at.max(stand(base, runs));
             }
         }
     }
-    let cell_of = |p: [f32; 3]| ((column(p[0]) - min[0]) / CELL, (column(p[2]) - min[1]) / CELL);
+    let cell_of = |p: [f32; 3]| {
+        (
+            (column(p[0]) - min[0]) / CELL,
+            (column(p[2]) - min[1]) / CELL,
+        )
+    };
     let height = |c: (i32, i32)| -> Option<f32> {
         (c.0 >= 0 && c.1 >= 0 && c.0 < cells[0] && c.1 < cells[1]).then_some(())?;
-        stands.get((c.1 * cells[0] + c.0) as usize).copied().flatten()
+        stands
+            .get((c.1 * cells[0] + c.0) as usize)
+            .copied()
+            .flatten()
     };
     let center = |c: (i32, i32), y: f32| {
         let m = |i: i32, at: i32| (at + i * CELL) as f32 * VOXEL_SIZE + VOXEL_SIZE / 2.0;
@@ -162,7 +183,10 @@ pub fn path(ground: &dyn Ground, from: [f32; 3], to: [f32; 3]) -> Result<Vec<[f3
     }
     // A* over the cells, 8 ways.
     let guess = |c: (i32, i32)| (((c.0 - goal.0).pow(2) + (c.1 - goal.1).pow(2)) as f32).sqrt();
-    let mut open = BinaryHeap::from([Node { cost: guess(start), cell: start }]);
+    let mut open = BinaryHeap::from([Node {
+        cost: guess(start),
+        cell: start,
+    }]);
     let mut best: HashMap<(i32, i32), (f32, (i32, i32))> = HashMap::from([(start, (0.0, start))]);
     let mut reached = false;
     while let Some(Node { cell, .. }) = open.pop() {
@@ -172,21 +196,46 @@ pub fn path(ground: &dyn Ground, from: [f32; 3], to: [f32; 3]) -> Result<Vec<[f3
         }
         let (so_far, _) = best[&cell];
         // Setting off, it's where it stands (even right by a wall in its cell).
-        let here = if cell == start { from[1] } else { height(cell).unwrap_or(0.0) };
-        for (dx, dz) in [(1, 0), (-1, 0), (0, 1), (0, -1), (1, 1), (1, -1), (-1, 1), (-1, -1)] {
+        let here = if cell == start {
+            from[1]
+        } else {
+            height(cell).unwrap_or(0.0)
+        };
+        for (dx, dz) in [
+            (1, 0),
+            (-1, 0),
+            (0, 1),
+            (0, -1),
+            (1, 1),
+            (1, -1),
+            (-1, 1),
+            (-1, -1),
+        ] {
             let next = (cell.0 + dx, cell.1 + dz);
             let Some(y) = height(next) else { continue };
             if (y - here).abs() > CLIMB {
                 continue;
             }
             // Diagonals don't cut corners.
-            if dx != 0 && dz != 0 && (height((cell.0 + dx, cell.1)).is_none() || height((cell.0, cell.1 + dz)).is_none()) {
+            if dx != 0
+                && dz != 0
+                && (height((cell.0 + dx, cell.1)).is_none()
+                    || height((cell.0, cell.1 + dz)).is_none())
+            {
                 continue;
             }
-            let cost = so_far + if dx != 0 && dz != 0 { std::f32::consts::SQRT_2 } else { 1.0 };
+            let cost = so_far
+                + if dx != 0 && dz != 0 {
+                    std::f32::consts::SQRT_2
+                } else {
+                    1.0
+                };
             if best.get(&next).is_none_or(|(c, _)| cost < *c) {
                 best.insert(next, (cost, cell));
-                open.push(Node { cost: cost + guess(next), cell: next });
+                open.push(Node {
+                    cost: cost + guess(next),
+                    cell: next,
+                });
             }
         }
     }
@@ -229,12 +278,23 @@ pub fn path(ground: &dyn Ground, from: [f32; 3], to: [f32; 3]) -> Result<Vec<[f3
 }
 
 fn length(path: &[[f32; 3]]) -> f32 {
-    path.windows(2).map(|w| ((w[0][0] - w[1][0]).powi(2) + (w[0][1] - w[1][1]).powi(2) + (w[0][2] - w[1][2]).powi(2)).sqrt()).sum()
+    path.windows(2)
+        .map(|w| {
+            ((w[0][0] - w[1][0]).powi(2)
+                + (w[0][1] - w[1][1]).powi(2)
+                + (w[0][2] - w[1][2]).powi(2))
+            .sqrt()
+        })
+        .sum()
 }
 
 fn point(v: &Value) -> Option<[f32; 3]> {
     let a = v.as_array().filter(|a| a.len() == 3)?;
-    let p = [a[0].as_f64()? as f32, a[1].as_f64()? as f32, a[2].as_f64()? as f32];
+    let p = [
+        a[0].as_f64()? as f32,
+        a[1].as_f64()? as f32,
+        a[2].as_f64()? as f32,
+    ];
     p.iter().all(|v| v.is_finite()).then_some(p)
 }
 
@@ -257,11 +317,17 @@ pub fn walking_at(e: &Entity, now: f64) -> Option<([f32; 3], f32)> {
     let mut left = ((now - start) * speed).max(0.0) as f32;
     let mut facing = 0.0;
     for w in path.windows(2) {
-        let step = ((w[1][0] - w[0][0]).powi(2) + (w[1][1] - w[0][1]).powi(2) + (w[1][2] - w[0][2]).powi(2)).sqrt();
+        let step = ((w[1][0] - w[0][0]).powi(2)
+            + (w[1][1] - w[0][1]).powi(2)
+            + (w[1][2] - w[0][2]).powi(2))
+        .sqrt();
         facing = (-(w[1][0] - w[0][0])).atan2(-(w[1][2] - w[0][2]));
         if left <= step && step > 0.0 {
             let t = left / step;
-            return Some((std::array::from_fn(|i| w[0][i] + (w[1][i] - w[0][i]) * t), facing));
+            return Some((
+                std::array::from_fn(|i| w[0][i] + (w[1][i] - w[0][i]) * t),
+                facing,
+            ));
         }
         left -= step;
     }
@@ -269,16 +335,33 @@ pub fn walking_at(e: &Entity, now: f64) -> Option<([f32; 3], f32)> {
 }
 
 /// What a script or a package's data does to send `id` walking to `to` from `at`.
-pub fn walk_effects(id: EntityId, to: [f32; 3], speed: Option<f32>, fly: bool, at: u64) -> Vec<Effect> {
+pub fn walk_effects(
+    id: EntityId,
+    to: [f32; 3],
+    speed: Option<f32>,
+    fly: bool,
+    at: u64,
+) -> Vec<Effect> {
     let speed = speed.unwrap_or(DEFAULT_SPEED);
     let mut walk = json!({ "to": to, "speed": speed });
     if fly {
         walk["fly"] = true.into();
     }
     vec![
-        Effect::Set { entity: id, component: "walk".into(), value: walk },
+        Effect::Set {
+            entity: id,
+            component: "walk".into(),
+            value: walk,
+        },
         // A second on: the clock may have run up to `at` already.
-        Effect::Schedule { name: timer("walk", id), due: at + 1, every: None, data: Value::Null, near: Some(id), feature: None },
+        Effect::Schedule {
+            name: timer("walk", id),
+            due: at + 1,
+            every: None,
+            data: Value::Null,
+            near: Some(id),
+            feature: None,
+        },
     ]
 }
 
@@ -288,12 +371,22 @@ pub fn stop_effects(id: EntityId, e: &Entity, at: u64) -> Vec<Effect> {
     if e.components.contains_key("walk") {
         let here = position_at(e, at as f64);
         if here != e.position {
-            out.push(Effect::Move { entity: id, position: here });
+            out.push(Effect::Move {
+                entity: id,
+                position: here,
+            });
         }
-        out.push(Effect::Remove { entity: id, component: "walk".into() });
+        out.push(Effect::Remove {
+            entity: id,
+            component: "walk".into(),
+        });
     }
-    out.push(Effect::Cancel { name: timer("walk", id) });
-    out.push(Effect::Cancel { name: timer("arrive", id) });
+    out.push(Effect::Cancel {
+        name: timer("walk", id),
+    });
+    out.push(Effect::Cancel {
+        name: timer("arrive", id),
+    });
     out
 }
 
@@ -302,10 +395,29 @@ pub fn stop_effects(id: EntityId, e: &Entity, at: u64) -> Vec<Effect> {
 pub fn chase_effects(id: EntityId, chase: Option<Value>, at: u64) -> Vec<Effect> {
     match chase {
         Some(value) => vec![
-            Effect::Set { entity: id, component: "chase".into(), value },
-            Effect::Schedule { name: timer("chase", id), due: at + 1, every: Some(CHASE_EVERY), data: Value::Null, near: Some(id), feature: None },
+            Effect::Set {
+                entity: id,
+                component: "chase".into(),
+                value,
+            },
+            Effect::Schedule {
+                name: timer("chase", id),
+                due: at + 1,
+                every: Some(CHASE_EVERY),
+                data: Value::Null,
+                near: Some(id),
+                feature: None,
+            },
         ],
-        None => vec![Effect::Remove { entity: id, component: "chase".into() }, Effect::Cancel { name: timer("chase", id) }],
+        None => vec![
+            Effect::Remove {
+                entity: id,
+                component: "chase".into(),
+            },
+            Effect::Cancel {
+                name: timer("chase", id),
+            },
+        ],
     }
 }
 
@@ -316,22 +428,33 @@ pub fn timer(kind: &str, id: EntityId) -> String {
 
 /// Checks an engine component this module owns, phrased for the agent that wrote it.
 pub fn check(name: &str, value: &Value) -> Result<(), String> {
-    let num = |key: &str, range: std::ops::RangeInclusive<f64>| value[key].as_f64().is_some_and(|v| range.contains(&v));
+    let num = |key: &str, range: std::ops::RangeInclusive<f64>| {
+        value[key].as_f64().is_some_and(|v| range.contains(&v))
+    };
     let ok = match name {
         "walk" => {
             point(&value["to"]).is_some()
                 && num("speed", *SPEEDS.start() as f64..=*SPEEDS.end() as f64)
-                && (value["path"].is_null() || points(&value["path"]).is_some_and(|p| (2..=MAX_POINTS).contains(&p.len())))
+                && (value["path"].is_null()
+                    || points(&value["path"]).is_some_and(|p| (2..=MAX_POINTS).contains(&p.len())))
                 && (value["fly"].is_null() || value["fly"].is_boolean())
         }
-        "chase" => value["player"].as_str().is_some_and(|p| !p.is_empty()) && num("speed", 0.2..=12.0) && num("reach", 0.5..=16.0),
+        "chase" => {
+            value["player"].as_str().is_some_and(|p| !p.is_empty())
+                && num("speed", 0.2..=12.0)
+                && num("reach", 0.5..=16.0)
+        }
         _ => true,
     };
     if ok {
         return Ok(());
     }
     Err(match name {
-        "walk" => format!("\"walk\" is {{\"to\": [x, y, z], \"speed\": {}-{} m/s}}; use walk(id, pos, speed)", SPEEDS.start(), SPEEDS.end()),
+        "walk" => format!(
+            "\"walk\" is {{\"to\": [x, y, z], \"speed\": {}-{} m/s}}; use walk(id, pos, speed)",
+            SPEEDS.start(),
+            SPEEDS.end()
+        ),
         _ => "chase(id, player, {speed = 0.2-12 m/s, reach = 0.5-16 m})".into(),
     })
 }
@@ -361,12 +484,21 @@ impl Engine<'_, '_> {
 
     /// Runs the engine's timer `name` (`~walk:2.0`, without the `~`).
     pub fn fire(&mut self, name: &str) -> Result<Option<Heard>, String> {
-        let Some((kind, id)) = name.split_once(':') else { return Ok(None) };
-        let id = id.split_once('.').and_then(|(c, n)| Some(EntityId { change: c.parse().ok()?, n: n.parse().ok()? }));
+        let Some((kind, id)) = name.split_once(':') else {
+            return Ok(None);
+        };
+        let id = id.split_once('.').and_then(|(c, n)| {
+            Some(EntityId {
+                change: c.parse().ok()?,
+                n: n.parse().ok()?,
+            })
+        });
         let Some(id) = id else { return Ok(None) };
         let Some(e) = self.batch.get(id).cloned() else {
             // Its piece is gone: so is the timer.
-            self.apply(Effect::Cancel { name: format!("~{name}") })?;
+            self.apply(Effect::Cancel {
+                name: format!("~{name}"),
+            })?;
             return Ok(None);
         };
         match kind {
@@ -379,27 +511,50 @@ impl Engine<'_, '_> {
 
     /// Finds the way for a walk asked for, and sets off.
     fn set_off(&mut self, id: EntityId, e: &Entity) -> Result<Option<Heard>, String> {
-        let Some(walk) = e.components.get("walk") else { return Ok(None) };
-        let (Some(to), speed) = (point(&walk["to"]), walk["speed"].as_f64().unwrap_or(DEFAULT_SPEED as f64) as f32) else {
+        let Some(walk) = e.components.get("walk") else {
+            return Ok(None);
+        };
+        let (Some(to), speed) = (
+            point(&walk["to"]),
+            walk["speed"].as_f64().unwrap_or(DEFAULT_SPEED as f64) as f32,
+        ) else {
             return Ok(None);
         };
         match self.go(id, e, to, speed, walk["fly"] == true) {
             Ok(()) => Ok(None),
             Err(_) => {
-                self.apply(Effect::Remove { entity: id, component: "walk".into() })?;
-                Ok(Some(Heard::Arrived { entity: id, stuck: true }))
+                self.apply(Effect::Remove {
+                    entity: id,
+                    component: "walk".into(),
+                })?;
+                Ok(Some(Heard::Arrived {
+                    entity: id,
+                    stuck: true,
+                }))
             }
         }
     }
 
     /// Sends `id` from where it is now to `to`: over the ground, or (`fly`) straight there.
-    fn go(&mut self, id: EntityId, e: &Entity, to: [f32; 3], speed: f32, fly: bool) -> Result<(), String> {
+    fn go(
+        &mut self,
+        id: EntityId,
+        e: &Entity,
+        to: [f32; 3],
+        speed: f32,
+        fly: bool,
+    ) -> Result<(), String> {
         let here = position_at(e, self.now as f64);
         if here != e.position {
-            self.apply(Effect::Move { entity: id, position: here })?;
+            self.apply(Effect::Move {
+                entity: id,
+                position: here,
+            })?;
         }
         let path = match fly {
-            true if flat_distance(here, to) > MAX_WALK || (to[1] - here[1]).abs() > MAX_WALK => return Err(format!("a flight is at most {MAX_WALK} m")),
+            true if flat_distance(here, to) > MAX_WALK || (to[1] - here[1]).abs() > MAX_WALK => {
+                return Err(format!("a flight is at most {MAX_WALK} m"));
+            }
             true => vec![here, to],
             false => path(self.ground, here, to)?,
         };
@@ -410,30 +565,60 @@ impl Engine<'_, '_> {
         if fly {
             walk["fly"] = true.into();
         }
-        self.apply(Effect::Set { entity: id, component: "walk".into(), value: walk })?;
-        self.apply(Effect::Schedule { name: timer("arrive", id), due: start + takes, every: None, data: Value::Null, near: Some(id), feature: None })?;
+        self.apply(Effect::Set {
+            entity: id,
+            component: "walk".into(),
+            value: walk,
+        })?;
+        self.apply(Effect::Schedule {
+            name: timer("arrive", id),
+            due: start + takes,
+            every: None,
+            data: Value::Null,
+            near: Some(id),
+            feature: None,
+        })?;
         Ok(())
     }
 
     /// A walk is over: the piece stands at its end, and its package hears about it.
     fn arrive(&mut self, id: EntityId, e: &Entity) -> Result<Option<Heard>, String> {
-        let Some(walk) = e.components.get("walk") else { return Ok(None) };
-        let end = points(&walk["path"]).and_then(|p| p.last().copied()).unwrap_or(e.position);
-        self.apply(Effect::Move { entity: id, position: end })?;
-        self.apply(Effect::Remove { entity: id, component: "walk".into() })?;
+        let Some(walk) = e.components.get("walk") else {
+            return Ok(None);
+        };
+        let end = points(&walk["path"])
+            .and_then(|p| p.last().copied())
+            .unwrap_or(e.position);
+        self.apply(Effect::Move {
+            entity: id,
+            position: end,
+        })?;
+        self.apply(Effect::Remove {
+            entity: id,
+            component: "walk".into(),
+        })?;
         // A chaser's walks are the engine's business, not its package's.
         if e.components.contains_key("chase") {
             return Ok(None);
         }
-        Ok(Some(Heard::Arrived { entity: id, stuck: false }))
+        Ok(Some(Heard::Arrived {
+            entity: id,
+            stuck: false,
+        }))
     }
 
     /// A chaser's turn: caught up, or off again toward where its player is now.
     fn chase(&mut self, id: EntityId, e: &Entity) -> Result<Option<Heard>, String> {
-        let Some(chase) = e.components.get("chase") else { return Ok(None) };
-        let Some(player) = chase["player"].as_str() else { return Ok(None) };
+        let Some(chase) = e.components.get("chase") else {
+            return Ok(None);
+        };
+        let Some(player) = chase["player"].as_str() else {
+            return Ok(None);
+        };
         // Gone from the world: it waits where it is.
-        let Some((_, target)) = self.players.iter().find(|(p, _)| p == player) else { return Ok(None) };
+        let Some((_, target)) = self.players.iter().find(|(p, _)| p == player) else {
+            return Ok(None);
+        };
         let here = position_at(e, self.now as f64);
         let reach = chase["reach"].as_f64().unwrap_or(1.5) as f32;
         let distance = ((here[0] - target[0]).powi(2) + (here[2] - target[2]).powi(2)).sqrt();
@@ -443,7 +628,10 @@ impl Engine<'_, '_> {
                     self.apply(effect)?;
                 }
             }
-            return Ok(Some(Heard::Caught { entity: id, player: player.to_string() }));
+            return Ok(Some(Heard::Caught {
+                entity: id,
+                player: player.to_string(),
+            }));
         }
         // Still heading close enough to where they are: keep going.
         let heading = e.components.get("walk").and_then(|w| point(&w["to"]));
@@ -466,7 +654,10 @@ mod tests {
 
     impl Ground for Pond {
         fn heights(&self, min: [i32; 2], step: i32, count: [i32; 2]) -> Option<Vec<Option<i32>>> {
-            let pond = |x: i32, z: i32| (column(10.0)..column(12.0)).contains(&x) && (column(-5.0)..column(5.0)).contains(&z);
+            let pond = |x: i32, z: i32| {
+                (column(10.0)..column(12.0)).contains(&x)
+                    && (column(-5.0)..column(5.0)).contains(&z)
+            };
             let mut out = Vec::new();
             for j in 0..count[1] {
                 for i in 0..count[0] {
@@ -489,7 +680,10 @@ mod tests {
         // It goes around the pond's end, never through the water.
         assert!(way.iter().any(|p| p[2].abs() >= 5.0), "{way:?}");
         assert!(way.iter().all(|p| p[1] == y));
-        assert!(path(&Pond, from, [11.0, y, 0.0]).is_err(), "nowhere to stand in a pond");
+        assert!(
+            path(&Pond, from, [11.0, y, 0.0]).is_err(),
+            "nowhere to stand in a pond"
+        );
         assert!(path(&NoGround, from, [200.0, y, 0.0]).is_err(), "too far");
     }
 
@@ -499,11 +693,23 @@ mod tests {
     impl Ground for Built {
         fn heights(&self, min: [i32; 2], step: i32, count: [i32; 2]) -> Option<Vec<Option<i32>>> {
             let _ = (min, step);
-            Some(vec![Some(crate::terrain::FLAT_GROUND); (count[0] * count[1]) as usize])
+            Some(vec![
+                Some(crate::terrain::FLAT_GROUND);
+                (count[0] * count[1]) as usize
+            ])
         }
 
         fn solids(&self, _lo: [f32; 2], _hi: [f32; 2]) -> Vec<Solid<'_>> {
-            self.0.iter().enumerate().map(|(i, (spec, at))| Solid { spec, model: i as u64, position: *at, yaw: 0.0 }).collect()
+            self.0
+                .iter()
+                .enumerate()
+                .map(|(i, (spec, at))| Solid {
+                    spec,
+                    model: i as u64,
+                    position: *at,
+                    yaw: 0.0,
+                })
+                .collect()
         }
     }
 
@@ -519,10 +725,16 @@ mod tests {
     fn walks_go_around_builds_and_onto_low_ones() {
         let y = (crate::terrain::FLAT_GROUND + 1) as f32 * VOXEL_SIZE;
         // A wall 25 cm thick, 2 m tall and 8 m long across the way; a deck 25 cm high.
-        let ground = Built(vec![(block([2, 16, 64]), [10.125, y, 0.0]), (block([16, 2, 16]), [15.0, y, 10.0])]);
+        let ground = Built(vec![
+            (block([2, 16, 64]), [10.125, y, 0.0]),
+            (block([16, 2, 16]), [15.0, y, 10.0]),
+        ]);
         let (from, to) = ([5.0, y, 0.0], [17.0, y, 0.0]);
         let way = path(&ground, from, to).unwrap();
-        assert!(way.iter().any(|p| p[2].abs() >= 4.0), "around the wall's end: {way:?}");
+        assert!(
+            way.iter().any(|p| p[2].abs() >= 4.0),
+            "around the wall's end: {way:?}"
+        );
         // Onto the deck, standing on top of it.
         let deck = path(&ground, from, [15.0, y, 10.0]).unwrap();
         assert_eq!(deck.last().unwrap()[1], y + 0.25, "{deck:?}");
@@ -532,7 +744,11 @@ mod tests {
 
     #[test]
     fn pieces_move_along_their_walk() {
-        let mut e = Entity { package: "town".into(), position: [0.0, 0.0, 0.0], components: Default::default() };
+        let mut e = Entity {
+            package: "town".into(),
+            position: [0.0, 0.0, 0.0],
+            components: Default::default(),
+        };
         e.components.insert("walk".into(), json!({ "to": [10, 0, 0], "speed": 2.0, "path": [[0, 0, 0], [4, 0, 0], [4, 0, 6]], "start": 100 }));
         assert_eq!(position_at(&e, 50.0), [0.0, 0.0, 0.0]);
         assert_eq!(position_at(&e, 101.0), [2.0, 0.0, 0.0]);

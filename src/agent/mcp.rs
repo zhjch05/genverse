@@ -47,7 +47,11 @@ impl McpServer {
     /// Binds a random local port and starts serving `tools` (a `tools/list` array).
     pub fn start(tools: Value, instructions: &'static str) -> Result<Self, String> {
         let server = Server::http("127.0.0.1:0").map_err(|e| e.to_string())?;
-        let port = server.server_addr().to_ip().map(|a| a.port()).ok_or("no TCP port")?;
+        let port = server
+            .server_addr()
+            .to_ip()
+            .map(|a| a.port())
+            .ok_or("no TCP port")?;
         let token = random_token();
         let (tx, rx) = mpsc::channel();
         let expected = format!("Bearer {token}");
@@ -59,11 +63,18 @@ impl McpServer {
                 }
             })
             .map_err(|e| e.to_string())?;
-        Ok(Self { url: format!("http://127.0.0.1:{port}/mcp"), token, calls: Mutex::new(rx) })
+        Ok(Self {
+            url: format!("http://127.0.0.1:{port}/mcp"),
+            token,
+            calls: Mutex::new(rx),
+        })
     }
 
     pub fn drain(&self) -> Vec<ToolCall> {
-        self.calls.lock().map(|rx| rx.try_iter().collect()).unwrap_or_default()
+        self.calls
+            .lock()
+            .map(|rx| rx.try_iter().collect())
+            .unwrap_or_default()
     }
 }
 
@@ -83,8 +94,9 @@ fn serve(
 ) {
     let respond = |request: tiny_http::Request, status: u16, body: Option<Value>| {
         let response = match body {
-            Some(body) => Response::from_string(body.to_string())
-                .with_header(Header::from_bytes("Content-Type", "application/json").expect("valid header")),
+            Some(body) => Response::from_string(body.to_string()).with_header(
+                Header::from_bytes("Content-Type", "application/json").expect("valid header"),
+            ),
             None => Response::from_string(String::new()),
         };
         let _ = request.respond(response.with_status_code(status));
@@ -105,11 +117,20 @@ fn serve(
         return respond(request, 405, None);
     }
     let mut body = String::new();
-    if request.as_reader().take(1 << 20).read_to_string(&mut body).is_err() {
+    if request
+        .as_reader()
+        .take(1 << 20)
+        .read_to_string(&mut body)
+        .is_err()
+    {
         return respond(request, 400, None);
     }
     let Ok(message) = serde_json::from_str::<Value>(&body) else {
-        return respond(request, 400, Some(rpc_error(Value::Null, -32700, "parse error")));
+        return respond(
+            request,
+            400,
+            Some(rpc_error(Value::Null, -32700, "parse error")),
+        );
     };
     let Some(id) = message.get("id").cloned() else {
         // Notifications (e.g. notifications/initialized) need no answer.
@@ -133,7 +154,9 @@ fn serve(
                 reply,
             };
             let outcome = if calls.send(call).is_ok() {
-                answer.recv_timeout(ANSWER_WAIT).unwrap_or(Err("the game didn't answer in time".into()))
+                answer
+                    .recv_timeout(ANSWER_WAIT)
+                    .unwrap_or(Err("the game didn't answer in time".into()))
             } else {
                 Err("the game is shutting down".into())
             };
@@ -143,9 +166,19 @@ fn serve(
             };
             json!({ "content": [{ "type": "text", "text": text }], "isError": is_error })
         }
-        other => return respond(request, 200, Some(rpc_error(id, -32601, &format!("unknown method {other}")))),
+        other => {
+            return respond(
+                request,
+                200,
+                Some(rpc_error(id, -32601, &format!("unknown method {other}"))),
+            );
+        }
     };
-    respond(request, 200, Some(json!({ "jsonrpc": "2.0", "id": id, "result": result })));
+    respond(
+        request,
+        200,
+        Some(json!({ "jsonrpc": "2.0", "id": id, "result": result })),
+    );
 }
 
 fn rpc_error(id: Value, code: i64, message: &str) -> Value {
@@ -166,7 +199,9 @@ mod tests {
         let addr = url.trim_start_matches("http://").trim_end_matches("/mcp");
         let mut stream = TcpStream::connect(addr).unwrap();
         let body = body.to_string();
-        let auth = auth.map(|t| format!("Authorization: Bearer {t}\r\n")).unwrap_or_default();
+        let auth = auth
+            .map(|t| format!("Authorization: Bearer {t}\r\n"))
+            .unwrap_or_default();
         write!(
             stream,
             "POST /mcp HTTP/1.1\r\nHost: {addr}\r\nContent-Type: application/json\r\n{auth}\
@@ -177,7 +212,11 @@ mod tests {
         let mut response = String::new();
         stream.read_to_string(&mut response).unwrap();
         let status = response[9..12].parse().unwrap();
-        let body = response.split("\r\n\r\n").nth(1).unwrap_or_default().to_string();
+        let body = response
+            .split("\r\n\r\n")
+            .nth(1)
+            .unwrap_or_default()
+            .to_string();
         (status, body)
     }
 
@@ -199,7 +238,10 @@ mod tests {
 
         let list = json!({ "jsonrpc": "2.0", "id": 2, "method": "tools/list" });
         let (_, body) = post(&server.url, Some(&server.token), &list);
-        assert_eq!(serde_json::from_str::<Value>(&body).unwrap()["result"]["tools"][0]["name"], "echo");
+        assert_eq!(
+            serde_json::from_str::<Value>(&body).unwrap()["result"]["tools"][0]["name"],
+            "echo"
+        );
 
         // A tool call is answered by whoever drains the queue (the game, here a thread).
         let url = server.url.clone();

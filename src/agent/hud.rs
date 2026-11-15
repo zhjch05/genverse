@@ -23,15 +23,28 @@ use super::{
 use crate::world::{VoxelWorld, ledger::Ledger};
 
 /// What the local player's screen shows of the games, and the panel they have open.
-pub fn game_hud(mut contexts: EguiContexts, time: Res<Time>, mut ledger: ResMut<Ledger>, mut play: ResMut<Play>, mut chat: ResMut<Chat>) -> Result {
+pub fn game_hud(
+    mut contexts: EguiContexts,
+    time: Res<Time>,
+    mut ledger: ResMut<Ledger>,
+    mut play: ResMut<Play>,
+    mut chat: ResMut<Chat>,
+) -> Result {
     let ctx = contexts.ctx_mut()?;
     let p = theme::palette(ctx);
     let covered = chat.covered * ctx.viewport_rect().width();
     let me = ledger.profile.id.clone();
     let state = &ledger.logic.state;
-    let live = Live { state, me: &me, logic: &ledger.logic };
+    let live = Live {
+        state,
+        me: &me,
+        logic: &ledger.logic,
+    };
 
-    let pinned: Vec<(String, Ui)> = state.hud(&me).map(|(id, w)| (id.to_string(), w.clone())).collect();
+    let pinned: Vec<(String, Ui)> = state
+        .hud(&me)
+        .map(|(id, w)| (id.to_string(), w.clone()))
+        .collect();
     if !pinned.is_empty() {
         egui::Area::new("game_hud".into())
             .anchor(egui::Align2::LEFT_BOTTOM, egui::vec2(16.0, -170.0))
@@ -51,7 +64,9 @@ pub fn game_hud(mut contexts: EguiContexts, time: Res<Time>, mut ledger: ResMut<
             });
     }
 
-    let Some(panel) = state.panel(&me).cloned() else { return Ok(()) };
+    let Some(panel) = state.panel(&me).cloned() else {
+        return Ok(());
+    };
     let mut pick: Option<Option<String>> = None;
     theme::centered(egui::Window::new(&panel.spec.title), ctx, covered / 2.0)
         .id(egui::Id::new("game_panel"))
@@ -111,16 +126,25 @@ fn draw(ui: &mut egui::Ui, node: &Ui, live: &Live, p: &theme::Palette) -> Option
         }
         Ui::Bar { label, stat, color } => {
             let s = live.state.stat(live.me, stat);
-            let (value, max) = s.map_or((0.0, 1.0), |s| (s.value, s.max.unwrap_or(s.value.max(1.0))));
+            let (value, max) =
+                s.map_or((0.0, 1.0), |s| (s.value, s.max.unwrap_or(s.value.max(1.0))));
             if !label.is_empty() {
                 ui.horizontal(|ui| {
                     ui.label(egui::RichText::new(label).color(p.text));
                     ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                        ui.label(egui::RichText::new(format!("{} / {}", number(value), number(max))).small().color(p.muted));
+                        ui.label(
+                            egui::RichText::new(format!("{} / {}", number(value), number(max)))
+                                .small()
+                                .color(p.muted),
+                        );
                     });
                 });
             }
-            bar(ui, (value / max) as f32, color.as_deref().and_then(hex).unwrap_or(p.primary));
+            bar(
+                ui,
+                (value / max) as f32,
+                color.as_deref().and_then(hex).unwrap_or(p.primary),
+            );
         }
         Ui::Item { item } => {
             let title = super::game::item_title(live.logic, item);
@@ -129,7 +153,10 @@ fn draw(ui: &mut egui::Ui, node: &Ui, live: &Live, p: &theme::Palette) -> Option
         Ui::Button { id, label, detail } => {
             let mut pressed = None;
             ui.horizontal(|ui| {
-                if ui.add(egui::Button::new(label).min_size(egui::vec2(180.0, 0.0))).clicked() {
+                if ui
+                    .add(egui::Button::new(label).min_size(egui::vec2(180.0, 0.0)))
+                    .clicked()
+                {
                     pressed = Some(id.clone());
                 }
                 if !detail.is_empty() {
@@ -139,10 +166,22 @@ fn draw(ui: &mut egui::Ui, node: &Ui, live: &Live, p: &theme::Palette) -> Option
             return pressed;
         }
         Ui::Row { items } => {
-            return ui.horizontal_wrapped(|ui| items.iter().fold(None, |pressed, n| draw(ui, n, live, p).or(pressed))).inner;
+            return ui
+                .horizontal_wrapped(|ui| {
+                    items
+                        .iter()
+                        .fold(None, |pressed, n| draw(ui, n, live, p).or(pressed))
+                })
+                .inner;
         }
         Ui::Column { items } => {
-            return ui.vertical(|ui| items.iter().fold(None, |pressed, n| draw(ui, n, live, p).or(pressed))).inner;
+            return ui
+                .vertical(|ui| {
+                    items
+                        .iter()
+                        .fold(None, |pressed, n| draw(ui, n, live, p).or(pressed))
+                })
+                .inner;
         }
         Ui::Space => {
             ui.add_space(8.0);
@@ -152,27 +191,44 @@ fn draw(ui: &mut egui::Ui, node: &Ui, live: &Live, p: &theme::Palette) -> Option
 }
 
 fn number(v: f64) -> String {
-    if v.fract().abs() < 1e-9 { format!("{v:.0}") } else { format!("{v:.1}") }
+    if v.fract().abs() < 1e-9 {
+        format!("{v:.0}")
+    } else {
+        format!("{v:.1}")
+    }
 }
 
 fn hex(text: &str) -> Option<egui::Color32> {
     let t = text.trim_start_matches('#');
     let v = u32::from_str_radix(t, 16).ok().filter(|_| t.len() == 6)?;
-    Some(egui::Color32::from_rgb((v >> 16) as u8, (v >> 8) as u8, v as u8))
+    Some(egui::Color32::from_rgb(
+        (v >> 16) as u8,
+        (v >> 8) as u8,
+        v as u8,
+    ))
 }
 
 fn bar(ui: &mut egui::Ui, share: f32, color: egui::Color32) {
     let p = theme::palette(ui.ctx());
-    let (rect, _) = ui.allocate_exact_size(egui::vec2(ui.available_width(), 10.0), egui::Sense::hover());
+    let (rect, _) =
+        ui.allocate_exact_size(egui::vec2(ui.available_width(), 10.0), egui::Sense::hover());
     ui.painter().rect_filled(rect, 4.0, p.input);
-    let fill = egui::Rect::from_min_size(rect.min, egui::vec2(rect.width() * share.clamp(0.0, 1.0), rect.height()));
+    let fill = egui::Rect::from_min_size(
+        rect.min,
+        egui::vec2(rect.width() * share.clamp(0.0, 1.0), rect.height()),
+    );
     ui.painter().rect_filled(fill, 4.0, color);
     ui.add_space(4.0);
 }
 
 /// Draws what games did to the world, offline (online, the server's changes bring it):
 /// builds come and go, and land changes are worked out on the ground as it is here.
-pub fn draw_game_world(mut commands: Commands, mut ledger: ResMut<Ledger>, mut world: ResMut<VoxelWorld>, mut creations: ResMut<Creations>) {
+pub fn draw_game_world(
+    mut commands: Commands,
+    mut ledger: ResMut<Ledger>,
+    mut world: ResMut<VoxelWorld>,
+    mut creations: ResMut<Creations>,
+) {
     if ledger.pending_world.is_empty() {
         return;
     }
@@ -184,11 +240,24 @@ pub fn draw_game_world(mut commands: Commands, mut ledger: ResMut<Ledger>, mut w
                 WorldChange::Build { .. } | WorldChange::Unbuild { .. } => builds = true,
                 // The ledger holds portals; nothing to draw.
                 WorldChange::Portal { .. } => {}
-                WorldChange::Terrain { package, area, spec } => {
+                WorldChange::Terrain {
+                    package,
+                    area,
+                    spec,
+                } => {
                     let ground = ground_columns(world.terrain, area, &world.edits_in_area(area));
-                    match sculpt::compile(&spec, area, world.terrain, ground, &ledger.rules.terrain, &ledger.rules.content) {
+                    match sculpt::compile(
+                        &spec,
+                        area,
+                        world.terrain,
+                        ground,
+                        &ledger.rules.terrain,
+                        &ledger.rules.content,
+                    ) {
                         Ok(edit) => {
-                            if let Ok(edits) = ledger.land.authorize_terrain(&installer, area, edit.edits) {
+                            if let Ok(edits) =
+                                ledger.land.authorize_terrain(&installer, area, edit.edits)
+                            {
                                 for (p, id) in edits {
                                     world.set(p, id);
                                 }

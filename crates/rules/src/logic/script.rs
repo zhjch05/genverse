@@ -118,7 +118,10 @@ pub fn check(package: &Package) -> Vec<String> {
         .scripts
         .iter()
         .filter_map(|(file, source)| {
-            mlua::Compiler::new().compile(source).err().map(|e| format!("{file}: {}", first_lines(&e.to_string())))
+            mlua::Compiler::new()
+                .compile(source)
+                .err()
+                .map(|e| format!("{file}: {}", first_lines(&e.to_string())))
         })
         .collect()
 }
@@ -129,35 +132,71 @@ pub fn check(_package: &Package) -> Vec<String> {
 }
 
 #[cfg(target_arch = "wasm32")]
-pub fn run(_package: &Package, _event: &Event, _world: &mut Batch, _grants: &Grants) -> Result<(), String> {
+pub fn run(
+    _package: &Package,
+    _event: &Event,
+    _world: &mut Batch,
+    _grants: &Grants,
+) -> Result<(), String> {
     Err("game scripts don't run on the web yet".into())
 }
 
 /// An error's first lines: Luau adds a traceback the player doesn't need.
 #[cfg(not(target_arch = "wasm32"))]
 fn first_lines(text: &str) -> String {
-    text.lines().take_while(|l| !l.starts_with("stack traceback")).take(2).collect::<Vec<_>>().join(" ")
+    text.lines()
+        .take_while(|l| !l.starts_with("stack traceback"))
+        .take(2)
+        .collect::<Vec<_>>()
+        .join(" ")
 }
 
 /// Runs the handler for `event` in `package`'s scripts, if they have one.
 #[cfg(not(target_arch = "wasm32"))]
-pub fn run(package: &Package, event: &Event, world: &mut Batch, grants: &Grants) -> Result<(), String> {
-    vm::run(package, event, world, grants).map_err(|e| format!("script error: {}", first_lines(&e.to_string())))
+pub fn run(
+    package: &Package,
+    event: &Event,
+    world: &mut Batch,
+    grants: &Grants,
+) -> Result<(), String> {
+    vm::run(package, event, world, grants)
+        .map_err(|e| format!("script error: {}", first_lines(&e.to_string())))
 }
 
 /// The handlers a script file may define.
 #[cfg(not(target_arch = "wasm32"))]
 const HANDLERS: [&str; 17] = [
-    "on_place", "on_interact", "on_use", "on_key", "on_timer", "on_choose", "on_arrive", "on_start", "on_join", "on_leave", "on_enter",
-    "on_exit", "on_catch", "on_hit", "on_message", "on_chat", "on_signal",
+    "on_place",
+    "on_interact",
+    "on_use",
+    "on_key",
+    "on_timer",
+    "on_choose",
+    "on_arrive",
+    "on_start",
+    "on_join",
+    "on_leave",
+    "on_enter",
+    "on_exit",
+    "on_catch",
+    "on_hit",
+    "on_message",
+    "on_chat",
+    "on_signal",
 ];
 
 /// Functions the game had once and doesn't now, and what to use instead: an old
 /// script that calls one hears so, rather than that it's nil.
 #[cfg(not(target_arch = "wasm32"))]
 pub const REMOVED: [(&str, &str); 3] = [
-    ("wander", "walk() to a spot it picks, and pick the next spot in on_arrive"),
-    ("spawner", "an every() timer that spawns while find() says there are too few"),
+    (
+        "wander",
+        "walk() to a spot it picks, and pick the next spot in on_arrive",
+    ),
+    (
+        "spawner",
+        "an every() timer that spawns while find() says there are too few",
+    ),
     ("zone", "region(id, {w, d, keys = true})"),
 ];
 
@@ -180,13 +219,18 @@ pub(super) mod vm {
     /// Names the stats and items a UI tree shows with the package's namespace, and turns
     /// Lua's empty tables (which come as objects) into empty lists of children.
     fn name_ui(ui: &mut serde_json::Value, full: &dyn Fn(&str) -> String) {
-        let Some(node) = ui.as_object_mut() else { return };
+        let Some(node) = ui.as_object_mut() else {
+            return;
+        };
         for key in ["stat", "item"] {
             if let Some(name) = node.get(key).and_then(|v| v.as_str()).map(full) {
                 node.insert(key.into(), name.into());
             }
         }
-        if node.get("items").is_some_and(|v| v.as_object().is_some_and(|o| o.is_empty())) {
+        if node
+            .get("items")
+            .is_some_and(|v| v.as_object().is_some_and(|o| o.is_empty()))
+        {
             node.insert("items".into(), serde_json::json!([]));
         }
         if let Some(items) = node.get_mut("items").and_then(|v| v.as_array_mut()) {
@@ -201,7 +245,9 @@ pub(super) mod vm {
     }
 
     pub(in crate::logic) fn parse_id(text: &str) -> mlua::Result<EntityId> {
-        let (change, n) = text.split_once('.').ok_or_else(|| fail(format!("\"{text}\" isn't an entity id")))?;
+        let (change, n) = text
+            .split_once('.')
+            .ok_or_else(|| fail(format!("\"{text}\" isn't an entity id")))?;
         match (change.parse(), n.parse()) {
             (Ok(change), Ok(n)) => Ok(EntityId { change, n }),
             _ => Err(fail(format!("\"{text}\" isn't an entity id"))),
@@ -218,7 +264,11 @@ pub(super) mod vm {
 
     pub(in crate::logic) fn pos_of(t: &Table) -> mlua::Result<[f32; 3]> {
         let p: [f32; 3] = [t.get("x")?, t.get("y")?, t.get("z")?];
-        if p.iter().all(|v| v.is_finite()) { Ok(p) } else { Err(fail("a position needs finite x, y and z")) }
+        if p.iter().all(|v| v.is_finite()) {
+            Ok(p)
+        } else {
+            Err(fail("a position needs finite x, y and z"))
+        }
     }
 
     /// splitmix64: small, and the same everywhere.
@@ -230,19 +280,39 @@ pub(super) mod vm {
         ((z ^ (z >> 31)) >> 11) as f64 / (1u64 << 53) as f64
     }
 
-    pub fn run(package: &Package, event: &Event, world: &mut Batch, grants: &Grants) -> mlua::Result<()> {
-        let lua = Lua::new_with(StdLib::MATH | StdLib::STRING | StdLib::TABLE | StdLib::UTF8 | StdLib::BIT, LuaOptions::default())?;
+    pub fn run(
+        package: &Package,
+        event: &Event,
+        world: &mut Batch,
+        grants: &Grants,
+    ) -> mlua::Result<()> {
+        let lua = Lua::new_with(
+            StdLib::MATH | StdLib::STRING | StdLib::TABLE | StdLib::UTF8 | StdLib::BIT,
+            LuaOptions::default(),
+        )?;
         lua.set_memory_limit(MAX_MEMORY)?;
         let steps = Rc::new(RefCell::new(0u64));
         let counter = steps.clone();
         lua.set_interrupt(move |_| {
             let mut n = counter.borrow_mut();
             *n += 1;
-            if *n > MAX_STEPS { Err(fail("the script ran too long (an endless loop?)")) } else { Ok(VmState::Continue) }
+            if *n > MAX_STEPS {
+                Err(fail("the script ran too long (an endless loop?)"))
+            } else {
+                Ok(VmState::Continue)
+            }
         });
         let globals = lua.globals();
         // Nothing that reaches outside the action, or differs between machines.
-        for name in ["print", "loadstring", "getfenv", "setfenv", "collectgarbage", "gcinfo", "newproxy"] {
+        for name in [
+            "print",
+            "loadstring",
+            "getfenv",
+            "setfenv",
+            "collectgarbage",
+            "gcinfo",
+            "newproxy",
+        ] {
             globals.set(name, Value::Nil)?;
         }
         let math: Table = globals.get("math")?;
@@ -253,9 +323,14 @@ pub(super) mod vm {
         meta.set(
             "__index",
             lua.create_function(|_, (_, key): (Value, Value)| {
-                let key = key.as_string().map(|k| k.to_string_lossy()).unwrap_or_default();
+                let key = key
+                    .as_string()
+                    .map(|k| k.to_string_lossy())
+                    .unwrap_or_default();
                 match super::REMOVED.iter().find(|(name, _)| *name == key) {
-                    Some((name, instead)) => Err(fail(format!("{name}() isn't in the game any more; use {instead}"))),
+                    Some((name, instead)) => Err(fail(format!(
+                        "{name}() isn't in the game any more; use {instead}"
+                    ))),
                     None => Ok(Value::Nil),
                 }
             })?,
@@ -266,7 +341,11 @@ pub(super) mod vm {
         let full = {
             let ns = ns.clone();
             move |name: &str| -> String {
-                if name.contains(':') || RESERVED.contains(&name) { name.to_string() } else { format!("{ns}:{name}") }
+                if name.contains(':') || RESERVED.contains(&name) {
+                    name.to_string()
+                } else {
+                    format!("{ns}:{name}")
+                }
             }
         };
         let short = {
@@ -279,10 +358,15 @@ pub(super) mod vm {
         let feature = RefCell::new(String::new());
 
         let entity_table = |lua: &Lua, id: EntityId, world: &Batch| -> mlua::Result<Value> {
-            let Some(e) = world.get(id) else { return Ok(Value::Nil) };
+            let Some(e) = world.get(id) else {
+                return Ok(Value::Nil);
+            };
             let t = lua.create_table()?;
             t.set("id", id_text(id))?;
-            t.set("pos", pos_table(lua, crate::logic::walk::position_at(e, event.at as f64))?)?;
+            t.set(
+                "pos",
+                pos_table(lua, crate::logic::walk::position_at(e, event.at as f64))?,
+            )?;
             t.set("walking", e.components.contains_key("walk"))?;
             t.set("owner", e.package.clone())?;
             let c = lua.create_table()?;
@@ -292,7 +376,9 @@ pub(super) mod vm {
             t.set("c", c)?;
             Ok(Value::Table(t))
         };
-        let apply = |effect: Effect| -> mlua::Result<Option<EntityId>> { world.borrow_mut().apply(grants, &effect).map_err(fail) };
+        let apply = |effect: Effect| -> mlua::Result<Option<EntityId>> {
+            world.borrow_mut().apply(grants, &effect).map_err(fail)
+        };
 
         lua.scope(|scope| {
             globals.set(
@@ -892,17 +978,28 @@ mod tests {
     use std::collections::BTreeMap;
 
     use super::*;
-    use crate::logic::{EntityId, GameState, Intent, Manifest, Permission, Scope, Trigger, WorldTime};
+    use crate::logic::{
+        EntityId, GameState, Intent, Manifest, Permission, Scope, Trigger, WorldTime,
+    };
 
     /// A package with one script and a crate model.
     fn package(source: &str) -> Package {
-        let manifest = Manifest { name: "game".into(), version: 1, title: "Game".into(), permissions: vec![Permission::Spawn], depends: Vec::new() , renamed: Default::default(), api: 0};
+        let manifest = Manifest {
+            name: "game".into(),
+            version: 1,
+            title: "Game".into(),
+            permissions: vec![Permission::Spawn],
+            depends: Vec::new(),
+            renamed: Default::default(),
+            api: 0,
+        };
         let crate_model = serde_json::from_str(
             r##"{"name":"Crate","size":[8,8,8],"palette":[{"name":"wood","hex":"#b07a45","material":"matte"}],
                 "shapes":[{"kind":"box","color":"wood","from":[0,0,0],"to":[8,8,8],"radius":null,"wobble":null}]}"##,
         )
         .unwrap();
-        Package { shaders: Default::default(),
+        Package {
+            shaders: Default::default(),
             manifest,
             defs: BTreeMap::new(),
             scripts: BTreeMap::from([("main.luau".into(), source.into())]),
@@ -910,11 +1007,39 @@ mod tests {
         }
     }
 
-    fn act(state: &mut GameState, package: &Package, intent: Intent) -> Result<Vec<(String, String)>, String> {
-        let time = WorldTime { day: 0, year: 0, season: 0, day_of_season: 0, time_of_day: 0.0 };
-        let event = Event { ground: None, change: 9, player: "p", trigger: Trigger::Intent(&intent), time, at: 100, seed: 1 };
+    fn act(
+        state: &mut GameState,
+        package: &Package,
+        intent: Intent,
+    ) -> Result<Vec<(String, String)>, String> {
+        let time = WorldTime {
+            day: 0,
+            year: 0,
+            season: 0,
+            day_of_season: 0,
+            time_of_day: 0.0,
+        };
+        let event = Event {
+            ground: None,
+            change: 9,
+            player: "p",
+            trigger: Trigger::Intent(&intent),
+            time,
+            at: 100,
+            seed: 1,
+        };
         let models = package.models.keys().cloned().collect();
-        let grants = Grants { package: "game".into(), write: Vec::new(), spawn: true, scope: Scope::World, max_entities: 100, models, shaders: Vec::new(), drawn: true, build: true };
+        let grants = Grants {
+            package: "game".into(),
+            write: Vec::new(),
+            spawn: true,
+            scope: Scope::World,
+            max_entities: 100,
+            models,
+            shaders: Vec::new(),
+            drawn: true,
+            build: true,
+        };
         let mut batch = state.batch(9, "p", 256);
         run(package, &event, &mut batch, &grants)?;
         let done = batch.finish();
@@ -935,15 +1060,34 @@ mod tests {
             "##,
         );
         let mut state = GameState::default();
-        let notes = act(&mut state, &p, Intent::Place { item: "game:crate".into(), position: [1.0, 2.04, 3.0] }).unwrap();
-        assert_eq!(notes, vec![("p".to_string(), "placed crate #1".to_string())]);
+        let notes = act(
+            &mut state,
+            &p,
+            Intent::Place {
+                item: "game:crate".into(),
+                position: [1.0, 2.04, 3.0],
+            },
+        )
+        .unwrap();
+        assert_eq!(
+            notes,
+            vec![("p".to_string(), "placed crate #1".to_string())]
+        );
         let e = state.get(EntityId { change: 9, n: 0 }).unwrap();
         assert_eq!(e.components["game:box"]["n"], 2.0);
         // Snapped to the build voxel grid.
         assert_eq!(e.position, [1.0, 2.0, 3.0]);
-        let unknown = package("function on_place(ev) spawn(ev.pos, { look = { model = 'barrel' } }) end");
-        let place = Intent::Place { item: "game:x".into(), position: [0.0; 3] };
-        assert!(act(&mut state, &unknown, place).unwrap_err().contains("models (crate)"));
+        let unknown =
+            package("function on_place(ev) spawn(ev.pos, { look = { model = 'barrel' } }) end");
+        let place = Intent::Place {
+            item: "game:x".into(),
+            position: [0.0; 3],
+        };
+        assert!(
+            act(&mut state, &unknown, place)
+                .unwrap_err()
+                .contains("models (crate)")
+        );
     }
 
     #[test]
@@ -955,30 +1099,74 @@ mod tests {
             "##,
         );
         let mut state = GameState::default();
-        let fireball = Intent::Message { package: "game".into(), name: "fireball".into(), data: serde_json::json!({ "power": 3 }), at: [5.0, 9.0, 1.0] };
-        assert_eq!(act(&mut state, &p, fireball).unwrap(), vec![("p".to_string(), "fireball 3 at 5".to_string())]);
-        let chat = Intent::Chat { text: "/home".into(), at: [0.0; 3] };
-        assert_eq!(act(&mut state, &p, chat).unwrap(), vec![("p".to_string(), "heard /home".to_string())]);
+        let fireball = Intent::Message {
+            package: "game".into(),
+            name: "fireball".into(),
+            data: serde_json::json!({ "power": 3 }),
+            at: [5.0, 9.0, 1.0],
+        };
+        assert_eq!(
+            act(&mut state, &p, fireball).unwrap(),
+            vec![("p".to_string(), "fireball 3 at 5".to_string())]
+        );
+        let chat = Intent::Chat {
+            text: "/home".into(),
+            at: [0.0; 3],
+        };
+        assert_eq!(
+            act(&mut state, &p, chat).unwrap(),
+            vec![("p".to_string(), "heard /home".to_string())]
+        );
     }
 
     #[test]
     fn the_sandbox_holds() {
         let mut state = GameState::default();
-        let place = || Intent::Place { item: "game:x".into(), position: [0.0; 3] };
-        let error = |source: &str, state: &mut GameState| act(state, &package(source), place()).unwrap_err();
-        assert!(error("function on_place() while true do end end", &mut state).contains("ran too long"));
-        assert!(error("function on_place() set('1.0', 'other:x', 1) end", &mut state).contains("doesn't exist"));
+        let place = || Intent::Place {
+            item: "game:x".into(),
+            position: [0.0; 3],
+        };
+        let error = |source: &str, state: &mut GameState| {
+            act(state, &package(source), place()).unwrap_err()
+        };
+        assert!(
+            error("function on_place() while true do end end", &mut state).contains("ran too long")
+        );
+        assert!(
+            error(
+                "function on_place() set('1.0', 'other:x', 1) end",
+                &mut state
+            )
+            .contains("doesn't exist")
+        );
         assert!(error("function on_place(ev) spawn(ev.pos, { look = { model = 'crate' }, ['other:x'] = 1 }) end", &mut state).contains("belongs to other"));
-        assert!(error("function on_place(ev) spawn(ev.pos, { box = true }) end", &mut state).contains("every piece needs a look"));
+        assert!(
+            error(
+                "function on_place(ev) spawn(ev.pos, { box = true }) end",
+                &mut state
+            )
+            .contains("every piece needs a look")
+        );
         // No OS, files or printing: those names don't exist.
-        for source in ["function on_place() os.exit() end", "function on_place() io.open('x') end", "function on_place() print('hi') end"] {
+        for source in [
+            "function on_place() os.exit() end",
+            "function on_place() io.open('x') end",
+            "function on_place() print('hi') end",
+        ] {
             assert!(error(source, &mut state).contains("nil"), "{source}");
         }
         // A failed action changes nothing.
-        assert!(error("function on_place(ev) spawn(ev.pos, { pawn = 'p' }); error('nope') end", &mut state).contains("nope"));
+        assert!(
+            error(
+                "function on_place(ev) spawn(ev.pos, { pawn = 'p' }); error('nope') end",
+                &mut state
+            )
+            .contains("nope")
+        );
         assert!(state.is_empty());
         // Random numbers come from the action's seed: the same every time.
-        let roll = package("function on_place(ev) notify('p', tostring(random_int(1, 1000000))) end");
+        let roll =
+            package("function on_place(ev) notify('p', tostring(random_int(1, 1000000))) end");
         let a = act(&mut state, &roll, place()).unwrap();
         assert_eq!(a, act(&mut state, &roll, place()).unwrap());
         assert_eq!(check(&package("function on_place( end")).len(), 1);

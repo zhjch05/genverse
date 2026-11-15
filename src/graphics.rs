@@ -45,7 +45,12 @@ impl Plugin for GraphicsPlugin {
             .add_systems(Startup, spawn_screen)
             // Before the cameras work out their sizes, so the world camera sees a resized
             // picture in the same frame.
-            .add_systems(PostUpdate, (apply_graphics, adjust_scale, fit_render_target).chain().before(CameraUpdateSystems))
+            .add_systems(
+                PostUpdate,
+                (apply_graphics, adjust_scale, fit_render_target)
+                    .chain()
+                    .before(CameraUpdateSystems),
+            )
             .init_resource::<Dim>()
             .add_systems(PostUpdate, (dim_picture, apply_build_animation));
     }
@@ -63,7 +68,13 @@ pub enum Level {
 
 #[cfg_attr(target_arch = "wasm32", allow(dead_code))]
 impl Level {
-    pub const ALL: [Level; 5] = [Level::Off, Level::Low, Level::Medium, Level::High, Level::Ultra];
+    pub const ALL: [Level; 5] = [
+        Level::Off,
+        Level::Low,
+        Level::Medium,
+        Level::High,
+        Level::Ultra,
+    ];
 
     pub fn label(self) -> &'static str {
         match self {
@@ -158,7 +169,9 @@ impl Quality {
 
     #[cfg_attr(target_arch = "wasm32", allow(dead_code))]
     pub fn from_key(key: &str) -> Option<Self> {
-        Self::ALL.into_iter().find(|q| q.label().eq_ignore_ascii_case(key))
+        Self::ALL
+            .into_iter()
+            .find(|q| q.label().eq_ignore_ascii_case(key))
     }
 
     pub fn settings(self, render_scale: f32, auto_scale: bool) -> Graphics {
@@ -168,7 +181,16 @@ impl Quality {
             Quality::High => (Antialias::Taa, Level::Low, Level::High, false, true),
             Quality::Ultra => (Antialias::Taa, Level::High, Level::Ultra, true, true),
         };
-        Graphics { antialias, ambient_occlusion, shadows, contact_shadows, bloom, render_scale, auto_scale, build_animation: true }
+        Graphics {
+            antialias,
+            ambient_occlusion,
+            shadows,
+            contact_shadows,
+            bloom,
+            render_scale,
+            auto_scale,
+            build_animation: true,
+        }
     }
 }
 
@@ -176,9 +198,12 @@ impl Quality {
 impl Graphics {
     /// The preset these settings match, if any ("Custom" otherwise).
     pub fn preset(&self) -> Option<Quality> {
-        Quality::ALL
-            .into_iter()
-            .find(|q| Graphics { build_animation: self.build_animation, ..q.settings(self.render_scale, self.auto_scale) } == *self)
+        Quality::ALL.into_iter().find(|q| {
+            Graphics {
+                build_animation: self.build_animation,
+                ..q.settings(self.render_scale, self.auto_scale)
+            } == *self
+        })
     }
 
     fn ssao(&self) -> Option<ScreenSpaceAmbientOcclusionQualityLevel> {
@@ -244,14 +269,25 @@ pub struct AutoScale {
 
 impl Default for AutoScale {
     fn default() -> Self {
-        Self { scale: 1.0, paused: false, frames: Vec::new(), window: 0.0, since_change: 0.0, probe_wait: PROBE_FIRST, probing: false }
+        Self {
+            scale: 1.0,
+            paused: false,
+            frames: Vec::new(),
+            window: 0.0,
+            since_change: 0.0,
+            probe_wait: PROBE_FIRST,
+            probing: false,
+        }
     }
 }
 
 impl AutoScale {
     /// Starts over at `ceiling`.
     fn reset(&mut self, ceiling: f32) {
-        *self = Self { paused: self.paused, ..default() };
+        *self = Self {
+            paused: self.paused,
+            ..default()
+        };
         self.scale = ceiling;
     }
 
@@ -274,9 +310,15 @@ impl AutoScale {
         frames.sort_by(f32::total_cmp);
         let most = frames[frames.len() * 9 / 10];
 
-        let mut steps: Vec<f32> = RENDER_SCALES.into_iter().filter(|s| *s < ceiling - 0.001).collect();
+        let mut steps: Vec<f32> = RENDER_SCALES
+            .into_iter()
+            .filter(|s| *s < ceiling - 0.001)
+            .collect();
         steps.push(ceiling);
-        let at = steps.iter().position(|s| (*s - self.scale).abs() < 0.001).unwrap_or(steps.len() - 1);
+        let at = steps
+            .iter()
+            .position(|s| (*s - self.scale).abs() < 0.001)
+            .unwrap_or(steps.len() - 1);
         let next = if most > SLOW_MS && at > 0 {
             if self.probing {
                 self.probe_wait = (self.probe_wait * 2.0).min(PROBE_MOST);
@@ -335,7 +377,11 @@ impl Default for Dim {
     }
 }
 
-fn dim_picture(dim: Res<Dim>, mut materials: ResMut<Assets<ColorMaterial>>, pictures: Query<&MeshMaterial2d<ColorMaterial>, With<WorldPicture>>) {
+fn dim_picture(
+    dim: Res<Dim>,
+    mut materials: ResMut<Assets<ColorMaterial>>,
+    pictures: Query<&MeshMaterial2d<ColorMaterial>, With<WorldPicture>>,
+) {
     if !dim.is_changed() {
         return;
     }
@@ -349,13 +395,20 @@ fn dim_picture(dim: Res<Dim>, mut materials: ResMut<Assets<ColorMaterial>>, pict
 /// Drawn by the screen camera only.
 const SCREEN_LAYER: usize = 1;
 
-pub fn spawn_screen(mut commands: Commands, mut meshes: ResMut<Assets<Mesh>>, mut materials: ResMut<Assets<ColorMaterial>>) {
+pub fn spawn_screen(
+    mut commands: Commands,
+    mut meshes: ResMut<Assets<Mesh>>,
+    mut materials: ResMut<Assets<ColorMaterial>>,
+) {
     commands.spawn((
         Name::new("Screen camera"),
         ScreenCamera,
         Camera2d,
         // After the world camera, so its picture is ready.
-        Camera { order: 1, ..default() },
+        Camera {
+            order: 1,
+            ..default()
+        },
         // The interface blends in HDR, as it did when it drew on the world camera; the
         // picture is already tonemapped.
         Hdr,
@@ -367,7 +420,10 @@ pub fn spawn_screen(mut commands: Commands, mut meshes: ResMut<Assets<Mesh>>, mu
         Name::new("World picture"),
         WorldPicture,
         Mesh2d(meshes.add(Rectangle::new(1.0, 1.0))),
-        MeshMaterial2d(materials.add(ColorMaterial { alpha_mode: AlphaMode2d::Opaque, ..default() })),
+        MeshMaterial2d(materials.add(ColorMaterial {
+            alpha_mode: AlphaMode2d::Opaque,
+            ..default()
+        })),
         RenderLayers::layer(SCREEN_LAYER),
     ));
 }
@@ -431,7 +487,10 @@ fn apply_graphics(
         if let Some(quality_level) = g.ssao()
             && cfg!(not(target_arch = "wasm32"))
         {
-            camera.insert(ScreenSpaceAmbientOcclusion { quality_level, ..default() });
+            camera.insert(ScreenSpaceAmbientOcclusion {
+                quality_level,
+                ..default()
+            });
         }
     }
     let maps = g.shadow_maps();
@@ -444,8 +503,13 @@ fn apply_graphics(
         light.shadow_maps_enabled = maps.is_some();
         light.contact_shadows_enabled = g.contact_shadows && maps.is_some();
         if let Some((num_cascades, maximum_distance, _)) = maps {
-            let cascades =
-                CascadeShadowConfigBuilder { num_cascades, first_cascade_far_bound: 8.0, maximum_distance, ..default() }.build();
+            let cascades = CascadeShadowConfigBuilder {
+                num_cascades,
+                first_cascade_far_bound: 8.0,
+                maximum_distance,
+                ..default()
+            }
+            .build();
             commands.entity(sun).insert(cascades);
         }
     }
@@ -461,9 +525,11 @@ fn fit_render_target(
     mut world_cameras: Query<&mut RenderTarget, With<FollowCamera>>,
     mut pictures: Query<(&MeshMaterial2d<ColorMaterial>, &mut Transform), With<WorldPicture>>,
 ) {
-    let (Ok(window), Ok(mut target), Ok((material, mut transform))) =
-        (windows.single(), world_cameras.single_mut(), pictures.single_mut())
-    else {
+    let (Ok(window), Ok(mut target), Ok((material, mut transform))) = (
+        windows.single(),
+        world_cameras.single_mut(),
+        pictures.single_mut(),
+    ) else {
         return;
     };
     let physical = window.physical_size();
@@ -472,19 +538,31 @@ fn fit_render_target(
     }
     // The player's scale, or less with auto render scale on.
     let scale = auto.scale;
-    let size = (physical.as_vec2() * scale).round().as_uvec2().max(UVec2::ONE);
+    let size = (physical.as_vec2() * scale)
+        .round()
+        .as_uvec2()
+        .max(UVec2::ONE);
     // The picture's logical size matches the window's, so rays from the cursor line up.
     let scale_factor = window.scale_factor() * size.x as f32 / physical.x as f32;
     // At full size, a straight copy; smaller, smoothed as it stretches.
-    let sampler = if size == physical { ImageSamplerDescriptor::nearest() } else { ImageSamplerDescriptor::linear() };
+    let sampler = if size == physical {
+        ImageSamplerDescriptor::nearest()
+    } else {
+        ImageSamplerDescriptor::linear()
+    };
     match &*target {
         RenderTarget::Image(picture) => {
             let (handle, current_factor) = (picture.handle.clone(), picture.scale_factor);
             if let Some(image) = images.get(&handle)
-                && (image.size() != size || !matches!(&image.sampler, ImageSampler::Descriptor(d) if *d == sampler))
+                && (image.size() != size
+                    || !matches!(&image.sampler, ImageSampler::Descriptor(d) if *d == sampler))
                 && let Some(mut image) = images.get_mut(&handle)
             {
-                image.resize(Extent3d { width: size.x, height: size.y, depth_or_array_layers: 1 });
+                image.resize(Extent3d {
+                    width: size.x,
+                    height: size.y,
+                    depth_or_array_layers: 1,
+                });
                 image.sampler = ImageSampler::Descriptor(sampler);
                 // The material's bind group still holds the old texture, so the screen would
                 // keep showing the last frame drawn before the resize; writing to it rebuilds that.
@@ -493,14 +571,21 @@ fn fit_render_target(
                 }
             }
             if current_factor != scale_factor {
-                *target = RenderTarget::Image(ImageRenderTarget { handle, scale_factor });
+                *target = RenderTarget::Image(ImageRenderTarget {
+                    handle,
+                    scale_factor,
+                });
             }
         }
         _ => {
-            let mut image = Image::new_target_texture(size.x, size.y, TextureFormat::Bgra8UnormSrgb, None);
+            let mut image =
+                Image::new_target_texture(size.x, size.y, TextureFormat::Bgra8UnormSrgb, None);
             image.sampler = ImageSampler::Descriptor(sampler);
             let handle = images.add(image);
-            *target = RenderTarget::Image(ImageRenderTarget { handle: handle.clone(), scale_factor });
+            *target = RenderTarget::Image(ImageRenderTarget {
+                handle: handle.clone(),
+                scale_factor,
+            });
             if let Some(mut material) = materials.get_mut(&material.0) {
                 material.texture = Some(handle);
             }

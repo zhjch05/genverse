@@ -10,8 +10,8 @@ use bevy_egui::{EguiContexts, egui, input::EguiWantsInput};
 
 use super::{loading::Loading, prefs, theme};
 use crate::{
-    player::{InputBlocked, Player, PointerOverUi},
     graphics::{AutoScale, Graphics},
+    player::{InputBlocked, Player, PointerOverUi},
     world::VoxelWorld,
 };
 
@@ -64,7 +64,12 @@ impl Fps {
         sorted.sort_by(|a, b| b.total_cmp(a));
         let slowest = &sorted[..sorted.len().div_ceil(100)];
         let low_ms = slowest.iter().sum::<f32>() / slowest.len() as f32;
-        Stats { fps: 1000.0 / ms, ms, low: 1000.0 / low_ms, worst_ms: sorted[0] }
+        Stats {
+            fps: 1000.0 / ms,
+            ms,
+            low: 1000.0 / low_ms,
+            worst_ms: sorted[0],
+        }
     }
 }
 
@@ -140,53 +145,109 @@ pub fn fps_overlay(
                 .show(ui, |ui| {
                     ui.spacing_mut().item_spacing = egui::vec2(6.0, 3.0);
                     ui.horizontal(|ui| {
-                        let big = egui::RichText::new(format!("{:.0}", s.fps)).size(22.0).strong().monospace();
+                        let big = egui::RichText::new(format!("{:.0}", s.fps))
+                            .size(22.0)
+                            .strong()
+                            .monospace();
                         ui.label(big.color(tone(s.ms)));
                         ui.label(egui::RichText::new("fps").size(12.0).color(p.muted));
                     });
-                    let row = |ui: &mut egui::Ui, name: &str, value: String, color: egui::Color32| {
-                        ui.horizontal(|ui| {
-                            ui.label(egui::RichText::new(name).size(11.5).color(p.muted));
-                            ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                                ui.label(egui::RichText::new(value).size(11.5).monospace().color(color));
+                    let row =
+                        |ui: &mut egui::Ui, name: &str, value: String, color: egui::Color32| {
+                            ui.horizontal(|ui| {
+                                ui.label(egui::RichText::new(name).size(11.5).color(p.muted));
+                                ui.with_layout(
+                                    egui::Layout::right_to_left(egui::Align::Center),
+                                    |ui| {
+                                        ui.label(
+                                            egui::RichText::new(value)
+                                                .size(11.5)
+                                                .monospace()
+                                                .color(color),
+                                        );
+                                    },
+                                );
                             });
-                        });
-                    };
+                        };
                     ui.set_width(170.0);
                     row(ui, "frame", format!("{:.1} ms", s.ms), p.text);
-                    row(ui, "1% low", format!("{:.0} fps", s.low), tone(1000.0 / s.low.max(1.0)));
-                    row(ui, "worst", format!("{:.1} ms", s.worst_ms), tone(s.worst_ms));
+                    row(
+                        ui,
+                        "1% low",
+                        format!("{:.0} fps", s.low),
+                        tone(1000.0 / s.low.max(1.0)),
+                    );
+                    row(
+                        ui,
+                        "worst",
+                        format!("{:.1} ms", s.worst_ms),
+                        tone(s.worst_ms),
+                    );
                     graph(ui, &fps.frames, tone);
                     let preset = graphics.preset().map_or("Custom", |q| q.label());
                     let auto_note = if graphics.auto_scale { " auto" } else { "" };
-                    row(ui, "graphics", format!("{preset} · {:.0}%{auto_note}", auto.scale * 100.0), p.text);
+                    row(
+                        ui,
+                        "graphics",
+                        format!("{preset} · {:.0}%{auto_note}", auto.scale * 100.0),
+                        p.text,
+                    );
                     row(ui, "chunks", format!("{loaded} (+{building})"), p.text);
                     row(ui, "entities", entities.iter().len().to_string(), p.text);
                     if let Ok(t) = player.single() {
                         let at = t.translation;
-                        row(ui, "at", format!("{:.0} {:.0} {:.0}", at.x, at.y, at.z), p.text);
+                        row(
+                            ui,
+                            "at",
+                            format!("{:.0} {:.0} {:.0}", at.x, at.y, at.z),
+                            p.text,
+                        );
                     }
                     let cursor = windows.single().ok().and_then(|w| w.cursor_position());
-                    row(ui, "cursor", cursor.map_or("outside".into(), |c| format!("{:.0} {:.0}", c.x, c.y)), p.text);
+                    row(
+                        ui,
+                        "cursor",
+                        cursor.map_or("outside".into(), |c| format!("{:.0} {:.0}", c.x, c.y)),
+                        p.text,
+                    );
                     // Who gets the mouse and the keys: the game, or the interface (and why).
                     let mouse = if egui_input.is_popup_open() {
                         "UI · menu open"
                     } else if egui_input.is_using_pointer() {
                         "UI · dragging"
-                    } else if egui_input.is_pointer_over_area() || egui_input.wants_pointer_input() {
+                    } else if egui_input.is_pointer_over_area() || egui_input.wants_pointer_input()
+                    {
                         "UI · over it"
                     } else if over_ui.0 {
                         "UI · panel"
                     } else {
                         "game"
                     };
-                    row(ui, "mouse", mouse.into(), if mouse == "game" { p.text } else { p.warn });
-                    let held: Vec<_> = [(MouseButton::Left, "left"), (MouseButton::Right, "right"), (MouseButton::Middle, "middle")]
-                        .into_iter()
-                        .filter(|(b, _)| buttons.pressed(*b))
-                        .map(|(_, name)| name)
-                        .collect();
-                    row(ui, "held", if held.is_empty() { "–".into() } else { held.join(" ") }, p.text);
+                    row(
+                        ui,
+                        "mouse",
+                        mouse.into(),
+                        if mouse == "game" { p.text } else { p.warn },
+                    );
+                    let held: Vec<_> = [
+                        (MouseButton::Left, "left"),
+                        (MouseButton::Right, "right"),
+                        (MouseButton::Middle, "middle"),
+                    ]
+                    .into_iter()
+                    .filter(|(b, _)| buttons.pressed(*b))
+                    .map(|(_, name)| name)
+                    .collect();
+                    row(
+                        ui,
+                        "held",
+                        if held.is_empty() {
+                            "–".into()
+                        } else {
+                            held.join(" ")
+                        },
+                        p.text,
+                    );
                     let keys = if egui_input.wants_keyboard_input() {
                         "UI · typing"
                     } else if egui_input.is_popup_open() {
@@ -194,7 +255,12 @@ pub fn fps_overlay(
                     } else {
                         "game"
                     };
-                    row(ui, "keys", keys.into(), if keys == "game" { p.text } else { p.warn });
+                    row(
+                        ui,
+                        "keys",
+                        keys.into(),
+                        if keys == "game" { p.text } else { p.warn },
+                    );
                 });
         });
     Ok(())
@@ -203,7 +269,8 @@ pub fn fps_overlay(
 /// One bar per frame, newest on the right, taller for slower frames; the line marks 60 fps.
 fn graph(ui: &mut egui::Ui, frames: &VecDeque<f32>, tone: impl Fn(f32) -> egui::Color32) {
     let p = theme::palette(ui.ctx());
-    let (rect, _) = ui.allocate_exact_size(egui::vec2(ui.available_width(), 40.0), egui::Sense::hover());
+    let (rect, _) =
+        ui.allocate_exact_size(egui::vec2(ui.available_width(), 40.0), egui::Sense::hover());
     let painter = ui.painter_at(rect);
     painter.rect_filled(rect, theme::ROUND, p.input);
     // Room for frames up to 30 fps; slower ones are clipped at the top.
@@ -213,7 +280,11 @@ fn graph(ui: &mut egui::Ui, frames: &VecDeque<f32>, tone: impl Fn(f32) -> egui::
     for (i, &ms) in frames.iter().enumerate() {
         let x = rect.left() + (start + i) as f32 * width;
         let top = (rect.bottom() - ms * scale).max(rect.top());
-        painter.rect_filled(egui::Rect::from_min_max(egui::pos2(x, top), egui::pos2(x + width, rect.bottom())), 0, tone(ms));
+        painter.rect_filled(
+            egui::Rect::from_min_max(egui::pos2(x, top), egui::pos2(x + width, rect.bottom())),
+            0,
+            tone(ms),
+        );
     }
     let y = rect.bottom() - TARGET_MS * scale;
     painter.hline(rect.x_range(), y, egui::Stroke::new(1.0, p.faint));

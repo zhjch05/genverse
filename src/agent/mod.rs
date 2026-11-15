@@ -11,6 +11,7 @@
 //! gameplay there ("a turnip farm"), the agent answers with a data package that's
 //! installed on the area's parcels and played with [`game`].
 
+mod activity;
 mod commands;
 mod creations;
 mod decal;
@@ -26,26 +27,25 @@ mod landscape;
 mod loading;
 mod mcp;
 mod menu;
+mod online;
 mod ops;
 mod panels;
-mod online;
 mod prefs;
 mod presence;
 mod prompt;
 mod registry;
 mod runner;
-mod stream;
-mod activity;
 mod settings;
 mod start;
+mod stream;
 mod theme;
 mod welcome;
 use genverse_rules::build as spec;
-mod tools;
-mod workspace;
-mod present;
 #[cfg(not(target_arch = "wasm32"))]
 mod player_scripts;
+mod present;
+mod tools;
+mod workspace;
 mod worlds;
 
 use std::{
@@ -62,13 +62,17 @@ use egui_phosphor::regular as icon;
 
 use crate::bindings::Bindings;
 use crate::{
-    player::{self, InputBlocked, Player, PointerOverUi},
     graphics::{self, ScreenCamera},
+    player::{self, InputBlocked, Player, PointerOverUi},
     voxel::{
         VoxelModel,
         query::{Hit, overlaps_box, raycast},
     },
     world::{VoxelWorld, ledger::Ledger},
+};
+use creations::{
+    Adjust, Creation, Creations, DraftMarker, load_creations, outline_creations, placement_for_hit,
+    stream_creations,
 };
 use genverse_rules::{
     land::area_parcels,
@@ -76,11 +80,9 @@ use genverse_rules::{
     logic::{Scope, data::GameSpec},
     settings::WorldRules,
 };
-use creations::{
-    Adjust, Creation, Creations, DraftMarker, load_creations, outline_creations, placement_for_hit, stream_creations,
-};
 use landscape::{
-    AreaGizmos, Landscape, SpawnOverlay, PreviewError, draw_spawn, configure_area_gizmos, describe_stats, land_summary, draw_area, highlight_area, select_area,
+    AreaGizmos, Landscape, PreviewError, SpawnOverlay, configure_area_gizmos, describe_stats,
+    draw_area, draw_spawn, highlight_area, land_summary, select_area,
 };
 use mcp::McpServer;
 use runner::{AgentEvent, AgentJob, Provider};
@@ -130,33 +132,116 @@ impl Plugin for AgentPlugin {
             .add_systems(Update, (welcome::open_if_asked, start::follow_start))
             .init_gizmo_group::<AreaGizmos>()
             .init_gizmo_group::<presence::RingGizmos>()
-            .add_systems(Startup, (attach_interface.after(graphics::spawn_screen), settings::load_settings))
+            .add_systems(
+                Startup,
+                (
+                    attach_interface.after(graphics::spawn_screen),
+                    settings::load_settings,
+                ),
+            )
             .init_resource::<panels::Panels>()
             .add_systems(Startup, (ops::load_bindings, panels::load_panels))
-            .add_systems(EguiPrimaryContextPass, panels::panel_windows.after(chat_panel))
-            .add_systems(Startup, (load_creations, configure_area_gizmos, presence::configure_ring_gizmos, start_tool_server, lan::start_listening))
+            .add_systems(
+                EguiPrimaryContextPass,
+                panels::panel_windows.after(chat_panel),
+            )
+            .add_systems(
+                Startup,
+                (
+                    load_creations,
+                    configure_area_gizmos,
+                    presence::configure_ring_gizmos,
+                    start_tool_server,
+                    lan::start_listening,
+                ),
+            )
             .add_systems(
                 Update,
                 (
                     block_game_input,
                     center_view,
                     stream_creations,
-                    (online::sync_online, lan::update_lan, update_build_site, answer_tool_calls, poll_agent, finish_turn, resume_turn, creations::show_builds).chain(),
-                    (presence::send_presence, presence::move_avatars, presence::draw_peers, history::toggle_history, (loading::track_loading, fps::track_frames).chain()),
+                    (
+                        online::sync_online,
+                        lan::update_lan,
+                        update_build_site,
+                        answer_tool_calls,
+                        poll_agent,
+                        finish_turn,
+                        resume_turn,
+                        creations::show_builds,
+                    )
+                        .chain(),
+                    (
+                        presence::send_presence,
+                        presence::move_avatars,
+                        presence::draw_peers,
+                        history::toggle_history,
+                        (loading::track_loading, fps::track_frames).chain(),
+                    ),
                     auto_prompt,
-                    (game::script_play.after(auto_prompt), game::run_timers, game::play_keys, game::sync_pieces, game::walk_pieces, game::follow_teleports, game::follow_travels, game::follow_body, game::sync_game_actions, game::use_pieces, worlds::use_portals, hud::draw_game_world, history::follow_ledger)
+                    (
+                        game::script_play.after(auto_prompt),
+                        game::run_timers,
+                        game::play_keys,
+                        game::sync_pieces,
+                        game::walk_pieces,
+                        game::follow_teleports,
+                        game::follow_travels,
+                        game::follow_body,
+                        game::sync_game_actions,
+                        game::use_pieces,
+                        worlds::use_portals,
+                        hud::draw_game_world,
+                        history::follow_ledger,
+                    )
                         .chain(),
                     worlds::toggle_worlds,
-                    (inventory::sync_inventory, inventory::inventory_keys, inventory::use_held, shortcuts, select_area, follow_cursor, check_clearance, click_in_world, outline_creations, draw_area, highlight_area, draw_spawn)
+                    (
+                        inventory::sync_inventory,
+                        inventory::inventory_keys,
+                        inventory::use_held,
+                        shortcuts,
+                        select_area,
+                        follow_cursor,
+                        check_clearance,
+                        click_in_world,
+                        outline_creations,
+                        draw_area,
+                        highlight_area,
+                        draw_spawn,
+                    )
                         .chain(),
                 ),
             )
-            .add_systems(EguiPrimaryContextPass, (install_icon_font, chat_panel, shortcut_hints, game::game_labels, inventory::hotbar, loading::loading_screen).chain())
             .add_systems(
                 EguiPrimaryContextPass,
-                (presence::name_tags, landscape::spawn_label, presence::hover_credit, history::history_window, fps::fps_overlay, settings::settings_window, worlds::portal_prompt),
+                (
+                    install_icon_font,
+                    chat_panel,
+                    shortcut_hints,
+                    game::game_labels,
+                    inventory::hotbar,
+                    loading::loading_screen,
+                )
+                    .chain(),
             )
-            .add_systems(EguiPrimaryContextPass, (worlds::worlds_window, hud::game_hud))
+            .add_systems(
+                EguiPrimaryContextPass,
+                (
+                    presence::name_tags,
+                    landscape::spawn_label,
+                    presence::hover_credit,
+                    history::history_window,
+                    fps::fps_overlay,
+                    settings::settings_window,
+                    worlds::portal_prompt,
+                ),
+            )
+            .add_systems(
+                EguiPrimaryContextPass,
+                (worlds::worlds_window, hud::game_hud),
+            )
             // Esc: before what it would cancel, so it sees the frame as the key found it.
             .add_systems(
                 Update,
@@ -169,7 +254,10 @@ impl Plugin for AgentPlugin {
                     .before(worlds::toggle_worlds),
             )
             .add_systems(Update, menu::follow_menu)
-            .add_systems(EguiPrimaryContextPass, menu::paused_banner.after(shortcut_hints))
+            .add_systems(
+                EguiPrimaryContextPass,
+                menu::paused_banner.after(shortcut_hints),
+            )
             // Over everything else, so drawn last.
             .add_systems(
                 EguiPrimaryContextPass,
@@ -180,14 +268,35 @@ impl Plugin for AgentPlugin {
                     .after(worlds::worlds_window)
                     .after(loading::loading_screen),
             )
-            .add_systems(EguiPrimaryContextPass, (start::start_screen, welcome::welcome_window).chain().after(menu::menu_window))
+            .add_systems(
+                EguiPrimaryContextPass,
+                (start::start_screen, welcome::welcome_window)
+                    .chain()
+                    .after(menu::menu_window),
+            )
             // How games show things: effects, sounds, the sky, heroes' looks.
             // Decals follow the pieces they're under.
             .add_systems(Update, decal::sync_decals.after(game::walk_pieces))
-            .add_systems(Update, (present::play_shows, present::update_particles, present::apply_sky, present::dress_hero))
-            .add_systems(Update, tools::take_looks.after(crate::player::follow_camera))
+            .add_systems(
+                Update,
+                (
+                    present::play_shows,
+                    present::update_particles,
+                    present::apply_sky,
+                    present::dress_hero,
+                ),
+            )
+            .add_systems(
+                Update,
+                tools::take_looks.after(crate::player::follow_camera),
+            )
             // Before games act, so they read the ground as it is.
-            .add_systems(Update, crate::world::ledger::copy_edits.before(game::script_play).before(game::run_timers))
+            .add_systems(
+                Update,
+                crate::world::ledger::copy_edits
+                    .before(game::script_play)
+                    .before(game::run_timers),
+            )
             // Trips are taken last, once everything else this frame is done with the world.
             .add_systems(PostUpdate, worlds::travel);
         // The games' player scripts: before the hero moves, after the pieces do.
@@ -197,8 +306,12 @@ impl Plugin for AgentPlugin {
             .add_systems(
                 Update,
                 (
-                    player_scripts::run_player_scripts.after(game::sync_pieces).before(crate::player::move_player),
-                    player_scripts::pose_pieces.after(game::walk_pieces).after(player_scripts::run_player_scripts),
+                    player_scripts::run_player_scripts
+                        .after(game::sync_pieces)
+                        .before(crate::player::move_player),
+                    player_scripts::pose_pieces
+                        .after(game::walk_pieces)
+                        .after(player_scripts::run_player_scripts),
                 ),
             );
     }
@@ -329,7 +442,11 @@ impl Chat {
     }
 
     pub(super) fn say(&mut self, role: Role, text: impl Into<String>) {
-        self.messages.push(Message { role, text: text.into(), at: Instant::now() });
+        self.messages.push(Message {
+            role,
+            text: text.into(),
+            at: Instant::now(),
+        });
     }
 
     fn start(
@@ -342,9 +459,21 @@ impl Chat {
         repairs: u8,
         restore: bool,
     ) {
-        let job = runner::start(provider, prompt::system(tools.is_some(), rules), request, tools, workspace::current());
+        let job = runner::start(
+            provider,
+            prompt::system(tools.is_some(), rules),
+            request,
+            tools,
+            workspace::current(),
+        );
         self.activity = activity::Feed::default();
-        self.pending = Some(Pending { job: Mutex::new(job), provider, prompt, repairs, restore });
+        self.pending = Some(Pending {
+            job: Mutex::new(job),
+            provider,
+            prompt,
+            repairs,
+            restore,
+        });
     }
 
     /// Sends the input. With no draft but a selected build, the message revises that
@@ -369,12 +498,17 @@ impl Chat {
         self.after = tools::AfterTurn::default();
         self.resume = None;
         self.hops = 0;
-        let restore = area.is_none() && creations.draft.is_none() && creations.edit_selected(commands, false).is_some();
+        let restore = area.is_none()
+            && creations.draft.is_none()
+            && creations.edit_selected(commands, false).is_some();
         let turns: Vec<_> = self
             .messages
             .iter()
             .filter(|m| m.role != Role::System)
-            .map(|m| prompt::Turn { from_player: m.role == Role::Player, text: &m.text })
+            .map(|m| prompt::Turn {
+                from_player: m.role == Role::Player,
+                text: &m.text,
+            })
             .collect();
         let history = &turns[turns.len().saturating_sub(HISTORY)..];
         let draft = creations.draft.as_ref().map(|d| &d.spec);
@@ -414,12 +548,22 @@ fn folder_context(ledger: &Ledger, here: Option<&str>, errors: &[String]) -> Opt
 impl Chat {
     /// Starts the agent again in the world its trip led to, to do what it left itself
     /// there: the same request, with the conversation so far and this world's folder.
-    fn carry_on(&mut self, tools: Option<&McpServer>, ledger: &Ledger, here: String, resume: tools::Resume, world: &str) {
+    fn carry_on(
+        &mut self,
+        tools: Option<&McpServer>,
+        ledger: &Ledger,
+        here: String,
+        resume: tools::Resume,
+        world: &str,
+    ) {
         let turns: Vec<_> = self
             .messages
             .iter()
             .filter(|m| m.role != Role::System)
-            .map(|m| prompt::Turn { from_player: m.role == Role::Player, text: &m.text })
+            .map(|m| prompt::Turn {
+                from_player: m.role == Role::Player,
+                text: &m.text,
+            })
             .collect();
         let history = &turns[turns.len().saturating_sub(HISTORY)..];
         let game = folder_context(ledger, Some(&here), &self.script_errors);
@@ -430,10 +574,21 @@ impl Chat {
             resume.prompt, resume.from, resume.note
         );
         let request = prompt::request(history, None, None, game.as_deref(), &message);
-        self.say(Role::System, format!("The agent carries on here: {}", resume.note));
+        self.say(
+            Role::System,
+            format!("The agent carries on here: {}", resume.note),
+        );
         self.after = tools::AfterTurn::default();
         self.hops += 1;
-        self.start(tools, &ledger.rules, self.provider, resume.prompt, request, 0, false);
+        self.start(
+            tools,
+            &ledger.rules,
+            self.provider,
+            resume.prompt,
+            request,
+            0,
+            false,
+        );
     }
 }
 
@@ -457,28 +612,56 @@ fn resume_turn(
     }
     let here = worlds::current_title(&ledger);
     let arrived = travel.next.is_none() && here != resume.from && loading.is_done();
-    let Some((_, hero)) = players.single().ok().filter(|(player, _)| arrived && player.has_landed()) else {
+    let Some((_, hero)) = players
+        .single()
+        .ok()
+        .filter(|(player, _)| arrived && player.has_landed())
+    else {
         if resume.since.elapsed() > std::time::Duration::from_secs(90) {
             chat.resume = None;
-            chat.say(Role::System, "The trip didn't happen, so what the agent meant to do there is left undone.");
+            chat.say(
+                Role::System,
+                "The trip didn't happen, so what the agent meant to do there is left undone.",
+            );
         }
         return;
     };
-    let Some(resume) = chat.resume.take() else { return };
-    let context = here_context(&world, ledger.log.terrain(), hero.translation, cameras.single().ok());
+    let Some(resume) = chat.resume.take() else {
+        return;
+    };
+    let context = here_context(
+        &world,
+        ledger.log.terrain(),
+        hero.translation,
+        cameras.single().ok(),
+    );
     chat.carry_on(tools.as_deref(), &ledger, context, resume, &here);
 }
 
 /// Where the player stands, in the world's own meters, and the ground around them: so
 /// "next to me" and "20 m east" become positions a game can use (its scripts hold them),
 /// without anything to put down first.
-fn here_context(world: &VoxelWorld, terrain: genverse_rules::terrain::Terrain, hero: Vec3, camera: Option<&GlobalTransform>) -> String {
+fn here_context(
+    world: &VoxelWorld,
+    terrain: genverse_rules::terrain::Terrain,
+    hero: Vec3,
+    camera: Option<&GlobalTransform>,
+) -> String {
     use genverse_rules::logic::Ground;
     const STEP_M: f32 = 4.0;
     const REACH: i32 = 6;
-    let facing = camera.map(|c| c.forward().xz()).filter(|f| f.length() > 0.1).map_or("north", |f| {
-        if f.x.abs() > f.y.abs() { if f.x > 0.0 { "east (+x)" } else { "west (-x)" } } else if f.y > 0.0 { "south (+z)" } else { "north (-z)" }
-    });
+    let facing = camera
+        .map(|c| c.forward().xz())
+        .filter(|f| f.length() > 0.1)
+        .map_or("north", |f| {
+            if f.x.abs() > f.y.abs() {
+                if f.x > 0.0 { "east (+x)" } else { "west (-x)" }
+            } else if f.y > 0.0 {
+                "south (+z)"
+            } else {
+                "north (-z)"
+            }
+        });
     let column = |m: f32| (m / crate::world::terrain::VOXEL_SIZE).floor() as i32;
     let step = (STEP_M / crate::world::terrain::VOXEL_SIZE) as i32;
     let min = [column(hero.x) - REACH * step, column(hero.z) - REACH * step];
@@ -504,11 +687,25 @@ fn here_context(world: &VoxelWorld, terrain: genverse_rules::terrain::Terrain, h
          Where pieces stand around them (y in meters, every {STEP_M} m; rows north to south, columns west to east; ~ water):\n",
         hero.x, hero.z
     );
-    out.push_str(&format!("  z \\ x: {}\n", (0..n).map(|i| format!("{:.0}", hero.x + (i - REACH) as f32 * STEP_M)).collect::<Vec<_>>().join(" ")));
+    out.push_str(&format!(
+        "  z \\ x: {}\n",
+        (0..n)
+            .map(|i| format!("{:.0}", hero.x + (i - REACH) as f32 * STEP_M))
+            .collect::<Vec<_>>()
+            .join(" ")
+    ));
     for j in 0..n {
-        let row: Vec<String> =
-            (0..n).map(|i| stand(min[0] + i * step, min[1] + j * step).map_or("~".into(), |y| format!("{y:.2}"))).collect();
-        out.push_str(&format!("  {:.0}: {}\n", hero.z + (j - REACH) as f32 * STEP_M, row.join(" ")));
+        let row: Vec<String> = (0..n)
+            .map(|i| {
+                stand(min[0] + i * step, min[1] + j * step)
+                    .map_or("~".into(), |y| format!("{y:.2}"))
+            })
+            .collect();
+        out.push_str(&format!(
+            "  {:.0}: {}\n",
+            hero.z + (j - REACH) as f32 * STEP_M,
+            row.join(" ")
+        ));
     }
     out
 }
@@ -539,14 +736,33 @@ fn game_context(ledger: &Ledger, errors: &[String]) -> Option<String> {
         .filter_map(|i| logic.package(i))
         .map(|p| {
             let spec = GameSpec::from_package(p);
-            let models: Vec<String> = spec.models.iter().map(|m| format!("{} ({})", m.name, m.build.size.iter().map(|v| v.to_string()).collect::<Vec<_>>().join("×"))).collect();
+            let models: Vec<String> = spec
+                .models
+                .iter()
+                .map(|m| {
+                    format!(
+                        "{} ({})",
+                        m.name,
+                        m.build
+                            .size
+                            .iter()
+                            .map(|v| v.to_string())
+                            .collect::<Vec<_>>()
+                            .join("×")
+                    )
+                })
+                .collect();
             let mut text = format!(
                 "Package \"{}\" (\"{}\", v{}):\n- defs: {}\n- models: {}\n",
                 spec.name,
                 spec.title,
                 p.manifest.version,
                 serde_json::to_string(&spec.defs).unwrap_or_default(),
-                if models.is_empty() { "none".into() } else { models.join(", ") }
+                if models.is_empty() {
+                    "none".into()
+                } else {
+                    models.join(", ")
+                }
             );
             for script in &spec.scripts {
                 text.push_str(&format!("- script {}:\n{}\n", script.name, script.source));
@@ -555,17 +771,34 @@ fn game_context(ledger: &Ledger, errors: &[String]) -> Option<String> {
         })
         .collect();
     let names: Vec<String> = match &ledger.online {
-        Some(online) => online.game.as_ref().map(|g| g.worlds().into_iter().map(|(n, _)| n).collect()).unwrap_or_default(),
-        None => crate::world::ledger::list_worlds().into_iter().map(|w| w.name).collect(),
+        Some(online) => online
+            .game
+            .as_ref()
+            .map(|g| g.worlds().into_iter().map(|(n, _)| n).collect())
+            .unwrap_or_default(),
+        None => crate::world::ledger::list_worlds()
+            .into_iter()
+            .map(|w| w.name)
+            .collect(),
     };
-    let here = ledger.online.as_ref().and_then(|o| o.world.clone()).unwrap_or_else(crate::world::ledger::world_name);
+    let here = ledger
+        .online
+        .as_ref()
+        .and_then(|o| o.world.clone())
+        .unwrap_or_else(crate::world::ledger::world_name);
     let names: Vec<String> = names.into_iter().filter(|n| *n != here).collect();
     let mut out = format!(
         "The other worlds of this game (for portals, by name; another game of the player's is \"game/world\"): {}.",
-        if names.is_empty() { "none yet".into() } else { names.join(", ") }
+        if names.is_empty() {
+            "none yet".into()
+        } else {
+            names.join(", ")
+        }
     );
     if specs.is_empty() {
-        out.push_str("\nThe world has no game logic yet: a \"game\" you send starts it (name it \"world\").");
+        out.push_str(
+            "\nThe world has no game logic yet: a \"game\" you send starts it (name it \"world\").",
+        );
         return Some(out);
     }
     out.push_str(&format!(
@@ -574,7 +807,10 @@ fn game_context(ledger: &Ledger, errors: &[String]) -> Option<String> {
         specs.join("\n")
     ));
     if !errors.is_empty() {
-        out.push_str(&format!("\nRecent errors from these scripts while players played:\n- {}", errors.join("\n- ")));
+        out.push_str(&format!(
+            "\nRecent errors from these scripts while players played:\n- {}",
+            errors.join("\n- ")
+        ));
     }
     Some(out)
 }
@@ -586,8 +822,13 @@ fn land_refusal(creations: &Creations, landscape: &Landscape, ledger: &Ledger) -
         return None;
     }
     let area = landscape.target()?;
-    let why = ledger.check(&area_parcels(area)).and_then(|_| ledger.held(vec![area])).err()?;
-    Some(format!("⚠ Can't change this land: {why}. Select an area you can change."))
+    let why = ledger
+        .check(&area_parcels(area))
+        .and_then(|_| ledger.held(vec![area]))
+        .err()?;
+    Some(format!(
+        "⚠ Can't change this land: {why}. Select an area you can change."
+    ))
 }
 
 /// `GENVERSE_PROMPT="a red mailbox" cargo run` sends one message once the hero has
@@ -605,7 +846,11 @@ fn auto_prompt(
     mut world: ResMut<VoxelWorld>,
     mut ledger: ResMut<Ledger>,
     mut travel: ResMut<worlds::Travel>,
-    (mut binds, mut graphics, mut panels): (ResMut<Bindings>, ResMut<crate::graphics::Graphics>, ResMut<panels::Panels>),
+    (mut binds, mut graphics, mut panels): (
+        ResMut<Bindings>,
+        ResMut<crate::graphics::Graphics>,
+        ResMut<panels::Panels>,
+    ),
     players: Query<(&Player, &Transform)>,
     cameras: Query<&GlobalTransform, With<Camera3d>>,
 ) {
@@ -617,9 +862,28 @@ fn auto_prompt(
     if *sent {
         if chat.pending.is_none() && !queue.is_empty() {
             chat.input = queue.remove(0);
-            let area = area_context(&creations, &landscape, &world, &ledger, Some(hero.translation), cameras.single().ok());
-            let here = here_context(&world, ledger.log.terrain(), hero.translation, cameras.single().ok());
-            chat.send(&mut creations, &mut commands, tools.as_deref(), &ledger, area, Some(here));
+            let area = area_context(
+                &creations,
+                &landscape,
+                &world,
+                &ledger,
+                Some(hero.translation),
+                cameras.single().ok(),
+            );
+            let here = here_context(
+                &world,
+                ledger.log.terrain(),
+                hero.translation,
+                cameras.single().ok(),
+            );
+            chat.send(
+                &mut creations,
+                &mut commands,
+                tools.as_deref(),
+                &ledger,
+                area,
+                Some(here),
+            );
         }
         return;
     }
@@ -630,16 +894,26 @@ fn auto_prompt(
     if std::env::var("GENVERSE_SPAWN_AREA").is_ok() {
         overlay.visible = true;
     }
-    if let Some(size) = std::env::var("GENVERSE_AREA").ok().and_then(|s| s.parse::<f32>().ok()) {
+    if let Some(size) = std::env::var("GENVERSE_AREA")
+        .ok()
+        .and_then(|s| s.parse::<f32>().ok())
+    {
         let forward = (hero.rotation * Vec3::NEG_Z).xz().normalize_or_zero();
         let center = hero.translation.xz() + forward * (size / 2.0 + 2.0);
         let half = Vec2::splat(size / 2.0);
         let cell = |p: Vec2| (p / crate::world::terrain::VOXEL_SIZE).floor().as_ivec2();
-        landscape.area = Some(genverse_rules::sculpt::Area::from_corners(cell(center - half), cell(center + half) - 1));
+        landscape.area = Some(genverse_rules::sculpt::Area::from_corners(
+            cell(center - half),
+            cell(center + half) - 1,
+        ));
     }
     if let Ok(text) = std::env::var("GENVERSE_PROMPT") {
         if let Ok(provider) = std::env::var("GENVERSE_AGENT") {
-            chat.provider = if provider == "codex" { Provider::Codex } else { Provider::Claude };
+            chat.provider = if provider == "codex" {
+                Provider::Codex
+            } else {
+                Provider::Claude
+            };
         }
         // `GENVERSE_SELECT_LAST=1` targets the most recent build, like clicking it first.
         if std::env::var("GENVERSE_SELECT_LAST").is_ok() {
@@ -664,7 +938,11 @@ fn auto_prompt(
             }
             return;
         }
-        let mut prompts: Vec<String> = text.split("||").map(|p| p.trim().to_string()).filter(|p| !p.is_empty()).collect();
+        let mut prompts: Vec<String> = text
+            .split("||")
+            .map(|p| p.trim().to_string())
+            .filter(|p| !p.is_empty())
+            .collect();
         if prompts.is_empty() {
             return;
         }
@@ -676,9 +954,28 @@ fn auto_prompt(
             chat.say(Role::System, why);
             return;
         }
-        let area = area_context(&creations, &landscape, &world, &ledger, Some(hero.translation), cameras.single().ok());
-        let here = here_context(&world, ledger.log.terrain(), hero.translation, cameras.single().ok());
-        chat.send(&mut creations, &mut commands, tools.as_deref(), &ledger, area, Some(here));
+        let area = area_context(
+            &creations,
+            &landscape,
+            &world,
+            &ledger,
+            Some(hero.translation),
+            cameras.single().ok(),
+        );
+        let here = here_context(
+            &world,
+            ledger.log.terrain(),
+            hero.translation,
+            cameras.single().ok(),
+        );
+        chat.send(
+            &mut creations,
+            &mut commands,
+            tools.as_deref(),
+            &ledger,
+            area,
+            Some(here),
+        );
     }
 }
 
@@ -708,7 +1005,11 @@ fn finish_turn(
     mut creations: ResMut<Creations>,
     mut landscape: ResMut<Landscape>,
     mut travel: ResMut<worlds::Travel>,
-    (mut binds, mut graphics, mut panels): (ResMut<Bindings>, ResMut<crate::graphics::Graphics>, ResMut<panels::Panels>),
+    (mut binds, mut graphics, mut panels): (
+        ResMut<Bindings>,
+        ResMut<crate::graphics::Graphics>,
+        ResMut<panels::Panels>,
+    ),
     players: Query<&Transform, With<Player>>,
 ) {
     if chat.pending.is_some() || chat.after.is_empty() {
@@ -729,7 +1030,9 @@ fn finish_turn(
             creations: &mut creations,
             landscape: &mut landscape,
             travel: &mut travel,
-            at: players.single().map_or([0.0; 3], |t| t.translation.to_array()),
+            at: players
+                .single()
+                .map_or([0.0; 3], |t| t.translation.to_array()),
             agent: None,
             binds: &mut binds,
             graphics: &mut graphics,
@@ -746,7 +1049,12 @@ fn finish_turn(
         travel.stop_hosting |= after.stop_hosting;
         // The request goes on where the trip leads, a few worlds at most.
         if let Some((note, prompt)) = after.then.filter(|_| chat.hops < MAX_HOPS) {
-            chat.resume = Some(tools::Resume { from: worlds::current_title(&ledger), note, prompt, since: std::time::Instant::now() });
+            chat.resume = Some(tools::Resume {
+                from: worlds::current_title(&ledger),
+                note,
+                prompt,
+                since: std::time::Instant::now(),
+            });
         }
     }
 }
@@ -778,7 +1086,10 @@ fn block_game_input(
     // egui only knows about its windows and popups; the panel is drawn on the background,
     // so the pointer counts as over it by its rectangle.
     let cursor = windows.single().ok().and_then(|w| w.cursor_position());
-    let over_panel = chat.panel.zip(cursor).is_some_and(|(panel, at)| panel.contains(egui::pos2(at.x, at.y)));
+    let over_panel = chat
+        .panel
+        .zip(cursor)
+        .is_some_and(|(panel, at)| panel.contains(egui::pos2(at.x, at.y)));
     over_ui.0 = egui.is_pointer_over_area() || over_panel;
 }
 
@@ -834,7 +1145,12 @@ fn poll_agent(
 
     // An unchanged revision draft goes back to being the original build.
     let mut keep_original = |creations: &mut Creations, chat: &mut Chat| {
-        if pending.restore && creations.draft.as_ref().is_some_and(|d| d.replaces.is_some()) {
+        if pending.restore
+            && creations
+                .draft
+                .as_ref()
+                .is_some_and(|d| d.replaces.is_some())
+        {
             creations.discard_draft(&mut commands);
             chat.say(Role::System, "Left it unchanged.");
         }
@@ -843,7 +1159,10 @@ fn poll_agent(
         Ok(answer) => answer,
         Err(e) => {
             warn!("{} failed: {e}", pending.provider.label());
-            chat.say(Role::System, format!("⚠ {} failed: {e}", pending.provider.label()));
+            chat.say(
+                Role::System,
+                format!("⚠ {} failed: {e}", pending.provider.label()),
+            );
             // It didn't finish: what waited for the end of its turn doesn't happen.
             chat.after = tools::AfterTurn::default();
             keep_original(&mut creations, &mut chat);
@@ -852,7 +1171,10 @@ fn poll_agent(
     };
     info!("{} replied: {}", pending.provider.label(), answer.reply);
     if !answer.reply.trim().is_empty() {
-        chat.say(Role::Agent(pending.provider.label()), answer.reply.trim().to_string());
+        chat.say(
+            Role::Agent(pending.provider.label()),
+            answer.reply.trim().to_string(),
+        );
     }
     // Land first: a rejected change asks the agent for a fix (and drops any build with it).
     let mut repairing = false;
@@ -860,10 +1182,22 @@ fn poll_agent(
         let name = terrain.name.clone();
         let provider = pending.provider.label().to_string();
         match landscape.target() {
-            None => chat.say(Role::System, "The agent sent land changes, but no area is selected (G)."),
-            Some(area) => match landscape.preview(&mut world, &ledger, terrain.clone(), pending.prompt.clone(), provider) {
+            None => chat.say(
+                Role::System,
+                "The agent sent land changes, but no area is selected (G).",
+            ),
+            Some(area) => match landscape.preview(
+                &mut world,
+                &ledger,
+                terrain.clone(),
+                pending.prompt.clone(),
+                provider,
+            ) {
                 Ok(stats) => {
-                    info!("terrain preview {name:?}: {stats:?} from {}", serde_json::to_string(&terrain).unwrap_or_default());
+                    info!(
+                        "terrain preview {name:?}: {stats:?} from {}",
+                        serde_json::to_string(&terrain).unwrap_or_default()
+                    );
                     chat.say(
                         Role::System,
                         format!(
@@ -881,15 +1215,32 @@ fn poll_agent(
                 }
                 Err(PreviewError::Invalid(errors)) if pending.repairs == 0 => {
                     warn!("terrain rejected, asking for a fix: {errors:?}");
-                    chat.say(Role::System, format!("Land change broke {} rule(s); asking for a fix…", errors.len()));
+                    chat.say(
+                        Role::System,
+                        format!(
+                            "Land change broke {} rule(s); asking for a fix…",
+                            errors.len()
+                        ),
+                    );
                     let request = prompt::repair_terrain(&terrain, &errors);
                     let rules = &ledger.rules;
-                    chat.start(tools.as_deref(), rules, pending.provider, pending.prompt.clone(), request, 1, false);
+                    chat.start(
+                        tools.as_deref(),
+                        rules,
+                        pending.provider,
+                        pending.prompt.clone(),
+                        request,
+                        1,
+                        false,
+                    );
                     repairing = true;
                 }
                 Err(PreviewError::Invalid(errors)) => {
                     warn!("terrain rejected again: {errors:?}");
-                    chat.say(Role::System, format!("⚠ Land change rejected:\n• {}", errors.join("\n• ")));
+                    chat.say(
+                        Role::System,
+                        format!("⚠ Land change rejected:\n• {}", errors.join("\n• ")),
+                    );
                 }
             },
         }
@@ -907,50 +1258,105 @@ fn poll_agent(
     if let Some(change) = workspace::merge(edited, answer.game.map(|g| *g)) {
         let provider = pending.provider.label();
         // A change to what the world runs: it adds to it, by name.
-        let base = ledger.logic.installed.get(&change.name).and_then(|i| ledger.logic.package(i)).map(GameSpec::from_package);
+        let base = ledger
+            .logic
+            .installed
+            .get(&change.name)
+            .and_then(|i| ledger.logic.package(i))
+            .map(GameSpec::from_package);
         let summary = change.change_summary(base.as_ref());
         let game = change.onto(base.as_ref());
-        let version = ledger.logic.installed.get(&game.name).map_or(1, |i| i.package.version + 1);
+        let version = ledger
+            .logic
+            .installed
+            .get(&game.name)
+            .map_or(1, |i| i.package.version + 1);
         let package = game.to_package(version);
         match package.check() {
             Err(errors) if pending.repairs == 0 && !repairing => {
                 warn!("game rules rejected, asking for a fix: {errors:?}");
-                chat.say(Role::System, format!("Game rules broke {} rule(s); asking for a fix…", errors.len()));
+                chat.say(
+                    Role::System,
+                    format!(
+                        "Game rules broke {} rule(s); asking for a fix…",
+                        errors.len()
+                    ),
+                );
                 let request = prompt::repair_game(&game, &errors);
-                chat.start(tools.as_deref(), &ledger.rules, pending.provider, pending.prompt.clone(), request, 1, false);
+                chat.start(
+                    tools.as_deref(),
+                    &ledger.rules,
+                    pending.provider,
+                    pending.prompt.clone(),
+                    request,
+                    1,
+                    false,
+                );
                 repairing = true;
             }
-            Err(errors) => chat.say(Role::System, format!("⚠ Game rules rejected:\n• {}", errors.join("\n• "))),
+            Err(errors) => chat.say(
+                Role::System,
+                format!("⚠ Game rules rejected:\n• {}", errors.join("\n• ")),
+            ),
             // Live: the next version, at once, for everyone. The world is saved just before,
             // so loading that goes back to how it was, data and all.
             Ok(()) => {
-                let before = (version > 1).then(|| format!("before {} v{version}", game.name).chars().take(40).collect::<String>());
+                let before = (version > 1).then(|| {
+                    format!("before {} v{version}", game.name)
+                        .chars()
+                        .take(40)
+                        .collect::<String>()
+                });
                 if let Some(name) = &before {
-                    ledger.record(None, None, genverse_rules::log::Action::Save { name: name.clone() });
+                    ledger.record(
+                        None,
+                        None,
+                        genverse_rules::log::Action::Save { name: name.clone() },
+                    );
                     ledger.keep_saves(&world.edit_list());
                 }
-                match (ledger.install(package, Scope::World, Some(provider), Some(&pending.prompt)), before) {
+                match (
+                    ledger.install(package, Scope::World, Some(provider), Some(&pending.prompt)),
+                    before,
+                ) {
                     (Ok(_), Some(before)) => {
                         chat.script_errors.clear();
                         chat.say(Role::System, format!("\"{}\" v{version} is live: {summary}. (Saved \"{before}\" first: /load it to go back.)", game.title));
                     }
                     (Ok(_), None) => {
                         chat.script_errors.clear();
-                        chat.say(Role::System, format!("\"{}\" is live in this world: {summary}.", game.title));
+                        chat.say(
+                            Role::System,
+                            format!("\"{}\" is live in this world: {summary}.", game.title),
+                        );
                     }
-                    (Err(why), _) => chat.say(Role::System, format!("⚠ Couldn't install \"{}\": {why}.", game.title)),
+                    (Err(why), _) => chat.say(
+                        Role::System,
+                        format!("⚠ Couldn't install \"{}\": {why}.", game.title),
+                    ),
                 }
             }
         }
     }
     // What things mean, for later requests.
     for meaning in describe {
-        ledger.record(Some(pending.provider.label()), Some(&pending.prompt), genverse_rules::log::Action::Describe { meaning });
+        ledger.record(
+            Some(pending.provider.label()),
+            Some(&pending.prompt),
+            genverse_rules::log::Action::Describe { meaning },
+        );
     }
-    let portal = match answer.portal.as_deref().map(genverse_rules::log::PortalTo::parse) {
+    let portal = match answer
+        .portal
+        .as_deref()
+        .map(genverse_rules::log::PortalTo::parse)
+    {
         Some(Ok(to)) => Some(to),
         Some(Err(why)) => {
-            chat.say(Role::System, format!("⚠ The portal can't lead there: {why}."));
+            chat.say(
+                Role::System,
+                format!("⚠ The portal can't lead there: {why}."),
+            );
             None
         }
         None => None,
@@ -959,8 +1365,18 @@ fn poll_agent(
         // A portal for the build that's selected, without changing how it looks.
         if let (Some(to), Some(build)) = (portal, creations.selected().map(|b| b.build)) {
             let label = to.label().to_string();
-            ledger.record(None, None, genverse_rules::log::Action::SetPortal { build, to: Some(to) });
-            chat.say(Role::System, format!("It's a portal to {label} now: walk up to it and press E."));
+            ledger.record(
+                None,
+                None,
+                genverse_rules::log::Action::SetPortal {
+                    build,
+                    to: Some(to),
+                },
+            );
+            chat.say(
+                Role::System,
+                format!("It's a portal to {label} now: walk up to it and press E."),
+            );
         }
         keep_original(&mut creations, &mut chat);
         return;
@@ -969,7 +1385,10 @@ fn poll_agent(
         Ok(build) => {
             // A revision stays where the current draft stands; a new build goes on the
             // site the agent was shown.
-            let current = creations.draft.as_ref().and_then(|d| drafts.get(d.entity).ok());
+            let current = creations
+                .draft
+                .as_ref()
+                .and_then(|d| drafts.get(d.entity).ok());
             let at = match current {
                 Some(t) => (t.translation, t.rotation.to_euler(EulerRot::YXZ).0),
                 None => (site.origin, site.yaw),
@@ -989,16 +1408,25 @@ fn poll_agent(
                 ),
             );
             let provider = pending.provider.label().to_string();
-            creations.set_draft(&mut commands, &build.model, (spec, s, pending.prompt, provider), at);
+            creations.set_draft(
+                &mut commands,
+                &build.model,
+                (spec, s, pending.prompt, provider),
+                at,
+            );
             if let Some(draft) = &mut creations.draft {
                 draft.portal = portal;
             }
             // `GENVERSE_KEEP=1` places a scripted build where it was drafted, as a click would.
             if std::env::var("GENVERSE_KEEP").is_ok() {
                 // On the ground under where it was drafted.
-                let column = (at.0.xz() / crate::world::terrain::VOXEL_SIZE).floor().as_ivec2();
-                let ground = (ledger.log.terrain().height(column.x, column.y) + 1) as f32 * crate::world::terrain::VOXEL_SIZE;
-                let transform = Transform::from_translation(at.0.with_y(ground)).with_rotation(Quat::from_rotation_y(at.1));
+                let column = (at.0.xz() / crate::world::terrain::VOXEL_SIZE)
+                    .floor()
+                    .as_ivec2();
+                let ground = (ledger.log.terrain().height(column.x, column.y) + 1) as f32
+                    * crate::world::terrain::VOXEL_SIZE;
+                let transform = Transform::from_translation(at.0.with_y(ground))
+                    .with_rotation(Quat::from_rotation_y(at.1));
                 match creations.place_draft(&mut commands, &transform, &mut ledger) {
                     Ok(name) => chat.say(Role::System, format!("Placed \"{name}\".")),
                     Err(why) => chat.say(Role::System, format!("⚠ {why}")),
@@ -1007,7 +1435,10 @@ fn poll_agent(
         }
         Err(errors) if pending.repairs == 0 && !repairing => {
             warn!("build rejected, asking for a fix: {errors:?}");
-            chat.say(Role::System, format!("Build broke {} rule(s); asking for a fix…", errors.len()));
+            chat.say(
+                Role::System,
+                format!("Build broke {} rule(s); asking for a fix…", errors.len()),
+            );
             let request = prompt::repair(&spec, &errors);
             chat.start(
                 tools.as_deref(),
@@ -1021,7 +1452,10 @@ fn poll_agent(
         }
         Err(errors) => {
             warn!("build rejected again: {errors:?}");
-            chat.say(Role::System, format!("⚠ Build rejected:\n• {}", errors.join("\n• ")));
+            chat.say(
+                Role::System,
+                format!("⚠ Build rejected:\n• {}", errors.join("\n• ")),
+            );
             keep_original(&mut creations, &mut chat);
         }
     }
@@ -1045,7 +1479,12 @@ fn shortcuts(
     if blocked.0 {
         return;
     }
-    let command = keys.any_pressed([KeyCode::ControlLeft, KeyCode::ControlRight, KeyCode::SuperLeft, KeyCode::SuperRight]);
+    let command = keys.any_pressed([
+        KeyCode::ControlLeft,
+        KeyCode::ControlRight,
+        KeyCode::SuperLeft,
+        KeyCode::SuperRight,
+    ]);
     // Ctrl/Cmd+Z undoes, with Shift redoes.
     if command && keys.just_pressed(KeyCode::KeyZ) {
         let redo = keys.any_pressed([KeyCode::ShiftLeft, KeyCode::ShiftRight]);
@@ -1083,7 +1522,11 @@ fn shortcuts(
     }
 
     // G: select an area of ground to reshape.
-    if binds.just_pressed("select_area") && creations.draft.is_none() && landscape.draft.is_none() && chat.pending.is_none() {
+    if binds.just_pressed("select_area")
+        && creations.draft.is_none()
+        && landscape.draft.is_none()
+        && chat.pending.is_none()
+    {
         landscape.selecting = !landscape.selecting;
         if landscape.selecting {
             creations.selected = None;
@@ -1146,11 +1589,17 @@ fn shortcuts(
     if creations.selected.is_some() {
         if binds.just_pressed("move_build") {
             if let Some(name) = creations.edit_selected(&mut commands, true) {
-                chat.say(Role::System, format!("Moving \"{name}\": point and click to place it."));
+                chat.say(
+                    Role::System,
+                    format!("Moving \"{name}\": point and click to place it."),
+                );
             }
         } else if binds.just_pressed("remove_build") {
             match creations.delete_selected(&mut commands, &mut ledger) {
-                Ok(name) => chat.say(Role::System, format!("Deleted \"{name}\". Ctrl/Cmd+Z brings it back.")),
+                Ok(name) => chat.say(
+                    Role::System,
+                    format!("Deleted \"{name}\". Ctrl/Cmd+Z brings it back."),
+                ),
                 Err(why) => chat.say(Role::System, why),
             }
         } else if keys.just_pressed(KeyCode::Escape) {
@@ -1171,7 +1620,14 @@ fn shortcuts(
 /// latest undo, which redoes it). The world follows once the ledger has it.
 fn undo(ledger: &mut Ledger, chat: &mut Chat, redo: bool) {
     let Some(id) = ledger.latest_undoable(redo) else {
-        chat.say(Role::System, if redo { "Nothing to redo." } else { "Nothing of yours left to undo." });
+        chat.say(
+            Role::System,
+            if redo {
+                "Nothing to redo."
+            } else {
+                "Nothing of yours left to undo."
+            },
+        );
         return;
     };
     let what = match ledger.log.change(id).map(|c| &c.action) {
@@ -1180,15 +1636,31 @@ fn undo(ledger: &mut Ledger, chat: &mut Chat, redo: bool) {
     }
     .unwrap_or_default();
     match ledger.undo(id) {
-        Ok(()) if redo => chat.say(Role::System, format!("Redid: {what}. Ctrl/Cmd+Z undoes it again.")),
-        Ok(()) => chat.say(Role::System, format!("Undid: {what}. Ctrl/Cmd+Shift+Z redoes it.")),
+        Ok(()) if redo => chat.say(
+            Role::System,
+            format!("Redid: {what}. Ctrl/Cmd+Z undoes it again."),
+        ),
+        Ok(()) => chat.say(
+            Role::System,
+            format!("Undid: {what}. Ctrl/Cmd+Shift+Z redoes it."),
+        ),
         Err(why) => chat.say(Role::System, why),
     }
 }
 
-fn keep_terrain(landscape: &mut Landscape, world: &mut VoxelWorld, ledger: &mut Ledger, chat: &mut Chat) {
+fn keep_terrain(
+    landscape: &mut Landscape,
+    world: &mut VoxelWorld,
+    ledger: &mut Ledger,
+    chat: &mut Chat,
+) {
     if let Some((_, name)) = landscape.keep(world, ledger) {
-        chat.say(Role::System, format!("Kept \"{name}\". Ctrl/Cmd+Z undoes it; the area stays selected for more changes."));
+        chat.say(
+            Role::System,
+            format!(
+                "Kept \"{name}\". Ctrl/Cmd+Z undoes it; the area stays selected for more changes."
+            ),
+        );
     }
 }
 
@@ -1311,7 +1783,9 @@ fn click_in_world(
             pressed_at[i] = Some(cursor);
         }
         if binds.just_released(action) {
-            clicked[i] = pressed_at[i].take().is_some_and(|start| start.distance(cursor) <= 5.0);
+            clicked[i] = pressed_at[i]
+                .take()
+                .is_some_and(|start| start.distance(cursor) <= 5.0);
         }
     }
     let [left, right, middle] = clicked;
@@ -1334,21 +1808,31 @@ fn click_in_world(
     }
     let target = || pick(ray, &world, &builds).and_then(|(_, entity)| entity);
     if middle && let Some(entity) = target() {
-        let at = builds.get(entity).map(|(_, _, t)| t.compute_transform()).unwrap_or_default();
+        let at = builds
+            .get(entity)
+            .map(|(_, _, t)| t.compute_transform())
+            .unwrap_or_default();
         if let Some(name) = creations.copy_as_draft(&mut commands, entity, &at) {
-            chat.say(Role::System, format!("Copied \"{name}\": point and click to place the copy."));
+            chat.say(
+                Role::System,
+                format!("Copied \"{name}\": point and click to place the copy."),
+            );
         }
         return;
     }
     if left {
         let hit = target();
         let now = time.elapsed_secs();
-        let double = hit.is_some() && last_select.is_some_and(|(e, t)| Some(e) == hit && now - t < 0.4);
+        let double =
+            hit.is_some() && last_select.is_some_and(|(e, t)| Some(e) == hit && now - t < 0.4);
         creations.selected = hit;
         *last_select = hit.map(|e| (e, now));
         if double && let Some(name) = creations.edit_selected(&mut commands, true) {
             *last_select = None;
-            chat.say(Role::System, format!("Moving \"{name}\": point and click to place it."));
+            chat.say(
+                Role::System,
+                format!("Moving \"{name}\": point and click to place it."),
+            );
         }
     }
 }
@@ -1372,9 +1856,21 @@ fn shortcut_hints(
     // Each hint names the keys the player has on that action now.
     let k = |action: &str| binds.label(action);
     // What the mouse does by pointing keeps its usual name ("Click") until it's moved.
-    let m = |action: &str, usual: &str| if binds.is_usual(action) { usual.to_string() } else { binds.label(action) };
+    let m = |action: &str, usual: &str| {
+        if binds.is_usual(action) {
+            usual.to_string()
+        } else {
+            binds.label(action)
+        }
+    };
     let pair = |a: &str, b: &str| format!("{}/{}", binds.short(a), binds.short(b));
-    let hand = || if (1..=9).all(|i| binds.short(&format!("hand_{i}")) == i.to_string()) { "1-9".to_string() } else { format!("{}…", binds.short("hand_1")) };
+    let hand = || {
+        if (1..=9).all(|i| binds.short(&format!("hand_{i}")) == i.to_string()) {
+            "1-9".to_string()
+        } else {
+            format!("{}…", binds.short("hand_1"))
+        }
+    };
     let actions: Vec<(String, &str)> = match &creations.draft {
         Some(d) if d.follow => vec![
             (m("click", "Click"), "place"),
@@ -1383,13 +1879,30 @@ fn shortcut_hints(
             (k("chat"), "ask for changes"),
             (format!("Esc or {}", m("cancel", "right-click")), "cancel"),
         ],
-        Some(_) => vec![("Enter".into(), "keep the change"), (k("move_build"), "move it"), (k("chat"), "ask for more"), ("Esc".into(), "cancel")],
+        Some(_) => vec![
+            ("Enter".into(), "keep the change"),
+            (k("move_build"), "move it"),
+            (k("chat"), "ask for more"),
+            ("Esc".into(), "cancel"),
+        ],
         None if landscape.draft.is_some() => {
-            vec![("Enter".into(), "keep the change"), (k("chat"), "ask for changes"), ("Esc".into(), "put the ground back")]
+            vec![
+                ("Enter".into(), "keep the change"),
+                (k("chat"), "ask for changes"),
+                ("Esc".into(), "put the ground back"),
+            ]
         }
-        None if landscape.selecting => vec![(m("click", "Drag"), "select an area (a click: 6 m)"), (format!("{} or Esc", k("select_area")), "stop")],
+        None if landscape.selecting => vec![
+            (m("click", "Drag"), "select an area (a click: 6 m)"),
+            (format!("{} or Esc", k("select_area")), "stop"),
+        ],
         None if play.playing.is_some() => {
-            vec![(binds.movement(), "move"), (k("reset"), "reset"), (k("use"), "action"), ("Esc".into(), "leave the game")]
+            vec![
+                (binds.movement(), "move"),
+                (k("reset"), "reset"),
+                (k("use"), "action"),
+                ("Esc".into(), "leave the game"),
+            ]
         }
         None if creations.selected.is_some() => vec![
             (k("chat"), "change it"),
@@ -1401,10 +1914,18 @@ fn shortcut_hints(
         ],
         None if chat.pending.is_some() => Vec::new(),
         None if landscape.area.is_some() => {
-            vec![(k("chat"), "describe what this land should become"), (k("select_area"), "select again"), ("Esc".into(), "clear the area")]
+            vec![
+                (k("chat"), "describe what this land should become"),
+                (k("select_area"), "select again"),
+                ("Esc".into(), "clear the area"),
+            ]
         }
         None if inventory.open => {
-            vec![("Click".into(), "pick up or put down a stack"), (hand(), "what's in hand"), (format!("{} or Esc", k("inventory")), "close")]
+            vec![
+                ("Click".into(), "pick up or put down a stack"),
+                (hand(), "what's in hand"),
+                (format!("{} or Esc", k("inventory")), "close"),
+            ]
         }
         None if play.near.is_some() && inventory.held().is_some() => vec![
             (k("use"), "use"),
@@ -1444,7 +1965,10 @@ fn shortcut_hints(
             ("Esc".into(), "menu"),
         ],
     };
-    let actions: Vec<(&str, &str)> = actions.iter().map(|(keys, what)| (keys.as_str(), *what)).collect();
+    let actions: Vec<(&str, &str)> = actions
+        .iter()
+        .map(|(keys, what)| (keys.as_str(), *what))
+        .collect();
     let actions = actions.as_slice();
     // Looking around turns to the right button while the left one selects ground.
     let look = if !binds.is_usual("look") || !binds.is_usual("click") {
@@ -1455,7 +1979,13 @@ fn shortcut_hints(
         "Drag".to_string()
     };
     let builder = if chat.open { "hide builder" } else { "builder" };
-    let (movement, run, jump, panel, hints) = (binds.movement(), k("run"), k("jump"), k("builder"), k("hints"));
+    let (movement, run, jump, panel, hints) = (
+        binds.movement(),
+        k("run"),
+        k("jump"),
+        k("builder"),
+        k("hints"),
+    );
     let moving = [
         (movement.as_str(), "move"),
         (run.as_str(), "run"),
@@ -1473,7 +2003,10 @@ fn shortcut_hints(
     // Hidden, the hints leave a small reminder of how to bring them back.
     if !chat.hints {
         egui::Area::new("shortcut_hints".into())
-            .anchor(egui::Align2::CENTER_BOTTOM, egui::vec2(-covered / 2.0, -16.0))
+            .anchor(
+                egui::Align2::CENTER_BOTTOM,
+                egui::vec2(-covered / 2.0, -16.0),
+            )
             .interactable(false)
             .show(ctx, |ui| {
                 egui::Frame::new()
@@ -1481,12 +2014,17 @@ fn shortcut_hints(
                     .stroke(egui::Stroke::new(1.0, p.line))
                     .corner_radius(theme::ROUND + 1)
                     .inner_margin(egui::Margin::symmetric(8, 5))
-                    .show(ui, |ui| ui.horizontal(|ui| hint_row(ui, &[(hints.as_str(), "show hints")], true)));
+                    .show(ui, |ui| {
+                        ui.horizontal(|ui| hint_row(ui, &[(hints.as_str(), "show hints")], true))
+                    });
             });
         return Ok(());
     }
     egui::Area::new("shortcut_hints".into())
-        .anchor(egui::Align2::CENTER_BOTTOM, egui::vec2(-covered / 2.0, -16.0))
+        .anchor(
+            egui::Align2::CENTER_BOTTOM,
+            egui::vec2(-covered / 2.0, -16.0),
+        )
         .interactable(false)
         .show(ctx, |ui| {
             egui::Frame::new()
@@ -1506,7 +2044,11 @@ fn shortcut_hints(
                     ui.horizontal_wrapped(|ui| hint_row(ui, &moving, true));
                     // Drawn last so it spans the wider of the two rows.
                     if let Some(y) = divider {
-                        ui.painter().hline(ui.min_rect().x_range(), y, egui::Stroke::new(1.0, p.line));
+                        ui.painter().hline(
+                            ui.min_rect().x_range(),
+                            y,
+                            egui::Stroke::new(1.0, p.line),
+                        );
                     }
                 });
         });
@@ -1516,7 +2058,11 @@ fn shortcut_hints(
 /// One row of hints: keycaps, then what they do. Quiet rows are smaller and muted.
 fn hint_row(ui: &mut egui::Ui, hints: &[(&str, &str)], quiet: bool) {
     let p = theme::palette(ui.ctx());
-    let (size, color) = if quiet { (11.5, p.muted) } else { (13.0, p.text) };
+    let (size, color) = if quiet {
+        (11.5, p.muted)
+    } else {
+        (13.0, p.text)
+    };
     for (i, (keys, what)) in hints.iter().enumerate() {
         if i > 0 {
             ui.add_space(if quiet { 8.0 } else { 10.0 });
@@ -1582,7 +2128,9 @@ fn center_view(
     windows: Query<&Window, With<PrimaryWindow>>,
     mut cameras: Query<&mut Camera, With<Camera3d>>,
 ) {
-    let (Ok(window), Ok(mut camera)) = (windows.single(), cameras.single_mut()) else { return };
+    let (Ok(window), Ok(mut camera)) = (windows.single(), cameras.single_mut()) else {
+        return;
+    };
     let size = window.physical_size();
     let covered = (chat.covered * size.x as f32).round() as u32;
     let view = (covered > 0 && size.x > 0 && size.y > 0).then(|| SubCameraView {
@@ -1596,7 +2144,12 @@ fn center_view(
 }
 
 /// The name a message is shown with, and the color of its avatar and name.
-fn sender(role: &Role, me: &str, mine: egui::Color32, p: &theme::Palette) -> (String, egui::Color32) {
+fn sender(
+    role: &Role,
+    me: &str,
+    mine: egui::Color32,
+    p: &theme::Palette,
+) -> (String, egui::Color32) {
     match role {
         Role::Player => (me.to_string(), mine),
         Role::Agent(name) if name.starts_with("Claude") => (name.to_string(), p.claude),
@@ -1622,7 +2175,9 @@ fn show_messages(ui: &mut egui::Ui, messages: &[Message], me: &str, mine: egui::
     let p = theme::palette(ui.ctx());
     let mut previous: Option<&Message> = None;
     for m in messages {
-        let first = !previous.is_some_and(|p| p.role == m.role && m.role != Role::System && m.at.duration_since(p.at) < GROUP);
+        let first = !previous.is_some_and(|p| {
+            p.role == m.role && m.role != Role::System && m.at.duration_since(p.at) < GROUP
+        });
         if first && previous.is_some() {
             ui.add_space(12.0);
         }
@@ -1632,7 +2187,10 @@ fn show_messages(ui: &mut egui::Ui, messages: &[Message], me: &str, mine: egui::
         let row = ui.horizontal_top(|ui| {
             ui.add_space(12.0);
             if m.role == Role::System {
-                ui.add_sized([36.0, 18.0], egui::Label::new(egui::RichText::new(icon::INFO).size(15.0).color(p.faint)));
+                ui.add_sized(
+                    [36.0, 18.0],
+                    egui::Label::new(egui::RichText::new(icon::INFO).size(15.0).color(p.faint)),
+                );
             } else if first {
                 theme::avatar(ui, &name, color, 36.0);
             } else {
@@ -1649,23 +2207,41 @@ fn show_messages(ui: &mut egui::Ui, messages: &[Message], me: &str, mine: egui::
                 if first {
                     ui.horizontal(|ui| {
                         // Light markers would vanish on parchment; names go darker there.
-                        let readable = if ui.visuals().dark_mode { color } else { theme::shade(color, 0.62) };
+                        let readable = if ui.visuals().dark_mode {
+                            color
+                        } else {
+                            theme::shade(color, 0.62)
+                        };
                         ui.label(egui::RichText::new(&name).strong().color(readable));
                         if matches!(m.role, Role::Agent(_)) {
                             theme::tag(ui, "AGENT", p.primary, p.on_primary);
                         }
-                        ui.label(egui::RichText::new(ago(m.at, false)).size(11.0).color(p.faint));
+                        ui.label(
+                            egui::RichText::new(ago(m.at, false))
+                                .size(11.0)
+                                .color(p.faint),
+                        );
                     });
                 }
                 ui.label(egui::RichText::new(&m.text).color(p.text));
             });
         });
-        let rect = egui::Rect::from_x_y_ranges(ui.max_rect().x_range(), row.response.rect.y_range().expand(2.0));
+        let rect = egui::Rect::from_x_y_ranges(
+            ui.max_rect().x_range(),
+            row.response.rect.y_range().expand(2.0),
+        );
         if ui.rect_contains_pointer(rect) {
-            ui.painter().set(background, egui::Shape::rect_filled(rect, 0.0, p.hover));
+            ui.painter()
+                .set(background, egui::Shape::rect_filled(rect, 0.0, p.hover));
             if !first && m.role != Role::System {
                 let at = egui::pos2(rect.left() + 30.0, rect.top() + 11.0);
-                ui.painter().text(at, egui::Align2::CENTER_CENTER, ago(m.at, true), egui::FontId::proportional(10.0), p.faint);
+                ui.painter().text(
+                    at,
+                    egui::Align2::CENTER_CENTER,
+                    ago(m.at, true),
+                    egui::FontId::proportional(10.0),
+                    p.faint,
+                );
             }
         }
     }
@@ -1693,32 +2269,48 @@ fn command_suggestions(
             ui.set_width(ui.available_width());
             ui.horizontal(|ui| {
                 ui.add_space(4.0);
-                let title = if typed.is_empty() { "Commands".to_string() } else { format!("Commands matching /{typed}") };
+                let title = if typed.is_empty() {
+                    "Commands".to_string()
+                } else {
+                    format!("Commands matching /{typed}")
+                };
                 theme::section(ui, &title);
                 ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                    let keys = format!("{}{} choose · Tab or Enter fills in", icon::ARROW_UP, icon::ARROW_DOWN);
+                    let keys = format!(
+                        "{}{} choose · Tab or Enter fills in",
+                        icon::ARROW_UP,
+                        icon::ARROW_DOWN
+                    );
                     ui.label(egui::RichText::new(keys).size(10.5).color(p.faint));
                 });
             });
             ui.add_space(2.0);
-            egui::ScrollArea::vertical().max_height(220.0).auto_shrink([false, true]).show(ui, |ui| {
-                for (i, command) in matches.iter().enumerate() {
-                    let row = command_row(ui, command, i == highlighted, admin);
-                    if i == highlighted && moved {
-                        row.scroll_to_me(None);
+            egui::ScrollArea::vertical()
+                .max_height(220.0)
+                .auto_shrink([false, true])
+                .show(ui, |ui| {
+                    for (i, command) in matches.iter().enumerate() {
+                        let row = command_row(ui, command, i == highlighted, admin);
+                        if i == highlighted && moved {
+                            row.scroll_to_me(None);
+                        }
+                        if row.clicked() {
+                            clicked = Some(command.name);
+                        }
                     }
-                    if row.clicked() {
-                        clicked = Some(command.name);
-                    }
-                }
-            });
+                });
         });
     clicked
 }
 
 /// One suggested command: its name and arguments, what it does, and whether it's for
 /// admins. Lit when highlighted or under the pointer.
-fn command_row(ui: &mut egui::Ui, command: &ops::Op, highlighted: bool, admin: bool) -> egui::Response {
+fn command_row(
+    ui: &mut egui::Ui,
+    command: &ops::Op,
+    highlighted: bool,
+    admin: bool,
+) -> egui::Response {
     let p = theme::palette(ui.ctx());
     let background = ui.painter().add(egui::Shape::Noop);
     let allowed = admin || !command.admin;
@@ -1730,24 +2322,53 @@ fn command_row(ui: &mut egui::Ui, command: &ops::Op, highlighted: bool, admin: b
             ui.add_space(3.0);
             ui.horizontal(|ui| {
                 let name = if allowed { p.strong } else { p.muted };
-                ui.label(egui::RichText::new(format!("/{}", command.name)).strong().color(name));
+                ui.label(
+                    egui::RichText::new(format!("/{}", command.name))
+                        .strong()
+                        .color(name),
+                );
                 if !command.args.is_empty() {
-                    ui.label(egui::RichText::new(command.args).monospace().size(11.5).color(p.muted));
+                    ui.label(
+                        egui::RichText::new(command.args)
+                            .monospace()
+                            .size(11.5)
+                            .color(p.muted),
+                    );
                 }
                 if command.admin {
-                    theme::tag(ui, "ADMIN", if allowed { p.warn } else { p.faint }, p.footer);
+                    theme::tag(
+                        ui,
+                        "ADMIN",
+                        if allowed { p.warn } else { p.faint },
+                        p.footer,
+                    );
                 }
             });
-            let about = if allowed { command.about.to_string() } else { format!("{} · admins only", command.about) };
+            let about = if allowed {
+                command.about.to_string()
+            } else {
+                format!("{} · admins only", command.about)
+            };
             ui.label(egui::RichText::new(about).size(11.5).color(p.muted));
             ui.add_space(3.0);
         });
     });
     let rect = inner.response.rect;
-    let response = ui.interact(rect, ui.id().with(("command", command.name)), egui::Sense::click());
+    let response = ui.interact(
+        rect,
+        ui.id().with(("command", command.name)),
+        egui::Sense::click(),
+    );
     if highlighted || response.hovered() {
-        let fill = if highlighted { p.primary.gamma_multiply(0.22) } else { p.hover };
-        ui.painter().set(background, egui::Shape::rect_filled(rect, theme::ROUND, fill));
+        let fill = if highlighted {
+            p.primary.gamma_multiply(0.22)
+        } else {
+            p.hover
+        };
+        ui.painter().set(
+            background,
+            egui::Shape::rect_filled(rect, theme::ROUND, fill),
+        );
     }
     if highlighted {
         let edge = egui::Rect::from_min_size(rect.min, egui::vec2(3.0, rect.height()));
@@ -1767,9 +2388,18 @@ fn command_usage(ui: &mut egui::Ui, command: &ops::Op, admin: bool) {
         .show(ui, |ui| {
             ui.set_width(ui.available_width());
             ui.horizontal_wrapped(|ui| {
-                ui.label(egui::RichText::new(format!("/{}", command.name)).strong().color(p.strong));
+                ui.label(
+                    egui::RichText::new(format!("/{}", command.name))
+                        .strong()
+                        .color(p.strong),
+                );
                 if !command.args.is_empty() {
-                    ui.label(egui::RichText::new(command.args).monospace().size(11.5).color(p.primary));
+                    ui.label(
+                        egui::RichText::new(command.args)
+                            .monospace()
+                            .size(11.5)
+                            .color(p.primary),
+                    );
                 }
                 let mut about = command.about.to_string();
                 if command.admin && !admin {
@@ -1786,7 +2416,12 @@ fn profile_section(ui: &mut egui::Ui, chat: &mut Chat, ledger: &mut Ledger) {
     theme::section(ui, "Your name");
     let mut save = false;
     if let Some(name) = &mut chat.name {
-        let field = ui.add(egui::TextEdit::singleline(name).desired_width(f32::INFINITY).char_limit(32).hint_text("your name"));
+        let field = ui.add(
+            egui::TextEdit::singleline(name)
+                .desired_width(f32::INFINITY)
+                .char_limit(32)
+                .hint_text("your name"),
+        );
         if std::mem::take(&mut chat.focus_name) {
             field.request_focus();
         }
@@ -1799,7 +2434,10 @@ fn profile_section(ui: &mut egui::Ui, chat: &mut Chat, ledger: &mut Ledger) {
         ui.spacing_mut().item_spacing = egui::vec2(6.0, 6.0);
         for (i, (label, _)) in presence::MARKERS.iter().enumerate() {
             let color = theme::color(presence::marker_color(i as u8));
-            if theme::swatch(ui, color, i as u8 == current).on_hover_text(*label).clicked() {
+            if theme::swatch(ui, color, i as u8 == current)
+                .on_hover_text(*label)
+                .clicked()
+            {
                 chat.marker = Some(i as u8);
                 prefs::set("marker", i as u64);
             }
@@ -1809,8 +2447,17 @@ fn profile_section(ui: &mut egui::Ui, chat: &mut Chat, ledger: &mut Ledger) {
     ui.add_space(2.0);
     ui.horizontal(|ui| {
         let typed = chat.name.as_deref().is_some_and(|n| !n.trim().is_empty());
-        save |= ui.add_enabled(typed, theme::Block::new(format!("{} Save", icon::CHECK), theme::Tone::Primary)).on_hover_text("Enter").clicked();
-        if ui.add(theme::Block::new("Cancel", theme::Tone::Plain)).clicked() {
+        save |= ui
+            .add_enabled(
+                typed,
+                theme::Block::new(format!("{} Save", icon::CHECK), theme::Tone::Primary),
+            )
+            .on_hover_text("Enter")
+            .clicked();
+        if ui
+            .add(theme::Block::new("Cancel", theme::Tone::Plain))
+            .clicked()
+        {
             chat.name = None;
         }
     });
@@ -1820,20 +2467,42 @@ fn profile_section(ui: &mut egui::Ui, chat: &mut Chat, ledger: &mut Ledger) {
 }
 
 /// Playing with others: worlds on your network, joining by address, or hosting this one.
-fn network_section(ui: &mut egui::Ui, chat: &mut Chat, ledger: &Ledger, lan: &lan::Lan, action: &mut Option<Action>) {
+fn network_section(
+    ui: &mut egui::Ui,
+    chat: &mut Chat,
+    ledger: &Ledger,
+    lan: &lan::Lan,
+    action: &mut Option<Action>,
+) {
     let p = theme::palette(ui.ctx());
     theme::section(ui, "Play together");
     let Some(online) = &ledger.online else {
         ui.horizontal(|ui| {
-            let label = if lan.play_until.is_some() { "Looking…" } else { "Play together" };
+            let label = if lan.play_until.is_some() {
+                "Looking…"
+            } else {
+                "Play together"
+            };
             if ui
-                .add_enabled(lan.play_until.is_none(), theme::Block::new(format!("{} {label}", icon::USERS_THREE), theme::Tone::Primary))
+                .add_enabled(
+                    lan.play_until.is_none(),
+                    theme::Block::new(
+                        format!("{} {label}", icon::USERS_THREE),
+                        theme::Tone::Primary,
+                    ),
+                )
                 .on_hover_text("Join a world on your network, or open this one if there's none")
                 .clicked()
             {
                 *action = Some(Action::PlayTogether);
             }
-            if ui.add(theme::Block::new("Host", theme::Tone::Plain)).on_hover_text("Open this world to others: on your network, and anywhere with an invite").clicked() {
+            if ui
+                .add(theme::Block::new("Host", theme::Tone::Plain))
+                .on_hover_text(
+                    "Open this world to others: on your network, and anywhere with an invite",
+                )
+                .clicked()
+            {
                 *action = Some(Action::Host);
             }
         });
@@ -1848,7 +2517,10 @@ fn network_section(ui: &mut egui::Ui, chat: &mut Chat, ledger: &Ledger, lan: &la
                 theme::note(ui, format!("{} playing", b.players));
                 ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
                     let join = ui
-                        .add_enabled(b.compatible(), theme::Block::new("Join", theme::Tone::Primary))
+                        .add_enabled(
+                            b.compatible(),
+                            theme::Block::new("Join", theme::Tone::Primary),
+                        )
                         .on_disabled_hover_text("Made with another version of the game");
                     if join.clicked() {
                         *action = Some(Action::JoinLan(world.address()));
@@ -1864,7 +2536,13 @@ fn network_section(ui: &mut egui::Ui, chat: &mut Chat, ledger: &Ledger, lan: &la
             );
             let enter = field.lost_focus() && ui.input(|i| i.key_pressed(egui::Key::Enter));
             let filled = !chat.server_addr.trim().is_empty();
-            if (ui.add_enabled(filled, theme::Block::new("Join", theme::Tone::Plain)).on_hover_text("Play on that server").clicked() || enter) && filled {
+            if (ui
+                .add_enabled(filled, theme::Block::new("Join", theme::Tone::Plain))
+                .on_hover_text("Play on that server")
+                .clicked()
+                || enter)
+                && filled
+            {
                 *action = Some(Action::Join);
             }
         });
@@ -1877,10 +2555,18 @@ fn network_section(ui: &mut egui::Ui, chat: &mut Chat, ledger: &Ledger, lan: &la
         match (&online.closed, &ledger.hosting) {
             (Some(why), _) => {
                 ui.add(egui::Spinner::new().size(12.0));
-                ui.label(egui::RichText::new(format!("{shown} · reconnecting…")).small().color(p.muted)).on_hover_text(why);
+                ui.label(
+                    egui::RichText::new(format!("{shown} · reconnecting…"))
+                        .small()
+                        .color(p.muted),
+                )
+                .on_hover_text(why);
             }
             (None, Some(server)) => {
-                let players = server.players.load(std::sync::atomic::Ordering::Relaxed).saturating_sub(1);
+                let players = server
+                    .players
+                    .load(std::sync::atomic::Ordering::Relaxed)
+                    .saturating_sub(1);
                 let others = match players {
                     0 => "no one else yet".to_string(),
                     1 => "1 other playing".to_string(),
@@ -1890,12 +2576,27 @@ fn network_section(ui: &mut egui::Ui, chat: &mut Chat, ledger: &Ledger, lan: &la
             }
             (None, None) if finding => {
                 ui.add(egui::Spinner::new().size(12.0));
-                let what = if online.tunnel.is_some() { "Finding the host" } else { "Connecting to " };
-                let target = if online.tunnel.is_some() { String::new() } else { shown.clone() };
-                theme::note(ui, format!("{what}{target}… {}s", online.since.elapsed().as_secs()));
+                let what = if online.tunnel.is_some() {
+                    "Finding the host"
+                } else {
+                    "Connecting to "
+                };
+                let target = if online.tunnel.is_some() {
+                    String::new()
+                } else {
+                    shown.clone()
+                };
+                theme::note(
+                    ui,
+                    format!("{what}{target}… {}s", online.since.elapsed().as_secs()),
+                );
             }
             (None, None) => {
-                let how = if online.tunnel.is_some() { "by invite".to_string() } else { format!("at {shown}") };
+                let how = if online.tunnel.is_some() {
+                    "by invite".to_string()
+                } else {
+                    format!("at {shown}")
+                };
                 match &online.game {
                     Some(game) => theme::note(ui, format!("Playing in {} · {how}", game.name)),
                     None => theme::note(ui, format!("Playing {how}")),
@@ -1903,14 +2604,21 @@ fn network_section(ui: &mut egui::Ui, chat: &mut Chat, ledger: &Ledger, lan: &la
             }
         }
         let (label, tip) = if ledger.hosting.is_some() {
-            ("Stop hosting", "Close this world to others and go back to your local world")
+            (
+                "Stop hosting",
+                "Close this world to others and go back to your local world",
+            )
         } else if finding {
             ("Cancel", "Stop trying and stay in your local world")
         } else {
             ("Leave", "Back to your local world")
         };
         ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-            if ui.add(theme::Block::new(label, theme::Tone::Danger)).on_hover_text(tip).clicked() {
+            if ui
+                .add(theme::Block::new(label, theme::Tone::Danger))
+                .on_hover_text(tip)
+                .clicked()
+            {
                 *action = Some(Action::Leave);
             }
         });
@@ -1919,12 +2627,16 @@ fn network_section(ui: &mut egui::Ui, chat: &mut Chat, ledger: &Ledger, lan: &la
         let why = online.tunnel.as_ref().and_then(|t| t.error());
         let hint = match why {
             Some(why) => format!("Still trying: {why}."),
-            None if online.tunnel.is_some() => "Still trying. Check the invite, and that the host is still hosting.".into(),
+            None if online.tunnel.is_some() => {
+                "Still trying. Check the invite, and that the host is still hosting.".into()
+            }
             None => "Still trying. Check the address, and that the host is still hosting.".into(),
         };
         theme::note(ui, hint);
     }
-    let Some(server) = &ledger.hosting else { return };
+    let Some(server) = &ledger.hosting else {
+        return;
+    };
     // Hosting: how others get in.
     let copy = |ui: &mut egui::Ui, chat: &mut Chat, text: &str, tip: &str, said: &str| {
         if ui.small_button(icon::COPY).on_hover_text(tip).clicked() {
@@ -1994,7 +2706,11 @@ enum Action {
 
 fn chat_panel(
     mut contexts: EguiContexts,
-    (mut binds, mut graphics, mut panels): (ResMut<Bindings>, ResMut<crate::graphics::Graphics>, ResMut<panels::Panels>),
+    (mut binds, mut graphics, mut panels): (
+        ResMut<Bindings>,
+        ResMut<crate::graphics::Graphics>,
+        ResMut<panels::Panels>,
+    ),
     egui_input: Res<EguiWantsInput>,
     mut chat: ResMut<Chat>,
     mut creations: ResMut<Creations>,
@@ -2027,7 +2743,9 @@ fn chat_panel(
     let mut viewport = egui::Ui::new(
         ctx.clone(),
         "viewport".into(),
-        egui::UiBuilder::new().layer_id(egui::LayerId::background()).max_rect(screen),
+        egui::UiBuilder::new()
+            .layer_id(egui::LayerId::background())
+            .max_rect(screen),
     );
     let me = ledger.profile.name.clone();
     let mine = theme::color(presence::marker_color(chat.marker(&ledger.profile.id)));
@@ -2489,8 +3207,12 @@ fn chat_panel(
                 });
         });
     // How much of the window the panel covers, mid-slide included, so the view recenters.
-    chat.panel = panel.map(|panel| panel.response.rect.intersect(screen)).filter(|r| r.width() > 0.0);
-    chat.covered = chat.panel.map_or(0.0, |r| r.width() / screen.width().max(1.0));
+    chat.panel = panel
+        .map(|panel| panel.response.rect.intersect(screen))
+        .filter(|r| r.width() > 0.0);
+    chat.covered = chat
+        .panel
+        .map_or(0.0, |r| r.width() / screen.width().max(1.0));
     chat.open = open && !hide;
 
     // While hidden, a button in the corner brings the panel back.
@@ -2499,11 +3221,16 @@ fn chat_panel(
             .anchor(egui::Align2::RIGHT_TOP, egui::vec2(-12.0, 12.0))
             .show(ctx, |ui| {
                 let busy = chat.pending.is_some();
-                let label = if busy { format!("{} Working…", icon::CHATS_CIRCLE) } else { icon::CHATS_CIRCLE.to_string() };
-                let button = egui::Button::new(egui::RichText::new(label).size(18.0).color(p.strong))
-                    .fill(p.overlay)
-                    .corner_radius(theme::ROUND)
-                    .min_size(egui::vec2(38.0, 38.0));
+                let label = if busy {
+                    format!("{} Working…", icon::CHATS_CIRCLE)
+                } else {
+                    icon::CHATS_CIRCLE.to_string()
+                };
+                let button =
+                    egui::Button::new(egui::RichText::new(label).size(18.0).color(p.strong))
+                        .fill(p.overlay)
+                        .corner_radius(theme::ROUND)
+                        .min_size(egui::vec2(38.0, 38.0));
                 if ui.add(button).on_hover_text("Builder (Tab)").clicked() {
                     chat.open = true;
                 }
@@ -2519,7 +3246,9 @@ fn chat_panel(
                 creations: &mut creations,
                 landscape: &mut landscape,
                 travel: &mut travel,
-                at: players.single().map_or([0.0; 3], |t| t.translation.to_array()),
+                at: players
+                    .single()
+                    .map_or([0.0; 3], |t| t.translation.to_array()),
                 agent: None,
                 binds: &mut binds,
                 graphics: &mut graphics,
@@ -2532,12 +3261,29 @@ fn chat_panel(
                 chat.say(Role::System, why);
             } else {
                 let player = players.single().ok().map(|t| t.translation);
-                let area = area_context(&creations, &landscape, &world, &ledger, player, cameras.single().ok());
-                let here = player.map(|p| here_context(&world, ledger.log.terrain(), p, cameras.single().ok()));
-                chat.send(&mut creations, &mut commands, tools.as_deref(), &ledger, area, here);
+                let area = area_context(
+                    &creations,
+                    &landscape,
+                    &world,
+                    &ledger,
+                    player,
+                    cameras.single().ok(),
+                );
+                let here = player
+                    .map(|p| here_context(&world, ledger.log.terrain(), p, cameras.single().ok()));
+                chat.send(
+                    &mut creations,
+                    &mut commands,
+                    tools.as_deref(),
+                    &ledger,
+                    area,
+                    here,
+                );
             }
         }
-        Some(Action::KeepTerrain) => keep_terrain(&mut landscape, &mut world, &mut ledger, &mut chat),
+        Some(Action::KeepTerrain) => {
+            keep_terrain(&mut landscape, &mut world, &mut ledger, &mut chat)
+        }
         Some(Action::DiscardTerrain) => {
             landscape.discard(&mut world);
             chat.say(Role::System, "Put the ground back.");
@@ -2545,9 +3291,9 @@ fn chat_panel(
         Some(Action::SelectArea) => landscape.selecting = true,
         Some(Action::ClearArea) => landscape.area = None,
         Some(Action::History) => history.open = !history.open,
-        Some(Action::Join | Action::JoinLan(_) | Action::PlayTogether | Action::Host | Action::Leave)
-            if creations.draft.is_some() || landscape.draft.is_some() =>
-        {
+        Some(
+            Action::Join | Action::JoinLan(_) | Action::PlayTogether | Action::Host | Action::Leave,
+        ) if creations.draft.is_some() || landscape.draft.is_some() => {
             chat.say(Role::System, "Keep or discard your draft first.");
         }
         Some(Action::Join) => {
@@ -2575,8 +3321,18 @@ fn chat_panel(
         }
         Some(Action::Allow) => {
             if let Some(ask) = chat.asking.take() {
-                let at = players.single().map_or([0.0; 3], |t| t.translation.to_array());
-                ask.allow(&mut chat, &mut ledger, &mut world, &mut creations, &mut landscape, (&mut binds, &mut graphics, &mut panels), at);
+                let at = players
+                    .single()
+                    .map_or([0.0; 3], |t| t.translation.to_array());
+                ask.allow(
+                    &mut chat,
+                    &mut ledger,
+                    &mut world,
+                    &mut creations,
+                    &mut landscape,
+                    (&mut binds, &mut graphics, &mut panels),
+                    at,
+                );
             }
         }
         Some(Action::Deny) => {
@@ -2592,7 +3348,11 @@ fn chat_panel(
             }
         }
         Some(Action::Place) => {
-            let transform = creations.draft.as_ref().and_then(|d| transforms.get(d.entity).ok()).copied();
+            let transform = creations
+                .draft
+                .as_ref()
+                .and_then(|d| transforms.get(d.entity).ok())
+                .copied();
             if let Some(transform) = transform {
                 match creations.place_draft(&mut commands, &transform, &mut ledger) {
                     Ok(name) => chat.say(Role::System, format!("Placed \"{name}\".")),
@@ -2612,15 +3372,16 @@ fn chat_panel(
             if let Some(draft) = &mut creations.draft {
                 draft.follow = true;
             } else if let Some(name) = creations.edit_selected(&mut commands, true) {
-                chat.say(Role::System, format!("Moving \"{name}\": point and click to place it."));
+                chat.say(
+                    Role::System,
+                    format!("Moving \"{name}\": point and click to place it."),
+                );
             }
         }
-        Some(Action::Delete) => {
-            match creations.delete_selected(&mut commands, &mut ledger) {
-                Ok(name) => chat.say(Role::System, format!("Deleted \"{name}\".")),
-                Err(why) => chat.say(Role::System, why),
-            }
-        }
+        Some(Action::Delete) => match creations.delete_selected(&mut commands, &mut ledger) {
+            Ok(name) => chat.say(Role::System, format!("Deleted \"{name}\".")),
+            Err(why) => chat.say(Role::System, why),
+        },
         Some(Action::Deselect) => creations.selected = None,
         Some(Action::Undo) => undo(&mut ledger, &mut chat, false),
         None => {}

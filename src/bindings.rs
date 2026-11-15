@@ -29,11 +29,21 @@ pub struct Input {
 }
 
 const fn key(name: &'static str, label: &'static str, keys: &'static [KeyCode]) -> Input {
-    Input { name, label, keys, buttons: &[] }
+    Input {
+        name,
+        label,
+        keys,
+        buttons: &[],
+    }
 }
 
 const fn mouse(name: &'static str, label: &'static str, button: &'static [MouseButton]) -> Input {
-    Input { name, label, keys: &[], buttons: button }
+    Input {
+        name,
+        label,
+        keys: &[],
+        buttons: button,
+    }
 }
 
 /// Every input that can be bound, and that player scripts can read.
@@ -76,7 +86,11 @@ pub static INPUTS: &[Input] = &[
     key("9", "9", &[KeyCode::Digit9]),
     key("space", "Space", &[KeyCode::Space]),
     key("shift", "Shift", &[KeyCode::ShiftLeft, KeyCode::ShiftRight]),
-    key("ctrl", "Ctrl", &[KeyCode::ControlLeft, KeyCode::ControlRight]),
+    key(
+        "ctrl",
+        "Ctrl",
+        &[KeyCode::ControlLeft, KeyCode::ControlRight],
+    ),
     key("alt", "Alt", &[KeyCode::AltLeft, KeyCode::AltRight]),
     key("tab", "Tab", &[KeyCode::Tab]),
     key("up", "Up", &[KeyCode::ArrowUp]),
@@ -147,15 +161,26 @@ impl Input {
     }
 
     pub fn held(&self, keys: &ButtonInput<KeyCode>, buttons: &ButtonInput<MouseButton>) -> bool {
-        keys.any_pressed(self.keys.iter().copied()) || buttons.any_pressed(self.buttons.iter().copied())
+        keys.any_pressed(self.keys.iter().copied())
+            || buttons.any_pressed(self.buttons.iter().copied())
     }
 
-    pub fn just_pressed(&self, keys: &ButtonInput<KeyCode>, buttons: &ButtonInput<MouseButton>) -> bool {
-        keys.any_just_pressed(self.keys.iter().copied()) || buttons.any_just_pressed(self.buttons.iter().copied())
+    pub fn just_pressed(
+        &self,
+        keys: &ButtonInput<KeyCode>,
+        buttons: &ButtonInput<MouseButton>,
+    ) -> bool {
+        keys.any_just_pressed(self.keys.iter().copied())
+            || buttons.any_just_pressed(self.buttons.iter().copied())
     }
 
-    pub fn just_released(&self, keys: &ButtonInput<KeyCode>, buttons: &ButtonInput<MouseButton>) -> bool {
-        keys.any_just_released(self.keys.iter().copied()) || buttons.any_just_released(self.buttons.iter().copied())
+    pub fn just_released(
+        &self,
+        keys: &ButtonInput<KeyCode>,
+        buttons: &ButtonInput<MouseButton>,
+    ) -> bool {
+        keys.any_just_released(self.keys.iter().copied())
+            || buttons.any_just_released(self.buttons.iter().copied())
     }
 }
 
@@ -169,22 +194,47 @@ pub struct Action {
     pub defaults: &'static [&'static str],
 }
 
-const fn action(group: &'static str, name: &'static str, title: &'static str, defaults: &'static [&'static str]) -> Action {
-    Action { name, title, group, defaults }
+const fn action(
+    group: &'static str,
+    name: &'static str,
+    title: &'static str,
+    defaults: &'static [&'static str],
+) -> Action {
+    Action {
+        name,
+        title,
+        group,
+        defaults,
+    }
 }
 
 /// Every action, in the order the Controls list shows them.
 pub static ACTIONS: &[Action] = &[
-    action("Moving", "forward", "Walk forward (in a grid game: move away from the camera)", &["w", "up"]),
+    action(
+        "Moving",
+        "forward",
+        "Walk forward (in a grid game: move away from the camera)",
+        &["w", "up"],
+    ),
     action("Moving", "back", "Walk back", &["s", "down"]),
     action("Moving", "left", "Walk left", &["a", "left"]),
     action("Moving", "right", "Walk right", &["d", "right"]),
     action("Moving", "run", "Run while held", &["shift"]),
     action("Moving", "jump", "Jump", &["space"]),
-    action("Playing", "use", "Use the piece or portal in reach (in a grid game: its action)", &["e"]),
+    action(
+        "Playing",
+        "use",
+        "Use the piece or portal in reach (in a grid game: its action)",
+        &["e"],
+    ),
     action("Playing", "hit", "Hit the piece in reach", &["f"]),
     action("Playing", "reset", "Reset the grid game you're in", &["r"]),
-    action("Playing", "inventory", "Open and close the inventory", &["i"]),
+    action(
+        "Playing",
+        "inventory",
+        "Open and close the inventory",
+        &["i"],
+    ),
     action("Playing", "hand_1", "Hold hotbar slot 1", &["1"]),
     action("Playing", "hand_2", "Hold hotbar slot 2", &["2"]),
     action("Playing", "hand_3", "Hold hotbar slot 3", &["3"]),
@@ -195,24 +245,94 @@ pub static ACTIONS: &[Action] = &[
     action("Playing", "hand_8", "Hold hotbar slot 8", &["8"]),
     action("Playing", "hand_9", "Hold hotbar slot 9", &["9"]),
     action("Building", "chat", "Type to the agent", &["t"]),
-    action("Building", "select_area", "Select an area of ground to reshape", &["g"]),
-    action("Building", "move_build", "Pick up the selected build or pinned draft to move it", &["m"]),
-    action("Building", "remove_build", "Remove the selected build", &["delete", "backspace"]),
-    action("Building", "turn_left", "Turn the draft a quarter turn left", &["q"]),
-    action("Building", "turn_right", "Turn the draft a quarter turn right", &["e"]),
+    action(
+        "Building",
+        "select_area",
+        "Select an area of ground to reshape",
+        &["g"],
+    ),
+    action(
+        "Building",
+        "move_build",
+        "Pick up the selected build or pinned draft to move it",
+        &["m"],
+    ),
+    action(
+        "Building",
+        "remove_build",
+        "Remove the selected build",
+        &["delete", "backspace"],
+    ),
+    action(
+        "Building",
+        "turn_left",
+        "Turn the draft a quarter turn left",
+        &["q"],
+    ),
+    action(
+        "Building",
+        "turn_right",
+        "Turn the draft a quarter turn right",
+        &["e"],
+    ),
     action("Building", "raise", "Raise the draft", &["r"]),
     action("Building", "lower", "Lower the draft", &["f"]),
-    action("Building", "spawn_area", "Show the spawn area: the ground around the start where only admins build", &["p"]),
-    action("Pointing", "click", "Place the draft, select a build, drag out an area of ground", &["mouse_left"]),
-    action("Pointing", "cancel", "Drop the draft, clear the selection", &["mouse_right"]),
-    action("Pointing", "use_held", "Put down what's in hand, or use it on the piece pointed at", &["mouse_right"]),
-    action("Pointing", "copy", "Copy the build pointed at into a new draft", &["mouse_middle"]),
-    action("Pointing", "look", "Look around while held, by moving the mouse", &["mouse_left", "mouse_right"]),
-    action("Windows", "builder", "Show and hide the builder panel", &["tab"]),
+    action(
+        "Building",
+        "spawn_area",
+        "Show the spawn area: the ground around the start where only admins build",
+        &["p"],
+    ),
+    action(
+        "Pointing",
+        "click",
+        "Place the draft, select a build, drag out an area of ground",
+        &["mouse_left"],
+    ),
+    action(
+        "Pointing",
+        "cancel",
+        "Drop the draft, clear the selection",
+        &["mouse_right"],
+    ),
+    action(
+        "Pointing",
+        "use_held",
+        "Put down what's in hand, or use it on the piece pointed at",
+        &["mouse_right"],
+    ),
+    action(
+        "Pointing",
+        "copy",
+        "Copy the build pointed at into a new draft",
+        &["mouse_middle"],
+    ),
+    action(
+        "Pointing",
+        "look",
+        "Look around while held, by moving the mouse",
+        &["mouse_left", "mouse_right"],
+    ),
+    action(
+        "Windows",
+        "builder",
+        "Show and hide the builder panel",
+        &["tab"],
+    ),
     action("Windows", "history", "Open the history panel", &["h"]),
-    action("Windows", "game_window", "Open the Game window (worlds, saves, portals)", &["o"]),
+    action(
+        "Windows",
+        "game_window",
+        "Open the Game window (worlds, saves, portals)",
+        &["o"],
+    ),
     action("Windows", "hints", "Show and hide the key hints", &["f1"]),
-    action("Windows", "stats", "Show and hide the frame statistics", &["f3"]),
+    action(
+        "Windows",
+        "stats",
+        "Show and hide the frame statistics",
+        &["f3"],
+    ),
 ];
 
 /// The action called `name`.
@@ -222,7 +342,11 @@ pub fn action_named(name: &str) -> Option<&'static Action> {
 }
 
 fn defaults(action: &Action) -> Vec<&'static Input> {
-    action.defaults.iter().filter_map(|name| Input::named(name)).collect()
+    action
+        .defaults
+        .iter()
+        .filter_map(|name| Input::named(name))
+        .collect()
 }
 
 /// An action a game declares for itself (a package's `action` definition): a fireball,
@@ -279,7 +403,10 @@ pub struct Bindings {
 impl Default for Bindings {
     fn default() -> Self {
         Self {
-            bound: ACTIONS.iter().map(|a| (a.name.to_string(), defaults(a))).collect(),
+            bound: ACTIONS
+                .iter()
+                .map(|a| (a.name.to_string(), defaults(a)))
+                .collect(),
             game: Vec::new(),
             away: BTreeMap::new(),
             held: HashSet::new(),
@@ -311,23 +438,37 @@ impl Bindings {
     /// dragging to look with the button that isn't busy selecting.
     pub fn pressed_without(&self, action: &str, other: &str) -> bool {
         let taken = self.inputs(other);
-        self.inputs(action).iter().any(|input| self.down.contains(input.name) && !taken.iter().any(|t| t.name == input.name))
+        self.inputs(action).iter().any(|input| {
+            self.down.contains(input.name) && !taken.iter().any(|t| t.name == input.name)
+        })
     }
 
     /// The inputs bound to `action`.
     pub fn inputs(&self, action: &str) -> &[&'static Input] {
-        self.bound.get(action).map_or(&[], |inputs| inputs.as_slice())
+        self.bound
+            .get(action)
+            .map_or(&[], |inputs| inputs.as_slice())
     }
 
     /// The inputs bound to `action` for a hint: "Space / J", or "unbound".
     pub fn label(&self, action: &str) -> String {
-        let labels: Vec<&str> = self.inputs(action).iter().map(|input| input.label).collect();
-        if labels.is_empty() { "unbound".into() } else { labels.join(" / ") }
+        let labels: Vec<&str> = self
+            .inputs(action)
+            .iter()
+            .map(|input| input.label)
+            .collect();
+        if labels.is_empty() {
+            "unbound".into()
+        } else {
+            labels.join(" / ")
+        }
     }
 
     /// The first input bound to `action`, for a short hint ("E").
     pub fn short(&self, action: &str) -> &'static str {
-        self.inputs(action).first().map_or("unbound", |input| input.label)
+        self.inputs(action)
+            .first()
+            .map_or("unbound", |input| input.label)
     }
 
     /// The four movement actions for a hint: "WASD" while they're the usual keys.
@@ -336,14 +477,28 @@ impl Bindings {
         if moves.iter().all(|name| self.is_usual(name)) {
             return "WASD".into();
         }
-        moves.iter().map(|name| self.short(name)).collect::<Vec<_>>().join(" ")
+        moves
+            .iter()
+            .map(|name| self.short(name))
+            .collect::<Vec<_>>()
+            .join(" ")
     }
 
     /// Every action there is now: the games' first (what's particular to this world),
     /// then the app's own.
     pub fn all(&self) -> Vec<Listed> {
-        let own = ACTIONS.iter().map(|a| Listed { name: a.name.into(), title: a.title.into(), group: a.group.into(), usual: defaults(a) });
-        let games = self.game.iter().map(|a| Listed { name: a.name.clone(), title: a.title.clone(), group: a.group.clone(), usual: a.defaults.clone() });
+        let own = ACTIONS.iter().map(|a| Listed {
+            name: a.name.into(),
+            title: a.title.into(),
+            group: a.group.into(),
+            usual: defaults(a),
+        });
+        let games = self.game.iter().map(|a| Listed {
+            name: a.name.clone(),
+            title: a.title.clone(),
+            group: a.group.clone(),
+            usual: a.defaults.clone(),
+        });
         games.chain(own).collect()
     }
 
@@ -354,19 +509,46 @@ impl Bindings {
         let all = self.all();
         let short = |listed: &Listed| listed.name.rsplit(':').next().map(str::to_string);
         let exact = all.iter().position(|a| a.name == name);
-        let by_short: Vec<usize> = all.iter().enumerate().filter(|(_, a)| a.name.contains(':') && short(a).as_deref() == Some(name.as_str())).map(|(i, _)| i).collect();
+        let by_short: Vec<usize> = all
+            .iter()
+            .enumerate()
+            .filter(|(_, a)| a.name.contains(':') && short(a).as_deref() == Some(name.as_str()))
+            .map(|(i, _)| i)
+            .collect();
         let at = match (exact, by_short.as_slice()) {
             (Some(at), _) => at,
             (None, [at]) => *at,
-            (None, []) => return Err(format!("There's no action \"{name}\". Actions: {}.", all.iter().map(|a| a.name.as_str()).collect::<Vec<_>>().join(", "))),
-            (None, many) => return Err(format!("\"{name}\" could be {}: give its whole name.", many.iter().map(|i| all[*i].name.as_str()).collect::<Vec<_>>().join(" or "))),
+            (None, []) => {
+                return Err(format!(
+                    "There's no action \"{name}\". Actions: {}.",
+                    all.iter()
+                        .map(|a| a.name.as_str())
+                        .collect::<Vec<_>>()
+                        .join(", ")
+                ));
+            }
+            (None, many) => {
+                return Err(format!(
+                    "\"{name}\" could be {}: give its whole name.",
+                    many.iter()
+                        .map(|i| all[*i].name.as_str())
+                        .collect::<Vec<_>>()
+                        .join(" or ")
+                ));
+            }
         };
         Ok(all.into_iter().nth(at).expect("a position in the list"))
     }
 
     /// The other actions `input` is bound to.
     pub fn also(&self, input: &Input, action: &str) -> Vec<String> {
-        self.bound.iter().filter(|(name, inputs)| name.as_str() != action && inputs.iter().any(|i| i.name == input.name)).map(|(name, _)| name.clone()).collect()
+        self.bound
+            .iter()
+            .filter(|(name, inputs)| {
+                name.as_str() != action && inputs.iter().any(|i| i.name == input.name)
+            })
+            .map(|(name, _)| name.clone())
+            .collect()
     }
 
     /// Binds `input` to `action` as well as what it has. Says what else the input does,
@@ -380,8 +562,21 @@ impl Bindings {
         }
         bound.push(input);
         let also = self.also(input, &action.name);
-        let also = if also.is_empty() { String::new() } else { format!(" It also does {} (unbind it there if they clash).", also.join(", ")) };
-        Ok(format!("{} now does \"{}\" ({}): {}.{also}", input.label, action.name, action.title, self.label(&action.name)))
+        let also = if also.is_empty() {
+            String::new()
+        } else {
+            format!(
+                " It also does {} (unbind it there if they clash).",
+                also.join(", ")
+            )
+        };
+        Ok(format!(
+            "{} now does \"{}\" ({}): {}.{also}",
+            input.label,
+            action.name,
+            action.title,
+            self.label(&action.name)
+        ))
     }
 
     /// Takes `input` off `action`; with no input, takes every input off it.
@@ -391,14 +586,27 @@ impl Bindings {
         match input {
             None => bound.clear(),
             Some(name) => {
-                let input = Input::named(name).ok_or_else(|| format!("\"{name}\" isn't a key that can be bound."))?;
+                let input = Input::named(name)
+                    .ok_or_else(|| format!("\"{name}\" isn't a key that can be bound."))?;
                 if !bound.iter().any(|i| i.name == input.name) {
-                    return Err(format!("{} isn't bound to \"{}\" ({}).", input.label, action.name, self.label(&action.name)));
+                    return Err(format!(
+                        "{} isn't bound to \"{}\" ({}).",
+                        input.label,
+                        action.name,
+                        self.label(&action.name)
+                    ));
                 }
-                self.bound.entry(action.name.clone()).or_default().retain(|i| i.name != input.name);
+                self.bound
+                    .entry(action.name.clone())
+                    .or_default()
+                    .retain(|i| i.name != input.name);
             }
         }
-        Ok(format!("\"{}\" is now on {}.", action.name, self.label(&action.name)))
+        Ok(format!(
+            "\"{}\" is now on {}.",
+            action.name,
+            self.label(&action.name)
+        ))
     }
 
     /// Puts `action` back to its default inputs; with no action, all of them.
@@ -412,7 +620,11 @@ impl Bindings {
             Some(name) => {
                 let action = self.find(name)?;
                 self.bound.insert(action.name.clone(), action.usual);
-                Ok(format!("\"{}\" is back on {}.", action.name, self.label(&action.name)))
+                Ok(format!(
+                    "\"{}\" is back on {}.",
+                    action.name,
+                    self.label(&action.name)
+                ))
             }
         }
     }
@@ -420,16 +632,27 @@ impl Bindings {
     /// Whether `action` has the inputs it started with.
     pub fn is_usual(&self, action: &str) -> bool {
         let now: Vec<&str> = self.inputs(action).iter().map(|i| i.name).collect();
-        self.all().iter().find(|a| a.name == action).is_none_or(|a| a.usual.iter().map(|i| i.name).collect::<Vec<_>>() == now)
+        self.all()
+            .iter()
+            .find(|a| a.name == action)
+            .is_none_or(|a| a.usual.iter().map(|i| i.name).collect::<Vec<_>>() == now)
     }
 
     /// What differs from the defaults, to keep between runs: `{action: [inputs]}`,
     /// with the keys for games' actions that aren't here now.
     pub fn changed(&self) -> BTreeMap<String, Vec<String>> {
-        let here = self.all().into_iter().filter(|a| !self.is_usual(&a.name)).map(|a| {
-            let inputs = self.inputs(&a.name).iter().map(|i| i.name.to_string()).collect();
-            (a.name, inputs)
-        });
+        let here = self
+            .all()
+            .into_iter()
+            .filter(|a| !self.is_usual(&a.name))
+            .map(|a| {
+                let inputs = self
+                    .inputs(&a.name)
+                    .iter()
+                    .map(|i| i.name.to_string())
+                    .collect();
+                (a.name, inputs)
+            });
         self.away.clone().into_iter().chain(here).collect()
     }
 
@@ -438,11 +661,21 @@ impl Bindings {
     pub fn restore<'a>(&mut self, kept: impl IntoIterator<Item = (&'a str, Vec<&'a str>)>) {
         for (name, inputs) in kept {
             // Called "parcels" while land was claimed parcel by parcel.
-            let name = if name == "parcels" { "spawn_area" } else { name };
+            let name = if name == "parcels" {
+                "spawn_area"
+            } else {
+                name
+            };
             if self.all().iter().any(|a| a.name == name) {
-                self.bound.insert(name.to_string(), inputs.into_iter().filter_map(Input::named).collect());
+                self.bound.insert(
+                    name.to_string(),
+                    inputs.into_iter().filter_map(Input::named).collect(),
+                );
             } else if name.contains(':') {
-                self.away.insert(name.to_string(), inputs.into_iter().map(str::to_string).collect());
+                self.away.insert(
+                    name.to_string(),
+                    inputs.into_iter().map(str::to_string).collect(),
+                );
             }
         }
     }
@@ -458,11 +691,21 @@ impl Bindings {
         if self.game == actions {
             return;
         }
-        for gone in self.game.iter().filter(|old| !actions.iter().any(|a| a.name == old.name)) {
+        for gone in self
+            .game
+            .iter()
+            .filter(|old| !actions.iter().any(|a| a.name == old.name))
+        {
             if let Some(inputs) = self.bound.remove(&gone.name)
-                && inputs.iter().map(|i| i.name).ne(gone.defaults.iter().map(|i| i.name))
+                && inputs
+                    .iter()
+                    .map(|i| i.name)
+                    .ne(gone.defaults.iter().map(|i| i.name))
             {
-                self.away.insert(gone.name.clone(), inputs.iter().map(|i| i.name.to_string()).collect());
+                self.away.insert(
+                    gone.name.clone(),
+                    inputs.iter().map(|i| i.name.to_string()).collect(),
+                );
             }
         }
         for action in &actions {
@@ -485,9 +728,17 @@ impl Bindings {
         for action in self.all() {
             if action.group != group {
                 group = action.group.clone();
-                out.push_str(&format!("{}{group}\n", if out.is_empty() { "" } else { "\n" }));
+                out.push_str(&format!(
+                    "{}{group}\n",
+                    if out.is_empty() { "" } else { "\n" }
+                ));
             }
-            out.push_str(&format!("- {}: {} ({})\n", action.name, self.label(&action.name), action.title));
+            out.push_str(&format!(
+                "- {}: {} ({})\n",
+                action.name,
+                self.label(&action.name),
+                action.title
+            ));
         }
         out
     }
@@ -495,7 +746,11 @@ impl Bindings {
 
 /// Works out which actions are held, just pressed and just released, once the frame's
 /// input is in.
-fn read_actions(mut bindings: ResMut<Bindings>, keys: Res<ButtonInput<KeyCode>>, buttons: Res<ButtonInput<MouseButton>>) {
+fn read_actions(
+    mut bindings: ResMut<Bindings>,
+    keys: Res<ButtonInput<KeyCode>>,
+    buttons: Res<ButtonInput<MouseButton>>,
+) {
     let bindings = &mut *bindings;
     bindings.held.clear();
     bindings.pressed.clear();
@@ -504,15 +759,26 @@ fn read_actions(mut bindings: ResMut<Bindings>, keys: Res<ButtonInput<KeyCode>>,
     if bindings.capturing {
         return;
     }
-    bindings.down.extend(INPUTS.iter().filter(|input| input.held(&keys, &buttons)).map(|input| input.name));
+    bindings.down.extend(
+        INPUTS
+            .iter()
+            .filter(|input| input.held(&keys, &buttons))
+            .map(|input| input.name),
+    );
     for (action, inputs) in &bindings.bound {
         if inputs.iter().any(|input| input.held(&keys, &buttons)) {
             bindings.held.insert(action.clone());
         }
-        if inputs.iter().any(|input| input.just_pressed(&keys, &buttons)) {
+        if inputs
+            .iter()
+            .any(|input| input.just_pressed(&keys, &buttons))
+        {
             bindings.pressed.insert(action.clone());
         }
-        if inputs.iter().any(|input| input.just_released(&keys, &buttons)) {
+        if inputs
+            .iter()
+            .any(|input| input.just_released(&keys, &buttons))
+        {
             bindings.released.insert(action.clone());
         }
     }
@@ -522,7 +788,8 @@ pub struct BindingsPlugin;
 
 impl Plugin for BindingsPlugin {
     fn build(&self, app: &mut App) {
-        app.init_resource::<Bindings>().add_systems(PreUpdate, read_actions.after(InputSystems));
+        app.init_resource::<Bindings>()
+            .add_systems(PreUpdate, read_actions.after(InputSystems));
     }
 }
 
@@ -534,18 +801,37 @@ mod tests {
     fn every_default_is_a_real_input_and_names_are_unique() {
         let mut inputs = HashSet::new();
         for input in INPUTS {
-            assert!(inputs.insert(input.name), "two inputs are called {}", input.name);
-            assert!(!input.keys.is_empty() || !input.buttons.is_empty(), "{} is no key or button", input.name);
+            assert!(
+                inputs.insert(input.name),
+                "two inputs are called {}",
+                input.name
+            );
+            assert!(
+                !input.keys.is_empty() || !input.buttons.is_empty(),
+                "{} is no key or button",
+                input.name
+            );
             assert_eq!(Input::named(input.name).map(|i| i.name), Some(input.name));
         }
         let mut actions = HashSet::new();
         for action in ACTIONS {
-            assert!(actions.insert(action.name), "two actions are called {}", action.name);
+            assert!(
+                actions.insert(action.name),
+                "two actions are called {}",
+                action.name
+            );
             for name in action.defaults {
-                assert!(Input::named(name).is_some(), "{}'s default {name} isn't an input", action.name);
+                assert!(
+                    Input::named(name).is_some(),
+                    "{}'s default {name} isn't an input",
+                    action.name
+                );
             }
         }
-        assert!(Input::named("Escape").is_none() && Input::named("enter").is_none(), "Esc and Enter stay fixed");
+        assert!(
+            Input::named("Escape").is_none() && Input::named("enter").is_none(),
+            "Esc and Enter stay fixed"
+        );
     }
 
     #[test]
@@ -561,9 +847,14 @@ mod tests {
 
         // Only what changed is kept, and it comes back.
         let kept = bindings.changed();
-        assert_eq!(kept.get("jump"), Some(&vec!["space".to_string(), "j".to_string()]));
+        assert_eq!(
+            kept.get("jump"),
+            Some(&vec!["space".to_string(), "j".to_string()])
+        );
         let mut again = Bindings::default();
-        again.restore(kept.iter().map(|(action, inputs)| (action.as_str(), inputs.iter().map(String::as_str).collect())));
+        again.restore(kept.iter().map(|(action, inputs)| {
+            (action.as_str(), inputs.iter().map(String::as_str).collect())
+        }));
         assert_eq!(again.label("jump"), "Space / J");
 
         assert!(bindings.unbind("jump", Some("space")).is_ok());
@@ -577,30 +868,61 @@ mod tests {
 
     #[test]
     fn a_games_actions_come_and_go_with_it_and_keep_the_players_keys() {
-        let fireball = || GameAction { name: "magic:fireball".into(), title: "Throw a fireball".into(), group: "Magic".into(), defaults: vec![Input::named("q").unwrap()] };
+        let fireball = || GameAction {
+            name: "magic:fireball".into(),
+            title: "Throw a fireball".into(),
+            group: "Magic".into(),
+            defaults: vec![Input::named("q").unwrap()],
+        };
         let mut bindings = Bindings::default();
         assert!(bindings.find("fireball").is_err());
         bindings.set_game(vec![fireball()]);
         assert_eq!(bindings.label("magic:fireball"), "Q");
-        assert_eq!(bindings.find("fireball").map(|a| a.name), Ok("magic:fireball".to_string()));
-        assert!(bindings.list().contains("Magic\n- magic:fireball: Q (Throw a fireball)"));
-        assert!(bindings.changed().is_empty(), "on its own key, there's nothing to keep");
+        assert_eq!(
+            bindings.find("fireball").map(|a| a.name),
+            Ok("magic:fireball".to_string())
+        );
+        assert!(
+            bindings
+                .list()
+                .contains("Magic\n- magic:fireball: Q (Throw a fireball)")
+        );
+        assert!(
+            bindings.changed().is_empty(),
+            "on its own key, there's nothing to keep"
+        );
         // The player moves it; the game goes and comes back; their key is still there.
-        bindings.bind("fireball", "mouse_middle").expect("by its short name");
-        bindings.unbind("magic:fireball", Some("q")).expect("by its whole name");
+        bindings
+            .bind("fireball", "mouse_middle")
+            .expect("by its short name");
+        bindings
+            .unbind("magic:fireball", Some("q"))
+            .expect("by its whole name");
         bindings.set_game(Vec::new());
         assert!(bindings.find("fireball").is_err() && bindings.inputs("magic:fireball").is_empty());
-        assert_eq!(bindings.changed().get("magic:fireball"), Some(&vec!["mouse_middle".to_string()]), "kept while it's away");
+        assert_eq!(
+            bindings.changed().get("magic:fireball"),
+            Some(&vec!["mouse_middle".to_string()]),
+            "kept while it's away"
+        );
         bindings.set_game(vec![fireball()]);
         assert_eq!(bindings.label("magic:fireball"), "Middle click");
         // Kept between runs too, before the game is on.
         let kept = bindings.changed();
         let mut later = Bindings::default();
-        later.restore(kept.iter().map(|(action, inputs)| (action.as_str(), inputs.iter().map(String::as_str).collect())));
+        later.restore(kept.iter().map(|(action, inputs)| {
+            (action.as_str(), inputs.iter().map(String::as_str).collect())
+        }));
         later.set_game(vec![fireball()]);
         assert_eq!(later.label("magic:fireball"), "Middle click");
         // Two games with the same short name need the whole one.
-        later.set_game(vec![fireball(), GameAction { name: "fire:fireball".into(), ..fireball() }]);
+        later.set_game(vec![
+            fireball(),
+            GameAction {
+                name: "fire:fireball".into(),
+                ..fireball()
+            },
+        ]);
         assert!(later.find("fireball").unwrap_err().contains("whole name"));
         later.reset(None).expect("always");
         assert_eq!(later.label("magic:fireball"), "Q");
@@ -609,18 +931,35 @@ mod tests {
     #[test]
     fn looking_leaves_the_button_thats_busy_selecting() {
         let mut app = App::new();
-        app.init_resource::<ButtonInput<KeyCode>>().init_resource::<ButtonInput<MouseButton>>().init_resource::<Bindings>();
+        app.init_resource::<ButtonInput<KeyCode>>()
+            .init_resource::<ButtonInput<MouseButton>>()
+            .init_resource::<Bindings>();
         app.add_systems(Update, read_actions);
-        app.world_mut().resource_mut::<ButtonInput<MouseButton>>().press(MouseButton::Left);
+        app.world_mut()
+            .resource_mut::<ButtonInput<MouseButton>>()
+            .press(MouseButton::Left);
         app.update();
         let bindings = app.world().resource::<Bindings>();
         assert!(bindings.pressed("look") && bindings.just_pressed("click"));
-        assert!(!bindings.pressed_without("look", "click"), "the left button is the click's");
-        app.world_mut().resource_mut::<ButtonInput<MouseButton>>().press(MouseButton::Right);
+        assert!(
+            !bindings.pressed_without("look", "click"),
+            "the left button is the click's"
+        );
+        app.world_mut()
+            .resource_mut::<ButtonInput<MouseButton>>()
+            .press(MouseButton::Right);
         app.update();
-        assert!(app.world().resource::<Bindings>().pressed_without("look", "click"));
-        app.world_mut().resource_mut::<ButtonInput<MouseButton>>().clear();
-        app.world_mut().resource_mut::<ButtonInput<MouseButton>>().release(MouseButton::Left);
+        assert!(
+            app.world()
+                .resource::<Bindings>()
+                .pressed_without("look", "click")
+        );
+        app.world_mut()
+            .resource_mut::<ButtonInput<MouseButton>>()
+            .clear();
+        app.world_mut()
+            .resource_mut::<ButtonInput<MouseButton>>()
+            .release(MouseButton::Left);
         app.update();
         assert!(app.world().resource::<Bindings>().just_released("click"));
     }
@@ -628,24 +967,52 @@ mod tests {
     #[test]
     fn actions_follow_the_keys_bound_to_them() {
         let mut app = App::new();
-        app.init_resource::<ButtonInput<KeyCode>>().init_resource::<ButtonInput<MouseButton>>().init_resource::<Bindings>();
+        app.init_resource::<ButtonInput<KeyCode>>()
+            .init_resource::<ButtonInput<MouseButton>>()
+            .init_resource::<Bindings>();
         app.add_systems(Update, read_actions);
-        app.world_mut().resource_mut::<Bindings>().bind("jump", "mouse_back").expect("a mouse button can jump");
-        app.world_mut().resource_mut::<ButtonInput<KeyCode>>().press(KeyCode::KeyJ);
+        app.world_mut()
+            .resource_mut::<Bindings>()
+            .bind("jump", "mouse_back")
+            .expect("a mouse button can jump");
+        app.world_mut()
+            .resource_mut::<ButtonInput<KeyCode>>()
+            .press(KeyCode::KeyJ);
         app.update();
-        assert!(!app.world().resource::<Bindings>().just_pressed("jump"), "J isn't bound yet");
+        assert!(
+            !app.world().resource::<Bindings>().just_pressed("jump"),
+            "J isn't bound yet"
+        );
 
-        app.world_mut().resource_mut::<Bindings>().bind("jump", "j").expect("j can jump");
-        app.world_mut().resource_mut::<ButtonInput<KeyCode>>().release(KeyCode::KeyJ);
-        app.world_mut().resource_mut::<ButtonInput<KeyCode>>().clear();
-        app.world_mut().resource_mut::<ButtonInput<KeyCode>>().press(KeyCode::KeyJ);
+        app.world_mut()
+            .resource_mut::<Bindings>()
+            .bind("jump", "j")
+            .expect("j can jump");
+        app.world_mut()
+            .resource_mut::<ButtonInput<KeyCode>>()
+            .release(KeyCode::KeyJ);
+        app.world_mut()
+            .resource_mut::<ButtonInput<KeyCode>>()
+            .clear();
+        app.world_mut()
+            .resource_mut::<ButtonInput<KeyCode>>()
+            .press(KeyCode::KeyJ);
         app.update();
         let bindings = app.world().resource::<Bindings>();
-        assert!(bindings.just_pressed("jump") && bindings.pressed("jump") && !bindings.pressed("run"));
+        assert!(
+            bindings.just_pressed("jump") && bindings.pressed("jump") && !bindings.pressed("run")
+        );
 
-        app.world_mut().resource_mut::<ButtonInput<KeyCode>>().release(KeyCode::KeyJ);
-        app.world_mut().resource_mut::<ButtonInput<MouseButton>>().press(MouseButton::Back);
+        app.world_mut()
+            .resource_mut::<ButtonInput<KeyCode>>()
+            .release(KeyCode::KeyJ);
+        app.world_mut()
+            .resource_mut::<ButtonInput<MouseButton>>()
+            .press(MouseButton::Back);
         app.update();
-        assert!(app.world().resource::<Bindings>().pressed("jump"), "the mouse button holds it too");
+        assert!(
+            app.world().resource::<Bindings>().pressed("jump"),
+            "the mouse button holds it too"
+        );
     }
 }

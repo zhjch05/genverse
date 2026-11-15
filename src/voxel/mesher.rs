@@ -27,7 +27,6 @@ use bevy::{
     shape::Aabb3d,
 };
 
-
 use super::{AIR, Palette, VoxelGrid, VoxelId, noise::hash01};
 
 /// Edge length of a mesh chunk, in voxels.
@@ -67,12 +66,30 @@ const fn v(x: i32, y: i32, z: i32) -> IVec3 {
 }
 
 const FACES: [Face; 6] = [
-    Face { normal: v(1, 0, 0), corners: [v(1, 0, 0), v(1, 1, 0), v(1, 1, 1), v(1, 0, 1)] },
-    Face { normal: v(-1, 0, 0), corners: [v(0, 0, 0), v(0, 0, 1), v(0, 1, 1), v(0, 1, 0)] },
-    Face { normal: v(0, 1, 0), corners: [v(0, 1, 0), v(0, 1, 1), v(1, 1, 1), v(1, 1, 0)] },
-    Face { normal: v(0, -1, 0), corners: [v(0, 0, 0), v(1, 0, 0), v(1, 0, 1), v(0, 0, 1)] },
-    Face { normal: v(0, 0, 1), corners: [v(0, 0, 1), v(1, 0, 1), v(1, 1, 1), v(0, 1, 1)] },
-    Face { normal: v(0, 0, -1), corners: [v(0, 0, 0), v(0, 1, 0), v(1, 1, 0), v(1, 0, 0)] },
+    Face {
+        normal: v(1, 0, 0),
+        corners: [v(1, 0, 0), v(1, 1, 0), v(1, 1, 1), v(1, 0, 1)],
+    },
+    Face {
+        normal: v(-1, 0, 0),
+        corners: [v(0, 0, 0), v(0, 0, 1), v(0, 1, 1), v(0, 1, 0)],
+    },
+    Face {
+        normal: v(0, 1, 0),
+        corners: [v(0, 1, 0), v(0, 1, 1), v(1, 1, 1), v(1, 1, 0)],
+    },
+    Face {
+        normal: v(0, -1, 0),
+        corners: [v(0, 0, 0), v(1, 0, 0), v(1, 0, 1), v(0, 0, 1)],
+    },
+    Face {
+        normal: v(0, 0, 1),
+        corners: [v(0, 0, 1), v(1, 0, 1), v(1, 1, 1), v(0, 1, 1)],
+    },
+    Face {
+        normal: v(0, 0, -1),
+        corners: [v(0, 0, 0), v(0, 1, 0), v(1, 1, 0), v(1, 0, 0)],
+    },
 ];
 
 /// One mesh per (chunk, surface) pair, positioned relative to `origin`, in voxels.
@@ -92,7 +109,12 @@ struct MeshBuilder {
 
 impl MeshBuilder {
     fn new() -> Self {
-        Self { vertices: Vec::new(), indices: Vec::new(), min: IVec3::MAX, max: IVec3::MIN }
+        Self {
+            vertices: Vec::new(),
+            indices: Vec::new(),
+            min: IVec3::MAX,
+            max: IVec3::MIN,
+        }
     }
 
     fn build(self) -> Mesh {
@@ -101,11 +123,17 @@ impl MeshBuilder {
         } else {
             Indices::U32(self.indices)
         };
-        let mut mesh = Mesh::new(PrimitiveTopology::TriangleList, RenderAssetUsages::RENDER_WORLD)
-            .with_inserted_attribute(ATTRIBUTE_VOXEL, self.vertices)
-            .with_inserted_indices(indices);
+        let mut mesh = Mesh::new(
+            PrimitiveTopology::TriangleList,
+            RenderAssetUsages::RENDER_WORLD,
+        )
+        .with_inserted_attribute(ATTRIBUTE_VOXEL, self.vertices)
+        .with_inserted_indices(indices);
         // There's no position attribute to measure, so culling gets the bounds from here.
-        mesh.final_aabb = Some(Aabb3d { min: Vec3A::from(self.min.as_vec3()), max: Vec3A::from(self.max.as_vec3()) });
+        mesh.final_aabb = Some(Aabb3d {
+            min: Vec3A::from(self.min.as_vec3()),
+            max: Vec3A::from(self.max.as_vec3()),
+        });
         mesh
     }
 }
@@ -134,7 +162,11 @@ impl Cells {
         for (id, o) in opaque.iter_mut().enumerate().take(palette.entries.len()) {
             *o = palette.is_opaque(id as VoxelId);
         }
-        Self { cells, stride: IVec3::new(1, dims.x, dims.x * dims.y), opaque }
+        Self {
+            cells,
+            stride: IVec3::new(1, dims.x, dims.x * dims.y),
+            opaque,
+        }
     }
 
     /// The index of `local` (relative to the region's corner, `-1..=size`).
@@ -153,7 +185,8 @@ impl Cells {
 
     /// `genverse_rules::voxel::faces::face_visible`, from the table.
     fn visible(&self, id: VoxelId, neighbor: VoxelId) -> bool {
-        neighbor == AIR || (!self.opaque[neighbor as usize] && (self.opaque[id as usize] || neighbor != id))
+        neighbor == AIR
+            || (!self.opaque[neighbor as usize] && (self.opaque[id as usize] || neighbor != id))
     }
 }
 
@@ -181,9 +214,18 @@ impl FaceOffsets {
                 }
             }
             let layer = face.normal;
-            [layer + offsets[0], layer + offsets[1], layer + offsets[0] + offsets[1]].map(|d| cells.delta(d))
+            [
+                layer + offsets[0],
+                layer + offsets[1],
+                layer + offsets[0] + offsets[1],
+            ]
+            .map(|d| cells.delta(d))
         });
-        Self { normal: cells.delta(face.normal), light, edges: [-u, u, -v, v].map(|d| cells.delta(d)) }
+        Self {
+            normal: cells.delta(face.normal),
+            light,
+            edges: [-u, u, -v, v].map(|d| cells.delta(d)),
+        }
     }
 }
 
@@ -194,7 +236,12 @@ fn outside_edges(cells: &Cells, i: usize, id: VoxelId, offsets: &FaceOffsets) ->
     if !cells.opaque[id as usize] {
         return 0;
     }
-    offsets.edges.iter().enumerate().filter(|(_, d)| cells.visible(id, cells.at(i, **d))).fold(0, |bits, (b, _)| bits | 1 << b)
+    offsets
+        .edges
+        .iter()
+        .enumerate()
+        .filter(|(_, d)| cells.visible(id, cells.at(i, **d)))
+        .fold(0, |bits, (b, _)| bits | 1 << b)
 }
 
 /// Number of unoccluded neighbors (0..=3) around one face corner.
@@ -210,7 +257,12 @@ fn corner_light(cells: &Cells, i: usize, [side1, side2, corner]: [isize; 3]) -> 
 /// Meshes the voxels in `min..max`, at most [`CHUNK_SIZE`] on a side, reading neighbors
 /// (which may lie outside the region) through `get`. Returns one mesh per surface,
 /// positioned relative to `min`, in voxels.
-pub fn mesh_region(get: impl Fn(IVec3) -> VoxelId, palette: &Palette, min: IVec3, max: IVec3) -> Vec<(usize, Mesh)> {
+pub fn mesh_region(
+    get: impl Fn(IVec3) -> VoxelId,
+    palette: &Palette,
+    min: IVec3,
+    max: IVec3,
+) -> Vec<(usize, Mesh)> {
     mesh_region_fresh(get, None, palette, min, max)
 }
 
@@ -225,8 +277,15 @@ pub fn mesh_region_fresh(
     max: IVec3,
 ) -> Vec<(usize, Mesh)> {
     let size = max - min;
-    assert!(size.cmple(IVec3::splat(CHUNK_SIZE)).all(), "region too large to pack: {min}..{max}");
-    let mut builders: Vec<MeshBuilder> = palette.surfaces.iter().map(|_| MeshBuilder::new()).collect();
+    assert!(
+        size.cmple(IVec3::splat(CHUNK_SIZE)).all(),
+        "region too large to pack: {min}..{max}"
+    );
+    let mut builders: Vec<MeshBuilder> = palette
+        .surfaces
+        .iter()
+        .map(|_| MeshBuilder::new())
+        .collect();
     let cells = Cells::new(get, palette, min, max);
     let offsets = FACES.each_ref().map(|face| FaceOffsets::new(&cells, face));
     // In the cells' order, border included.
@@ -259,13 +318,17 @@ pub fn mesh_region_fresh(
                 let mut color = None;
 
                 for (f, (face, offsets)) in FACES.iter().zip(&offsets).enumerate() {
-                    let covered_later =
-                        || marks.as_ref().is_some_and(|m| !mark.grows() && m[(i as isize + offsets.normal) as usize].grows());
+                    let covered_later = || {
+                        marks.as_ref().is_some_and(|m| {
+                            !mark.grows() && m[(i as isize + offsets.normal) as usize].grows()
+                        })
+                    };
                     if !cells.visible(id, cells.at(i, offsets.normal)) && !covered_later() {
                         continue;
                     }
                     let color = *color.get_or_insert_with(|| {
-                        let jitter = 1.0 + entry.variation * (hash01(min + local, id as u32) * 2.0 - 1.0);
+                        let jitter =
+                            1.0 + entry.variation * (hash01(min + local, id as u32) * 2.0 - 1.0);
                         let [r, g, b, _] = Srgba::from(entry.color * jitter).to_u8_array();
                         r as u32 | (g as u32) << 8 | (b as u32) << 16 | (mark.arrival as u32) << 24
                     });
@@ -313,7 +376,11 @@ pub fn mesh_grid(grid: &VoxelGrid, palette: &Palette) -> Vec<ChunkMesh> {
 }
 
 /// [`mesh_grid`] for a reveal; see [`mesh_region_fresh`].
-pub fn mesh_grid_fresh(grid: &VoxelGrid, fresh: Option<FreshAt>, palette: &Palette) -> Vec<ChunkMesh> {
+pub fn mesh_grid_fresh(
+    grid: &VoxelGrid,
+    fresh: Option<FreshAt>,
+    palette: &Palette,
+) -> Vec<ChunkMesh> {
     let size = grid.size().as_ivec3();
     let chunk_counts = (size + IVec3::splat(CHUNK_SIZE - 1)) / CHUNK_SIZE;
     let mut out = Vec::new();
@@ -322,8 +389,14 @@ pub fn mesh_grid_fresh(grid: &VoxelGrid, fresh: Option<FreshAt>, palette: &Palet
             for cx in 0..chunk_counts.x {
                 let origin = IVec3::new(cx, cy, cz) * CHUNK_SIZE;
                 let end = (origin + IVec3::splat(CHUNK_SIZE)).min(size);
-                for (surface, mesh) in mesh_region_fresh(|p| grid.get(p), fresh, palette, origin, end) {
-                    out.push(ChunkMesh { origin, surface, mesh });
+                for (surface, mesh) in
+                    mesh_region_fresh(|p| grid.get(p), fresh, palette, origin, end)
+                {
+                    out.push(ChunkMesh {
+                        origin,
+                        surface,
+                        mesh,
+                    });
                 }
             }
         }
@@ -351,24 +424,48 @@ mod tests {
         let mut grid = VoxelGrid::new(UVec3::splat(4));
         grid.set(IVec3::new(1, 0, 1), 1);
         grid.set(IVec3::new(1, 1, 1), 1);
-        let fresh = |p: IVec3| Fresh { arrival: if p == IVec3::new(1, 1, 1) { 7 } else { 0 }, swap: false };
-        let quads = |meshes: &[ChunkMesh]| meshes.iter().map(|m| words(&m.mesh).len() / 4).sum::<usize>();
+        let fresh = |p: IVec3| Fresh {
+            arrival: if p == IVec3::new(1, 1, 1) { 7 } else { 0 },
+            swap: false,
+        };
+        let quads = |meshes: &[ChunkMesh]| {
+            meshes
+                .iter()
+                .map(|m| words(&m.mesh).len() / 4)
+                .sum::<usize>()
+        };
         let plain = mesh_grid(&grid, &palette);
         let revealed = mesh_grid_fresh(&grid, Some(&fresh), &palette);
         // Two stacked cubes show ten faces; the lower one's top makes eleven.
         assert_eq!((quads(&plain), quads(&revealed)), (10, 11));
         // Five faces of the arriving voxel carry its order; the six of the other don't.
-        let orders: Vec<u32> = revealed.iter().flat_map(|m| words(&m.mesh)).map(|[_, b]| b >> 24).collect();
+        let orders: Vec<u32> = revealed
+            .iter()
+            .flat_map(|m| words(&m.mesh))
+            .map(|[_, b]| b >> 24)
+            .collect();
         assert_eq!(orders.iter().filter(|o| **o == 7).count(), 20);
         assert_eq!(orders.iter().filter(|o| **o == 0).count(), 24);
-        assert!(plain.iter().flat_map(|m| words(&m.mesh)).all(|[a, b]| b >> 24 == 0 && a >> 29 == 0));
+        assert!(
+            plain
+                .iter()
+                .flat_map(|m| words(&m.mesh))
+                .all(|[a, b]| b >> 24 == 0 && a >> 29 == 0)
+        );
     }
 
     /// `voxel_vertex.wesl` hard-codes each face's normal and tangent (u) and takes the
     /// tangent's w as 1, which holds while every bitangent `normal × u` points along v.
     #[test]
     fn faces_match_the_vertex_shader() {
-        let normals = [IVec3::X, IVec3::NEG_X, IVec3::Y, IVec3::NEG_Y, IVec3::Z, IVec3::NEG_Z];
+        let normals = [
+            IVec3::X,
+            IVec3::NEG_X,
+            IVec3::Y,
+            IVec3::NEG_Y,
+            IVec3::Z,
+            IVec3::NEG_Z,
+        ];
         let tangents = [IVec3::Y, IVec3::Z, IVec3::Z, IVec3::X, IVec3::X, IVec3::Y];
         for (i, face) in FACES.iter().enumerate() {
             let u = face.corners[1] - face.corners[0];

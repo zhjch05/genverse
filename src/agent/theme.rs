@@ -89,9 +89,15 @@ pub const LIGHT: Palette = Palette {
 /// Opens a window centered in the view (moved left by `offset` px, as when the builder
 /// panel covers part of it): placed there, not pinned, so it can be dragged and resized
 /// like any window.
-pub fn centered<'a>(window: egui::Window<'a>, ctx: &egui::Context, offset: f32) -> egui::Window<'a> {
+pub fn centered<'a>(
+    window: egui::Window<'a>,
+    ctx: &egui::Context,
+    offset: f32,
+) -> egui::Window<'a> {
     let center = ctx.viewport_rect().center() - egui::vec2(offset, 0.0);
-    window.pivot(egui::Align2::CENTER_CENTER).default_pos(center)
+    window
+        .pivot(egui::Align2::CENTER_CENTER)
+        .default_pos(center)
 }
 
 pub fn palette(ctx: &egui::Context) -> &'static Palette {
@@ -116,7 +122,14 @@ pub fn toggle(ctx: &egui::Context) {
         Theme::Light => Theme::Dark,
     };
     ctx.set_theme(theme);
-    prefs::set("theme", if theme == Theme::Light { "light" } else { "dark" });
+    prefs::set(
+        "theme",
+        if theme == Theme::Light {
+            "light"
+        } else {
+            "dark"
+        },
+    );
 }
 
 fn restyle(style: &mut egui::Style, p: &Palette, dark: bool) {
@@ -133,7 +146,11 @@ fn restyle(style: &mut egui::Style, p: &Palette, dark: bool) {
     style.spacing.interact_size.y = 24.0;
 
     let v = &mut style.visuals;
-    *v = if dark { egui::Visuals::dark() } else { egui::Visuals::light() };
+    *v = if dark {
+        egui::Visuals::dark()
+    } else {
+        egui::Visuals::light()
+    };
     v.panel_fill = p.panel;
     v.window_fill = p.panel;
     v.window_stroke = Stroke::new(1.0, p.line);
@@ -156,11 +173,24 @@ fn restyle(style: &mut egui::Style, p: &Palette, dark: bool) {
     w.noninteractive.fg_stroke = Stroke::new(1.0, p.text);
     w.noninteractive.corner_radius = CornerRadius::same(ROUND);
     let (rest, lit, pressed) = if dark {
-        (p.raised, Color32::from_rgb(56, 66, 71), Color32::from_rgb(66, 78, 84))
+        (
+            p.raised,
+            Color32::from_rgb(56, 66, 71),
+            Color32::from_rgb(66, 78, 84),
+        )
     } else {
-        (p.raised, Color32::from_rgb(222, 212, 190), Color32::from_rgb(210, 198, 172))
+        (
+            p.raised,
+            Color32::from_rgb(222, 212, 190),
+            Color32::from_rgb(210, 198, 172),
+        )
     };
-    for (state, fill) in [(&mut w.inactive, rest), (&mut w.hovered, lit), (&mut w.active, pressed), (&mut w.open, lit)] {
+    for (state, fill) in [
+        (&mut w.inactive, rest),
+        (&mut w.hovered, lit),
+        (&mut w.active, pressed),
+        (&mut w.open, lit),
+    ] {
         state.weak_bg_fill = fill;
         state.bg_fill = p.input;
         state.bg_stroke = Stroke::new(1.0, p.line);
@@ -189,7 +219,10 @@ pub struct Block {
 
 impl Block {
     pub fn new(text: impl Into<String>, tone: Tone) -> Self {
-        Self { text: text.into(), tone }
+        Self {
+            text: text.into(),
+            tone,
+        }
     }
 }
 
@@ -210,12 +243,26 @@ impl egui::Widget for Block {
         let rect = response.rect;
         let painter = ui.painter();
         if response.hovered() && ui.is_enabled() {
-            let glow = if ui.visuals().dark_mode { Color32::from_white_alpha(18) } else { Color32::from_black_alpha(12) };
+            let glow = if ui.visuals().dark_mode {
+                Color32::from_white_alpha(18)
+            } else {
+                Color32::from_black_alpha(12)
+            };
             painter.rect_filled(rect, ROUND, glow);
         }
         if !response.is_pointer_button_down_on() {
-            let lip = egui::Rect::from_min_max(egui::pos2(rect.left(), rect.bottom() - 3.0), rect.max);
-            painter.rect_filled(lip, CornerRadius { nw: 0, ne: 0, sw: ROUND, se: ROUND }, shade(fill, 0.72));
+            let lip =
+                egui::Rect::from_min_max(egui::pos2(rect.left(), rect.bottom() - 3.0), rect.max);
+            painter.rect_filled(
+                lip,
+                CornerRadius {
+                    nw: 0,
+                    ne: 0,
+                    sw: ROUND,
+                    se: ROUND,
+                },
+                shade(fill, 0.72),
+            );
         }
         response
     }
@@ -246,13 +293,22 @@ pub fn color(color: bevy::color::Color) -> Color32 {
 pub fn swatch(ui: &mut egui::Ui, color: Color32, picked: bool) -> egui::Response {
     let p = palette(ui.ctx());
     let (rect, response) = ui.allocate_exact_size(egui::vec2(24.0, 24.0), egui::Sense::click());
-    let block = if response.hovered() { rect } else { rect.shrink(1.0) };
+    let block = if response.hovered() {
+        rect
+    } else {
+        rect.shrink(1.0)
+    };
     let painter = ui.painter();
     painter.rect_filled(block, ROUND, shade(color, 0.72));
     let face = egui::Rect::from_min_max(block.min, egui::pos2(block.right(), block.bottom() - 3.0));
     painter.rect_filled(face, ROUND, color);
     if picked {
-        painter.rect_stroke(rect.expand(2.5), ROUND + 2, Stroke::new(2.0, p.strong), egui::StrokeKind::Middle);
+        painter.rect_stroke(
+            rect.expand(2.5),
+            ROUND + 2,
+            Stroke::new(2.0, p.strong),
+            egui::StrokeKind::Middle,
+        );
     }
     response
 }
@@ -260,7 +316,8 @@ pub fn swatch(ui: &mut egui::Ui, color: Color32, picked: bool) -> egui::Response
 /// A frameless icon button, like the ones in Discord's headers.
 pub fn icon_button(ui: &mut egui::Ui, icon: &str, tip: &str) -> bool {
     let muted = palette(ui.ctx()).muted;
-    let response = ui.add(egui::Button::new(egui::RichText::new(icon).size(18.0).color(muted)).frame(false));
+    let response =
+        ui.add(egui::Button::new(egui::RichText::new(icon).size(18.0).color(muted)).frame(false));
     response.on_hover_text(tip).clicked()
 }
 
@@ -271,12 +328,35 @@ pub fn avatar(ui: &mut egui::Ui, name: &str, color: Color32, size: f32) -> egui:
     let painter = ui.painter();
     let radius = ROUND + 2;
     painter.rect_filled(rect, radius, shade(color, 0.72));
-    let face = egui::Rect::from_min_max(rect.min, egui::pos2(rect.right(), rect.bottom() - size * 0.1));
+    let face = egui::Rect::from_min_max(
+        rect.min,
+        egui::pos2(rect.right(), rect.bottom() - size * 0.1),
+    );
     painter.rect_filled(face, radius, color);
-    let top = egui::Rect::from_min_max(face.min, egui::pos2(face.right(), face.top() + size * 0.14));
-    painter.rect_filled(top, CornerRadius { nw: radius, ne: radius, sw: 0, se: 0 }, light(color, 0.22));
-    let initial = name.chars().find(|c| c.is_alphanumeric()).map(|c| c.to_uppercase().to_string()).unwrap_or_default();
-    painter.text(face.center(), egui::Align2::CENTER_CENTER, initial, FontId::proportional(size * 0.46), Color32::WHITE);
+    let top =
+        egui::Rect::from_min_max(face.min, egui::pos2(face.right(), face.top() + size * 0.14));
+    painter.rect_filled(
+        top,
+        CornerRadius {
+            nw: radius,
+            ne: radius,
+            sw: 0,
+            se: 0,
+        },
+        light(color, 0.22),
+    );
+    let initial = name
+        .chars()
+        .find(|c| c.is_alphanumeric())
+        .map(|c| c.to_uppercase().to_string())
+        .unwrap_or_default();
+    painter.text(
+        face.center(),
+        egui::Align2::CENTER_CENTER,
+        initial,
+        FontId::proportional(size * 0.46),
+        Color32::WHITE,
+    );
     response
 }
 
@@ -287,21 +367,39 @@ pub fn card<R>(ui: &mut egui::Ui, accent: Color32, add: impl FnOnce(&mut egui::U
         .fill(p.raised)
         .stroke(Stroke::new(1.0, p.line))
         .corner_radius(ROUND)
-        .inner_margin(Margin { left: 14, right: 10, top: 8, bottom: 9 })
+        .inner_margin(Margin {
+            left: 14,
+            right: 10,
+            top: 8,
+            bottom: 9,
+        })
         .show(ui, |ui| {
             ui.set_width(ui.available_width());
             add(ui)
         });
     let rect = inner.response.rect;
     let edge = egui::Rect::from_min_size(rect.min, egui::vec2(4.0, rect.height()));
-    ui.painter().rect_filled(edge, CornerRadius { nw: ROUND, sw: ROUND, ne: 0, se: 0 }, accent);
+    ui.painter().rect_filled(
+        edge,
+        CornerRadius {
+            nw: ROUND,
+            sw: ROUND,
+            ne: 0,
+            se: 0,
+        },
+        accent,
+    );
     inner.inner
 }
 
 /// A card's title line: an icon and a bold name.
 pub fn card_title(ui: &mut egui::Ui, icon: &str, title: &str) {
     let strong = palette(ui.ctx()).strong;
-    ui.label(egui::RichText::new(format!("{icon} {title}")).strong().color(strong));
+    ui.label(
+        egui::RichText::new(format!("{icon} {title}"))
+            .strong()
+            .color(strong),
+    );
 }
 
 /// Small print inside cards and footers.
@@ -313,32 +411,62 @@ pub fn note(ui: &mut egui::Ui, text: impl Into<String>) {
 /// An uppercase section heading, like Discord's channel categories.
 pub fn section(ui: &mut egui::Ui, text: &str) {
     let muted = palette(ui.ctx()).muted;
-    ui.label(egui::RichText::new(text.to_uppercase()).size(11.0).strong().color(muted));
+    ui.label(
+        egui::RichText::new(text.to_uppercase())
+            .size(11.0)
+            .strong()
+            .color(muted),
+    );
 }
 
 /// A small tag, such as AGENT next to an agent's name.
 pub fn tag(ui: &mut egui::Ui, text: &str, fill: Color32, color: Color32) {
-    let galley = ui.painter().layout_no_wrap(text.to_string(), FontId::proportional(9.5), color);
-    let (rect, _) = ui.allocate_exact_size(galley.size() + egui::vec2(8.0, 2.0), egui::Sense::hover());
+    let galley = ui
+        .painter()
+        .layout_no_wrap(text.to_string(), FontId::proportional(9.5), color);
+    let (rect, _) =
+        ui.allocate_exact_size(galley.size() + egui::vec2(8.0, 2.0), egui::Sense::hover());
     ui.painter().rect_filled(rect, 2, fill);
-    ui.painter().galley(rect.center() - galley.size() / 2.0, galley, color);
+    ui.painter()
+        .galley(rect.center() - galley.size() / 2.0, galley, color);
 }
 
 /// A keyboard key, for shortcut hints: a keycap with a shaded lip. Quiet keys are
 /// smaller and flatter, for hints that are always there.
 pub fn key(ui: &mut egui::Ui, text: &str, quiet: bool) {
     let p = palette(ui.ctx());
-    let (size, color) = if quiet { (10.5, p.text) } else { (11.5, p.strong) };
+    let (size, color) = if quiet {
+        (10.5, p.text)
+    } else {
+        (11.5, p.strong)
+    };
     let response = egui::Frame::new()
         .fill(p.raised)
         .stroke(Stroke::new(1.0, p.line))
         .corner_radius(ROUND)
-        .inner_margin(Margin { left: 5, right: 5, top: 1, bottom: if quiet { 2 } else { 3 } })
+        .inner_margin(Margin {
+            left: 5,
+            right: 5,
+            top: 1,
+            bottom: if quiet { 2 } else { 3 },
+        })
         .show(ui, |ui| {
             ui.label(egui::RichText::new(text).size(size).strong().color(color));
         })
         .response;
     let rect = response.rect;
-    let lip = egui::Rect::from_min_max(egui::pos2(rect.left(), rect.bottom() - if quiet { 1.5 } else { 2.0 }), rect.max);
-    ui.painter().rect_filled(lip, CornerRadius { nw: 0, ne: 0, sw: ROUND, se: ROUND }, p.line);
+    let lip = egui::Rect::from_min_max(
+        egui::pos2(rect.left(), rect.bottom() - if quiet { 1.5 } else { 2.0 }),
+        rect.max,
+    );
+    ui.painter().rect_filled(
+        lip,
+        CornerRadius {
+            nw: 0,
+            ne: 0,
+            sw: ROUND,
+            se: ROUND,
+        },
+        p.line,
+    );
 }

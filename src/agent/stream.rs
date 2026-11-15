@@ -29,8 +29,15 @@ pub enum Activity {
     /// More of what it's saying, as it's written.
     NoteMore(String),
     /// A tool call began: `what` is the file, search, tool or command.
-    Tool { id: String, kind: Kind, what: String },
-    ToolDone { id: String, ok: bool },
+    Tool {
+        id: String,
+        kind: Kind,
+        what: String,
+    },
+    ToolDone {
+        id: String,
+        ok: bool,
+    },
 }
 
 /// The reader for one run.
@@ -50,7 +57,12 @@ impl Stream {
     pub fn new(dir: &Path) -> Self {
         let mut roots = vec![dir.to_path_buf()];
         roots.extend(dir.canonicalize().ok().filter(|real| real != dir));
-        Self { roots, fresh: true, held: None, open: HashSet::new() }
+        Self {
+            roots,
+            fresh: true,
+            held: None,
+            open: HashSet::new(),
+        }
     }
 
     /// One event of `claude -p --output-format stream-json --include-partial-messages`.
@@ -60,13 +72,26 @@ impl Stream {
             // Text arrives a few words at a time.
             Some("stream_event") => {
                 let event = &event["event"];
-                match (event["type"].as_str(), event["content_block"]["type"].as_str(), event["delta"]["type"].as_str()) {
+                match (
+                    event["type"].as_str(),
+                    event["content_block"]["type"].as_str(),
+                    event["delta"]["type"].as_str(),
+                ) {
                     (Some("content_block_start"), Some("text"), _) => self.fresh = true,
-                    (Some("content_block_start"), Some("thinking"), _) => out.push(Activity::Thinking),
+                    (Some("content_block_start"), Some("thinking"), _) => {
+                        out.push(Activity::Thinking)
+                    }
                     (Some("content_block_delta"), _, Some("text_delta")) => {
-                        let text = event["delta"]["text"].as_str().unwrap_or_default().to_string();
+                        let text = event["delta"]["text"]
+                            .as_str()
+                            .unwrap_or_default()
+                            .to_string();
                         if !text.is_empty() {
-                            out.push(if self.fresh { Activity::Note(text) } else { Activity::NoteMore(text) });
+                            out.push(if self.fresh {
+                                Activity::Note(text)
+                            } else {
+                                Activity::NoteMore(text)
+                            });
                             self.fresh = false;
                         }
                     }
@@ -76,7 +101,11 @@ impl Stream {
             // The whole message, once written: its tool calls, with their inputs.
             Some("assistant") => {
                 for block in event["message"]["content"].as_array().into_iter().flatten() {
-                    let (Some("tool_use"), Some(id), Some(name)) = (block["type"].as_str(), block["id"].as_str(), block["name"].as_str()) else {
+                    let (Some("tool_use"), Some(id), Some(name)) = (
+                        block["type"].as_str(),
+                        block["id"].as_str(),
+                        block["name"].as_str(),
+                    ) else {
                         continue;
                     };
                     let input = &block["input"];
@@ -88,15 +117,27 @@ impl Stream {
                         "Edit" | "Write" => (Kind::Edit, self.relative(text("file_path"))),
                         // How the answer is handed in, not a step of the work.
                         "StructuredOutput" => continue,
-                        name => (Kind::World, name.rsplit("__").next().unwrap_or(name).to_string()),
+                        name => (
+                            Kind::World,
+                            name.rsplit("__").next().unwrap_or(name).to_string(),
+                        ),
                     };
-                    out.push(Activity::Tool { id: id.to_string(), kind, what: clip(&what) });
+                    out.push(Activity::Tool {
+                        id: id.to_string(),
+                        kind,
+                        what: clip(&what),
+                    });
                 }
             }
             Some("user") => {
                 for block in event["message"]["content"].as_array().into_iter().flatten() {
-                    if let (Some("tool_result"), Some(id)) = (block["type"].as_str(), block["tool_use_id"].as_str()) {
-                        out.push(Activity::ToolDone { id: id.to_string(), ok: block["is_error"].as_bool() != Some(true) });
+                    if let (Some("tool_result"), Some(id)) =
+                        (block["type"].as_str(), block["tool_use_id"].as_str())
+                    {
+                        out.push(Activity::ToolDone {
+                            id: id.to_string(),
+                            ok: block["is_error"].as_bool() != Some(true),
+                        });
                     }
                 }
             }
@@ -120,7 +161,8 @@ impl Stream {
         let (kind, what, ok) = match item["type"].as_str() {
             Some("agent_message") => {
                 if !started {
-                    self.held = Some(said(item["text"].as_str().unwrap_or_default())).filter(|text| !text.is_empty());
+                    self.held = Some(said(item["text"].as_str().unwrap_or_default()))
+                        .filter(|text| !text.is_empty());
                 }
                 return out;
             }
@@ -128,9 +170,11 @@ impl Stream {
                 out.push(Activity::Thinking);
                 return out;
             }
-            Some("command_execution") => {
-                (Kind::Run, command(item["command"].as_str().unwrap_or_default()), item["exit_code"].as_i64() == Some(0))
-            }
+            Some("command_execution") => (
+                Kind::Run,
+                command(item["command"].as_str().unwrap_or_default()),
+                item["exit_code"].as_i64() == Some(0),
+            ),
             Some("file_change") => {
                 let paths: Vec<String> = item["changes"]
                     .as_array()
@@ -141,12 +185,20 @@ impl Stream {
                     .collect();
                 (Kind::Edit, paths.join(", "), item["status"] == "completed")
             }
-            Some("mcp_tool_call") => (Kind::World, item["tool"].as_str().unwrap_or("a tool").to_string(), item["status"] == "completed"),
+            Some("mcp_tool_call") => (
+                Kind::World,
+                item["tool"].as_str().unwrap_or("a tool").to_string(),
+                item["status"] == "completed",
+            ),
             _ => return out,
         };
         // Some items are only reported once they're done.
         if started || !self.open.remove(&id) {
-            out.push(Activity::Tool { id: id.clone(), kind, what: clip(&what) });
+            out.push(Activity::Tool {
+                id: id.clone(),
+                kind,
+                what: clip(&what),
+            });
         }
         if started {
             self.open.insert(id);
@@ -159,8 +211,13 @@ impl Stream {
     /// A path as the player knows it: within the world's folder.
     fn relative(&self, path: &str) -> String {
         let path = Path::new(path);
-        let inside = self.roots.iter().find_map(|root| path.strip_prefix(root).ok());
-        let shown = inside.or_else(|| path.file_name().map(Path::new)).unwrap_or(path);
+        let inside = self
+            .roots
+            .iter()
+            .find_map(|root| path.strip_prefix(root).ok());
+        let shown = inside
+            .or_else(|| path.file_name().map(Path::new))
+            .unwrap_or(path);
         shown.display().to_string()
     }
 }
@@ -168,7 +225,9 @@ impl Stream {
 /// What a Codex message says. With an answer schema, every message is JSON in the
 /// answer's shape, with the words in "reply".
 fn said(text: &str) -> String {
-    let reply = serde_json::from_str::<Value>(text).ok().and_then(|json| json["reply"].as_str().map(str::to_string));
+    let reply = serde_json::from_str::<Value>(text)
+        .ok()
+        .and_then(|json| json["reply"].as_str().map(str::to_string));
     reply.unwrap_or_else(|| text.to_string()).trim().to_string()
 }
 
@@ -178,7 +237,10 @@ fn command(line: &str) -> String {
         return line.to_string();
     };
     let quoted = |q: char| inner.strip_prefix(q).and_then(|rest| rest.strip_suffix(q));
-    quoted('\'').or_else(|| quoted('"')).unwrap_or(inner).to_string()
+    quoted('\'')
+        .or_else(|| quoted('"'))
+        .unwrap_or(inner)
+        .to_string()
 }
 
 /// One line, short enough for the feed.
@@ -197,7 +259,11 @@ mod tests {
     use serde_json::json;
 
     fn tool(id: &str, kind: Kind, what: &str) -> Activity {
-        Activity::Tool { id: id.into(), kind, what: what.into() }
+        Activity::Tool {
+            id: id.into(),
+            kind,
+            what: what.into(),
+        }
     }
 
     #[test]
@@ -206,10 +272,19 @@ mod tests {
         let start = json!({"type": "stream_event", "event": {"type": "content_block_start", "index": 0, "content_block": {"type": "text", "text": ""}}});
         let delta = |text: &str| json!({"type": "stream_event", "event": {"type": "content_block_delta", "index": 0, "delta": {"type": "text_delta", "text": text}}});
         assert_eq!(stream.claude(&start), vec![]);
-        assert_eq!(stream.claude(&delta("I'll read")), vec![Activity::Note("I'll read".into())]);
-        assert_eq!(stream.claude(&delta(" the rules.")), vec![Activity::NoteMore(" the rules.".into())]);
+        assert_eq!(
+            stream.claude(&delta("I'll read")),
+            vec![Activity::Note("I'll read".into())]
+        );
+        assert_eq!(
+            stream.claude(&delta(" the rules.")),
+            vec![Activity::NoteMore(" the rules.".into())]
+        );
         stream.claude(&start);
-        assert_eq!(stream.claude(&delta("Now the wolves.")), vec![Activity::Note("Now the wolves.".into())]);
+        assert_eq!(
+            stream.claude(&delta("Now the wolves.")),
+            vec![Activity::Note("Now the wolves.".into())]
+        );
     }
 
     #[test]
@@ -238,7 +313,16 @@ mod tests {
         ]}});
         assert_eq!(
             stream.claude(&results),
-            vec![Activity::ToolDone { id: "a".into(), ok: true }, Activity::ToolDone { id: "c".into(), ok: false }]
+            vec![
+                Activity::ToolDone {
+                    id: "a".into(),
+                    ok: true
+                },
+                Activity::ToolDone {
+                    id: "c".into(),
+                    ok: false
+                }
+            ]
         );
     }
 
@@ -256,17 +340,29 @@ mod tests {
             json!({"type": "item.completed", "item": {"id": "item_4", "type": "agent_message", "text": "{\"reply\":\"Done.\",\"build\":null}"}}),
             json!({"type": "turn.completed"}),
         ];
-        let seen: Vec<Activity> = events.iter().flat_map(|event| stream.codex(event)).collect();
+        let seen: Vec<Activity> = events
+            .iter()
+            .flat_map(|event| stream.codex(event))
+            .collect();
         assert_eq!(
             seen,
             vec![
                 Activity::Note("I'll read the note.".into()),
                 tool("item_1", Kind::Run, "cat note.txt"),
-                Activity::ToolDone { id: "item_1".into(), ok: true },
+                Activity::ToolDone {
+                    id: "item_1".into(),
+                    ok: true
+                },
                 tool("item_2", Kind::Edit, "note3.txt"),
-                Activity::ToolDone { id: "item_2".into(), ok: true },
+                Activity::ToolDone {
+                    id: "item_2".into(),
+                    ok: true
+                },
                 tool("item_3", Kind::World, "test_game"),
-                Activity::ToolDone { id: "item_3".into(), ok: false },
+                Activity::ToolDone {
+                    id: "item_3".into(),
+                    ok: false
+                },
             ]
         );
     }

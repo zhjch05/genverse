@@ -83,12 +83,19 @@ impl Node {
 
     /// This node, or the ancestor of it at `level`.
     pub fn at(self, level: u32) -> Self {
-        Self::new(level, self.xz.div_euclid(IVec2::splat(1 << (level - self.level))))
+        Self::new(
+            level,
+            self.xz.div_euclid(IVec2::splat(1 << (level - self.level))),
+        )
     }
 
     /// Whether the two cover any ground in common: one holds the other.
     pub fn overlaps(self, other: Self) -> bool {
-        if self.level >= other.level { other.at(self.level) == self } else { self.at(other.level) == other }
+        if self.level >= other.level {
+            other.at(self.level) == self
+        } else {
+            self.at(other.level) == other
+        }
     }
 
     /// Its chunks, keyed by chunk coordinates at its level, bottom first.
@@ -108,7 +115,11 @@ impl Node {
 /// The nodes to draw for loaders at `loaders` (meters, on the ground plane), and the
 /// nodes split to get them. `split` is last time's, for the margin a split node keeps;
 /// `drawn` is what's drawn now, which keeps a margin at the edge of the view.
-pub fn select(loaders: &[Vec2], split: &HashSet<Node>, drawn: impl Fn(Node) -> bool) -> (HashSet<Node>, HashSet<Node>) {
+pub fn select(
+    loaders: &[Vec2],
+    split: &HashSet<Node>,
+    drawn: impl Fn(Node) -> bool,
+) -> (HashSet<Node>, HashSet<Node>) {
     let (mut leaves, mut splits) = (HashSet::default(), HashSet::default());
     let top = node_meters(TOP);
     let reach = (VIEW_DISTANCE * KEEP / top).ceil() as i32 + 1;
@@ -121,7 +132,12 @@ pub fn select(loaders: &[Vec2], split: &HashSet<Node>, drawn: impl Fn(Node) -> b
             }
         }
     }
-    let distance = |node: Node| loaders.iter().map(|p| node.distance(*p)).fold(f32::INFINITY, f32::min);
+    let distance = |node: Node| {
+        loaders
+            .iter()
+            .map(|p| node.distance(*p))
+            .fold(f32::INFINITY, f32::min)
+    };
     let mut stack: Vec<Node> = roots
         .into_iter()
         .filter(|root| {
@@ -130,7 +146,8 @@ pub fn select(loaders: &[Vec2], split: &HashSet<Node>, drawn: impl Fn(Node) -> b
         })
         .collect();
     while let Some(node) = stack.pop() {
-        let limit = SPLIT * node_meters(node.level) * if split.contains(&node) { KEEP } else { 1.0 };
+        let limit =
+            SPLIT * node_meters(node.level) * if split.contains(&node) { KEEP } else { 1.0 };
         if node.level > 0 && distance(node) < limit {
             splits.insert(node);
             stack.extend(node.children());
@@ -208,7 +225,9 @@ fn downsample(fine: &VoxelGrid, step: i32, columns: Option<&dyn Fn(IVec2) -> boo
                 for dy in (0..step).rev() {
                     for dz in 0..step {
                         for dx in 0..step {
-                            cell.push(fine.get(IVec3::new(x, y, z) * step + IVec3::new(dx, dy, dz)));
+                            cell.push(
+                                fine.get(IVec3::new(x, y, z) * step + IVec3::new(dx, dy, dz)),
+                            );
                         }
                     }
                 }
@@ -231,7 +250,9 @@ pub fn coarse_region(level: u32, key: IVec3) -> (IVec3, IVec3) {
 pub fn coarse_keys(level: u32, lo: IVec3, hi: IVec3) -> impl Iterator<Item = IVec3> {
     let (span, step) = (IVec3::splat(span(level)), IVec3::splat(step(level)));
     let (lo, hi) = ((lo - step).div_euclid(span), (hi + step).div_euclid(span));
-    (lo.z..=hi.z).flat_map(move |z| (lo.y..=hi.y).flat_map(move |y| (lo.x..=hi.x).map(move |x| IVec3::new(x, y, z))))
+    (lo.z..=hi.z).flat_map(move |z| {
+        (lo.y..=hi.y).flat_map(move |y| (lo.x..=hi.x).map(move |x| IVec3::new(x, y, z)))
+    })
 }
 
 /// The ground under a column of chunks at one level, worked out once for all of them:
@@ -265,7 +286,13 @@ impl ColumnGround {
 /// The voxels of chunk `key` at `level` (1 and up) with its border: generated from
 /// the seed, with `edits` (world voxels in its region) merged in. `ground` is its
 /// column's.
-fn coarse_voxels(terrain: Terrain, ground: &ColumnGround, level: u32, key: IVec3, edits: &[(IVec3, VoxelId)]) -> VoxelGrid {
+fn coarse_voxels(
+    terrain: Terrain,
+    ground: &ColumnGround,
+    level: u32,
+    key: IVec3,
+    edits: &[(IVec3, VoxelId)],
+) -> VoxelGrid {
     let (min, max) = coarse_region(level, key);
     let step = step(level);
     if level == 1 {
@@ -276,13 +303,21 @@ fn coarse_voxels(terrain: Terrain, ground: &ColumnGround, level: u32, key: IVec3
         return downsample(&fine, step, None);
     }
     let cells = (max - min) / step;
-    let mut coarse = terrain.generate_coarse_in(&ground.heights, min / step, cells.as_uvec3(), step);
+    let mut coarse =
+        terrain.generate_coarse_in(&ground.heights, min / step, cells.as_uvec3(), step);
     if edits.is_empty() {
         return coarse;
     }
     // The columns with edits, merged from world voxels: just the box around them.
-    let columns: HashSet<IVec2> = edits.iter().map(|(p, _)| (p.xz() - min.xz()).div_euclid(IVec2::splat(step))).collect();
-    let (lo, hi) = columns.iter().fold((IVec2::MAX, IVec2::MIN), |(lo, hi), c| (lo.min(*c), hi.max(*c)));
+    let columns: HashSet<IVec2> = edits
+        .iter()
+        .map(|(p, _)| (p.xz() - min.xz()).div_euclid(IVec2::splat(step)))
+        .collect();
+    let (lo, hi) = columns
+        .iter()
+        .fold((IVec2::MAX, IVec2::MIN), |(lo, hi), c| {
+            (lo.min(*c), hi.max(*c))
+        });
     let fine_min = min + IVec3::new(lo.x, 0, lo.y) * step;
     let fine_size = IVec3::new(hi.x - lo.x + 1, cells.y, hi.y - lo.y + 1) * step;
     let mut fine = terrain.generate(fine_min, fine_size.as_uvec3());
@@ -303,14 +338,25 @@ fn coarse_voxels(terrain: Terrain, ground: &ColumnGround, level: u32, key: IVec3
 /// Generates chunk `key` at `level` (1 and up) from the seed and the `edits` in its
 /// region, and meshes it. Meshes are in that level's voxels, relative to the chunk's
 /// corner.
-pub fn build_coarse(terrain: Terrain, palette: &Palette, level: u32, key: IVec3, edits: &[(IVec3, VoxelId)]) -> Vec<(usize, Mesh)> {
+pub fn build_coarse(
+    terrain: Terrain,
+    palette: &Palette,
+    level: u32,
+    key: IVec3,
+    edits: &[(IVec3, VoxelId)],
+) -> Vec<(usize, Mesh)> {
     let ground = ColumnGround::new(terrain, level, key.xz());
     build_coarse_in(terrain, &ground, palette, level, key, edits)
 }
 
 /// Builds every chunk of `node` (level 1 and up), each with its `edits`: like
 /// [`build_coarse`], working the ground out once and leaving the sky empty.
-pub fn build_coarse_node(terrain: Terrain, palette: &Palette, node: Node, edits: &[Vec<(IVec3, VoxelId)>]) -> Vec<(IVec3, Vec<(usize, Mesh)>)> {
+pub fn build_coarse_node(
+    terrain: Terrain,
+    palette: &Palette,
+    node: Node,
+    edits: &[Vec<(IVec3, VoxelId)>],
+) -> Vec<(IVec3, Vec<(usize, Mesh)>)> {
     let ground = ColumnGround::new(terrain, node.level, node.xz);
     node.chunks()
         .zip(edits)
@@ -335,7 +381,12 @@ fn build_coarse_in(
 ) -> Vec<(usize, Mesh)> {
     let coarse = coarse_voxels(terrain, ground, level, key, edits);
     let origin = key * CHUNK;
-    mesh_region(|p| coarse.get(p - origin + IVec3::ONE), palette, origin, origin + IVec3::splat(CHUNK))
+    mesh_region(
+        |p| coarse.get(p - origin + IVec3::ONE),
+        palette,
+        origin,
+        origin + IVec3::splat(CHUNK),
+    )
 }
 
 #[cfg(test)]
@@ -345,7 +396,11 @@ mod tests {
     #[test]
     fn nodes_nest() {
         let n = Node::new(2, IVec2::new(-1, 3));
-        assert!(n.children().iter().all(|c| c.parent() == n && c.overlaps(n) && n.overlaps(*c)));
+        assert!(
+            n.children()
+                .iter()
+                .all(|c| c.parent() == n && c.overlaps(n) && n.overlaps(*c))
+        );
         assert_eq!(Node::new(0, IVec2::new(-3, 13)).at(2), n);
         assert!(!Node::new(2, IVec2::new(0, 3)).overlaps(Node::new(0, IVec2::new(-1, 12))));
         assert_eq!(n.distance(Vec2::new(-10.0, 100.0)), 0.0);
@@ -361,7 +416,12 @@ mod tests {
             }
             assert!(!splits.contains(a));
         }
-        let at = |p: Vec2| leaves.iter().find(|n| n.distance(p) == 0.0 && n.distance(p + 0.01) == 0.0).map(|n| n.level);
+        let at = |p: Vec2| {
+            leaves
+                .iter()
+                .find(|n| n.distance(p) == 0.0 && n.distance(p + 0.01) == 0.0)
+                .map(|n| n.level)
+        };
         assert_eq!(at(Vec2::new(3.0, -7.0)), Some(0));
         assert_eq!(at(Vec2::new(80.0, -7.0)), Some(1));
         assert_eq!(at(Vec2::new(-150.0, -7.0)), Some(2));
@@ -413,7 +473,10 @@ mod tests {
             let built = build_coarse_node(terrain, &palette, node, &none);
             // The same as built one at a time, with the sky left empty.
             for (key, meshes) in &built {
-                assert_eq!(meshes.len(), build_coarse(terrain, &palette, level, *key, &[]).len());
+                assert_eq!(
+                    meshes.len(),
+                    build_coarse(terrain, &palette, level, *key, &[]).len()
+                );
             }
             assert!(built.iter().any(|(_, m)| !m.is_empty()));
             assert!(built.last().unwrap().1.is_empty());
@@ -423,13 +486,26 @@ mod tests {
         let (min, _) = coarse_region(2, key);
         let column = IVec2::new(40, 40);
         let edits: Vec<_> = (0..WORLD_HEIGHT)
-            .flat_map(|y| (0..4).flat_map(move |dz| (0..4).map(move |dx| (IVec3::new(column.x + dx, y, column.y + dz), block::STONE[0]))))
+            .flat_map(|y| {
+                (0..4).flat_map(move |dz| {
+                    (0..4).map(move |dx| {
+                        (IVec3::new(column.x + dx, y, column.y + dz), block::STONE[0])
+                    })
+                })
+            })
             .collect();
         let edits: Vec<_> = edits.into_iter().filter(|(p, _)| p.y >= min.y).collect();
         let ground = ColumnGround::new(terrain, 2, key.xz());
         assert!(ground.sky(2, key));
         let voxels = coarse_voxels(terrain, &ground, 2, key, &edits);
         let top = (WORLD_HEIGHT - 1) / 4 - min.y / 4;
-        assert_eq!(voxels.get(IVec3::new(column.x / 4 - min.x / 4, top, column.y / 4 - min.z / 4)), block::STONE[0]);
+        assert_eq!(
+            voxels.get(IVec3::new(
+                column.x / 4 - min.x / 4,
+                top,
+                column.y / 4 - min.z / 4
+            )),
+            block::STONE[0]
+        );
     }
 }

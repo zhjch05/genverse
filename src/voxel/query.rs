@@ -75,7 +75,11 @@ pub fn march(
     let step = dir.signum().as_ivec3();
     let delta = inv.abs();
     let boundary = cell.as_vec3() + step.max(IVec3::ZERO).as_vec3();
-    let mut next = Vec3::select(dir.cmpeq(Vec3::ZERO), Vec3::INFINITY, (boundary - origin) * inv);
+    let mut next = Vec3::select(
+        dir.cmpeq(Vec3::ZERO),
+        Vec3::INFINITY,
+        (boundary - origin) * inv,
+    );
     let mut t = enter;
     let mut normal = IVec3::ZERO;
     while t <= exit {
@@ -99,7 +103,12 @@ pub fn march(
 }
 
 /// The first solid voxel of `model` hit by `ray` within `max`.
-pub fn raycast(model: &VoxelModel, transform: &GlobalTransform, ray: Ray3d, max: f32) -> Option<Hit> {
+pub fn raycast(
+    model: &VoxelModel,
+    transform: &GlobalTransform,
+    ray: Ray3d,
+    max: f32,
+) -> Option<Hit> {
     let affine = transform.affine();
     let inverse = affine.inverse();
     let origin = to_voxels(model, &inverse, ray.origin);
@@ -117,14 +126,23 @@ pub fn raycast(model: &VoxelModel, transform: &GlobalTransform, ray: Ray3d, max:
     if enter > exit {
         return None;
     }
-    let (distance, mut normal) =
-        march(origin, dir, enter, exit, |cell| model.grid.contains(cell).then(|| model.grid.get(cell) != AIR))?;
+    let (distance, mut normal) = march(origin, dir, enter, exit, |cell| {
+        model
+            .grid
+            .contains(cell)
+            .then(|| model.grid.get(cell) != AIR)
+    })?;
     // A hit in the very first cell entered through the bounding box face.
     if normal == IVec3::ZERO && enter > 0.0 {
         let axis = near.max_position();
         normal[axis] = -step_sign(dir[axis]);
     }
-    Some(Hit { distance, normal: affine.transform_vector3(normal.as_vec3()).normalize_or_zero() })
+    Some(Hit {
+        distance,
+        normal: affine
+            .transform_vector3(normal.as_vec3())
+            .normalize_or_zero(),
+    })
 }
 
 fn step_sign(v: f32) -> i32 {
@@ -156,10 +174,18 @@ mod tests {
             emissive: LinearRgba::BLACK,
             alpha: 1.0,
         };
-        let entry = |name: &str| PaletteEntry { name: name.into(), color: LinearRgba::WHITE, surface: 0, variation: 0.0 };
+        let entry = |name: &str| PaletteEntry {
+            name: name.into(),
+            color: LinearRgba::WHITE,
+            surface: 0,
+            variation: 0.0,
+        };
         VoxelModel {
             grid,
-            palette: Arc::new(Palette { surfaces: vec![surface], entries: vec![entry("air"), entry("solid")] }),
+            palette: Arc::new(Palette {
+                surfaces: vec![surface],
+                entries: vec![entry("air"), entry("solid")],
+            }),
             voxel_size: 0.5,
             pivot: Vec3::new(2.0, 0.0, 1.0),
             lights: Vec::new(),
@@ -167,7 +193,9 @@ mod tests {
     }
 
     fn at(x: f32, z: f32, yaw: f32) -> GlobalTransform {
-        GlobalTransform::from(Transform::from_xyz(x, 0.0, z).with_rotation(Quat::from_rotation_y(yaw)))
+        GlobalTransform::from(
+            Transform::from_xyz(x, 0.0, z).with_rotation(Quat::from_rotation_y(yaw)),
+        )
     }
 
     #[test]
@@ -186,7 +214,11 @@ mod tests {
         let ray = Ray3d::new(Vec3::new(10.0, 0.5, 5.0), Dir3::NEG_Z);
         let hit = raycast(&bar(), &at(10.0, 0.0, 0.0), ray, 100.0).unwrap();
         assert!((hit.distance - 4.5).abs() < 1e-3, "hit at {}", hit.distance);
-        assert!(hit.normal.abs_diff_eq(Vec3::Z, 1e-4), "normal {}", hit.normal);
+        assert!(
+            hit.normal.abs_diff_eq(Vec3::Z, 1e-4),
+            "normal {}",
+            hit.normal
+        );
     }
 
     #[test]
@@ -199,7 +231,11 @@ mod tests {
         let down_long_side = Ray3d::new(Vec3::new(10.0, 0.5, 5.0), Dir3::NEG_Z);
         let hit = raycast(&model, &turned, down_long_side, 100.0).unwrap();
         assert!((hit.distance - 4.0).abs() < 1e-3, "hit at {}", hit.distance);
-        assert!(hit.normal.abs_diff_eq(Vec3::Z, 1e-4), "normal {}", hit.normal);
+        assert!(
+            hit.normal.abs_diff_eq(Vec3::Z, 1e-4),
+            "normal {}",
+            hit.normal
+        );
     }
 
     #[test]
@@ -213,16 +249,35 @@ mod tests {
         let ray = Ray3d::new(Vec3::new(0.3, 5.0, 0.2), Dir3::NEG_Y);
         let hit = raycast(&bar(), &at(0.0, 0.0, 0.0), ray, 100.0).unwrap();
         assert!((hit.distance - 4.0).abs() < 1e-3, "hit at {}", hit.distance);
-        assert!(hit.normal.abs_diff_eq(Vec3::Y, 1e-4), "normal {}", hit.normal);
+        assert!(
+            hit.normal.abs_diff_eq(Vec3::Y, 1e-4),
+            "normal {}",
+            hit.normal
+        );
     }
 
     #[test]
     fn box_overlap() {
         let model = bar();
         let t = at(0.0, 0.0, 0.0);
-        assert!(overlaps_box(&model, &t, Vec3::new(0.9, 0.0, 0.0), Vec3::new(1.5, 1.0, 0.2)));
-        assert!(!overlaps_box(&model, &t, Vec3::new(1.01, 0.0, 0.0), Vec3::new(1.5, 1.0, 0.2)));
+        assert!(overlaps_box(
+            &model,
+            &t,
+            Vec3::new(0.9, 0.0, 0.0),
+            Vec3::new(1.5, 1.0, 0.2)
+        ));
+        assert!(!overlaps_box(
+            &model,
+            &t,
+            Vec3::new(1.01, 0.0, 0.0),
+            Vec3::new(1.5, 1.0, 0.2)
+        ));
         // Standing on top touches nothing.
-        assert!(!overlaps_box(&model, &t, Vec3::new(-0.2, 1.0, -0.2), Vec3::new(0.2, 2.0, 0.2)));
+        assert!(!overlaps_box(
+            &model,
+            &t,
+            Vec3::new(-0.2, 1.0, -0.2),
+            Vec3::new(0.2, 2.0, 0.2)
+        ));
     }
 }

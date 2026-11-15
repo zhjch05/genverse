@@ -34,7 +34,13 @@ impl Keypair {
     /// keeps a host's invite the same from one session to the next.
     pub fn derive(&self, purpose: &str) -> [u8; 32] {
         use sha2::{Digest, Sha256};
-        Sha256::new().chain_update(b"genverse derive\0").chain_update(purpose).chain_update(b"\0").chain_update(self.0.to_bytes()).finalize().into()
+        Sha256::new()
+            .chain_update(b"genverse derive\0")
+            .chain_update(purpose)
+            .chain_update(b"\0")
+            .chain_update(self.0.to_bytes())
+            .finalize()
+            .into()
     }
 }
 
@@ -56,7 +62,10 @@ fn unhex(text: &str) -> Option<Vec<u8>> {
     if !text.len().is_multiple_of(2) {
         return None;
     }
-    (0..text.len()).step_by(2).map(|i| u8::from_str_radix(text.get(i..i + 2)?, 16).ok()).collect()
+    (0..text.len())
+        .step_by(2)
+        .map(|i| u8::from_str_radix(text.get(i..i + 2)?, 16).ok())
+        .collect()
 }
 
 #[cfg(test)]
@@ -71,7 +80,11 @@ mod tests {
         let sig = key.sign(b"place a lamp");
         assert!(verify(&key.player_id(), b"place a lamp", &sig));
         assert!(!verify(&key.player_id(), b"place a tower", &sig));
-        assert!(!verify(&Keypair::from_seed([8; 32]).player_id(), b"place a lamp", &sig));
+        assert!(!verify(
+            &Keypair::from_seed([8; 32]).player_id(),
+            b"place a lamp",
+            &sig
+        ));
         assert!(!verify("not-a-key", b"place a lamp", &sig));
     }
 }
