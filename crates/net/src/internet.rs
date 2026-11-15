@@ -31,8 +31,8 @@ use tokio::{
 
 /// The protocol name iroh connections use; bumped with [`crate::VERSION`] so a game
 /// can't reach a host that speaks another protocol.
-const ALPN: &[u8] = b"genverse/net/7";
-const _: () = assert!(crate::VERSION == 7, "bump ALPN with VERSION");
+const ALPN: &[u8] = b"genverse/net/8";
+const _: () = assert!(crate::VERSION == 8, "bump ALPN with VERSION");
 /// What an invite starts with, so it reads as one and isn't taken for an address.
 const PREFIX: &str = "gv1";
 /// A dialing game opens its stream with this byte: a QUIC stream isn't announced to

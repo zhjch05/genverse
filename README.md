@@ -292,6 +292,7 @@ screenshots:
 | `GENVERSE_PLAY="go 15 0; wait 4; hit"` | plays steps once the agent is done |
 | `GENVERSE_AS=Bo` | plays as a non-admin guest for one run |
 | `GENVERSE_SERVER=host` | joins a server |
+| `GENVERSE_CHAT=game`, `GENVERSE_SAY="hi all;anyone around?"` | shows the game's chat, and says things in it once joined |
 | `GENVERSE_MENU=1` | opens the game menu (Esc) at start |
 | `GENVERSE_START=1` | shows the start screen (runs driven by these variables skip it otherwise) |
 | `GENVERSE_WELCOME=1` (+ `_STEP=0-2`) | opens the new-player welcome at start |

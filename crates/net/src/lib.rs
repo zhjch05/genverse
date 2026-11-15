@@ -38,7 +38,7 @@ use genverse_rules::{
 use serde::{Deserialize, Serialize};
 
 /// Bumped when the protocol changes incompatibly.
-pub const VERSION: u32 = 7;
+pub const VERSION: u32 = 8;
 pub const DEFAULT_PORT: u16 = 7878;
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
@@ -79,6 +79,53 @@ pub enum ToServer {
     Presence(Presence),
     /// The edits in these chunks, because ours disagree with the server's fingerprints.
     FetchChunks { chunks: Vec<[i32; 3]> },
+    /// Something said in the game's chat: to everyone in the game, whatever world
+    /// they're in.
+    Say { text: String },
+}
+
+/// The most characters a chat message may have.
+pub const MAX_CHAT: usize = 500;
+/// How many of the game's messages the server keeps, and sends a player who joins.
+pub const CHAT_KEPT: usize = 200;
+
+/// A message in the game's chat, as the server passes it on.
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+pub struct Said {
+    /// Who said it: their id, and the name they went by.
+    pub from: String,
+    pub name: String,
+    /// The world they were in.
+    pub world: String,
+    pub text: String,
+    /// When, in seconds since 1970, by the server's clock.
+    pub at: u64,
+}
+
+/// A player in the game, in whichever world.
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+pub struct Member {
+    pub player: String,
+    /// The name they go by now.
+    pub name: String,
+    pub world: String,
+    /// Their marker color, if they picked one ([`Presence::color`]).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub color: Option<u8>,
+}
+
+/// A chat message as a player may send it: trimmed, on one line, not too long.
+pub fn chat_text(text: &str) -> Result<String, String> {
+    let text = text
+        .split(|c: char| c.is_control())
+        .flat_map(str::split_whitespace)
+        .collect::<Vec<_>>()
+        .join(" ");
+    match text.chars().count() {
+        0 => Err("there's nothing to say".into()),
+        n if n > MAX_CHAT => Err(format!("that's {n} characters; the most is {MAX_CHAT}")),
+        _ => Ok(text),
+    }
 }
 
 /// What others see of a player, live: like Figma's cursors and selections. Sent when it
@@ -214,6 +261,15 @@ pub enum ToClient {
     },
     /// A player left.
     Gone { player: String },
+    /// Something said in the game's chat, including by us.
+    Said(Said),
+    /// The game's latest messages, oldest first: sent once, after the first welcome.
+    ChatHistory { messages: Vec<Said> },
+    /// Why something we said wasn't passed on.
+    Unsaid { why: String },
+    /// Everyone in the game now, us included: sent when someone joins, leaves, goes to
+    /// another world, or changes their name or color.
+    Players { players: Vec<Member> },
 }
 
 /// What a player signs to log in.
@@ -433,6 +489,14 @@ mod tests {
         assert!(held(&Touches::Everywhere, [("Bo", &drafting)]).is_err());
         assert_eq!(held(&Touches::Everywhere, [("Cy", &idle)]), Ok(()));
         assert_eq!(held(&Touches::Nothing, [("Ada", &selecting)]), Ok(()));
+    }
+
+    #[test]
+    fn chat_text_is_one_tidy_line() {
+        assert_eq!(chat_text("  hi \n\tthere  ").as_deref(), Ok("hi there"));
+        assert!(chat_text(" \n ").is_err());
+        assert!(chat_text(&"a".repeat(MAX_CHAT)).is_ok());
+        assert!(chat_text(&"a".repeat(MAX_CHAT + 1)).is_err());
     }
 
     #[test]

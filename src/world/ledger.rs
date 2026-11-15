@@ -524,6 +524,10 @@ pub struct Online {
     /// The others in this world, by id: their name, what they're doing, and when we
     /// heard it. The land they're working on waits for them ([`Ledger::held`]).
     pub others: HashMap<String, (String, genverse_net::Presence, std::time::Instant)>,
+    /// Everyone in the game, in any world, as the server last said.
+    pub players: Vec<genverse_net::Member>,
+    /// The game's earlier chat has been shown (it's sent again on every reconnect).
+    pub heard_chat: bool,
 }
 
 /// Online, changes are known by request number until the server commits them; these
@@ -1870,6 +1874,8 @@ fn connect_to(addr: &str, profile: &Profile, key: &Keypair) -> Result<Online, St
         shown: None,
         arriving_from: None,
         others: HashMap::new(),
+        players: Vec::new(),
+        heard_chat: false,
     })
 }
 

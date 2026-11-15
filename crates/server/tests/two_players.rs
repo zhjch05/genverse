@@ -35,7 +35,17 @@ impl Player {
         }
     }
 
+    /// The next message, past who's in the game ([`ToClient::Players`]): `roster` reads those.
     fn next(&self) -> ToClient {
+        loop {
+            match self.next_any() {
+                ToClient::Players { .. } => continue,
+                m => return m,
+            }
+        }
+    }
+
+    fn next_any(&self) -> ToClient {
         match self.client.recv_timeout(Duration::from_secs(5)) {
             Ok(ClientEvent::Message(m)) => m,
             Ok(ClientEvent::Closed(why) | ClientEvent::Refused(why)) => {
@@ -1142,5 +1152,128 @@ fn stopping_disconnects_everyone_and_frees_the_port() {
     }
     // The port is free again, and nobody new gets in.
     assert!(std::net::TcpListener::bind(("0.0.0.0", addr.port())).is_ok());
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+#[test]
+fn the_game_has_one_chat_across_its_worlds() {
+    use genverse_rules::game::{GameAction, signing_bytes as game_bytes};
+    let dir = std::env::temp_dir().join(format!("genverse-chat-game-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&dir);
+    let config = || ServerConfig {
+        data_dir: dir.clone(),
+        port: 0,
+        seed: 1337,
+        flat: true,
+    };
+    let server = start(config()).unwrap();
+    let addr = format!("127.0.0.1:{}", server.addr.port());
+    let ada = Player::join(&addr, 1, "Ada");
+    let bo = Player::join(&addr, 2, "Bo");
+    let cy = Player::join(&addr, 3, "Cy");
+    let say = |p: &Player, text: &str| p.client.send(ToServer::Say { text: text.into() });
+    let said = |p: &Player| match until(p, |m| {
+        matches!(m, ToClient::Said(_) | ToClient::Unsaid { .. })
+    }) {
+        ToClient::Said(said) => said,
+        other => panic!("{} expected a message, got {other:?}", p.name),
+    };
+    let unsaid = |p: &Player| match until(p, |m| {
+        matches!(m, ToClient::Said(_) | ToClient::Unsaid { .. })
+    }) {
+        ToClient::Unsaid { why } => why,
+        other => panic!("{} expected a refusal, got {other:?}", p.name),
+    };
+
+    // Ada makes a second world and Bo goes there.
+    let action = GameAction::CreateWorld {
+        name: "arena".into(),
+        seed: 7,
+        flat: true,
+        recipe: Default::default(),
+    };
+    let now = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .unwrap()
+        .as_secs();
+    let by = Provenance::new(&ada.key.player_id(), ada.name, None, None, now);
+    let sig = ada.key.sign(&game_bytes(&by, &action));
+    ada.client.send(ToServer::ProposeGame {
+        request: 1,
+        by,
+        action,
+        sig,
+    });
+    until(&bo, |m| matches!(m, ToClient::Game { .. }));
+    bo.client.send(ToServer::Enter {
+        world: "arena".into(),
+    });
+    until(&bo, |m| matches!(m, ToClient::Welcome { .. }));
+    // Everyone knows who's in the game and where, to write to them.
+    let roster = |p: &Player, done: &dyn Fn(&[genverse_net::Member]) -> bool| {
+        for _ in 0..30 {
+            if let ToClient::Players { players } = p.next_any()
+                && done(&players)
+            {
+                return players;
+            }
+        }
+        panic!("{} never heard who's here", p.name);
+    };
+    let players = roster(&cy, &|players| {
+        players.iter().any(|m| m.name == "Bo" && m.world == "arena")
+    });
+    assert_eq!(
+        players.iter().map(|m| m.name.as_str()).collect::<Vec<_>>(),
+        ["Ada", "Bo", "Cy"]
+    );
+
+    // Said to everyone: heard in every world, the sender included, tidied up.
+    say(&ada, "  hello\n everyone ");
+    for p in [&ada, &bo, &cy] {
+        let s = said(p);
+        assert_eq!(
+            (s.name.as_str(), s.world.as_str(), s.text.as_str()),
+            ("Ada", "main", "hello everyone"),
+            "{}",
+            p.name
+        );
+    }
+    // Bo, in the arena, is heard in main too.
+    say(&bo, "anyone?");
+    for p in [&ada, &bo, &cy] {
+        let s = said(p);
+        assert_eq!((s.world.as_str(), s.text.as_str()), ("arena", "anyone?"));
+    }
+
+    // What isn't passed on, and why.
+    say(&ada, " \n ");
+    assert!(unsaid(&ada).contains("nothing"));
+    say(&ada, &"a".repeat(genverse_net::MAX_CHAT + 1));
+    assert!(unsaid(&ada).contains("characters"));
+    // A flood is cut off. Ada has said one thing in the last few seconds.
+    for n in 0..genverse_server::chat::CHAT_BURST {
+        say(&ada, &format!("spam {n}"));
+    }
+    for _ in 1..genverse_server::chat::CHAT_BURST {
+        assert!(said(&ada).text.starts_with("spam"));
+    }
+    assert!(unsaid(&ada).contains("a lot"));
+
+    // After a restart, someone joining hears what was said.
+    drop((ada, bo, cy));
+    server.stop();
+    let server = start(config()).unwrap();
+    let addr = format!("127.0.0.1:{}", server.addr.port());
+    let dee = Player::join(&addr, 4, "Dee");
+    match until(&dee, |m| matches!(m, ToClient::ChatHistory { .. })) {
+        ToClient::ChatHistory { messages } => {
+            let texts: Vec<&str> = messages.iter().map(|s| s.text.as_str()).collect();
+            assert_eq!(texts[..2], ["hello everyone", "anyone?"]);
+            assert_eq!(texts.len(), 2 + genverse_server::chat::CHAT_BURST - 1);
+        }
+        _ => unreachable!(),
+    }
+    server.stop();
     let _ = std::fs::remove_dir_all(&dir);
 }

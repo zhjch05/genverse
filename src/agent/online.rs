@@ -130,6 +130,85 @@ fn backoff(n: u32) -> f32 {
     (2.0 * 2f32.powi(n.min(4) as i32)).min(30.0)
 }
 
+/// Says `text` to everyone in the game's chat. The server sends it back to show it.
+pub fn say(ledger: &Ledger, text: &str) -> Reply {
+    let online = ledger
+        .online
+        .as_ref()
+        .ok_or("The game chat is for playing together: host or join first.")?;
+    if online.closed.is_some() {
+        return Err("Not connected to the server right now.".into());
+    }
+    let text = genverse_net::chat_text(text).map_err(|why| format!("Not sent: {why}."))?;
+    online.client.send(ToServer::Say { text });
+    Ok(String::new())
+}
+
+/// For scripted runs: `GENVERSE_CHAT=game` shows the game's chat, and `GENVERSE_SAY`
+/// says something in it (`;` between messages) once we're in.
+pub fn scripted_chat(mut chat: ResMut<Chat>, ledger: Res<Ledger>, mut done: Local<bool>) {
+    let ready = ledger
+        .online
+        .as_ref()
+        .is_some_and(|o| o.state.is_some() && !o.players.is_empty());
+    if *done || !ready {
+        return;
+    }
+    *done = true;
+    if std::env::var("GENVERSE_CHAT").is_ok_and(|v| v == "game") {
+        chat.tab = super::Tab::Game;
+    }
+    for text in std::env::var("GENVERSE_SAY").unwrap_or_default().split(';') {
+        if !text.trim().is_empty()
+            && let Err(why) = say(&ledger, text)
+        {
+            chat.note_game(format!("⚠ {why}"));
+        }
+    }
+}
+
+/// A message from the game's chat, for the Game tab.
+fn heard(chat: &mut Chat, said: &genverse_net::Said, ledger: &Ledger) {
+    let Some(online) = ledger.online.as_ref() else {
+        return;
+    };
+    let me = &ledger.profile.id;
+    let marker = if said.from == *me {
+        chat.marker(me)
+    } else {
+        online
+            .players
+            .iter()
+            .find(|m| m.player == said.from)
+            .and_then(|m| m.color)
+            .unwrap_or_else(|| super::presence::default_marker(&said.from))
+    };
+    // Where they said it, when it's another world.
+    let note = match online.world.as_deref() {
+        Some(here) if here != said.world => format!("in {}", said.world),
+        _ => String::new(),
+    };
+    // How long ago it was said, by the server's clock.
+    let ago = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map_or(0, |d| d.as_secs())
+        .saturating_sub(said.at);
+    let at = std::time::Instant::now()
+        .checked_sub(std::time::Duration::from_secs(ago))
+        .unwrap_or_else(std::time::Instant::now);
+    chat.hear(
+        Role::Peer {
+            id: said.from.clone(),
+            name: said.name.clone(),
+            marker,
+            note,
+        },
+        said.text.clone(),
+        at,
+        said.from == *me,
+    );
+}
+
 pub fn sync_online(
     mut commands: Commands,
     time: Res<Time>,
@@ -231,6 +310,28 @@ pub fn sync_online(
                 }
                 peers.gone(&mut commands, &player);
             }
+            ClientEvent::Message(ToClient::Said(said)) => heard(&mut chat, &said, &ledger),
+            ClientEvent::Message(ToClient::ChatHistory { messages }) => {
+                let Some(online) = &mut ledger.online else {
+                    continue;
+                };
+                // A reconnect sends it again: what we have is already shown.
+                if std::mem::replace(&mut online.heard_chat, true) {
+                    continue;
+                }
+                for said in &messages {
+                    heard(&mut chat, said, &ledger);
+                }
+                chat.unread = 0;
+            }
+            ClientEvent::Message(ToClient::Unsaid { why }) => {
+                chat.note_game(format!("⚠ Not sent: {why}."));
+            }
+            ClientEvent::Message(ToClient::Players { players }) => {
+                if let Some(online) = &mut ledger.online {
+                    online.players = players;
+                }
+            }
             ClientEvent::Message(ToClient::Chunks { chunks }) => {
                 heal(&mut ledger, &mut world, chunks);
             }
@@ -245,6 +346,11 @@ pub fn sync_online(
                     continue;
                 };
                 online.others.clear();
+                // A new server's chat (its history follows): not the last one's.
+                if !online.heard_chat {
+                    chat.game.clear();
+                    chat.unread = 0;
+                }
                 // Worlds renamed while we were away are the same worlds.
                 let renamed = |w: Option<String>| w.map(|w| game.current(&w).unwrap_or(w));
                 online.world = renamed(online.world.take());

@@ -2,7 +2,8 @@
 //! after it as its arguments. The chat suggests them as you type, and `/help` lists them.
 //!
 //! - `/history [n]`, `/undo <id>` (undoing an undo redoes), `/rules`, `/verify`.
-//! - `/host`, `/join <host[:port]>`, `/leave`: play together.
+//! - `/host`, `/join <host[:port]>`, `/leave`: play together. Talking to the other
+//!   players needs no command: the chat's Game tab is theirs.
 //! - `/save <name>`, `/saves`, `/fork <save> <world>`; admins `/load <name>`.
 //! - `/worlds`, `/world <name>`, `/games`, `/game <name>`, `/newgame`, `/savegame`,
 //!   `/portal`; admins `/newworld`, `/removeworld`, `/loadgame`.
